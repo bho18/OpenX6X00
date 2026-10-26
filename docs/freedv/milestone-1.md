@@ -68,7 +68,12 @@ The separate `codec2_frame_bench.c` prototype exercises real 700E codec frames
 with paced or unpaced input and reports per-frame timing ratios. An optional
 host-tested path includes stateful 44.1/8 kHz resampling and warm-up exclusion;
 the original codec-only path was also exercised on ARM/QEMU. The prototype does
-not measure the live audio path or RADE and cannot establish the radio gate.
+not measure the live audio path and cannot establish the radio gate.
+
+`rade_frame_bench.c` is a host-tested RADE V1 streaming prototype with feature
+extraction, FARGAN, resampling, paced and unpaced TX/RX, silence and signal
+interruptions. It does not yet measure queues, underruns, thermal behavior or
+progressive memory growth, and has not been built with the matching radio SDK.
 
 The required target benchmark must measure RADE V1 and 700E TX, synced RX and
 acquisition/no-sync on the actual radio, using the matching SDK. With normal GUI
