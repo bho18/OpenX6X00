@@ -3,6 +3,7 @@
 add_executable(${PROJECT_NAME})
 if(ENABLE_FREEDV_DIAGNOSTICS)
     target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1)
+    target_sources(${PROJECT_NAME} PRIVATE freedv/watchdog.c)
 endif()
 
 target_sources(${PROJECT_NAME} PUBLIC
