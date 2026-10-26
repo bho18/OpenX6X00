@@ -72,6 +72,23 @@ jobs:
           assert not tx['full_pipeline_qualified'] and not rx['radio_io']
           print('PASS: 700E TX and synchronized RX benchmark outputs')
           PY
+          python3 tools/freedv/collect_benchmark.py --mode 700E --benchmark /tmp/codec2-frame-bench \
+            --fixture codec2-reference/raw/ve9qrp_10s.raw --direction tx --seconds 1 --pacing paced \
+            --warmup 1 --sample-interval 1 --output /tmp/freedv-collected-700e
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          p = Path('/tmp/freedv-collected-700e')
+          m = json.loads((p/'manifest.json').read_text())
+          r = json.loads((p/'result.json').read_text())
+          e = json.loads((p/'events.json').read_text())
+          s = [json.loads(line) for line in (p/'resources.jsonl').read_text().splitlines()]
+          assert m['fixture_sha256'] == hashlib.sha256(Path('codec2-reference/raw/ve9qrp_10s.raw').read_bytes()).hexdigest()
+          assert not m['automatic_upload'] and not m['hardware_routing_tested']
+          assert r['mode'] == '700E' and r['direction'] == 'tx' and not r['radio_io']
+          assert len(s) >= 1 and e[-1]['return_code'] == 0
+          print('PASS: benchmark collection retains fingerprints, resource samples and events')
+          PY
 
   host-ui:
     runs-on: ubuntu-24.04
