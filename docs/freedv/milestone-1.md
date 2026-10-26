@@ -91,3 +91,10 @@ the supported native routes have been tested and documented as unusable.
 See `tools/freedv/sources.json` for the source revisions and fixture hashes.
 Preserve individual component notices and inspect the Opus model archive's
 notices before distributing a firmware image containing it.
+
+`.github/workflows/freedv-baseline-image.yml` is a manually triggered X6200
+baseline image definition pinned to the inspected Buildroot revision. It is
+unverified and does not create a diagnostic image. GitHub only exposes a new
+workflow-dispatch definition after the workflow exists on the default branch;
+do not merge this draft solely to run it. Validate it when the branch is ready
+for review, then add the diagnostic image and benchmark packaging separately.

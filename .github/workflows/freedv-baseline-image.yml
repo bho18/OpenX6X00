@@ -1,0 +1,62 @@
+name: FreeDV X6200 baseline image
+
+# This is a baseline only. It does not include the unfinished diagnostic UI or
+# benchmark package. A diagnostic image will be added after those pieces exist.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  x6200-baseline:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      # The upstream image build requires more space than a default hosted runner.
+      - name: Free disk space on the disposable runner
+        uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
+          path: x6100_gui
+      - name: Check out pinned X6200 Buildroot
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: gdyuldin/AetherX6200Buildroot
+          ref: 8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3
+          submodules: true
+          path: AetherX6200Buildroot
+      - name: Build baseline image
+        env:
+          MODEL: x6200
+        run: |
+          set -eu
+          df -h .
+          test "$(git -C AetherX6200Buildroot/buildroot rev-parse HEAD)" = cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f
+          GUI_DIR="$GITHUB_WORKSPACE/x6100_gui" BR_DIR="$GITHUB_WORKSPACE/AetherX6200Buildroot" \
+            bash x6100_gui/buildroot/local-build.sh
+          cd AetherX6200Buildroot/build/images
+          sha256sum OpenX6X00-x6200-local-sdcard.img > SHA256SUMS
+          git -C "$GITHUB_WORKSPACE/x6100_gui" rev-parse HEAD > firmware-commit.txt
+          git -C "$GITHUB_WORKSPACE/AetherX6200Buildroot" rev-parse HEAD > buildroot-commit.txt
+      - name: Upload baseline image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: x6200-freedv-baseline
+          path: |
+            AetherX6200Buildroot/build/images/OpenX6X00-x6200-local-sdcard.img
+            AetherX6200Buildroot/build/images/SHA256SUMS
+            AetherX6200Buildroot/build/images/firmware-commit.txt
+            AetherX6200Buildroot/build/images/buildroot-commit.txt
+          if-no-files-found: error
+          retention-days: 7
