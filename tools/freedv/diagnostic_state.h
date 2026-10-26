@@ -4,6 +4,12 @@
 #include <stdint.h>
 
 typedef enum { FD_IDLE, FD_READY, FD_ARMED, FD_RUNNING, FD_WAIT_RX, FD_RESTORE } fd_state;
+/* Bits are RECORD, MODEM, software PTT, in that order. Every combination is
+ * potentially keyed and therefore needs local arming before execution. */
+typedef enum {
+    FD_R0_M0_P0 = 0, FD_R0_M0_P1, FD_R0_M1_P0, FD_R0_M1_P1,
+    FD_R1_M0_P0, FD_R1_M0_P1, FD_R1_M1_P0, FD_R1_M1_P1
+} fd_matrix_case;
 typedef struct {
     bool known;
     bool fresh;       /* caller's explicit freshness limit, not inferred from !tx */
@@ -14,6 +20,7 @@ typedef struct {
     fd_state state;
     bool tx_case;
     bool software_cleared;
+    int matrix_case; /* -1 for passive receive only */
     uint64_t deadline_ms;
     uint64_t clear_sequence;
 } fd_session;
@@ -21,7 +28,11 @@ typedef struct {
 /* Caller serializes all operations, acquires exclusive radio/audio ownership and
  * snapshots state under the radio lock. Do not use this prototype as the owner. */
 bool fd_acquire(fd_session *s, bool busy, bool commands_quiescent, fd_observation observed);
-bool fd_select(fd_session *s, bool tx_case);
+/* Passive receive only: no route changes or generated playback. */
+bool fd_select_passive_rx(fd_session *s);
+/* Selecting a matrix case changes model state only; it must never key RF. */
+bool fd_select_matrix(fd_session *s, fd_matrix_case selected);
+bool fd_matrix_bits(fd_matrix_case selected, bool *record, bool *modem, bool *ptt);
 /* The caller must establish the request came from local controls. */
 bool fd_arm(fd_session *s, bool local);
 /* The caller must recheck the transmit frequency and guards immediately before

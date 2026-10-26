@@ -73,6 +73,11 @@ cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
 /tmp/freedv-state-test
 ```
 
+The model names all eight RECORD × MODEM × software-PTT combinations and treats
+each as potentially keyed. Selection itself only changes model state; every
+matrix case requires local arming. Its separate passive-RX selection does not
+authorize routing changes or generated playback.
+
 For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
 The option defaults to OFF. When enabled on X6200 or the host simulator,

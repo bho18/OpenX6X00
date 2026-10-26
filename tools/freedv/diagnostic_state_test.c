@@ -15,11 +15,11 @@ int main(void) {
     assert(!fd_acquire(&s, false, true, unknown));
     assert(!fd_acquire(&s, false, true, stale));
     assert(fd_acquire(&s, false, true, rx));
-    assert(fd_select(&s, true));
+    assert(fd_select_matrix(&s, FD_R1_M1_P1));
     assert(!fd_run(&s, 1, true, rx)); /* case selection cannot key */
     assert(!fd_arm(&s, false)); /* remote arming refused */
     assert(fd_arm(&s, true));
-    assert(!fd_select(&s, false));
+    assert(!fd_select_passive_rx(&s));
     assert(!fd_run(&s, 1, false, rx)); /* frequency/guard refused */
     assert(!fd_run(&s, 1, true, tx)); /* hardware PTT became active */
     assert(!fd_run(&s, 1, true, unknown));
@@ -46,12 +46,27 @@ int main(void) {
     assert(!fd_restored(&s));
     assert(!fd_stop(&s));
     assert(fd_acquire(&s, false, true, rx));
-    assert(fd_select(&s, false));
+    assert(fd_select_passive_rx(&s));
     assert(fd_run(&s, 0, false, rx));
     assert(fd_stop(&s));
     assert(fd_commands_cleared(&s, 10));
     assert(fd_rx_observed(&s, (fd_observation){true, true, false, 11}));
     assert(fd_restored(&s));
     assert(fd_release(&s));
+    for (unsigned i = 0; i < 8; ++i) {
+        bool record, modem, ptt;
+        assert(fd_matrix_bits((fd_matrix_case)i, &record, &modem, &ptt));
+        assert(record == !!(i & 4) && modem == !!(i & 2) && ptt == !!(i & 1));
+        assert(fd_acquire(&s, false, true, rx));
+        assert(fd_select_matrix(&s, (fd_matrix_case)i));
+        assert(!fd_run(&s, 1, true, rx)); /* all eight need explicit local arming */
+        assert(fd_arm(&s, true) && fd_run(&s, 1, true, rx));
+        assert(fd_stop(&s) && fd_commands_cleared(&s, 10));
+        assert(fd_rx_observed(&s, (fd_observation){true, true, false, 11}));
+        assert(fd_restored(&s) && fd_release(&s));
+    }
+    bool record, modem, ptt;
+    assert(!fd_matrix_bits((fd_matrix_case)8, &record, &modem, &ptt));
+    assert(!fd_matrix_bits(FD_R0_M0_P0, NULL, &modem, &ptt));
     puts("PASS: session arming, guards, timeout, fresh post-clear RX and held PTT");
 }
