@@ -48,20 +48,24 @@ jobs:
       - name: Build and exercise 700E timing prototype
         run: |
           set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsamplerate0-dev
           cmake -S codec2-reference -B /tmp/codec2-build -DCMAKE_BUILD_TYPE=Release -DUNITTEST=OFF -DLPCNET=OFF
           cmake --build /tmp/codec2-build --target freedv_tx -j 2
           cc -std=c11 -Wall -Wextra -Werror -Icodec2-reference/src tools/freedv/codec2_frame_bench.c \
-            -L/tmp/codec2-build/src -lcodec2 -lm -o /tmp/codec2-frame-bench
+            -L/tmp/codec2-build/src -lcodec2 -lsamplerate -lm -o /tmp/codec2-frame-bench
           export LD_LIBRARY_PATH=/tmp/codec2-build/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
           /tmp/codec2-build/src/freedv_tx 700E codec2-reference/raw/ve9qrp_10s.raw /tmp/700e-modem.raw
-          /tmp/codec2-frame-bench tx codec2-reference/raw/ve9qrp_10s.raw 1 unpaced > /tmp/tx.json
-          /tmp/codec2-frame-bench rx /tmp/700e-modem.raw 3 unpaced > /tmp/rx.json
+          /tmp/codec2-frame-bench tx codec2-reference/raw/ve9qrp_10s.raw 1 unpaced resample 1 > /tmp/tx.json
+          /tmp/codec2-frame-bench rx /tmp/700e-modem.raw 3 unpaced resample 1 > /tmp/rx.json
           python3 - <<'PY'
           import json
           with open('/tmp/tx.json') as f: tx = json.load(f)
           with open('/tmp/rx.json') as f: rx = json.load(f)
           assert tx['frames'] > 0 and tx['output_samples'] > 0
           assert rx['frames'] > 0 and rx['sync_frames'] > 0
+          assert tx['resampling_included'] and rx['resampled_output_samples'] > 0
+          assert tx['warmup_audio_seconds'] >= 1 and rx['deadline_misses'] is None
           assert not tx['full_pipeline_qualified'] and not rx['radio_io']
           print('PASS: 700E TX and synchronized RX benchmark outputs')
           PY

@@ -63,9 +63,10 @@ benchmark, report audio-block deadlines, or measure target-radio performance.
 It never controls radio hardware.
 
 The separate `codec2_frame_bench.c` prototype exercises real 700E codec frames
-with paced or unpaced input and reports per-frame timing ratios. Host and ARM/QEMU
-TX/RX checks passed. It excludes 44.1 kHz resampling, warm-up exclusion and the
-other full-pipeline measurements, so it cannot establish the radio gate.
+with paced or unpaced input and reports per-frame timing ratios. An optional
+host-tested path includes stateful 44.1/8 kHz resampling and warm-up exclusion;
+the original codec-only path was also exercised on ARM/QEMU. The prototype does
+not measure the live audio path or RADE and cannot establish the radio gate.
 
 The required target benchmark must measure RADE V1 and 700E TX, synced RX and
 acquisition/no-sync on the actual radio, using the matching SDK. With normal GUI
