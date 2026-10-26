@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// 700E codec-only timing prototype. No radio or physical audio I/O.
+// 700E in-memory timing prototype. No radio or physical audio I/O.
 #define _POSIX_C_SOURCE 200809L
 #include <freedv_api.h>
 #include <samplerate.h>
@@ -45,7 +45,7 @@ static void read_resampled(SRC_STATE *state, const float *fixture, size_t count,
     }
 }
 static size_t write_resampled(SRC_STATE *state, const float *input, size_t count,
-                              float *output, size_t output_capacity) {
+                              float *output, short *pcm, size_t output_capacity) {
     size_t used = 0, generated = 0;
     while (used < count) {
         SRC_DATA d = {.data_in = input + used, .input_frames = (long)(count - used),
@@ -56,6 +56,7 @@ static size_t write_resampled(SRC_STATE *state, const float *input, size_t count
             fprintf(stderr, "output resampling failed: %s\n", src_strerror(error)); exit(1);
         }
         used += (size_t)d.input_frames_used;
+        src_float_to_short_array(output, pcm, (int)d.output_frames_gen);
         generated += (size_t)d.output_frames_gen;
     }
     return generated;
@@ -99,6 +100,7 @@ int main(int argc, char **argv) {
     bool resample = argc == 7;
     SRC_STATE *input_src = NULL, *output_src = NULL;
     float *fixture_44100 = NULL, *frame_float = NULL, *output_44100 = NULL;
+    short *output_pcm = NULL;
     size_t count_44100 = 0, output_capacity = frame_capacity * 7 + 512;
     if (resample) {
         float *original = malloc(count * sizeof(*original));
@@ -106,7 +108,8 @@ int main(int argc, char **argv) {
         fixture_44100 = malloc(converted_capacity * sizeof(*fixture_44100));
         frame_float = malloc(frame_capacity * sizeof(*frame_float));
         output_44100 = malloc(output_capacity * sizeof(*output_44100));
-        if (!original || !fixture_44100 || !frame_float || !output_44100) { fprintf(stderr, "allocation failed\n"); return 1; }
+        output_pcm = malloc(output_capacity * sizeof(*output_pcm));
+        if (!original || !fixture_44100 || !frame_float || !output_44100 || !output_pcm) { fprintf(stderr, "allocation failed\n"); return 1; }
         src_short_to_float_array(fixture, original, (int)count);
         SRC_DATA d = {.data_in = original, .input_frames = (long)count, .data_out = fixture_44100,
                       .output_frames = (long)converted_capacity, .src_ratio = 44100.0 / 8000.0, .end_of_input = 1};
@@ -148,7 +151,8 @@ int main(int argc, char **argv) {
         size_t output_44100_count = 0;
         if (resample && produced) {
             src_short_to_float_array(out, frame_float, produced);
-            output_44100_count = write_resampled(output_src, frame_float, (size_t)produced, output_44100, output_capacity);
+            output_44100_count = write_resampled(output_src, frame_float, (size_t)produced,
+                                                 output_44100, output_pcm, output_capacity);
         }
         if (!tx) {
             int sync = 0;
@@ -186,7 +190,7 @@ int main(int argc, char **argv) {
     else snprintf(misses, sizeof(misses), "null");
     printf("{\"schema_version\":1,\"mode\":\"700E\",\"direction\":\"%s\","
            "\"pacing\":\"%s\",\"frames\":%zu,\"audio_seconds\":%.6f,"
-           "\"codec_realtime_factor\":%.6f,\"p99_frame_ratio\":%.6f,\"max_frame_ratio\":%.6f,"
+           "\"processing_realtime_factor\":%.6f,\"p99_frame_ratio\":%.6f,\"max_frame_ratio\":%.6f,"
            "\"deadline_misses\":%s,\"output_samples\":%" PRId64 ",\"peak_rss_kib_linux\":%ld,"
            "\"resampled_output_samples\":%" PRIu64 ","
            "\"sync_frames\":%zu,\"warmup_audio_seconds\":%.6f,"
@@ -198,7 +202,7 @@ int main(int argc, char **argv) {
     freedv_close(f);
     if (input_src) src_delete(input_src);
     if (output_src) src_delete(output_src);
-    free(fixture_44100); free(frame_float); free(output_44100);
+    free(fixture_44100); free(frame_float); free(output_44100); free(output_pcm);
     free(ratios); free(in); free(out); free(fixture);
     return 0;
 }
