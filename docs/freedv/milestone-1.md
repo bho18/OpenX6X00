@@ -92,6 +92,8 @@ or missing model is INCONCLUSIVE. External audio is a scope decision only after
 the supported native routes have been tested and documented as unusable.
 
 See `tools/freedv/sources.json` for the source revisions and fixture hashes.
+The pending case matrix and evidence fields are in
+`docs/freedv/qualification-record.md`; none of those entries have passed yet.
 Preserve individual component notices and inspect the Opus model archive's
 notices before distributing a firmware image containing it.
 
