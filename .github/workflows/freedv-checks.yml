@@ -49,7 +49,7 @@ jobs:
         run: |
           set -eu
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libsamplerate0-dev
+          sudo apt-get install -y --no-install-recommends libsamplerate0-dev sox
           cmake -S codec2-reference -B /tmp/codec2-build -DCMAKE_BUILD_TYPE=Release -DUNITTEST=OFF -DLPCNET=OFF
           cmake --build /tmp/codec2-build --target freedv_tx -j 2
           cc -std=c11 -Wall -Wextra -Werror -Icodec2-reference/src tools/freedv/codec2_frame_bench.c \
@@ -71,6 +71,19 @@ jobs:
           assert paced['warmup_audio_seconds'] >= 1 and 0 <= paced['deadline_misses'] <= paced['frames']
           assert not tx['full_pipeline_qualified'] and not rx['radio_io']
           print('PASS: 700E TX and synchronized RX benchmark outputs')
+          PY
+          python3 tools/freedv/make_700e_fixture.py --tx /tmp/codec2-build/src/freedv_tx \
+            --speech codec2-reference/raw/ve9qrp_10s.raw --output /tmp/freedv-fixture-a
+          python3 tools/freedv/make_700e_fixture.py --tx /tmp/codec2-build/src/freedv_tx \
+            --speech codec2-reference/raw/ve9qrp_10s.raw --output /tmp/freedv-fixture-b
+          python3 - <<'PY'
+          import json
+          with open('/tmp/freedv-fixture-a/manifest.json') as f: a = json.load(f)
+          with open('/tmp/freedv-fixture-b/manifest.json') as f: b = json.load(f)
+          assert a['modem_8000_sha256'] == b['modem_8000_sha256']
+          assert a['modem_44100_wav_sha256'] == b['modem_44100_wav_sha256']
+          assert not a['radio_control'] and not a['transmitter_provenance_verified']
+          print('PASS: deterministic 700E waveform generation')
           PY
 
   host-ui:
