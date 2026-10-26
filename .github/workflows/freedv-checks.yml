@@ -52,6 +52,25 @@ jobs:
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
 
+  x6100-backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out pinned X6100 control headers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: gdyuldin/X6100Control
+          ref: 1426f56ef6759dc1c90cb76478c6e524e08c5c94
+          path: x6100-control-reference
+      - name: Compile X6100 backend with diagnostics enabled
+        run: |
+          set -eu
+          cmake -S x6100-control-reference -B /tmp/x6100-control-config -DAETHER_X6100CTRL_USE_LTO=OFF
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 \
+            -I. -Ix6100-control-reference/include -I/tmp/x6100-control-config/include \
+            -c src/hw/x6100/hw_x6100.c -o /tmp/x6100-backend.o
+
   codec2-prototype:
     runs-on: ubuntu-22.04
     steps:
