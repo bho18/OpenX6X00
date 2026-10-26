@@ -73,6 +73,33 @@ jobs:
           print('PASS: 700E TX and synchronized RX benchmark outputs')
           PY
 
+  rade-prototype:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out pinned RADE
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: freedv/rade_c
+          ref: c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9
+          path: rade-reference
+      - name: Build RADE V1 reference and exercise streaming prototype
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev
+          cmake -S rade-reference -B /tmp/rade-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/rade-build --target rade_tx_wav -j 2
+          opus_dir=/tmp/rade-build/build_opus-prefix/src/build_opus
+          cc -O2 -std=c11 -Wall -Wextra -Werror -Wno-error=cpp \
+            -Irade-reference/src -I"$opus_dir/dnn" -I"$opus_dir/celt" -I"$opus_dir/include" -I"$opus_dir" \
+            tools/freedv/rade_frame_bench.c -L/tmp/rade-build/src -lrade "$opus_dir/.libs/libopus.a" \
+            -lsamplerate -lm -Wl,-rpath,/tmp/rade-build/src -o /tmp/rade-frame-bench
+          python3 tools/freedv/test_rade_frame_bench.py --benchmark /tmp/rade-frame-bench \
+            --tx /tmp/rade-build/src/rade_tx_wav --speech rade-reference/input_sample.wav
+
   host-ui:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
