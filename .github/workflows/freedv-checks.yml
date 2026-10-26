@@ -51,6 +51,15 @@ jobs:
           /tmp/freedv-control-lease-test
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
+          PULSE_SERVER=unix:/tmp/freedv-no-pulse python3 tools/freedv/inventory.py --output /tmp/freedv-inventory.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/freedv-inventory.json') as f: inventory = json.load(f)
+          assert inventory['schema_version'] == 2 and inventory['radio_hardware_tested'] is False
+          assert inventory['firmware']['baseband_version'] is None
+          assert 'alsa_mixers' in inventory['audio'] and 'thermal_zones' in inventory
+          print('PASS: inventory distinguishes missing observations from hardware results')
+          PY
 
   x6100-backend:
     runs-on: ubuntu-24.04
