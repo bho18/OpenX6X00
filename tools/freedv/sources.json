@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "openx6x00": {"repository": "https://github.com/Guru-RF/OpenX6X00", "commit": "d833e288026ad4a22575b897829c1c82d8437f92"},
+  "x6200_buildroot": {"repository": "https://github.com/gdyuldin/AetherX6200Buildroot", "commit": "8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3", "buildroot_submodule": "cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f"},
+  "x6200_control": {"repository": "https://github.com/gdyuldin/X6200Control", "commit": "0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8", "tag": "v0.1.1"},
+  "codec2": {"repository": "https://github.com/drowe67/codec2", "commit": "310777b1c6f1af0bc7c72f5b32f80f6fd9136962", "speech_fixture_sha256": "b5554e78d9a5d34e886df2142d3e9327c11688b9aacb6404dea2de67d20df13b"},
+  "freedv_backend": {"repository": "https://github.com/freedv/freedv-backend", "commit": "884503f9463bd723aeae35dc5bf8ee75896d9406"},
+  "rade_c": {"repository": "https://github.com/freedv/rade_c", "commit": "c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9", "speech_fixture_sha256": "a53d3cc835a5668c4687dba80314b82d8a96d9e0431e5de5072fa397fc8c4a79"},
+  "opus": {"repository": "https://github.com/xiph/opus", "commit": "940d4e5af64351ca8ba8390df3f555484c567fbb", "model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453"}
+}

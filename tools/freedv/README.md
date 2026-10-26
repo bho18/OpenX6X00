@@ -1,0 +1,24 @@
+# FreeDV reference tooling
+
+`sources.json` records the first-milestone source pins and speech fixture hashes.
+`reference_benchmark.py` runs the upstream FreeDV transmit and receive tools on
+an exact pinned fixture. Both executables must already be built. Example, with
+paths adjusted for the local source/build locations:
+
+```sh
+python3 tools/freedv/reference_benchmark.py --mode 700E \
+  --tx /path/to/codec2-build/src/freedv_tx --rx /path/to/codec2-build/src/freedv_rx \
+  --input /path/to/codec2/raw/ve9qrp_10s.raw --output /path/to/new-results
+
+python3 tools/freedv/reference_benchmark.py --mode RADE-V1 \
+  --tx /path/to/rade-build/src/rade_tx_wav --rx /path/to/rade-build/src/rade_rx_wav \
+  --input /path/to/rade_c/input_sample.wav --output /path/to/new-results
+```
+
+The output directory must not exist. Each run writes logs and `result.json`;
+its temporary audio files are deleted. Fixture hashes are checked before running.
+The real-time factor is whole-file wall time divided by input duration, including
+process and file I/O. It is an **unpaced reference measurement**, not the planned
+30-minute streaming benchmark, p99 block-time test or an on-radio qualification.
+It does not access or control the radio. The complete milestone scope and its
+outstanding requirements are in `docs/freedv/milestone-1.md`.
