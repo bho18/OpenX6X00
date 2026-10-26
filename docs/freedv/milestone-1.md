@@ -13,6 +13,12 @@ on-radio measurements remain to be implemented and verified. In particular,
 the X6200's generic `hw_get_i()` does not return a valid RECORD/MODEM/PTT
 snapshot; the read-only view uses a separate locked cached-command accessor.
 
+An opt-in, bounded mono PCM capture buffer is connected before application
+decimation in the existing PulseAudio callback. It has no UI control or file
+writer yet and is not a guarded diagnostic session. It cannot establish ALSA
+left/right routing or physical microphone behavior. Its overflow, audio holes
+and capture errors must be treated as invalidating affected measurements.
+
 ## Evidence and scope
 
 The reference GUI defaults to RADE V1; 700E is a traditional waveform useful for

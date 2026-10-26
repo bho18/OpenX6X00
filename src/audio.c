@@ -26,6 +26,9 @@
 #include "params/params.h"
 #include "cfg/cfg_api.h"
 #include "btaudio.h"
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include "freedv/capture_ring.h"
+#endif
 
 #define AUDIO_RATE_MS   100
 #define PA_CONNECT_TRIES 20     /* a second apart: PulseAudio still coming up, or x6100_daemon restarting it */
@@ -48,6 +51,44 @@ static pa_stream            *monitor_stm = NULL;
 
 static float                peak_db = -60.0f;
 static bool                 connected;      /* the context was READY once */
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+/* The PulseAudio mainloop lock serializes activation against its callback.
+ * A diagnostic worker is the sole consumer and writes files outside it. */
+static freedv_capture_ring  diagnostic_capture;
+static bool                 diagnostic_capture_active;
+static atomic_uint          diagnostic_capture_errors;
+
+bool audio_freedv_capture_begin(void) {
+    if (!mloop || !capture_stm) return false;
+    pa_threaded_mainloop_lock(mloop);
+    bool ok = !diagnostic_capture_active && pa_stream_get_state(capture_stm) == PA_STREAM_READY;
+    if (ok) {
+        freedv_capture_ring_init(&diagnostic_capture);
+        atomic_store_explicit(&diagnostic_capture_errors, 0, memory_order_relaxed);
+        diagnostic_capture_active = true;
+    }
+    pa_threaded_mainloop_unlock(mloop);
+    return ok;
+}
+
+void audio_freedv_capture_end(void) {
+    if (!mloop) return;
+    pa_threaded_mainloop_lock(mloop);
+    diagnostic_capture_active = false;
+    pa_threaded_mainloop_unlock(mloop);
+}
+
+size_t audio_freedv_capture_read(int16_t *out, size_t capacity) {
+    return freedv_capture_ring_pop(&diagnostic_capture, out, capacity);
+}
+
+audio_freedv_capture_stats_t audio_freedv_capture_stats(void) {
+    freedv_capture_stats s = freedv_capture_ring_stats(&diagnostic_capture);
+    return (audio_freedv_capture_stats_t){s.queued_samples, s.dropped_samples, s.hole_samples,
+        atomic_load_explicit(&diagnostic_capture_errors, memory_order_relaxed)};
+}
+#endif
 
 static void record_monitor_setup();
 
@@ -108,11 +149,20 @@ static void read_callback(pa_stream *s, size_t nbytes, void *udata) {
     const void *buf = NULL;
 
     if (pa_stream_peek(s, &buf, &nbytes) < 0) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        if (diagnostic_capture_active) atomic_fetch_add_explicit(&diagnostic_capture_errors, 1, memory_order_relaxed);
+#endif
         LV_LOG_WARN("Capture: %s", pa_strerror(pa_context_errno(ctx)));
         return;
     }
     if (nbytes == 0)
         return;
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (diagnostic_capture_active) {
+        if (nbytes % sizeof(int16_t)) atomic_fetch_add_explicit(&diagnostic_capture_errors, 1, memory_order_relaxed);
+        freedv_capture_ring_push(&diagnostic_capture, buf, nbytes / sizeof(int16_t));
+    }
+#endif
     if (buf) {
         dsp_put_audio_samples(nbytes / 2, (int16_t *) buf);
     } else {
@@ -125,7 +175,13 @@ static void read_callback(pa_stream *s, size_t nbytes, void *udata) {
             left -= n;
         }
     }
-    pa_stream_drop(s);
+    int drop_result = pa_stream_drop(s);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (drop_result < 0 && diagnostic_capture_active)
+        atomic_fetch_add_explicit(&diagnostic_capture_errors, 1, memory_order_relaxed);
+#else
+    (void)drop_result;
+#endif
 }
 
 void audio_init() {
