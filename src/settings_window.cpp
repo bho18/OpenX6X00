@@ -4708,6 +4708,13 @@ static void make_info_page() {
         const char *state = route.observed_state == RADIO_RX ? "RX" :
                             route.observed_state == RADIO_TX ? "TX" : "Busy";
         row = info_row(row, "Last radio state", state);
+        if (route.packet_tx_known) {
+            snprintf(route_text, sizeof(route_text), "%s (%llu ms ago)", route.packet_tx ? "TX" : "RX",
+                     (unsigned long long)route.packet_age_ms);
+            row = info_row(row, "Last packet TX", route_text);
+        } else {
+            row = info_row(row, "Last packet TX", "Unknown");
+        }
     } else {
         row = info_row(row, "Cached commands", "Unavailable");
     }

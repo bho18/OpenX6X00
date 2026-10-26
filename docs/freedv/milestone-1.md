@@ -6,8 +6,10 @@ while playing decoded speech on its speaker. It also requires measuring 700E
 and RADE V1 on the actual radio with the GUI and waterfall active.
 
 When the diagnostic option is enabled, Settings → Info contains a read-only
-snapshot of cached RECORD/MODEM/PTT commands and the last radio state. It is
-not independent hardware readback and does not provide or authorize routing
+snapshot of cached RECORD/MODEM/PTT commands, the last radio state, and a
+separate timestamped TX flag from the latest baseband packet. The cached
+commands are not independent hardware readback, and an unknown or stale packet
+is not proof that RF has stopped. The page does not provide or authorize routing
 experiments. The required guarded diagnostics, matched Buildroot SDK, image and
 on-radio measurements remain to be implemented and verified. In particular,
 the X6200's generic `hw_get_i()` does not return a valid RECORD/MODEM/PTT

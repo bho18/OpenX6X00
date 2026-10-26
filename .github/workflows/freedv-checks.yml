@@ -34,6 +34,9 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/capture_ring.c \
             tools/freedv/capture_ring_test.c -o /tmp/freedv-capture-ring-test
           /tmp/freedv-capture-ring-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/packet_tx.c \
+            tools/freedv/packet_tx_test.c -o /tmp/freedv-packet-tx-test
+          /tmp/freedv-packet-tx-test
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
 
