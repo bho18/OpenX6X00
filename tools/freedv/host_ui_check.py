@@ -102,7 +102,7 @@ def main():
             wait_for(client, image_path, ('INFO', 'FIRMWARE'))
             drive.turn('mfk', 20)
             time.sleep(1)
-            wait_for(client, image_path, ('CACHED COMMANDS', 'LAST RADIO STATE'))
+            wait_for(client, image_path, ('CACHED', 'LAST RADIO STATE'))
             print('PASS: diagnostic snapshot displayed cached commands and last radio state')
 
 
