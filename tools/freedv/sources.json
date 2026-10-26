@@ -3,6 +3,8 @@
   "openx6x00": {"repository": "https://github.com/Guru-RF/OpenX6X00", "commit": "d833e288026ad4a22575b897829c1c82d8437f92"},
   "x6200_buildroot": {"repository": "https://github.com/gdyuldin/AetherX6200Buildroot", "commit": "8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3", "buildroot_submodule": "cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f"},
   "x6200_control": {"repository": "https://github.com/gdyuldin/X6200Control", "commit": "0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8", "tag": "v0.1.1"},
+  "x6100_control_host_check": {"repository": "https://github.com/gdyuldin/X6100Control", "commit": "1426f56ef6759dc1c90cb76478c6e524e08c5c94", "tag": "v0.16.1"},
+  "host_libgpiod_v1_check": {"repository": "https://github.com/brgl/libgpiod", "commit": "40f18f16f573e6bf091d83cb1677e7386d0b8495", "note": "host-only X6100 backend link check"},
   "host_liquid_dsp": {"repository": "https://github.com/jgaeddert/liquid-dsp", "commit": "3b8a6f07ba6780b7a3d4be148461257515d183ad", "tag": "v1.4.0"},
   "host_ft8_lib": {"repository": "https://github.com/gdyuldin/ft8_lib", "commit": "73b0db861dc41c7ca9f3dedc73ee148daa06dd0e"},
   "codec2": {"repository": "https://github.com/drowe67/codec2", "commit": "310777b1c6f1af0bc7c72f5b32f80f6fd9136962", "speech_fixture_sha256": "b5554e78d9a5d34e886df2142d3e9327c11688b9aacb6404dea2de67d20df13b"},
