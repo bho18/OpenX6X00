@@ -1,6 +1,9 @@
 # The GUI program, x6100_gui. Copyright (c) 2026 Giovanni Ricciardi IU1WXY
 # The source order below is the link order: keep it when adding files.
 add_executable(${PROJECT_NAME})
+if(ENABLE_FREEDV_DIAGNOSTICS)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1)
+endif()
 
 target_sources(${PROJECT_NAME} PUBLIC
     gui_main.c screen_main.c walkie.c gui_styles.c wf_palettes.c

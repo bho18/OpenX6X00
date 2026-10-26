@@ -5,11 +5,13 @@ microphone while feeding a generated signal to RF, and capture received audio
 while playing decoded speech on its speaker. It also requires measuring 700E
 and RADE V1 on the actual radio with the GUI and waterfall active.
 
-The firmware currently provides no FreeDV diagnostic page and this document is
-not authorization to run experiments on an installed radio. The required guarded
-diagnostics, matched Buildroot SDK, image and on-radio measurements remain to be
-implemented and verified. In particular, the X6200's generic `hw_get_i()` does
-not return a valid RECORD/MODEM/PTT snapshot.
+When the diagnostic option is enabled, Settings → Info contains a read-only
+snapshot of cached RECORD/MODEM/PTT commands and the last radio state. It is
+not independent hardware readback and does not provide or authorize routing
+experiments. The required guarded diagnostics, matched Buildroot SDK, image and
+on-radio measurements remain to be implemented and verified. In particular,
+the X6200's generic `hw_get_i()` does not return a valid RECORD/MODEM/PTT
+snapshot; the read-only view uses a separate locked cached-command accessor.
 
 ## Evidence and scope
 

@@ -70,7 +70,10 @@ cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
 
 For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
-The option defaults to OFF and does not expose a radio diagnostic page yet.
+The option defaults to OFF. When enabled on X6200 or the host simulator,
+Settings → Info includes a read-only snapshot of cached route commands and the
+last radio state. It does not acquire a session, run experiments, or key RF; the
+values are refreshed when the Info page opens and are not hardware readback.
 
 To also test decoding the X6200 control library's cached RECORD, MODEM and PTT
 bits, provide `-DX6200_CONTROL_INCLUDE_DIR=/path/to/X6200Control/include` when
