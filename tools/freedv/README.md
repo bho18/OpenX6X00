@@ -94,3 +94,23 @@ memory information and lists available ALSA/PulseAudio devices. It does not
 collect station settings or change the radio. Missing commands are recorded as
 unavailable. The output may include local audio-device names; inspect it before
 sharing. The inventory is not a hardware routing or TX test.
+
+For a shared X6100 compile check, build the pinned X6100Control and libgpiod
+v1 sources from `sources.json` into a host-only prefix, with the ordinary host
+GUI dependencies already prepared by `host/build.sh build`. Then use:
+
+```sh
+prefix=/path/to/host-only-x6100-deps
+export CPATH="$prefix/include${CPATH:+:$CPATH}"
+export LIBRARY_PATH="$prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cmake -S . -B /path/to/new-x6100-host-build -G Ninja -DHOST_BUILD=ON \
+  -DHW_BACKEND=x6100 -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build /path/to/new-x6100-host-build --target x6100_gui
+```
+
+The combined diagnostic prototypes were compiled and linked this way using
+the recorded control-library and libgpiod commits. Do not execute the resulting
+physical-backend binary as a simulator. This host build does not use the radio's
+Buildroot SDK and is not suitable for deployment. CI separately compiles the
+X6100 backend against the pinned control headers; it is not a full target build.
