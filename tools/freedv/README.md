@@ -22,3 +22,15 @@ process and file I/O. It is an **unpaced reference measurement**, not the planne
 30-minute streaming benchmark, p99 block-time test or an on-radio qualification.
 It does not access or control the radio. The complete milestone scope and its
 outstanding requirements are in `docs/freedv/milestone-1.md`.
+
+`diagnostic_state.c` is an isolated session-state prototype. It does not control
+the radio, provide synchronization, capture snapshots, or implement the diagnostic
+UI. Its caller must serialize access, stop audio and clear software TX when
+requested, and complete restoration before calling `fd_restored`. Compile and run
+the behavioral check with:
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
+  tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
+/tmp/freedv-state-test
+```
