@@ -1,146 +1,83 @@
-# Builds the SD card images on GitHub, one per radio: this repository (OpenX6X00) is the GUI
-# package of gdyuldin's AetherX6100Buildroot (the X6100) and AetherX6200Buildroot (the X6200),
-# built from the checkout instead of upstream. buildroot/local-build.sh does the patching and
-# the build, here as in the container at home.
-name: Build image
+name: FreeDV X6200 baseline image
 
-# By hand only (Actions > Build image > Run workflow): releases are built
-# locally and the images attached by hand; building on every tag only made a
-# second copy, took 2 hours and failed now and then.
+# This is a baseline only. It does not include the unfinished diagnostic UI or
+# benchmark package. A diagnostic image will be added after those pieces exist.
 on:
   workflow_dispatch:
+  push:
+    branches: [experiment/x6200-baseline-sdk]
 
-# Write access for the Release step (the default token is read-only)
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  register-workflow:
+    if: github.event_name == 'push'
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - model: x6100
-            tree: AetherX6100Buildroot
-            out: OpenX6X00-x6100
-          - model: x6200
-            tree: AetherX6200Buildroot
-            out: OpenX6X00-x6200
-    defaults:
-      run:
-        shell: bash
-
-    env:
-      X6CI_IMAGES: ${{ matrix.tree }}/build/images
-      X6CI_IMG: ${{ matrix.out }}-${{ github.ref_name }}-sdcard.img
-      X6CI_BUNDLE: ${{ matrix.out }}-${{ github.ref_name }}-update.tar.gz
-
     steps:
-    # A full buildroot build needs more room than the runner leaves free:
-    # drop the SDKs we do not use (the tool cache and the big packages stay)
-    - name: Free Disk Space (Ubuntu)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        tool-cache: false
-        android: true
-        dotnet: true
-        haskell: true
-        large-packages: false
-        docker-images: true
-        swap-storage: true
-    - name: check free space
-      run: |
-        df -h
-        pwd
-
-    - name: Checkout GUI
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-        path: x6100_gui
-
-    - name: Checkout buildroot
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-        repository: gdyuldin/${{ matrix.tree }}
-        path: ${{ matrix.tree }}
-
-    # ccache kept between runs, one cache per radio. The cache key carries the time of the
-    # run, so every run saves a new one and restores the latest by prefix.
-    - name: Prepare ccache timestamp
-      id: ccache_cache_timestamp
-      shell: cmake -P {0}
-      run: |
-        string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
-        file(APPEND "$ENV{GITHUB_OUTPUT}" "timestamp=${current_date}")
-
-    # Restore here and save right after Build, even when Build fails, so a
-    # failed attempt still leaves its compiled work for the next one.
-    - name: Restore ccache
-      uses: actions/cache/restore@v4
-      with:
-        path: ~/.buildroot-ccache
-        key: ${{ runner.os }}-${{ matrix.model }}-ccache-${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.model }}-ccache-
-
-    # The update bundle a running radio installs by itself (x6100-update) is signed with the
-    # repository secret UPDATE_SIGNING_KEY (an EC P-256 private key in PEM; its public half is
-    # rootfs/usr/share/x6100/update.pub). Without the secret the bundle is unsigned and radios
-    # refuse it. The script also patches the buildroot tree, configures and builds, puts our
-    # U-Boot on the X6100's image and names it <out>-local-sdcard.img.
-    - name: Build
-      env:
-        UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-      run: |
-        if [ -n "$UPDATE_SIGNING_KEY" ]; then
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > /tmp/update-key.pem
-          export UPDATE_KEY=/tmp/update-key.pem
-        fi
-        MODEL=${{ matrix.model }} GUI_DIR=$GITHUB_WORKSPACE/x6100_gui BR_DIR=$GITHUB_WORKSPACE/${{ matrix.tree }} \
-          bash x6100_gui/buildroot/local-build.sh
-        rm -f /tmp/update-key.pem
-
-    - name: Save ccache
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: ~/.buildroot-ccache
-        key: ${{ runner.os }}-${{ matrix.model }}-ccache-${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-
-    # The release names: <out>-<ref>-sdcard.img.zip and <out>-<ref>-update.tar.gz (the script
-    # named the bundle after the version in src/main.h)
-    - name: Name the image and the bundle
-      run: |
-        cd $X6CI_IMAGES
-        mv ${{ matrix.out }}-local-sdcard.img $X6CI_IMG
-        zip $X6CI_IMG.zip $X6CI_IMG
-        mv ${{ matrix.out }}-v*-update.tar.gz $X6CI_BUNDLE
-        ls -la $X6CI_IMG.zip $X6CI_BUNDLE
-
-    # Always keep the image and the bundle as workflow artifacts: branch runs have no
-    # release to attach to, and on a tag they survive a failed Release step.
-    - name: Upload image
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.X6CI_IMG }}.zip
-        path: ${{ env.X6CI_IMAGES }}/${{ env.X6CI_IMG }}.zip
-        retention-days: 30
-
-    - name: Upload update bundle
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.X6CI_BUNDLE }}
-        path: ${{ env.X6CI_IMAGES }}/${{ env.X6CI_BUNDLE }}
-        retention-days: 30
-
-    # On a tag: GitHub release with the image and the update bundle (what radios look for)
-    - name: Release
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: |
-          ${{ env.X6CI_IMAGES }}/${{ env.X6CI_IMG }}.zip
-          ${{ env.X6CI_IMAGES }}/${{ env.X6CI_BUNDLE }}
+      - run: echo 'Manual image build is ready to dispatch.'
+  x6200-baseline:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      # The upstream image build requires more space than a default hosted runner.
+      - name: Free disk space on the disposable runner
+        uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: fd7f0bba70c0c8f8854219b6422600cbd428a6dc
+          submodules: true
+          path: x6100_gui
+      - name: Check out pinned X6200 Buildroot
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: gdyuldin/AetherX6200Buildroot
+          ref: 8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3
+          submodules: true
+          path: AetherX6200Buildroot
+      - name: Build baseline image
+        env:
+          MODEL: x6200
+        run: |
+          set -eu
+          df -h .
+          test "$(git -C AetherX6200Buildroot/buildroot rev-parse HEAD)" = cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f
+          GUI_DIR="$GITHUB_WORKSPACE/x6100_gui" BR_DIR="$GITHUB_WORKSPACE/AetherX6200Buildroot" \
+            bash x6100_gui/buildroot/local-build.sh
+          cd AetherX6200Buildroot/build/images
+          sha256sum OpenX6X00-x6200-local-sdcard.img > SHA256SUMS
+          cp "$GITHUB_WORKSPACE/x6100_gui/tools/freedv/sources.json" sources.json
+          git -C "$GITHUB_WORKSPACE/x6100_gui" rev-parse HEAD > firmware-commit.txt
+          git -C "$GITHUB_WORKSPACE/AetherX6200Buildroot" rev-parse HEAD > buildroot-commit.txt
+      - name: Package matching Buildroot SDK
+        run: |
+          set -eu
+          make -C AetherX6200Buildroot/build sdk
+          cd AetherX6200Buildroot/build/images
+          set -- *sdk*.tar.gz
+          test "$#" = 1 && test -f "$1"
+          sha256sum "$1" >> SHA256SUMS
+      - name: Upload baseline image
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: x6200-freedv-baseline
+          path: |
+            AetherX6200Buildroot/build/images/OpenX6X00-x6200-local-sdcard.img
+            AetherX6200Buildroot/build/images/*sdk*.tar.gz
+            AetherX6200Buildroot/build/images/sources.json
+            AetherX6200Buildroot/build/images/SHA256SUMS
+            AetherX6200Buildroot/build/images/firmware-commit.txt
+            AetherX6200Buildroot/build/images/buildroot-commit.txt
+          if-no-files-found: error
+          retention-days: 7
