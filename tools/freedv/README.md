@@ -125,6 +125,16 @@ or guarantee the required 500 ms RF cessation. Never hold the radio lock while
 cancelling or closing it, and do not call those operations from the callback.
 The host test exercises expiry, cancellation and callback synchronization.
 
+`src/freedv/wav_capture.c` adds a background writer for that queue. It creates
+new mode-0600 mono PCM WAV files at the capture sample rate, drains the queue
+outside the callback and reports audio holes, overflow and I/O failures to a
+caller-provided abort callback. The owner must serialize start/stop, establish
+an exclusive diagnostic session first, and never stop or join from that
+callback or while holding the radio lock. Failed starts can leave a partial file;
+existing files are never overwritten. This worker is not wired to the UI or to
+radio TX cleanup and is not ready for hardware qualification. Store captures
+outside Git and share them only deliberately.
+
 For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
 The option defaults to OFF. When enabled on X6200 or the host simulator,

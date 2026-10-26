@@ -6,6 +6,7 @@ if(ENABLE_FREEDV_DIAGNOSTICS)
     target_sources(${PROJECT_NAME} PRIVATE freedv/capture_ring.c)
     target_sources(${PROJECT_NAME} PRIVATE freedv/packet_tx.c)
     target_sources(${PROJECT_NAME} PRIVATE freedv/watchdog.c)
+    target_sources(${PROJECT_NAME} PRIVATE freedv/wav_capture.c)
 endif()
 
 target_sources(${PROJECT_NAME} PUBLIC
