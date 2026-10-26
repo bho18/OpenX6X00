@@ -99,7 +99,7 @@ def main():
             for key in ('F1', 'F1'):
                 drive.key(key, 100)
                 time.sleep(0.7)
-            wait_for(client, image_path, ('INFO', 'FIRMWARE'))
+            wait_for(client, image_path, ('FIRMWARE', 'BASEBAND'))
             # Focus can wrap when there are more or fewer Info rows. Advance in
             # small steps and inspect each screen rather than assuming a fixed
             # number of detents lands on the diagnostic card.
