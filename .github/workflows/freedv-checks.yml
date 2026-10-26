@@ -1,0 +1,35 @@
+name: FreeDV feasibility checks
+
+on:
+  pull_request:
+  push:
+    branches: [feature/freedv-x6200]
+
+permissions:
+  contents: read
+
+jobs:
+  prototype:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out pinned X6200 control headers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: gdyuldin/X6200Control
+          ref: 0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8
+          path: x6200-control-reference
+      - name: Compile and run prototype checks
+        run: |
+          set -eu
+          cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
+            tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
+          /tmp/freedv-state-test
+          cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
+            -I. -Ix6200-control-reference/include src/hw/x6200/hw_x6200.c \
+            tools/freedv/x6200_route_snapshot_test.c -Wl,--gc-sections \
+            -o /tmp/freedv-route-test
+          /tmp/freedv-route-test
+          python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
+          python3 -m json.tool tools/freedv/sources.json > /dev/null
