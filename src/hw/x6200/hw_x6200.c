@@ -219,6 +219,38 @@ bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route) {
     return true;
 }
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *s) {
+    if (!s) return false;
+    uint32_t mic = x6200_control_get(x6200_micsel_pttmode_chge_spmode_auxiqgen_sqlthr);
+    uint32_t gains = x6200_control_get(x6200_ling_loutg_imicg_hmicg);
+    uint32_t filter = x6200_control_get(x6200_rxfilter);
+    uint32_t route = x6200_control_get(x6200_sple_atue_trx);
+    *s = (hw_freedv_cached_snapshot_t){
+        .route = {(route & x6200_voice_rec) != 0, (route & x6200_modem_trx) != 0, (route & x6200_iptt) != 0},
+        .raw_route_bits_available = true,
+        .shared_route_bits = route,
+        .microphone = (uint8_t)(mic & 3u),
+        .hand_mic_gain = (uint8_t)(gains >> 24),
+        .internal_mic_gain = (uint8_t)(gains >> 16),
+        .line_in = (uint8_t)gains,
+        .line_out = (uint8_t)(gains >> 8),
+        .speaker_mode = (uint8_t)((mic >> 5) & 1u),
+        .speaker_level = (uint8_t)x6200_control_get(x6200_rxvol),
+        .monitor_level = (uint8_t)x6200_control_get(x6200_monilevel_fftdec_fftzoomcw),
+        .requested_power_tenths_watt = (uint8_t)(x6200_control_get(x6200_rfg_txpwr) >> 8),
+        .active_vfo = (uint8_t)x6200_control_get(x6200_vi_vm),
+        .vfo_a_hz = x6200_control_get(x6200_vfoa_freq),
+        .vfo_b_hz = x6200_control_get(x6200_vfob_freq),
+        .backend_mode_a = x6200_control_get(x6200_vfoa_mode),
+        .backend_mode_b = x6200_control_get(x6200_vfob_mode),
+        .rx_filter_low_hz = (int16_t)(filter >> 16),
+        .rx_filter_high_hz = (int16_t)filter,
+    };
+    return true;
+}
+#endif
+
 static void dnf_apply(void) {
     x6200_control_dnf_set(!dnf_on ? x6200_dnf_off : dnf_auto ? x6200_dnf_auto : x6200_dnf_manual);
 }

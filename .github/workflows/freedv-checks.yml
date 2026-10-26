@@ -26,11 +26,14 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
             tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
           /tmp/freedv-state-test
-          cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -ffunction-sections -fdata-sections \
             -I. -Ix6200-control-reference/include src/hw/x6200/hw_x6200.c \
-            tools/freedv/x6200_route_snapshot_test.c -Wl,--gc-sections \
+            tools/freedv/x6200_route_snapshot_test.c -Wl,--gc-sections -Wl,--wrap=dlsym \
             -o /tmp/freedv-route-test
           /tmp/freedv-route-test
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -ffunction-sections -fdata-sections \
+            -I. src/hw/stub/hw_stub.c tools/freedv/stub_snapshot_test.c -Wl,--gc-sections -lm -o /tmp/freedv-stub-test
+          /tmp/freedv-stub-test
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
 

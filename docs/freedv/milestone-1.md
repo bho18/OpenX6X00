@@ -13,6 +13,12 @@ on-radio measurements remain to be implemented and verified. In particular,
 the X6200's generic `hw_get_i()` does not return a valid RECORD/MODEM/PTT
 snapshot; the read-only view uses a separate locked cached-command accessor.
 
+An opt-in internal accessor also snapshots selected cached X6200 route, mic,
+speaker, monitor, power, VFO, mode and RX filter commands under the radio lock.
+It is a partial read-only snapshot; ALSA settings, application audio levels and
+overrides, exclusive ownership and restoration remain outstanding. The cached
+shared register word contains unrelated bits and must not be restored wholesale.
+
 ## Evidence and scope
 
 The reference GUI defaults to RADE V1; 700E is a traditional waveform useful for

@@ -52,6 +52,9 @@
 #include "bat_est.h"
 #include "clock.h"
 #include "wifi.h"
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include "freedv/cached_snapshot.h"
+#endif
 
 /*********************
  *      DEFINES
@@ -394,6 +397,16 @@ bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route) {
     radio_unlock();
     return supported;
 }
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool radio_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *snapshot) {
+    if (!snapshot) return false;
+    radio_lock();
+    bool supported = hw_get_freedv_cached_snapshot(snapshot);
+    radio_unlock();
+    return supported;
+}
+#endif
 
 void radio_set_freq(int32_t freq) {
     if (!radio_check_freq(freq)) {

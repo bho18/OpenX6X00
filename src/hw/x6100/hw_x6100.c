@@ -215,6 +215,13 @@ bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route) {
     return false;
 }
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *snapshot) {
+    (void)snapshot;
+    return false; /* This snapshot describes X6200 registers only. */
+}
+#endif
+
 bool hw_set_i(hw_param_t p, int32_t v) {
     int reg = reg_of(p);
 
