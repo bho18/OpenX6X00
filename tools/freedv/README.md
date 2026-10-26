@@ -125,3 +125,26 @@ memory information and lists available ALSA/PulseAudio devices. It does not
 collect station settings or change the radio. Missing commands are recorded as
 unavailable. The output may include local audio-device names; inspect it before
 sharing. The inventory is not a hardware routing or TX test.
+
+`collect_benchmark.py` runs a prebuilt in-memory 700E or RADE V1 benchmark and
+creates a **new local directory** containing a versioned source and hash
+manifest, benchmark output and log, timestamped start/exit events, and sampled
+Linux process memory, CPU frequency policies and available thermal/cooling
+observations. Optional `--model` arguments record hashes of model artifacts;
+compare these hashes with the pinned sources before accepting a result. Missing
+system observations are null or empty, not evidence of an absence of throttling.
+For example:
+
+```sh
+python3 tools/freedv/collect_benchmark.py --mode 700E --benchmark /path/to/codec2-frame-bench \
+  --fixture /path/to/codec2/raw/ve9qrp_10s.raw --direction tx --seconds 30 \
+  --pacing paced --warmup 5 --sample-interval 10 --output /path/to/new-result
+```
+
+For RADE, set `--mode RADE-V1` and supply its benchmark and appropriately rated
+raw fixture. `--workload interrupt` is available for RADE RX. Resource sampling
+adds system load; record its interval and use it consistently. The collector
+does not command the radio, include recordings, or upload data. It cannot supply
+the missing queue/underrun measurements, controlled RF input, or route and
+restoration observations. Its output alone is not the complete milestone result
+bundle and cannot qualify a radio performance gate.
