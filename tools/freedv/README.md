@@ -23,6 +23,24 @@ process and file I/O. It is an **unpaced reference measurement**, not the planne
 It does not access or control the radio. The complete milestone scope and its
 outstanding requirements are in `docs/freedv/milestone-1.md`.
 
+`make_700e_fixture.py` prepares a local ten-second 700E reference waveform
+for future routing tests. It verifies the pinned speech fixture, generates the
+8 kHz modem PCM using a supplied `freedv_tx`, resamples to a mono 44.1 kHz WAV
+with SoX (no dither), checks the output format and peak, and writes a manifest
+with hashes and tool version. It cannot control the radio or arm a test:
+
+```sh
+python3 tools/freedv/make_700e_fixture.py --tx /path/to/codec2-build/src/freedv_tx \
+  --speech /path/to/codec2/raw/ve9qrp_10s.raw --output /path/to/new-fixture-directory
+```
+
+The output directory must be new and outside this repository. The executable's
+hash and expected Codec2 commit are recorded, but its source provenance is not
+independently verified by the helper. Verify the build before accepting a result.
+Repeated generation with the same tested tools produced identical hashes; other
+tool versions are not assumed to be bit-identical. Do not transmit this fixture
+until the guarded diagnostics and dummy-load procedure are ready.
+
 `validate_rade_v1_loss.sh` runs the upstream `rade_c_v1_wav` feature-loss
 check with the pinned RADE and RADAE sources and the expected input hash. It
 requires a built RADE tree and a Python environment with PyTorch, NumPy and
