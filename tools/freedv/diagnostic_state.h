@@ -19,6 +19,7 @@ typedef struct {
 typedef struct {
     fd_state state;
     bool tx_case;
+    bool selected;
     bool software_cleared;
     int matrix_case; /* -1 for passive receive only */
     uint64_t deadline_ms;
