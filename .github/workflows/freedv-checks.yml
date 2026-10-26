@@ -31,6 +31,9 @@ jobs:
             tools/freedv/x6200_route_snapshot_test.c -Wl,--gc-sections \
             -o /tmp/freedv-route-test
           /tmp/freedv-route-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/capture_ring.c \
+            tools/freedv/capture_ring_test.c -o /tmp/freedv-capture-ring-test
+          /tmp/freedv-capture-ring-test
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
 
@@ -182,7 +185,7 @@ jobs:
           wait "$gui_pid" || true
           gui_pid=
           cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test
-          ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure
+          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test
+          ctest --test-dir build-host -R '^freedv_' --output-on-failure
           start_gui
           timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py --snapshot

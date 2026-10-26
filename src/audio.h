@@ -50,3 +50,22 @@ float audio_set_play_vol(float db);
 float audio_set_rec_vol(float db);
 
 float audio_get_peak_db();
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+/* A future exclusive diagnostic session owns this capture. It must stop and
+ * join its sole reader before starting another capture. PCM is the existing
+ * mono PulseAudio stream at AUDIO_CAPTURE_RATE, before application decimation;
+ * it is not an independent left/right ALSA channel capture. Start and stop
+ * must be called outside the PulseAudio callback. queued_samples is UINT_MAX
+ * when a concurrent update makes that observation inconsistent. */
+typedef struct {
+    unsigned queued_samples;
+    unsigned dropped_samples;
+    unsigned hole_samples;
+    unsigned capture_errors;
+} audio_freedv_capture_stats_t;
+bool audio_freedv_capture_begin(void);
+void audio_freedv_capture_end(void);
+size_t audio_freedv_capture_read(int16_t *out, size_t capacity);
+audio_freedv_capture_stats_t audio_freedv_capture_stats(void);
+#endif

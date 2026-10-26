@@ -99,6 +99,18 @@ cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
 /tmp/freedv-state-test
 ```
 
+With diagnostics enabled, `src/freedv/capture_ring.c` provides a bounded,
+single-producer/single-consumer buffer at the existing PulseAudio callback
+before application decimation. The capture is the existing **mono** 44.1 kHz
+stream, not independent ALSA channel readback. Overflow and PulseAudio holes
+are counted; the callback never writes files. Start/stop APIs are internal and
+are not wired to the UI or an exclusive session yet. They must not be used as
+a radio qualification tool until the session owner, worker, export and safety
+behavior are implemented. The host test covers ordering, overflow, holes and
+cursor wrap, including concurrent transfer. A separate mocked PulseAudio test
+exercises the real callback, its holes/errors, capture stop and reset, and the
+unchanged delivery to the application's DSP.
+
 For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
 The option defaults to OFF. When enabled on X6200 or the host simulator,
