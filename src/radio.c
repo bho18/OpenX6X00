@@ -404,10 +404,12 @@ bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route) {
         route->packet_tx_known = packet.known;
         route->packet_tx = packet.tx;
         route->packet_age_ms = packet.age_ms;
+        route->packet_sequence = packet.sequence;
 #else
         route->packet_tx_known = false;
         route->packet_tx = false;
         route->packet_age_ms = 0;
+        route->packet_sequence = 0;
 #endif
     }
     return supported;

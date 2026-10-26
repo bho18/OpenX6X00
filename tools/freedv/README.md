@@ -93,6 +93,8 @@ it returns the last known state and timestamped packet TX flag separately and
 is not a complete route snapshot. Before the first packet, or if the supplied
 clock predates the packet, the packet status is unknown. A caller must decide
 which packet age is usable; this accessor does not decide whether RF is safe.
+The packet sequence advances with each observation and saturates rather than
+wrapping; it can distinguish a later packet from one received before a stop.
 
 `inventory.py --output /path/to/new-inventory.json` collects kernel, CPU and
 memory information and lists available ALSA/PulseAudio devices. It does not

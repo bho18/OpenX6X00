@@ -58,6 +58,7 @@ typedef struct {
     bool packet_tx_known;
     bool packet_tx;
     uint64_t packet_age_ms;
+    uint64_t packet_sequence;
 } radio_commanded_audio_route_t;
 bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route);
 

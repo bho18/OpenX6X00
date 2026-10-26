@@ -11,13 +11,15 @@ typedef struct {
     bool valid;
     bool tx;
     uint64_t received_ms;
+    uint64_t sequence;
 } freedv_packet_tx_tracker;
-#define FREEDV_PACKET_TX_TRACKER_INIT { PTHREAD_MUTEX_INITIALIZER, false, false, 0 }
+#define FREEDV_PACKET_TX_TRACKER_INIT { PTHREAD_MUTEX_INITIALIZER, false, false, 0, 0 }
 
 typedef struct {
     bool known;
     bool tx;
     uint64_t age_ms;
+    uint64_t sequence;
 } freedv_packet_tx_observation;
 
 void freedv_packet_tx_note(freedv_packet_tx_tracker *tracker, bool tx, uint64_t received_ms);

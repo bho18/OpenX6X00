@@ -6,6 +6,7 @@ void freedv_packet_tx_note(freedv_packet_tx_tracker *tracker, bool tx, uint64_t 
     tracker->valid = true;
     tracker->tx = tx;
     tracker->received_ms = received_ms;
+    if (tracker->sequence != UINT64_MAX) ++tracker->sequence;
     pthread_mutex_unlock(&tracker->mutex);
 }
 
@@ -16,6 +17,7 @@ freedv_packet_tx_observation freedv_packet_tx_read(freedv_packet_tx_tracker *tra
         out.known = true;
         out.tx = tracker->tx;
         out.age_ms = now_ms - tracker->received_ms;
+        out.sequence = tracker->sequence;
     }
     pthread_mutex_unlock(&tracker->mutex);
     return out;
