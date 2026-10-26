@@ -116,6 +116,15 @@ cursor wrap, including concurrent transfer. A separate mocked PulseAudio test
 exercises the real callback, its holes/errors, capture stop and reset, and the
 unchanged delivery to the application's DSP.
 
+`src/freedv/watchdog.c` is an opt-in, monotonic-clock timeout primitive for a
+future diagnostic session. It starts disarmed, refuses a second arm or a timeout
+over 10 seconds, invokes the callback once on expiry or timer failure, and waits
+for a running callback before cancellation completes. Its callback and radio
+shutdown path are not connected yet; it cannot by itself stop audio, clear TX,
+or guarantee the required 500 ms RF cessation. Never hold the radio lock while
+cancelling or closing it, and do not call those operations from the callback.
+The host test exercises expiry, cancellation and callback synchronization.
+
 For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
 The option defaults to OFF. When enabled on X6200 or the host simulator,
