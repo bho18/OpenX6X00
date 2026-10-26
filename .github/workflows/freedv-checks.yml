@@ -115,12 +115,12 @@ jobs:
           pulse_pid=$!
           ready=0
           for i in $(seq 1 30); do
-            if pactl list short sinks >/dev/null 2>&1; then ready=1; break; fi
+            if timeout --kill-after=2s 3s pactl list short sinks >/dev/null 2>&1; then ready=1; break; fi
             kill -0 "$pulse_pid" || { cat "$RUNNER_TEMP/freedv-pulse.log"; exit 1; }
             sleep 1
           done
           test "$ready" = 1
-          host/build.sh build
+          timeout --kill-after=10s 12m host/build.sh build
           start_gui() {
             build-host/src/x6100_gui > "$RUNNER_TEMP/freedv-gui.log" 2>&1 &
             gui_pid=$!
@@ -133,12 +133,12 @@ jobs:
             test "$ready" = 1
           }
           start_gui
-          python3 tools/freedv/host_ui_check.py
+          timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py
           kill "$gui_pid"
           wait "$gui_pid" || true
           gui_pid=
           cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build-host --target x6100_gui freedv_diagnostic_state_test
+          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test
           ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure
           start_gui
-          python3 tools/freedv/host_ui_check.py --snapshot
+          timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py --snapshot
