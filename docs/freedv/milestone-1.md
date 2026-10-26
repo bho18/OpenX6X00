@@ -62,6 +62,11 @@ the reference pipeline but does not implement the planned paced streaming
 benchmark, report audio-block deadlines, or measure target-radio performance.
 It never controls radio hardware.
 
+The separate `codec2_frame_bench.c` prototype exercises real 700E codec frames
+with paced or unpaced input and reports per-frame timing ratios. Host and ARM/QEMU
+TX/RX checks passed. It excludes 44.1 kHz resampling, warm-up exclusion and the
+other full-pipeline measurements, so it cannot establish the radio gate.
+
 The required target benchmark must measure RADE V1 and 700E TX, synced RX and
 acquisition/no-sync on the actual radio, using the matching SDK. With normal GUI
 and waterfall load, run each workload for 30 minutes after warm-up and record

@@ -47,6 +47,9 @@ deadline misses and Linux peak RSS as JSON. It deliberately marks resampling
 and full-pipeline qualification as false: it does not implement RADE, 44.1 kHz
 resampling, warm-up exclusion, queue/underrun accounting or on-radio validation.
 Do not use its numbers to claim the milestone performance gate passed.
+The prototype has been exercised both natively and under ARM/QEMU. QEMU timing
+is not representative of the radio, and the Debian ARM build is not a deployable
+substitute for the matching X6200 Buildroot SDK.
 
 `diagnostic_state.c` is an isolated session-state prototype. It does not control
 the radio, provide synchronization, capture snapshots, or implement the diagnostic
