@@ -89,6 +89,15 @@ test covers all eight bit combinations; it does not read actual hardware.
 `radio_get_commanded_audio_route()` reads those commands under the radio lock;
 it returns the last known state separately and is not a complete route snapshot.
 
+The opt-in internal `radio_get_freedv_cached_snapshot()` reads selected X6200
+register-cache fields under the radio lock: shared route bits, mic selection and
+gains, line levels, speaker and monitor settings, requested power, VFOs, modes,
+and RX filter. These are cached commands, not independent baseband measurements.
+The raw shared word also contains unrelated bits and must never be restored
+wholesale. ALSA channel settings, application audio levels and overrides, exclusive
+ownership and restoration are not implemented. The host backend exposes simulated
+values and marks the X6200 raw word unavailable; it is not hardware evidence.
+
 `inventory.py --output /path/to/new-inventory.json` collects kernel, CPU and
 memory information and lists available ALSA/PulseAudio devices. It does not
 collect station settings or change the radio. Missing commands are recorded as

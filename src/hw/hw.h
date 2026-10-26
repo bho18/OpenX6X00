@@ -168,6 +168,24 @@ typedef struct {
 } hw_commanded_audio_route_t;
 bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route);
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+/* Cached commands only. Values describe the backend's register representation;
+ * they are not measured hardware state. In particular, shared_route_bits may
+ * contain tune, split and power-off bits: it must never be written back whole. */
+typedef struct {
+    hw_commanded_audio_route_t route;
+    bool raw_route_bits_available;
+    uint32_t shared_route_bits;
+    uint8_t microphone, hand_mic_gain, internal_mic_gain;
+    uint8_t line_in, line_out, speaker_mode, speaker_level, monitor_level;
+    uint8_t requested_power_tenths_watt, active_vfo;
+    uint32_t vfo_a_hz, vfo_b_hz, backend_mode_a, backend_mode_b;
+    int16_t rx_filter_low_hz, rx_filter_high_hz;
+} hw_freedv_cached_snapshot_t;
+/* Caller holds the radio control lock. False means this backend is unsupported. */
+bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *snapshot);
+#endif
+
 /* The two VFOs. True when the value changed */
 bool hw_vfo_set_freq(radio_vfo_t vfo, int32_t hz);
 bool hw_vfo_set_mode(radio_vfo_t vfo, radio_mode_t mode);
