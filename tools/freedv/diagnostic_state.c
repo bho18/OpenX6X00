@@ -10,13 +10,28 @@ bool fd_acquire(fd_session *s, bool busy, bool commands_quiescent, fd_observatio
     s->state = FD_READY;
     s->tx_case = false;
     s->software_cleared = false;
+    s->matrix_case = -1;
     s->deadline_ms = 0;
     s->clear_sequence = 0;
     return true;
 }
-bool fd_select(fd_session *s, bool tx_case) {
+bool fd_select_passive_rx(fd_session *s) {
     if (!s || s->state != FD_READY) return false;
-    s->tx_case = tx_case;
+    s->tx_case = false;
+    s->matrix_case = -1;
+    return true;
+}
+bool fd_select_matrix(fd_session *s, fd_matrix_case selected) {
+    if (!s || s->state != FD_READY || (int)selected < 0 || selected > FD_R1_M1_P1) return false;
+    s->tx_case = true;
+    s->matrix_case = (int)selected;
+    return true;
+}
+bool fd_matrix_bits(fd_matrix_case selected, bool *record, bool *modem, bool *ptt) {
+    if ((int)selected < 0 || selected > FD_R1_M1_P1 || !record || !modem || !ptt) return false;
+    *record = ((unsigned)selected & 4u) != 0;
+    *modem = ((unsigned)selected & 2u) != 0;
+    *ptt = ((unsigned)selected & 1u) != 0;
     return true;
 }
 bool fd_arm(fd_session *s, bool local) {
@@ -59,6 +74,7 @@ bool fd_restored(fd_session *s) {
     if (!s || s->state != FD_RESTORE) return false;
     s->state = FD_READY;
     s->tx_case = false;
+    s->matrix_case = -1;
     s->software_cleared = false;
     return true;
 }
