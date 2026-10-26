@@ -33,3 +33,35 @@ jobs:
           /tmp/freedv-route-test
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
+
+  codec2-prototype:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out pinned Codec2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: drowe67/codec2
+          ref: 310777b1c6f1af0bc7c72f5b32f80f6fd9136962
+          path: codec2-reference
+      - name: Build and exercise 700E timing prototype
+        run: |
+          set -eu
+          cmake -S codec2-reference -B /tmp/codec2-build -DCMAKE_BUILD_TYPE=Release -DUNITTEST=OFF -DLPCNET=OFF
+          cmake --build /tmp/codec2-build --target freedv_tx -j 2
+          cc -std=c11 -Wall -Wextra -Werror -Icodec2-reference/src tools/freedv/codec2_frame_bench.c \
+            -L/tmp/codec2-build/src -lcodec2 -lm -o /tmp/codec2-frame-bench
+          export LD_LIBRARY_PATH=/tmp/codec2-build/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+          /tmp/codec2-build/src/freedv_tx 700E codec2-reference/raw/ve9qrp_10s.raw /tmp/700e-modem.raw
+          /tmp/codec2-frame-bench tx codec2-reference/raw/ve9qrp_10s.raw 1 unpaced > /tmp/tx.json
+          /tmp/codec2-frame-bench rx /tmp/700e-modem.raw 3 unpaced > /tmp/rx.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/tx.json') as f: tx = json.load(f)
+          with open('/tmp/rx.json') as f: rx = json.load(f)
+          assert tx['frames'] > 0 and tx['output_samples'] > 0
+          assert rx['frames'] > 0 and rx['sync_frames'] > 0
+          assert not tx['full_pipeline_qualified'] and not rx['radio_io']
+          print('PASS: 700E TX and synchronized RX benchmark outputs')
+          PY
