@@ -59,7 +59,12 @@ substitute for the matching X6200 Buildroot SDK.
 `diagnostic_state.c` is an isolated session-state prototype. It does not control
 the radio, provide synchronization, capture snapshots, or implement the diagnostic
 UI. Its caller must serialize access, stop audio and clear software TX when
-requested, and complete restoration before calling `fd_restored`. Compile and run
+requested, and complete restoration before calling `fd_restored`. It rejects
+remote arming, invalid TX permission and unknown, stale or transmitting packet
+status. After stopping, the caller must confirm that audio was flushed and
+software commands cleared, then provide a later fresh packet reporting RX before
+restoration. Packet sequence numbers, a reliable watchdog, actual exclusive
+ownership and snapshot/restore are not yet wired into the radio. Compile and run
 the behavioral check with:
 
 ```sh
@@ -67,6 +72,11 @@ cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
   tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
 /tmp/freedv-state-test
 ```
+
+The model names all eight RECORD × MODEM × software-PTT combinations and treats
+each as potentially keyed. Selection itself only changes model state; every
+matrix case requires local arming. Its separate passive-RX selection does not
+authorize routing changes or generated playback.
 
 For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
