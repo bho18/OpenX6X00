@@ -71,9 +71,11 @@ cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
 For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
 The option defaults to OFF. When enabled on X6200 or the host simulator,
-Settings → Info includes a read-only snapshot of cached route commands and the
-last radio state. It does not acquire a session, run experiments, or key RF; the
-values are refreshed when the Info page opens and are not hardware readback.
+Settings → Info includes a read-only snapshot of cached route commands, the
+last radio state and the most recent baseband packet's TX flag and age. It does
+not acquire a session, run experiments, or key RF; the values are refreshed when
+the Info page opens. Cached commands are not hardware readback, and unknown or
+old packet status must not be taken as proof that RF has stopped.
 
 With a freshly started host simulator and `tesseract` installed, run
 `python3 tools/freedv/host_ui_check.py` to exercise opening Settings. Add
@@ -87,7 +89,10 @@ configuring the host build and build target `freedv_x6200_route_test`. Run
 `ctest --test-dir build-host -R '^freedv_' --output-on-failure`. This mocked
 test covers all eight bit combinations; it does not read actual hardware.
 `radio_get_commanded_audio_route()` reads those commands under the radio lock;
-it returns the last known state separately and is not a complete route snapshot.
+it returns the last known state and timestamped packet TX flag separately and
+is not a complete route snapshot. Before the first packet, or if the supplied
+clock predates the packet, the packet status is unknown. A caller must decide
+which packet age is usable; this accessor does not decide whether RF is safe.
 
 `inventory.py --output /path/to/new-inventory.json` collects kernel, CPU and
 memory information and lists available ALSA/PulseAudio devices. It does not

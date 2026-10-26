@@ -52,6 +52,9 @@
 #include "bat_est.h"
 #include "clock.h"
 #include "wifi.h"
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include "freedv/packet_tx.h"
+#endif
 
 /*********************
  *      DEFINES
@@ -150,6 +153,9 @@ static void(*low_power_cb)(bool) = NULL;
 static bool low_power = false;
 
 static pthread_mutex_t  control_mux;
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static freedv_packet_tx_tracker packet_tx_tracker = FREEDV_PACKET_TX_TRACKER_INIT;
+#endif
 
 static hw_pack_t        pack_buf;
 static hw_pack_t       *pack = &pack_buf;
@@ -392,6 +398,18 @@ bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route) {
         route->observed_state = state;
     }
     radio_unlock();
+    if (supported) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        freedv_packet_tx_observation packet = freedv_packet_tx_read(&packet_tx_tracker, get_time());
+        route->packet_tx_known = packet.known;
+        route->packet_tx = packet.tx;
+        route->packet_age_ms = packet.age_ms;
+#else
+        route->packet_tx_known = false;
+        route->packet_tx = false;
+        route->packet_age_ms = 0;
+#endif
+    }
     return supported;
 }
 
@@ -1220,6 +1238,9 @@ static bool radio_tick() {
     int32_t d = now_time - prev_time;
 
     if (hw_flow_read(pack)) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        freedv_packet_tx_note(&packet_tx_tracker, pack->tx != 0, get_time());
+#endif
         prev_time = now_time;
         pack_time = now_time;
         pack_vbat = pack->vbat;

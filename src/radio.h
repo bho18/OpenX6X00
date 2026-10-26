@@ -52,6 +52,12 @@ typedef struct {
     bool commanded_modem;
     bool commanded_ptt;
     radio_state_t observed_state;
+    /* The last baseband packet's TX flag, independently of software commands
+     * and the GUI state. Age is measured on the monotonic clock. Unknown or
+     * stale status must never be taken as evidence that transmission stopped. */
+    bool packet_tx_known;
+    bool packet_tx;
+    uint64_t packet_age_ms;
 } radio_commanded_audio_route_t;
 bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route);
 
