@@ -90,7 +90,12 @@ third-party notice is in `THIRD-PARTY-NOTICES.md`.
 `diagnostic_state.c` is an isolated session-state prototype. It does not control
 the radio, provide synchronization, capture snapshots, or implement the diagnostic
 UI. Its caller must serialize access, stop audio and clear software TX when
-requested, and complete restoration before calling `fd_restored`. Compile and run
+requested, and complete restoration before calling `fd_restored`. It rejects
+remote arming, invalid TX permission and unknown, stale or transmitting packet
+status. After stopping, the caller must confirm that audio was flushed and
+software commands cleared, then provide a later fresh packet reporting RX before
+restoration. Packet sequence numbers, a reliable watchdog, actual exclusive
+ownership and snapshot/restore are not yet wired into the radio. Compile and run
 the behavioral check with:
 
 ```sh
