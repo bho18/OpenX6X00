@@ -89,8 +89,11 @@ test covers all eight bit combinations; it does not read actual hardware.
 `radio_get_commanded_audio_route()` reads those commands under the radio lock;
 it returns the last known state separately and is not a complete route snapshot.
 
-`inventory.py --output /path/to/new-inventory.json` collects kernel, CPU and
-memory information and lists available ALSA/PulseAudio devices. It does not
-collect station settings or change the radio. Missing commands are recorded as
-unavailable. The output may include local audio-device names; inspect it before
-sharing. The inventory is not a hardware routing or TX test.
+`inventory.py --output /path/to/new-inventory.json` collects kernel, CPU,
+memory and available thermal information, firmware metadata files, ALSA and
+PulseAudio endpoints, and read-only ALSA mixer contents. It does not query the
+baseband; record that version separately from the radio's Info page. Missing
+commands and observations are recorded as unavailable. It does not collect
+station configuration databases or change radio settings. Device names and
+mixer details may be identifying; inspect the output before sharing. The
+inventory is not a hardware routing or TX test.
