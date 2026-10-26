@@ -100,9 +100,17 @@ def main():
                 drive.key(key, 100)
                 time.sleep(0.7)
             wait_for(client, image_path, ('INFO', 'FIRMWARE'))
-            drive.turn('mfk', 20)
-            time.sleep(1)
-            wait_for(client, image_path, ('CACHED', 'LAST RADIO STATE'))
+            # Focus can wrap when there are more or fewer Info rows. Advance in
+            # small steps and inspect each screen rather than assuming a fixed
+            # number of detents lands on the diagnostic card.
+            for _ in range(12):
+                drive.turn('mfk', 2)
+                time.sleep(0.3)
+                text = screen_text(client, image_path)
+                if 'CACHED' in text and 'LAST RADIO STATE' in text:
+                    break
+            else:
+                raise RuntimeError(f'diagnostic snapshot not visible: {text}')
             print('PASS: diagnostic snapshot displayed cached commands and last radio state')
 
 
