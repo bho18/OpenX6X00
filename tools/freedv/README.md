@@ -56,6 +56,37 @@ The prototype has been exercised both natively and under ARM/QEMU. QEMU timing
 is not representative of the radio, and the Debian ARM build is not a deployable
 substitute for the matching X6200 Buildroot SDK.
 
+`rade_frame_bench.c` is a separate in-memory RADE V1 streaming prototype. It
+includes LPCNet speech feature extraction for TX, the RADE modem, FARGAN speech
+synthesis for RX, and stateful 44.1 kHz input/output resampling. It accepts a
+raw signed-16 mono PCM fixture: 16 kHz speech for TX, or an 8 kHz real modem
+signal for RX. `continuous` repeats the fixture; RX `interrupt` injects two
+seconds of silence every 12 seconds. It uses no physical audio or radio devices.
+
+Build and run its host smoke checks against the pinned RADE C build and its
+patched, static Opus tree (with libsamplerate development headers installed):
+
+```sh
+opus_dir=/path/to/rade-build/build_opus-prefix/src/build_opus
+cc -O2 -std=c11 -Wall -Wextra -Werror -Wno-error=cpp \
+  -I/path/to/rade_c/src -I"$opus_dir/dnn" -I"$opus_dir/celt" \
+  -I"$opus_dir/include" -I"$opus_dir" tools/freedv/rade_frame_bench.c \
+  -L/path/to/rade-build/src -lrade "$opus_dir/.libs/libopus.a" \
+  -lsamplerate -lm -Wl,-rpath,/path/to/rade-build/src -o /tmp/rade-frame-bench
+python3 tools/freedv/test_rade_frame_bench.py --benchmark /tmp/rade-frame-bench \
+  --tx /path/to/rade-build/src/rade_tx_wav --speech /path/to/rade_c/input_sample.wav
+```
+
+The test verifies the pinned speech WAV hash, generates a modem fixture using
+the reference transmitter, and checks TX, synchronized RX, no-sync silence,
+interruptions and pacing. The benchmark reports block ratios and durations,
+deadline misses, sync and output counters, model/speech initialization time,
+and Linux peak RSS; warm-up is excluded from timing. Unpaced deadline misses
+are null. It does not yet measure queues, underruns, progressive RSS, CPU or
+temperature, make a result bundle, or use the radio's matching SDK. Neither
+its host results nor its estimated timing gate qualify the target radio. Its
+third-party notice is in `THIRD-PARTY-NOTICES.md`.
+
 `diagnostic_state.c` is an isolated session-state prototype. It does not control
 the radio, provide synchronization, capture snapshots, or implement the diagnostic
 UI. Its caller must serialize access, stop audio and clear software TX when
