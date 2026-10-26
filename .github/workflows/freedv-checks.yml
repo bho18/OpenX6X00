@@ -147,7 +147,9 @@ jobs:
           test "$(git -C build-host/deps/src/liquid-dsp rev-parse HEAD)" = 3b8a6f07ba6780b7a3d4be148461257515d183ad
           git clone https://github.com/gdyuldin/ft8_lib.git build-host/deps/src/ft8_lib
           git -C build-host/deps/src/ft8_lib checkout --detach 73b0db861dc41c7ca9f3dedc73ee148daa06dd0e
-      - name: Build and exercise both host configurations
+      - name: Build host simulator with diagnostics disabled
+        run: timeout --kill-after=10s 12m host/build.sh build
+      - name: Exercise both host configurations
         run: |
           set -eu
           export SDL_VIDEODRIVER=dummy
@@ -170,7 +172,6 @@ jobs:
             sleep 1
           done
           test "$ready" = 1
-          timeout --kill-after=10s 12m host/build.sh build
           start_gui() {
             build-host/src/x6100_gui > "$RUNNER_TEMP/freedv-gui.log" 2>&1 &
             gui_pid=$!
