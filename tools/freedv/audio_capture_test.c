@@ -2,6 +2,7 @@
 /* Exercise the real PulseAudio callback with mocked PulseAudio and DSP. */
 #define ENABLE_FREEDV_DIAGNOSTICS 1
 #include "src/audio.c"
+#include "src/freedv/wav_capture.h"
 #include <assert.h>
 
 static int token_loop, token_stream, token_context;
@@ -25,6 +26,10 @@ const char *pa_strerror(int error) { (void)error; return "test failure"; }
 void dsp_put_audio_samples(size_t count, int16_t *samples) { assert(samples); dsp_seen += count; }
 void _lv_log_add(lv_log_level_t level, const char *file, int line, const char *func, const char *format, ...) {
     (void)level; (void)file; (void)line; (void)func; (void)format;
+}
+static void unexpected_wav_failure(void *context, freedv_wav_error error) {
+    (void)context; (void)error;
+    assert(!"unexpected WAV capture failure");
 }
 
 int main(void) {
@@ -62,6 +67,26 @@ int main(void) {
     audio_freedv_capture_stats_t s = audio_freedv_capture_stats();
     assert(!s.dropped_samples && !s.hole_samples && !s.capture_errors && !s.queued_samples);
     audio_freedv_capture_end();
-    puts("PASS: PulseAudio capture callback, holes, errors, stop and reset");
+
+    /* Exercise the actual callback, bounded queue and background WAV writer
+     * together; PulseAudio and DSP remain mocked and no radio is accessed. */
+    char directory[] = "/tmp/freedv-pipeline-test-XXXXXX", path[160];
+    assert(mkdtemp(directory));
+    snprintf(path, sizeof(path), "%s/capture.wav", directory);
+    freedv_wav_capture writer;
+    freedv_wav_capture_init(&writer);
+    assert(freedv_wav_capture_start(&writer, path, unexpected_wav_failure, NULL));
+    mock_data = input; mock_bytes = sizeof(input);
+    read_callback(capture_stm, 0, NULL);
+    assert(freedv_wav_capture_stop(&writer) == FREEDV_WAV_OK && writer.samples == 4);
+    unsigned char wave[52];
+    FILE *file = fopen(path, "rb"); assert(file);
+    assert(fread(wave, 1, sizeof(wave), file) == sizeof(wave) && fgetc(file) == EOF);
+    fclose(file);
+    const unsigned char expected[] = {42, 0, 246, 255, 123, 0, 191, 254};
+    assert(!memcmp(wave, "RIFF", 4) && !memcmp(wave + 36, "data", 4));
+    assert(!memcmp(wave + 44, expected, sizeof(expected)));
+    unlink(path); rmdir(directory);
+    puts("PASS: PulseAudio callback, holes, errors, stop, reset and WAV pipeline");
     return 0;
 }
