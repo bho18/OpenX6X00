@@ -34,3 +34,13 @@ cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
   tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
 /tmp/freedv-state-test
 ```
+
+For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
+`ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
+The option defaults to OFF and does not expose a radio diagnostic page yet.
+
+`inventory.py --output /path/to/new-inventory.json` collects kernel, CPU and
+memory information and lists available ALSA/PulseAudio devices. It does not
+collect station settings or change the radio. Missing commands are recorded as
+unavailable. The output may include local audio-device names; inspect it before
+sharing. The inventory is not a hardware routing or TX test.
