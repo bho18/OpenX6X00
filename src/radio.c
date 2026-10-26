@@ -380,6 +380,21 @@ radio_state_t radio_get_state() {
     return state;
 }
 
+bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route) {
+    if (!route) return false;
+    hw_commanded_audio_route_t commanded;
+    radio_lock();
+    bool supported = hw_get_commanded_audio_route(&commanded);
+    if (supported) {
+        route->commanded_record = commanded.record;
+        route->commanded_modem = commanded.modem;
+        route->commanded_ptt = commanded.ptt;
+        route->observed_state = state;
+    }
+    radio_unlock();
+    return supported;
+}
+
 void radio_set_freq(int32_t freq) {
     if (!radio_check_freq(freq)) {
         LV_LOG_ERROR("Freq %i incorrect", freq);

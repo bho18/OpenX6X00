@@ -159,6 +159,15 @@ bool hw_set_f(hw_param_t p, float v);
  * HW_RIT, HW_XIT, HW_AGC_TIME, HW_FILTER*, HW_ATU_NETWORK); 0 for the others */
 int32_t hw_get_i(hw_param_t p);
 
+/* Last commanded shared-register bits, not an independent baseband readback.
+ * The caller must hold the radio control lock. False means unsupported. */
+typedef struct {
+    bool record;
+    bool modem;
+    bool ptt;
+} hw_commanded_audio_route_t;
+bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route);
+
 /* The two VFOs. True when the value changed */
 bool hw_vfo_set_freq(radio_vfo_t vfo, int32_t hz);
 bool hw_vfo_set_mode(radio_vfo_t vfo, radio_mode_t mode);

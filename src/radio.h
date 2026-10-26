@@ -45,6 +45,16 @@ void radio_set_low_power_cb(void(*cb)(bool));
 void radio_bb_reset();
 radio_state_t radio_get_state();
 
+/* Cached GUI commands and the most recent radio state. The commands are not
+ * independent hardware readback, and the state may lag the latest packet. */
+typedef struct {
+    bool commanded_record;
+    bool commanded_modem;
+    bool commanded_ptt;
+    radio_state_t observed_state;
+} radio_commanded_audio_route_t;
+bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route);
+
 /**
  * Set freq for radio without updating corresponding subject: the active VFO, which receives
  * (Birdie Cal's scan). The apps' tones and the SWR scan go to radio_set_tx_freq
