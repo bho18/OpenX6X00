@@ -75,6 +75,12 @@ Settings → Info includes a read-only snapshot of cached route commands and the
 last radio state. It does not acquire a session, run experiments, or key RF; the
 values are refreshed when the Info page opens and are not hardware readback.
 
+With a freshly started host simulator and `tesseract` installed, run
+`python3 tools/freedv/host_ui_check.py` to exercise opening Settings. Add
+`--snapshot` for a diagnostics-enabled build to check the displayed route
+snapshot. The helper drives host FIFOs and reads only the local simulator screen;
+do not use it on a physical radio.
+
 To also test decoding the X6200 control library's cached RECORD, MODEM and PTT
 bits, provide `-DX6200_CONTROL_INCLUDE_DIR=/path/to/X6200Control/include` when
 configuring the host build and build target `freedv_x6200_route_test`. Run
