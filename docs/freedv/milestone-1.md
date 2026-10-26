@@ -69,6 +69,13 @@ p99/max block time, queue growth, underruns, CPU frequency/throttling, RSS and
 available temperature. The proposed p99 processing target is no more than 70%
 of the represented audio interval, with no sustained underruns or queue growth.
 
+On the cloud host, the pinned RADE V1 text test passed six cases and a speech
+roundtrip produced non-silent decoded audio. The upstream clean-channel
+`rade_c_v1_wav` feature-loss check passed at 0.113 against its 0.119 threshold.
+The source/model versions and repeatable commands are recorded under
+`tools/freedv`. These host results do not establish noise/fading-channel results
+or real-time performance on the radio.
+
 ## Decision record
 
 Report PASS, FAIL or INCONCLUSIVE for each separate audio route, microphone,

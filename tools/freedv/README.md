@@ -23,6 +23,14 @@ process and file I/O. It is an **unpaced reference measurement**, not the planne
 It does not access or control the radio. The complete milestone scope and its
 outstanding requirements are in `docs/freedv/milestone-1.md`.
 
+`validate_rade_v1_loss.sh` runs the upstream `rade_c_v1_wav` feature-loss
+check with the pinned RADE and RADAE sources and the expected input hash. It
+requires a built RADE tree and a Python environment with PyTorch, NumPy and
+Matplotlib. Pass RADAE source, RADE source, RADE build, Python interpreter and a
+new output directory, in that order. It preserves each tool's exit status and
+requires the upstream `PASS` marker. This is a host reference check, not RF or
+radio performance validation.
+
 `diagnostic_state.c` is an isolated session-state prototype. It does not control
 the radio, provide synchronization, capture snapshots, or implement the diagnostic
 UI. Its caller must serialize access, stop audio and clear software TX when
