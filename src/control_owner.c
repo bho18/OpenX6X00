@@ -19,6 +19,9 @@
 
 static pthread_mutex_t mux = PTHREAD_MUTEX_INITIALIZER;
 static ctl_info_t      owner;
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static ctl_info_t      before_diagnostic;
+#endif
 static atomic_uint     version;
 static atomic_uint_fast64_t injected_ms;
 
@@ -48,6 +51,12 @@ bool ctl_claim(ctl_kind_t kind, int id, const char *name, bool take) {
     bool ok;
 
     pthread_mutex_lock(&mux);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (kind == CTL_DIAGNOSTIC || owner.kind == CTL_DIAGNOSTIC) {
+        pthread_mutex_unlock(&mux);
+        return false;
+    }
+#endif
     if (owner.kind == kind && owner.id == id) {
         ok = true;
     } else if (owner.kind == CTL_NONE || (take && !ctl_transmitting())) {
@@ -61,6 +70,9 @@ bool ctl_claim(ctl_kind_t kind, int id, const char *name, bool take) {
 }
 
 void ctl_release(ctl_kind_t kind, int id) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (kind == CTL_DIAGNOSTIC) return; /* only the diagnostic owner releases its lease */
+#endif
     pthread_mutex_lock(&mux);
     if (owner.kind == kind && owner.id == id)
         set_owner(CTL_NONE, 0, "");
@@ -92,7 +104,35 @@ void ctl_local_input(void) {
     if (now_ms() - atomic_load(&injected_ms) < INJECT_MS)
         return;
     pthread_mutex_lock(&mux);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (owner.kind == CTL_DIAGNOSTIC) {
+        pthread_mutex_unlock(&mux);
+        return;
+    }
+#endif
     if (owner.kind != CTL_LOCAL)
         set_owner(CTL_LOCAL, 0, "");
     pthread_mutex_unlock(&mux);
 }
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool ctl_diagnostic_acquire(void) {
+    pthread_mutex_lock(&mux);
+    bool ok = (owner.kind == CTL_NONE || owner.kind == CTL_LOCAL) && !ctl_transmitting();
+    if (ok) {
+        before_diagnostic = owner;
+        set_owner(CTL_DIAGNOSTIC, 0, "FreeDV diagnostics");
+    }
+    pthread_mutex_unlock(&mux);
+    return ok;
+}
+
+bool ctl_diagnostic_release(bool restoration_complete_and_rx_confirmed) {
+    pthread_mutex_lock(&mux);
+    bool ok = owner.kind == CTL_DIAGNOSTIC && restoration_complete_and_rx_confirmed && !ctl_transmitting();
+    if (ok)
+        set_owner(before_diagnostic.kind, before_diagnostic.id, before_diagnostic.name);
+    pthread_mutex_unlock(&mux);
+    return ok;
+}
+#endif

@@ -1393,6 +1393,10 @@ static void ctl_tell(client_t *c) {
         snprintf(who, sizeof(who), "tci");
     else if (o.kind == CTL_BROWSER)
         snprintf(who, sizeof(who), "browser %s", o.name);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    else if (o.kind == CTL_DIAGNOSTIC)
+        snprintf(who, sizeof(who), "diagnostics");
+#endif
     else
         snprintf(who, sizeof(who), "none");
     client_textf(c, "ctl %s %d", who, o.kind == CTL_BROWSER && o.id == (int)(c - clients) ? 1 : 0);
