@@ -47,6 +47,14 @@ For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
 The option defaults to OFF and does not expose a radio diagnostic page yet.
 
+To also test decoding the X6200 control library's cached RECORD, MODEM and PTT
+bits, provide `-DX6200_CONTROL_INCLUDE_DIR=/path/to/X6200Control/include` when
+configuring the host build and build target `freedv_x6200_route_test`. Run
+`ctest --test-dir build-host -R '^freedv_' --output-on-failure`. This mocked
+test covers all eight bit combinations; it does not read actual hardware.
+`radio_get_commanded_audio_route()` reads those commands under the radio lock;
+it returns the last known state separately and is not a complete route snapshot.
+
 `inventory.py --output /path/to/new-inventory.json` collects kernel, CPU and
 memory information and lists available ALSA/PulseAudio devices. It does not
 collect station settings or change the radio. Missing commands are recorded as

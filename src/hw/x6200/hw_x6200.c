@@ -210,6 +210,15 @@ int32_t hw_get_i(hw_param_t p) {
     }
 }
 
+bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route) {
+    if (!route) return false;
+    uint32_t bits = x6200_control_get(x6200_sple_atue_trx);
+    route->record = (bits & x6200_voice_rec) != 0;
+    route->modem = (bits & x6200_modem_trx) != 0;
+    route->ptt = (bits & x6200_iptt) != 0;
+    return true;
+}
+
 static void dnf_apply(void) {
     x6200_control_dnf_set(!dnf_on ? x6200_dnf_off : dnf_auto ? x6200_dnf_auto : x6200_dnf_manual);
 }

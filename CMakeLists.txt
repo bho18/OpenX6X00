@@ -11,6 +11,7 @@ cmake_minimum_required(VERSION 3.23)
 # directory. host/build.sh configures, builds and runs it; see host/README.md
 option(HOST_BUILD "Build the GUI for this PC (SDL window, stub radio)" OFF)
 option(ENABLE_FREEDV_DIAGNOSTICS "Build experimental FreeDV diagnostic state support" OFF)
+set(X6200_CONTROL_INCLUDE_DIR "" CACHE PATH "X6200Control include directory for optional host diagnostic tests")
 set(HOST_DATA_DIR "${CMAKE_BINARY_DIR}/data" CACHE PATH "The host build's data directory (the radio's /mnt)")
 
 # All C code is C11
@@ -29,6 +30,14 @@ if(ENABLE_FREEDV_DIAGNOSTICS)
                 target_compile_options(freedv_diagnostic_state_test PRIVATE -UNDEBUG)
                 target_link_libraries(freedv_diagnostic_state_test PRIVATE freedv_diagnostic_state)
                 add_test(NAME freedv_diagnostic_state COMMAND freedv_diagnostic_state_test)
+                if(X6200_CONTROL_INCLUDE_DIR)
+                        add_executable(freedv_x6200_route_test src/hw/x6200/hw_x6200.c
+                                       tools/freedv/x6200_route_snapshot_test.c)
+                        target_include_directories(freedv_x6200_route_test PRIVATE ${X6200_CONTROL_INCLUDE_DIR})
+                        target_compile_options(freedv_x6200_route_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+                        target_link_options(freedv_x6200_route_test PRIVATE -Wl,--gc-sections)
+                        add_test(NAME freedv_x6200_route_snapshot COMMAND freedv_x6200_route_test)
+                endif()
         endif()
 endif()
 
