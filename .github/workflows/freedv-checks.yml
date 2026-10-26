@@ -26,9 +26,9 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
             tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
           /tmp/freedv-state-test
-          cc -std=c11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -ffunction-sections -fdata-sections \
             -I. -Ix6200-control-reference/include src/hw/x6200/hw_x6200.c \
-            tools/freedv/x6200_route_snapshot_test.c -Wl,--gc-sections \
+            tools/freedv/x6200_route_snapshot_test.c -Wl,--gc-sections -Wl,--wrap=dlsym \
             -o /tmp/freedv-route-test
           /tmp/freedv-route-test
           cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/capture_ring.c \
@@ -37,6 +37,9 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/packet_tx.c \
             tools/freedv/packet_tx_test.c -o /tmp/freedv-packet-tx-test
           /tmp/freedv-packet-tx-test
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -ffunction-sections -fdata-sections \
+            -I. src/hw/stub/hw_stub.c tools/freedv/stub_snapshot_test.c -Wl,--gc-sections -lm -o /tmp/freedv-stub-test
+          /tmp/freedv-stub-test
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
 
@@ -189,7 +192,7 @@ jobs:
           wait "$gui_pid" || true
           gui_pid=
           cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test freedv_packet_tx_test
+          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test freedv_packet_tx_test freedv_stub_snapshot_test
           ctest --test-dir build-host -R '^freedv_' --output-on-failure
           start_gui
           timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py --snapshot

@@ -21,6 +21,12 @@ writer yet and is not a guarded diagnostic session. It cannot establish ALSA
 left/right routing or physical microphone behavior. Its overflow, audio holes
 and capture errors must be treated as invalidating affected measurements.
 
+An opt-in internal accessor also snapshots selected cached X6200 route, mic,
+speaker, monitor, power, VFO, mode and RX filter commands under the radio lock.
+It is a partial read-only snapshot; ALSA settings, application audio levels and
+overrides, exclusive ownership and restoration remain outstanding. The cached
+shared register word contains unrelated bits and must not be restored wholesale.
+
 ## Evidence and scope
 
 The reference GUI defaults to RADE V1; 700E is a traditional waveform useful for
