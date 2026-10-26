@@ -31,6 +31,9 @@ jobs:
             tools/freedv/x6200_route_snapshot_test.c -Wl,--gc-sections \
             -o /tmp/freedv-route-test
           /tmp/freedv-route-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/packet_tx.c \
+            tools/freedv/packet_tx_test.c -o /tmp/freedv-packet-tx-test
+          /tmp/freedv-packet-tx-test
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
 
