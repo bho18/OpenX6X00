@@ -15,6 +15,8 @@ int main(void) {
     assert(!fd_acquire(&s, false, true, unknown));
     assert(!fd_acquire(&s, false, true, stale));
     assert(fd_acquire(&s, false, true, rx));
+    assert(!fd_run(&s, 1, true, rx)); /* a case must be explicitly selected */
+    assert(!fd_arm(&s, true));
     assert(fd_select_matrix(&s, FD_R1_M1_P1));
     assert(!fd_run(&s, 1, true, rx)); /* case selection cannot key */
     assert(!fd_arm(&s, false)); /* remote arming refused */
