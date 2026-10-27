@@ -122,6 +122,12 @@ cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
 /tmp/freedv-state-test
 ```
 
+`session_controller.c` exercises the state model and watchdog against a mock
+backend. It specifies acquisition, local arming, quiescence and fresh RX
+restoration ordering, including failures. The backend contract is not implemented
+against the radio: the controller cannot key RF, enforce real ownership or
+establish physical PTT behavior. It is built only into host tests.
+
 With diagnostics enabled, `src/freedv/capture_ring.c` provides a bounded,
 single-producer/single-consumer buffer at the existing PulseAudio callback
 before application decimation. The capture is the existing **mono** 44.1 kHz

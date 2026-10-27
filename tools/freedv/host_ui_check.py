@@ -28,7 +28,10 @@ def screen_text(client, image_path):
     ws = client.WS()
     ws.s.settimeout(3)
     try:
+        deadline = time.monotonic() + 5
         for _ in range(100):
+            if time.monotonic() >= deadline:
+                break
             opcode, payload = ws.frame()
             if opcode == 2 and len(payload) > 10:
                 width, height, _ = struct.unpack('<HHI', payload[:8])
@@ -36,7 +39,7 @@ def screen_text(client, image_path):
                     image_path.write_bytes(payload[8:])
                     env = dict(os.environ, OMP_THREAD_LIMIT='1')
                     result = subprocess.run(['tesseract', str(image_path), 'stdout'],
-                                            capture_output=True, text=True, check=True, env=env)
+                                            capture_output=True, text=True, check=True, env=env, timeout=5)
                     return result.stdout.upper()
         raise RuntimeError('no simulator screen frame')
     finally:
@@ -47,6 +50,7 @@ def wait_for(client, image_path, expected):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         text = screen_text(client, image_path)
+        print(f'Looking for {expected}: {text!r}', flush=True)
         if all(value in text for value in expected):
             return
         time.sleep(0.4)

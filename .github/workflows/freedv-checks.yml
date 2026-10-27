@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Check out firmware
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
       - name: Check out pinned X6200 control headers
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -22,7 +24,8 @@ jobs:
           path: x6200-control-reference
       - name: Compile and run prototype checks
         run: |
-          set -eu
+          set -Eeuo pipefail
+          trap 'echo "::error::Prototype check failed while running: $BASH_COMMAND"' ERR
           cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
             tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
           /tmp/freedv-state-test
@@ -43,6 +46,10 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/watchdog.c \
             tools/freedv/watchdog_test.c -o /tmp/freedv-watchdog-test
           /tmp/freedv-watchdog-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread -I. -Itools/freedv \
+            tools/freedv/diagnostic_state.c src/freedv/watchdog.c tools/freedv/session_controller.c \
+            tools/freedv/session_controller_test.c -o /tmp/freedv-session-controller-test
+          /tmp/freedv-session-controller-test
           cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -pthread -I. \
             src/freedv/wav_capture.c tools/freedv/wav_capture_test.c -Wl,--wrap=fwrite -o /tmp/freedv-wav-test
           /tmp/freedv-wav-test
@@ -187,12 +194,20 @@ jobs:
           submodules: true
       - name: Install host dependencies
         run: |
-          set -eu
-          timeout --kill-after=10s 4m sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
-          timeout --kill-after=10s 6m sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
+          set -Eeuo pipefail
+          install_error() {
+            status=$?
+            tail -12 "$RUNNER_TEMP/host-dependencies.log" | tac | head -8 | sed 's/%/%25/g; s/^/::error::/'
+            exit "$status"
+          }
+          trap install_error ERR
+          timeout --kill-after=10s 4m sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update > "$RUNNER_TEMP/host-dependencies.log" 2>&1
+          timeout --kill-after=10s 12m sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get \
+            -o Acquire::Retries=1 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
+            -o Dpkg::Use-Pty=0 install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
             libtool pkg-config sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
             libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev libpulse-dev \
-            libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr
+            libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr >> "$RUNNER_TEMP/host-dependencies.log" 2>&1
       - name: Prepare pinned host dependencies
         run: |
           set -eu
@@ -206,15 +221,27 @@ jobs:
         run: timeout --kill-after=10s 12m host/build.sh build
       - name: Exercise both host configurations
         run: |
-          set -eu
+          set -Eeuo pipefail
+          trap 'echo "::error::Host check failed while running: $BASH_COMMAND"; tail -40 "$RUNNER_TEMP/freedv-gui.log" || true' ERR
           export SDL_VIDEODRIVER=dummy
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/freedv-runtime"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
           gui_pid=
           pulse_pid=
+          stop_gui() {
+            [ -n "$gui_pid" ] || return 0
+            kill "$gui_pid" 2>/dev/null || true
+            for attempt in $(seq 1 30); do
+              kill -0 "$gui_pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            kill -KILL "$gui_pid" 2>/dev/null || true
+            wait "$gui_pid" 2>/dev/null || true
+            gui_pid=
+          }
           cleanup() {
-            [ -z "$gui_pid" ] || kill "$gui_pid" 2>/dev/null || true
+            stop_gui
             [ -z "$pulse_pid" ] || kill "$pulse_pid" 2>/dev/null || true
           }
           trap cleanup EXIT
@@ -239,12 +266,10 @@ jobs:
             test "$ready" = 1
           }
           start_gui
-          timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py
-          kill "$gui_pid"
-          wait "$gui_pid" || true
-          gui_pid=
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py
+          stop_gui
           cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test freedv_packet_tx_test freedv_stub_snapshot_test freedv_watchdog_test freedv_wav_capture_test freedv_control_lease_test
+          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test freedv_packet_tx_test freedv_stub_snapshot_test freedv_watchdog_test freedv_wav_capture_test freedv_control_lease_test freedv_session_controller_test
           ctest --test-dir build-host -R '^freedv_' --output-on-failure
           start_gui
-          timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py --snapshot
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py --snapshot
