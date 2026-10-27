@@ -223,8 +223,19 @@ jobs:
           chmod 700 "$XDG_RUNTIME_DIR"
           gui_pid=
           pulse_pid=
+          stop_gui() {
+            [ -n "$gui_pid" ] || return 0
+            kill "$gui_pid" 2>/dev/null || true
+            for attempt in $(seq 1 30); do
+              kill -0 "$gui_pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            kill -KILL "$gui_pid" 2>/dev/null || true
+            wait "$gui_pid" 2>/dev/null || true
+            gui_pid=
+          }
           cleanup() {
-            [ -z "$gui_pid" ] || kill "$gui_pid" 2>/dev/null || true
+            stop_gui
             [ -z "$pulse_pid" ] || kill "$pulse_pid" 2>/dev/null || true
           }
           trap cleanup EXIT
@@ -250,9 +261,7 @@ jobs:
           }
           start_gui
           timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py
-          kill "$gui_pid"
-          wait "$gui_pid" || true
-          gui_pid=
+          stop_gui
           cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
           timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test freedv_packet_tx_test freedv_stub_snapshot_test freedv_watchdog_test freedv_wav_capture_test freedv_control_lease_test freedv_session_controller_test
           ctest --test-dir build-host -R '^freedv_' --output-on-failure
