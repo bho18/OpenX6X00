@@ -32,7 +32,7 @@ A complete execution and matching hashes establish a limited regression check, n
 
 - Worker service times show time spent in A and B. Their sum is processing demand; neither sum nor one worker's percentile is full-path latency.
 - Full-path timing includes A, queue residence and B for the same input block. Overlap may improve sustained throughput without reducing that latency.
-- Paced input uses a fixed cumulative input clock. Producer lateness and maximum virtual input backlog include warm-up; an empty internal queue cannot hide ingress overload.
+- Paced input uses a fixed cumulative input clock. Producer lateness covers measured blocks; the separate maximum virtual input backlog also includes warm-up; an empty internal queue cannot hide ingress overload.
 - Paced queue saturation aborts with structured failure and no silent overwrite. Unpaced throughput tests may block the producer; their waiting time is reported separately.
 - Output completion intervals concern produced speech blocks only. Silence/acquisition has no decoded-speech cadence. These offline counters are not hardware audio underrun measurements.
 - Initialization/fixture preparation are reported outside steady-state timing. Hashing/instrumentation costs remain in service times; nothing is subtracted.
