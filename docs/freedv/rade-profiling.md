@@ -10,8 +10,17 @@ before deciding that the radio cannot support RADE or changing product scope.
 
 Keep the GUI/waterfall running in receive. Use the existing package under `/tmp`;
 no flashing, route changes, audio-device access or RF transmission is involved.
-The pinned X6200 kernel configuration enables `CONFIG_PERF_EVENTS`; whether
-the installed `perf` command and userspace sampling work still needs checking.
+The pinned X6200 kernel configuration enables `CONFIG_PERF_EVENTS`. The operator
+has now successfully captured software-clock samples on the working radio;
+see the [first target profile](rade-radio-profile-2026-10-27.md). Its report
+displayed library-relative addresses rather than function names, so exact-binary
+symbol mapping remains pending.
+
+`/tmp/freedv-benchmark` disappears after reboot. If it is absent, restore the
+existing runtime package using the [RAM smoke-test copy procedure](https://github.com/bho18/OpenX6X00/blob/topic/baseline-inventory-package/docs/freedv/ram-smoke-test.md),
+then restore executable permissions. There is no need to rerun the seven-case
+smoke suite just to restore these files. The operator's existing Windows package
+directory is `Downloads\x6200-freedv-benchmark-package\freedv-package`.
 
 The following runs 20 seconds of represented no-sync input plus 3 seconds of
 warm-up, unpaced, under software-clock sampling at 99 Hz. It may take around
@@ -24,7 +33,7 @@ cd /tmp/freedv-benchmark &&
 perf --version &&
 test ! -e /tmp/rade-rx-profile.data &&
 perf record --no-buildid-cache -e cpu-clock:u -F 99 -o /tmp/rade-rx-profile.data -- ./bin/rade-frame-bench rx fixtures/silence.raw 20 unpaced 3 continuous &&
-perf report --stdio --no-children --sort dso,symbol --percent-limit 1 -i /tmp/rade-rx-profile.data
+PERF_PAGER=cat perf report --stdio --no-children --sort dso,symbol --percent-limit 1 -i /tmp/rade-rx-profile.data
 ```
 
 Return the printed symbol report or the exact error if perf is missing, sampling
@@ -34,6 +43,45 @@ change kernel security settings to bypass an error. No build-ID cache is written
 is no call-chain collection. The profile includes fixture setup and warm-up as
 well as measured processing; a first diagnostic, not isolated steady-state cost.
 All output in `/tmp` is temporary. Use a different output filename for repeats.
+
+If recording succeeds but reporting fails with `/bin/less: No such file or
+directory`, rerun only the report command above. `PERF_PAGER=cat` avoids the
+missing pager. A missing `tips.txt` message is unrelated to the captured samples.
+
+If the report shows addresses instead of function names, preserve the capture
+and exact runtime library before reboot. `perf version --build-options` can
+help establish whether this perf build supports libelf. Missing names do not by
+themselves establish that the benchmark library is stripped. Do not use a library
+from a different compiler/build to assign functions to these addresses.
+
+At the radio shell, run `exit`. In Windows PowerShell, copy this small evidence
+set (including the library, which may be tens of MiB):
+
+```powershell
+$RadioIp = "192.168.100.64"
+$ProfileDir = "$env:USERPROFILE\Downloads\rade-rx-profile-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+New-Item -ItemType Directory -Path $ProfileDir -ErrorAction Stop | Out-Null
+$RadioFiles = @(
+    "/tmp/rade-rx-profile.data",
+    "/tmp/freedv-benchmark/lib/librade.so.0.1",
+    "/tmp/freedv-benchmark/bin/rade-frame-bench",
+    "/tmp/freedv-benchmark/package-manifest.json",
+    "/tmp/freedv-benchmark/SHA256SUMS"
+)
+foreach ($RadioFile in $RadioFiles) {
+    scp "root@${RadioIp}:$RadioFile" "$ProfileDir/"
+    if ($LASTEXITCODE -ne 0) { throw "Copy failed: $RadioFile" }
+}
+Compress-Archive -Path "$ProfileDir\*" -DestinationPath "$ProfileDir.zip" -ErrorAction Stop
+Write-Output "$ProfileDir.zip"
+```
+
+Return that ZIP explicitly; nothing uploads automatically. Check returned binary
+hashes against the package hash list and the captured build IDs before mapping
+addresses. Preserve ELF load-segment offsets when translating perf addresses;
+inspect the exact binary's symbol table/disassembly rather than assuming a
+source function from a similar build. The requested set contains benchmark
+metadata and executables, not microphone recordings or radio configuration.
 
 After reviewing that report, repeat with `fixtures/rade-modem.raw` and a new
 profile filename to examine synchronization, decoding and FARGAN. Do not assume
