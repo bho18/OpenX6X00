@@ -75,12 +75,17 @@ jobs:
               -DCMAKE_TOOLCHAIN_FILE="$sdk_dir/share/buildroot/toolchainfile.cmake" \
               -DCMAKE_BUILD_TYPE=RelWithDebInfo -DHW_BACKEND=x6200 -DENABLE_FREEDV_DIAGNOSTICS="$enabled"
             cmake --build "$RUNNER_TEMP/gui-$variant" --target x6100_gui -j 2
+            compiler=$(find "$sdk_dir/bin" -maxdepth 1 -name 'arm*-gcc' | head -1)
+            prefix=${compiler%-gcc}
+            "$prefix-objcopy" --only-keep-debug "$RUNNER_TEMP/gui-$variant/src/x6100_gui" "$RUNNER_TEMP/test-images/gui-$variant.debug"
+            cp "$RUNNER_TEMP/gui-$variant/src/x6100_gui" "$RUNNER_TEMP/gui-$variant.runtime"
+            "$prefix-strip" --strip-unneeded "$RUNNER_TEMP/gui-$variant.runtime"
+            "$prefix-objcopy" --add-gnu-debuglink="$RUNNER_TEMP/test-images/gui-$variant.debug" "$RUNNER_TEMP/gui-$variant.runtime"
             python3 tools/freedv/prepare_test_image.py \
               --baseline baseline/OpenX6X00-x6200-local-sdcard.img \
-              --gui "$RUNNER_TEMP/gui-$variant/src/x6100_gui" \
+              --gui "$RUNNER_TEMP/gui-$variant.runtime" \
               --package "$RUNNER_TEMP/freedv-package/package" --variant "$variant" \
               --firmware-commit "$revision" --output "$RUNNER_TEMP/test-images/x6200-$variant.img"
-            cp "$RUNNER_TEMP/gui-$variant/src/x6100_gui" "$RUNNER_TEMP/test-images/gui-$variant.debug"
           done
           cp tools/freedv/sources.json "$RUNNER_TEMP/test-images/"
           cp docs/freedv/test-card.md "$RUNNER_TEMP/test-images/README.md"
