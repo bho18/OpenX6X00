@@ -13,8 +13,9 @@ no flashing, route changes, audio-device access or RF transmission is involved.
 The pinned X6200 kernel configuration enables `CONFIG_PERF_EVENTS`. The operator
 has now successfully captured software-clock samples on the working radio;
 see the [first target profile](rade-radio-profile-2026-10-27.md). Its report
-displayed library-relative addresses rather than function names, so exact-binary
-symbol mapping remains pending.
+displayed library-relative addresses rather than function names. The returned
+capture and matching binaries resolve 93.53% of samples to coarse pilot
+acquisition; the library retains its symbols and debug information.
 
 `/tmp/freedv-benchmark` disappears after reboot. If it is absent, restore the
 existing runtime package using the [RAM smoke-test copy procedure](https://github.com/bho18/OpenX6X00/blob/topic/baseline-inventory-package/docs/freedv/ram-smoke-test.md),
@@ -82,6 +83,23 @@ addresses. Preserve ELF load-segment offsets when translating perf addresses;
 inspect the exact binary's symbol table/disassembly rather than assuming a
 source function from a similar build. The requested set contains benchmark
 metadata and executables, not microphone recordings or radio configuration.
+
+For the documented capture format, the cloud/desktop helper can reproduce the
+function sample counts without executing target code or installing perf:
+
+```sh
+python3 tools/freedv/decode_rade_profile.py EXTRACTED_PROFILE_DIRECTORY --output NEW_SUMMARY.json
+```
+
+It checks the returned manifest/library/worker against `SHA256SUMS`, validates
+the supported little-endian ARM ELF32 and single software-clock event layout,
+and maps samples only for the exact recorded runtime paths. It rejects unknown
+layouts and never overwrites an existing summary. This is a limited independent
+decoder, not a general perf replacement. The package checksum list is identity
+evidence, not an authenticated signature; absent build IDs are not invented.
+System-library functions remain unresolved unless their files are separately
+provided to another suitable analysis tool. Use `--capture-name NAME.data` for
+a differently named capture using the same documented recording command.
 
 After reviewing that report, repeat with `fixtures/rade-modem.raw` and a new
 profile filename to examine synchronization, decoding and FARGAN. Do not assume
