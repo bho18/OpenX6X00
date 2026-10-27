@@ -1,7 +1,7 @@
 name: FreeDV benchmark package
 on:
   push:
-    branches: [experiment/x6200-acquisition-neon]
+    branches: [experiment/x6200-stage-timing]
   workflow_dispatch:
     inputs:
       baseline_run:
@@ -21,7 +21,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-22.04
     steps:
-      - run: echo 'Acquisition SDK experiment registered; builds require manual dispatch.'
+      - run: echo 'Stage-timing SDK experiment registered; builds require manual dispatch.'
   build-package:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
@@ -105,7 +105,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ inputs.rade_acq_neon && 'x6200-freedv-acquisition-neon-package' || 'x6200-freedv-benchmark-package' }}
+          name: x6200-freedv-stage-timing-package
           path: |
             ${{ runner.temp }}/freedv-package/freedv-benchmark-package.tar.gz
             ${{ runner.temp }}/freedv-package/freedv-benchmark-sources.tar.gz
