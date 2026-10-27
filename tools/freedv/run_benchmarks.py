@@ -60,12 +60,23 @@ def main():
                        '--workload', workload, '--sample-interval', '10' if a.suite == 'qualification' else '1',
                        '--output', str(output / name)]
             done = subprocess.run(command)
-            results.append({'case': name, 'return_code': done.returncode})
+            entry = {'case': name, 'return_code': done.returncode, 'validated': False}
+            results.append(entry)
             if done.returncode:
                 raise RuntimeError('benchmark failed: ' + name)
+            data = json.loads((output / name / 'result.json').read_text())
+            if data['mode'] != mode or data['direction'] != direction or data['frames'] <= 0 or data['radio_io']:
+                raise ValueError('invalid benchmark identity or empty workload: ' + name)
+            if direction == 'rx':
+                sync = data['sync_frames' if mode == '700E' else 'sync_blocks']
+                if (fixture == 'silence' and sync != 0) or (fixture != 'silence' and sync <= 0):
+                    raise ValueError('unexpected receive synchronization: ' + name)
+                if workload == 'interrupt' and data['sync_blocks_after_first_interrupt'] <= 0:
+                    raise ValueError('receiver did not reacquire after interruption')
+            entry['validated'] = True
     finally:
         summary = {'schema_version': 1, 'suite': a.suite, 'cases': results,
-                   'complete': len(results) == len(cases) and all(r['return_code'] == 0 for r in results),
+                   'complete': len(results) == len(cases) and all(r['return_code'] == 0 and r['validated'] for r in results),
                    'hardware_qualification': 'INCONCLUSIVE',
                    'reason': 'Routing and PTT unmeasured; queue/underrun instrumentation remains incomplete.',
                    'automatic_upload': False}
