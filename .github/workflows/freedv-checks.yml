@@ -213,7 +213,8 @@ jobs:
         run: timeout --kill-after=10s 12m host/build.sh build
       - name: Exercise both host configurations
         run: |
-          set -eu
+          set -Eeuo pipefail
+          trap 'echo "::error::Host check failed while running: $BASH_COMMAND"; tail -40 "$RUNNER_TEMP/freedv-gui.log" || true' ERR
           export SDL_VIDEODRIVER=dummy
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/freedv-runtime"
           mkdir -p "$XDG_RUNTIME_DIR"
@@ -246,7 +247,7 @@ jobs:
             test "$ready" = 1
           }
           start_gui
-          timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py
           kill "$gui_pid"
           wait "$gui_pid" || true
           gui_pid=
@@ -254,4 +255,4 @@ jobs:
           timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test freedv_packet_tx_test freedv_stub_snapshot_test freedv_watchdog_test freedv_wav_capture_test freedv_control_lease_test freedv_session_controller_test
           ctest --test-dir build-host -R '^freedv_' --output-on-failure
           start_gui
-          timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py --snapshot
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py --snapshot
