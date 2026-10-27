@@ -81,10 +81,30 @@ Read-only inventory collection is complete. Native audio routing, PTT/recovery
 and RADE/700E performance remain **INCONCLUSIVE**; the inventory performed none
 of those tests. No external-audio fallback is justified by this evidence.
 
-Before asking the operator to run the existing SDK benchmark package on this
-updated working card, check the dynamic-loader/libc version, installed NE10
-library identity and free data-partition space. Current inventory does not
-contain those observations. Any benchmark on this installation must record its
+The operator subsequently returned these read-only runtime/storage checks:
+
+| Check | Returned observation |
+| --- | --- |
+| `/lib/ld-linux-armhf.so.3 --version` | `ld.so (Buildroot) stable release version 2.36.` |
+| `/usr/lib/libNE10.so` SHA256 | `38ddbda7364ae2ea70fd79ebee5a6b10170bcf607ed6d1cf81df20e734b21d12` |
+| `/usr/lib/libNE10.so.10` SHA256 | Same hash as the unversioned library |
+| `df -h /mnt` | `/dev/root`, mounted on `/`; 487.6M total, 265.7M used, 186.0M available |
+
+The loader version agrees with the baseline SDK's glibc 2.36. NE10 is present;
+the returned hash has not yet been compared with the SDK package's dependency
+hash. Full executable dependency resolution remains untested.
+
+The space check reports the root filesystem rather than a separate DATA mount.
+Upstream's fstab and startup script normally mount DATA on `/mnt`. Before copying
+the benchmark or doing any mount/repair operation, inspect the current mount and
+partition listings, third-partition filesystem identification and startup check
+log. The cause is unknown; this output alone does not establish filesystem
+damage, a missing partition or a need to format/reflash. Preserve the current
+installation and the collected inventory directory. The upstream startup script
+can create/format a partition or repair/mount an existing one, so do not rerun it
+as a diagnostic while the GUI is active.
+
+Any benchmark on this installation must record its
 actual version/image stamp and remain preliminary until the full sustained-load
 gates are measured. Do not replace system libraries or flash the older v0.3.5
 test images to resolve a runtime mismatch.
