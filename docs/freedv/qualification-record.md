@@ -2,8 +2,34 @@
 
 This is the planned evidence record, not a procedure for the current read-only
 diagnostic page. Do not perform these cases until guarded route experiments and
-the diagnostic image have been implemented and tested. No hardware observations
-have been collected yet; every entry below is INCONCLUSIVE.
+the diagnostic image have been implemented and tested. The operator has reported
+the starting firmware versions below. Initial on-radio codec smoke measurements
+are now recorded separately; routing, recovery and full 30-minute performance
+qualification remain INCONCLUSIVE.
+
+## Reported starting configuration
+
+| Item | Operator report | Evidence status |
+| --- | --- | --- |
+| Radio | Xiegu X6200 | User-provided equipment description |
+| OpenX6X00 application | 0.3.6 | Operator report and returned inventory, 2026-10-26 |
+| Xiegu baseband | 1.0.7 | Operator report, 2026-10-26 |
+| Installed application commit / image hash | Unknown | Inventory confirms version, not exact source/image provenance |
+
+The operator subsequently confirmed application 0.3.6 and reported syncing the
+fork with upstream. GitHub `bho18/OpenX6X00:main` was observed at
+`e4f0dc7b08f7e95fd53495baeb55d35c19857cf1`, whose application VERSION is v0.3.6.
+This identifies the fork source; it does not identify the installed radio's
+exact commit or image hash. SSH is now working and the operator returned the
+first read-only inventory from the working v0.3.6 installation. The
+[inventory review](hardware-inventory-2026-10-26.md) records the observed endpoints,
+resources, provenance and remaining evidence gaps. No spare-card firmware change
+has been requested for this test.
+
+These versions describe the current working card, not a newly built diagnostic
+image. They do not establish routing capability or compatibility of diagnostic
+experiments. Preserve the working card and record versions again after booting
+any spare-card test image.
 
 Record the radio and baseband versions, firmware and benchmark source hashes,
 SDK, audio endpoints and channel mapping, mixer settings, CPU configuration,
@@ -65,6 +91,15 @@ observed TX is false. Use the service stop/start mechanism for controlled
 recovery; the supervisor restarts an individually killed GUI process.
 
 ## Codec workloads
+
+The [first on-radio smoke report](codec-smoke-2026-10-26.md) records seven
+executed workloads. 700E stayed within the short timing limits. This RADE build
+exceeded the proposed p99 headroom target on TX and failed real-time deadlines
+on all RX workloads. Those are measured failures of this build's short timing
+check; the full qualification entries below remain INCONCLUSIVE. Do not start
+30-minute runs of this unchanged RADE build or silently change the product scope
+to legacy-only FreeDV. Review build configuration and stage costs before a
+separately identified rebuild and repeat smoke test.
 
 | Mode | TX | Synchronized RX | Acquisition/no-sync RX |
 | --- | --- | --- | --- |
