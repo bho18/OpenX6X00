@@ -248,11 +248,11 @@ int main(int argc, char **argv) {
            "\"sync_blocks\":%" PRIu64 ",\"feature_blocks\":%" PRIu64 ",\"nonzero_output_samples\":%" PRIu64 ","
            "\"interrupted_input_samples\":%" PRIu64 ","
            "\"sync_blocks_after_first_interrupt\":%" PRIu64 ","
-           "\"peak_rss_kib_linux\":%ld,\"resampling_included\":true,\"radio_io\":false,\"full_pipeline_qualified\":false}\n",
+           "\"peak_rss_kib_linux\":%ld,\"opus_arch\":%d,\"resampling_included\":true,\"radio_io\":false,\"full_pipeline_qualified\":false}\n",
            argv[1], argv[4], argv[6], frames, (double)audio_ns / 1e9, (double)warm_ns / 1e9,
            (double)init_ns / 1e6, (double)compute_ns / (double)audio_ns, ratios[p99], ratios[frames-1],
            milliseconds[p99], milliseconds[frames-1], misses_json, out_native, out_converted,
-           sync_blocks, feature_blocks, nonzero, muted, sync_after_interrupt, usage.ru_maxrss);
+           sync_blocks, feature_blocks, nonzero, muted, sync_after_interrupt, usage.ru_maxrss, arch);
     if (encoder) lpcnet_encoder_destroy(encoder);
     free(fargan); rade_close(r); rade_finalize(); src_delete(input_src); src_delete(output_src);
     free(fixture); free(input); free(features); free(eoo); free(native_out); free(converted); free(pcm_in); free(pcm_out); free(iq);
