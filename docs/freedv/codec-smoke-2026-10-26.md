@@ -26,9 +26,12 @@ or the proposed 70% processing-time target. Overall hardware feasibility and
 - Collection started 2026-10-26 21:59:43 America/Chicago
   (`2026-10-27T02:59:43.831353+00:00`); the last worker exited at
   `2026-10-27T03:00:41.311192+00:00`.
-- Source/model/fixture hashes and benchmark identities agree across the returned
-  case manifests and package manifest. `summary.json` reports all seven cases
-  validated with return code zero and `complete=true`.
+- Source/model identities in the case manifests agree with the package manifest
+  and the pinned source manifest at its recorded commit. Executable hashes are
+  consistent across cases using the same codec. Fixture hashes are recorded;
+  fixture/executable bytes were not returned for independent rehashing.
+  `summary.json` reports all seven cases validated with return code zero and
+  `complete=true`.
 
 ## Processing measurements
 
