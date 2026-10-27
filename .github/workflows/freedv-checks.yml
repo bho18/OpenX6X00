@@ -17,6 +17,8 @@ jobs:
         run: python3 tools/freedv/test_run_benchmarks.py
       - name: Validate limited-format offline profile decoding
         run: python3 tools/freedv/test_decode_rade_profile.py
+      - name: Validate SDK stage-accounting checks
+        run: python3 tools/freedv/test_validate_rade_stage.py
   prototype:
     runs-on: ubuntu-22.04
     steps:

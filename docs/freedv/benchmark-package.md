@@ -24,6 +24,9 @@ python3 tools/freedv/run_benchmarks.py --radio --output /mnt/freedv-smoke-01
 A smoke suite takes approximately one minute, plus model initialization. It runs
 700E and RADE TX, synchronized RX, no-sync RX and interrupted RADE RX. It produces
 versioned manifests, hashes, benchmark JSON, resource samples and events locally.
+`package-SHA256SUMS` retains the package file hashes verified before execution,
+including shared libraries. This identifies package files on disk; it does not
+trace which libraries the dynamic linker loaded.
 If all cases execute, run the longer suite (seven 30-minute workloads plus warm-up):
 
 ```sh
