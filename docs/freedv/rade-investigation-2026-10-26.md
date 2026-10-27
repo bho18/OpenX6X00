@@ -112,25 +112,32 @@ limitations in `tools/freedv/rade_stage_profile.c` and
 `docs/freedv/rade-profiling.md`. No modified library has been deployed to the
 radio or inserted into its GUI process.
 
-## Next test and optimization criteria
+## Target update and optimization criteria (2026-10-27)
 
-Use the existing radio binary under low-rate user-space `perf` sampling, starting
-with silence and then synchronized input. The pinned kernel enables
-`CONFIG_PERF_EVENTS`; installed tool availability/sampling permissions remain
-unmeasured. The prepared procedure uses `cpu-clock:u`, no build-ID cache writes,
-RAM output and no RF/audio-device access. If perf is unavailable, add stage
-timing to an SDK-built diagnostic benchmark rather than replacing system tools
-or inferring a hardware limit from host measurements.
+The operator successfully captured 3448 software-clock samples on the X6200,
+with zero lost samples. The returned capture, exact library and worker resolve
+3225 samples (93.5325%) to `rade_acq_detect_pilots`. Its hot correlation loop
+uses scalar floating-point instructions. The supplied files match package
+checksums and the capture's runtime paths; build IDs are absent. These are
+whole-command self samples including startup/warm-up, not isolated steady-state
+times. See the [resolved target report in PR #25](https://github.com/bho18/OpenX6X00/blob/topic/rade-stage-profiling/docs/freedv/rade-radio-profile-2026-10-27.md)
+for hashes, mapping, instruction evidence and limitations.
 
-If target profiling confirms correlation kernels dominate, evaluate explicit
-ARM NEON kernels and cache-friendly batching while preserving the complete
-time/frequency search and detection thresholds. A possible implementation can
-vectorize independent time/frequency positions rather than alter the reduction
-order. Compare scalar and optimized correlation grids/detection decisions with
-deterministic noise, offsets, interruptions and near-threshold cases, and retain
-the upstream correctness/loss checks. Do not silently shrink the acquisition
-range, skip no-sync work, change model/waveform, lower speech quality, suppress
-deadline failures or hide the cost in unbounded buffering.
+[PR #26](https://github.com/bho18/OpenX6X00/pull/26) adds a default-off NEON
+candidate that correlates four independent timing positions while preserving
+the complete search, accumulation order, maxima/ties and threshold calculations.
+A conservative arithmetic-domain and rounding check retains scalar handling for
+exceptional inputs. Development GCC14/QEMU checks pass all 47 cases bit-for-bit:
+34 vector and 13 fallback cases, plus all 47 with the option off. Those builds
+are development checks, not deployable SDK substitutes or radio-speed evidence.
+The matching SDK workflow repeats differential, text, speech, feature-loss and
+benchmark execution checks before producing an experimental runtime archive.
+
+Do not shrink the acquisition range, skip no-sync work, change model/waveform,
+lower speech quality, suppress deadline failures or hide the cost in unbounded
+buffering. A candidate must pass on-radio short benchmarks before sustained
+qualification; even a successful acquisition speedup would not qualify the full
+synchronized speech receiver.
 
 Profile synchronized RX separately for inference, FARGAN, filters and resampling.
 Four cores permit investigating bounded pipeline stages later, but do not make

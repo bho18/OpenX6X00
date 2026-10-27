@@ -116,6 +116,10 @@ Do not spend several hours on the unchanged full RADE qualification suite: it
 already misses every RX deadline in the short test. Preserve these results as
 the first measured baseline. Audit the generated SDK/Opus configuration and
 profile resampling, modem/acquisition, RADE inference and FARGAN separately.
+The subsequent returned no-sync profile now attributes 93.53% of sampled CPU
+time to scalar pilot acquisition; the [investigation update](rade-investigation-2026-10-26.md)
+records exact-binary evidence and the guarded SIMD candidate. Synchronized
+profiling and candidate target timing remain pending.
 Any corrected or optimized build needs its own source/config/model identity,
 correctness checks and repeat smoke measurements before sustained testing.
 
