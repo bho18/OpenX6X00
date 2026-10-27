@@ -62,7 +62,9 @@ def main():
         cross = []
     work.mkdir(parents=True, exist_ok=False)
     revision = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
-    if subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain'], text=True).strip():
+    tracked_changes = subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=no'], text=True).strip()
+    new_inputs = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '--others', '--exclude-standard', '--', 'tools/freedv', 'docs/freedv'], text=True).strip()
+    if tracked_changes or new_inputs:
         raise ValueError('commit source changes before making a reproducible package')
     code = work / 'firmware'; code.mkdir()
     run('git', '-C', ROOT, 'archive', '--format=tar', '-o', work / 'firmware.tar', revision, 'tools/freedv', 'docs/freedv')
