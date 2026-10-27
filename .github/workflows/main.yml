@@ -1,146 +1,117 @@
-# Builds the SD card images on GitHub, one per radio: this repository (OpenX6X00) is the GUI
-# package of gdyuldin's AetherX6100Buildroot (the X6100) and AetherX6200Buildroot (the X6200),
-# built from the checkout instead of upstream. buildroot/local-build.sh does the patching and
-# the build, here as in the container at home.
-name: Build image
-
-# By hand only (Actions > Build image > Run workflow): releases are built
-# locally and the images attached by hand; building on every tag only made a
-# second copy, took 2 hours and failed now and then.
+name: FreeDV X6200 test card images
 on:
+  push:
+    branches: [experiment/x6200-test-images]
   workflow_dispatch:
-
-# Write access for the Release step (the default token is read-only)
+    inputs:
+      baseline_run:
+        description: Successful or running pinned baseline image/SDK workflow run ID
+        required: true
+        type: string
 permissions:
-  contents: write
-
+  contents: read
+  actions: read
 jobs:
-  build:
+  register-workflow:
+    if: github.event_name == 'push'
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - model: x6100
-            tree: AetherX6100Buildroot
-            out: OpenX6X00-x6100
-          - model: x6200
-            tree: AetherX6200Buildroot
-            out: OpenX6X00-x6200
-    defaults:
-      run:
-        shell: bash
-
-    env:
-      X6CI_IMAGES: ${{ matrix.tree }}/build/images
-      X6CI_IMG: ${{ matrix.out }}-${{ github.ref_name }}-sdcard.img
-      X6CI_BUNDLE: ${{ matrix.out }}-${{ github.ref_name }}-update.tar.gz
-
     steps:
-    # A full buildroot build needs more room than the runner leaves free:
-    # drop the SDKs we do not use (the tool cache and the big packages stay)
-    - name: Free Disk Space (Ubuntu)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        tool-cache: false
-        android: true
-        dotnet: true
-        haskell: true
-        large-packages: false
-        docker-images: true
-        swap-storage: true
-    - name: check free space
-      run: |
-        df -h
-        pwd
-
-    - name: Checkout GUI
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-        path: x6100_gui
-
-    - name: Checkout buildroot
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-        repository: gdyuldin/${{ matrix.tree }}
-        path: ${{ matrix.tree }}
-
-    # ccache kept between runs, one cache per radio. The cache key carries the time of the
-    # run, so every run saves a new one and restores the latest by prefix.
-    - name: Prepare ccache timestamp
-      id: ccache_cache_timestamp
-      shell: cmake -P {0}
-      run: |
-        string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
-        file(APPEND "$ENV{GITHUB_OUTPUT}" "timestamp=${current_date}")
-
-    # Restore here and save right after Build, even when Build fails, so a
-    # failed attempt still leaves its compiled work for the next one.
-    - name: Restore ccache
-      uses: actions/cache/restore@v4
-      with:
-        path: ~/.buildroot-ccache
-        key: ${{ runner.os }}-${{ matrix.model }}-ccache-${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.model }}-ccache-
-
-    # The update bundle a running radio installs by itself (x6100-update) is signed with the
-    # repository secret UPDATE_SIGNING_KEY (an EC P-256 private key in PEM; its public half is
-    # rootfs/usr/share/x6100/update.pub). Without the secret the bundle is unsigned and radios
-    # refuse it. The script also patches the buildroot tree, configures and builds, puts our
-    # U-Boot on the X6100's image and names it <out>-local-sdcard.img.
-    - name: Build
-      env:
-        UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-      run: |
-        if [ -n "$UPDATE_SIGNING_KEY" ]; then
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > /tmp/update-key.pem
-          export UPDATE_KEY=/tmp/update-key.pem
-        fi
-        MODEL=${{ matrix.model }} GUI_DIR=$GITHUB_WORKSPACE/x6100_gui BR_DIR=$GITHUB_WORKSPACE/${{ matrix.tree }} \
-          bash x6100_gui/buildroot/local-build.sh
-        rm -f /tmp/update-key.pem
-
-    - name: Save ccache
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: ~/.buildroot-ccache
-        key: ${{ runner.os }}-${{ matrix.model }}-ccache-${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-
-    # The release names: <out>-<ref>-sdcard.img.zip and <out>-<ref>-update.tar.gz (the script
-    # named the bundle after the version in src/main.h)
-    - name: Name the image and the bundle
-      run: |
-        cd $X6CI_IMAGES
-        mv ${{ matrix.out }}-local-sdcard.img $X6CI_IMG
-        zip $X6CI_IMG.zip $X6CI_IMG
-        mv ${{ matrix.out }}-v*-update.tar.gz $X6CI_BUNDLE
-        ls -la $X6CI_IMG.zip $X6CI_BUNDLE
-
-    # Always keep the image and the bundle as workflow artifacts: branch runs have no
-    # release to attach to, and on a tag they survive a failed Release step.
-    - name: Upload image
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.X6CI_IMG }}.zip
-        path: ${{ env.X6CI_IMAGES }}/${{ env.X6CI_IMG }}.zip
-        retention-days: 30
-
-    - name: Upload update bundle
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.X6CI_BUNDLE }}
-        path: ${{ env.X6CI_IMAGES }}/${{ env.X6CI_BUNDLE }}
-        retention-days: 30
-
-    # On a tag: GitHub release with the image and the update bundle (what radios look for)
-    - name: Release
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: |
-          ${{ env.X6CI_IMAGES }}/${{ env.X6CI_IMG }}.zip
-          ${{ env.X6CI_IMAGES }}/${{ env.X6CI_BUNDLE }}
+      - run: echo 'Test image SDK workflow registered.'
+  build-package:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 210
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Wait for and verify baseline SDK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -eu
+          case "$BASELINE_RUN" in ''|*[!0-9]*) exit 1;; esac
+          for attempt in $(seq 1 150); do
+            state=$(gh api "repos/$REPOSITORY/actions/runs/$BASELINE_RUN" --jq '.status')
+            if [ "$state" = completed ]; then break; fi
+            echo "Waiting for pinned baseline SDK: $state ($attempt/150)"
+            sleep 60
+          done
+          gh api "repos/$REPOSITORY/actions/runs/$BASELINE_RUN" > baseline-run.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('baseline-run.json'))
+          assert r['conclusion']=='success', 'baseline did not succeed'
+          assert r['head_branch']=='experiment/x6200-baseline-sdk', 'unexpected baseline branch'
+          assert r['path']=='.github/workflows/main.yml', 'unexpected baseline workflow'
+          PY
+          gh run download "$BASELINE_RUN" --repo "$REPOSITORY" --name x6200-freedv-baseline --dir baseline
+          (cd baseline && sha256sum -c SHA256SUMS)
+          test "$(cat baseline/buildroot-commit.txt)" = 8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3
+          test "$(cat baseline/firmware-commit.txt)" = fd7f0bba70c0c8f8854219b6422600cbd428a6dc
+          mkdir sdk
+          set -- baseline/*sdk*.tar.gz
+          test "$#" = 1
+          tar -xzf "$1" -C sdk
+          relocation=$(find "$PWD/sdk" -name relocate-sdk.sh -type f)
+          test -n "$relocation"
+          "$relocation"
+          dirname "$relocation" > sdk-path.txt
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev python3 e2fsprogs
+      - name: Build pinned benchmarks with matching SDK
+        run: |
+          set -eu
+          python3 tools/freedv/build_benchmark_package.py --work "$RUNNER_TEMP/freedv-package" \
+            --sdk "$(cat sdk-path.txt)" --sdk-manifest baseline/buildroot-commit.txt --jobs 2 \
+            > "$RUNNER_TEMP/freedv-package-build.log" 2>&1 || { tail -80 "$RUNNER_TEMP/freedv-package-build.log"; exit 1; }
+          cp baseline-run.json "$RUNNER_TEMP/freedv-package/"
+          cd "$RUNNER_TEMP/freedv-package"
+          sha256sum freedv-benchmark-package.tar.gz freedv-benchmark-sources.tar.gz > ARCHIVE-SHA256SUMS
+      - name: Compile matching baseline and read-only diagnostic GUIs
+        run: |
+          set -eu
+          sdk_dir=$(cat sdk-path.txt)
+          revision=$(git rev-parse HEAD)
+          mkdir "$RUNNER_TEMP/test-images"
+          for variant in baseline diagnostic-readonly; do
+            enabled=OFF
+            [ "$variant" != diagnostic-readonly ] || enabled=ON
+            cmake -S . -B "$RUNNER_TEMP/gui-$variant" \
+              -DCMAKE_TOOLCHAIN_FILE="$sdk_dir/share/buildroot/toolchainfile.cmake" \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo -DHW_BACKEND=x6200 -DENABLE_FREEDV_DIAGNOSTICS="$enabled"
+            cmake --build "$RUNNER_TEMP/gui-$variant" --target x6100_gui -j 2
+            python3 tools/freedv/prepare_test_image.py \
+              --baseline baseline/OpenX6X00-x6200-local-sdcard.img \
+              --gui "$RUNNER_TEMP/gui-$variant/src/x6100_gui" \
+              --package "$RUNNER_TEMP/freedv-package/package" --variant "$variant" \
+              --firmware-commit "$revision" --output "$RUNNER_TEMP/test-images/x6200-$variant.img"
+            cp "$RUNNER_TEMP/gui-$variant/src/x6100_gui" "$RUNNER_TEMP/test-images/gui-$variant.debug"
+          done
+          cp tools/freedv/sources.json "$RUNNER_TEMP/test-images/"
+          cp docs/freedv/test-card.md "$RUNNER_TEMP/test-images/README.md"
+          cp baseline-run.json "$RUNNER_TEMP/test-images/"
+          cd "$RUNNER_TEMP/test-images"
+          sha256sum *.img *.debug *.json README.md > SHA256SUMS
+      - name: Upload test images and debug information
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-freedv-test-images
+          path: ${{ runner.temp }}/test-images/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload benchmark test package and build record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-freedv-benchmark-package
+          path: |
+            ${{ runner.temp }}/freedv-package/freedv-benchmark-package.tar.gz
+            ${{ runner.temp }}/freedv-package/freedv-benchmark-sources.tar.gz
+            ${{ runner.temp }}/freedv-package/ARCHIVE-SHA256SUMS
+            ${{ runner.temp }}/freedv-package/baseline-run.json
+            ${{ runner.temp }}/freedv-package-build.log
+          if-no-files-found: error
+          retention-days: 14
