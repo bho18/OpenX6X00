@@ -171,6 +171,8 @@ jobs:
     steps:
       - name: Check out firmware
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # The stage comparison uses an exact historical source.
       - name: Check out pinned RADE
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -185,12 +187,20 @@ jobs:
           cmake -S rade-reference -B /tmp/rade-build -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/rade-build --target rade_tx_wav -j 2
           opus_dir=/tmp/rade-build/build_opus-prefix/src/build_opus
-          cc -O2 -std=c11 -Wall -Wextra -Werror -Wno-error=cpp \
-            -Irade-reference/src -I"$opus_dir/dnn" -I"$opus_dir/celt" -I"$opus_dir/include" -I"$opus_dir" \
-            tools/freedv/rade_frame_bench.c -L/tmp/rade-build/src -lrade "$opus_dir/.libs/libopus.a" \
-            -lsamplerate -lm -Wl,-rpath,/tmp/rade-build/src -o /tmp/rade-frame-bench
+          git show cd6a672311e85a68feb97f24f65653a29791b1e0:tools/freedv/rade_frame_bench.c > /tmp/rade-frame-bench-baseline.c
+          printf '%s\n' 'c9756bd241fc409bab7c04753d99dd69267c87efff4153e0f3c5761fe8f4827d  /tmp/rade-frame-bench-baseline.c' | sha256sum -c -
+          build_benchmark() {
+            cc -O2 -g -std=c11 -Wall -Wextra -Werror -Wno-error=cpp \
+              -include "$opus_dir/config.h" \
+              -Irade-reference/src -I"$opus_dir/dnn" -I"$opus_dir/celt" -I"$opus_dir/include" -I"$opus_dir" \
+              "$1" -L/tmp/rade-build/src -lrade "$opus_dir/.libs/libopus.a" \
+              -lsamplerate -lm -Wl,-rpath,/tmp/rade-build/src -o "$2"
+          }
+          build_benchmark /tmp/rade-frame-bench-baseline.c /tmp/rade-frame-bench-baseline
+          build_benchmark tools/freedv/rade_frame_bench.c /tmp/rade-frame-bench
           python3 tools/freedv/test_rade_frame_bench.py --benchmark /tmp/rade-frame-bench \
-            --tx /tmp/rade-build/src/rade_tx_wav --speech rade-reference/input_sample.wav
+            --tx /tmp/rade-build/src/rade_tx_wav --speech rade-reference/input_sample.wav \
+            --stage-baseline /tmp/rade-frame-bench-baseline
 
   host-ui:
     runs-on: ubuntu-24.04

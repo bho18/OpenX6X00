@@ -92,6 +92,13 @@ def main():
                 'firmware_worktree_dirty': False,
                 'compiler_version': subprocess.check_output([str(compiler), '--version'], text=True).splitlines()[0],
                 'sdk_manifest_sha256': sha(a.sdk_manifest) if a.sdk_manifest else None}
+    manifest['rade_benchmark_timing'] = {
+        'stage_schema_version': 1,
+        'source_sha256': sha(code / 'tools/freedv/rade_frame_bench.c'),
+        'full_block_timer_includes_stage_instrumentation': True,
+        'instrumentation_overhead_subtracted': False,
+        'warmup_in_stage_statistics': False,
+    }
     for name in ('codec2', 'rade_c', 'opus'):
         pin = PINS[name]
         cached = a.cache_root / name if a.cache_root else None
@@ -223,6 +230,7 @@ endif()'''))
     for name in ('inventory.py', 'collect_benchmark.py', 'sources.json', 'run_benchmarks.py', 'THIRD-PARTY-NOTICES.md'):
         shutil.copy2(code / 'tools/freedv' / name, package / 'tools/freedv' / name)
     shutil.copy2(code / 'docs/freedv/benchmark-package.md', package / 'README.md')
+    shutil.copy2(code / 'docs/freedv/rade-benchmark-stage-timing.md', package / 'STAGE-TIMING.md')
     manifest['elf_dependencies'] = {}
     for binary in [*(package / 'bin').iterdir(), *(package / 'lib').iterdir()]:
         info = subprocess.check_output([str(readelf), '-d', str(binary)], text=True)
