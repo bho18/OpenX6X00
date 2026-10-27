@@ -61,14 +61,20 @@ def main():
         sysroot = None
         cross = []
     work.mkdir(parents=True, exist_ok=False)
+    revision = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip()
+    if subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain'], text=True).strip():
+        raise ValueError('commit source changes before making a reproducible package')
+    code = work / 'firmware'; code.mkdir()
+    run('git', '-C', ROOT, 'archive', '--format=tar', '-o', work / 'firmware.tar', revision, 'tools/freedv', 'docs/freedv')
+    run('tar', '-xf', work / 'firmware.tar', '-C', code)
     src = work / 'sources'; src.mkdir()
     package = work / 'package'; package.mkdir()
     for directory in ('bin', 'lib', 'fixtures', 'licenses', 'tools/freedv'):
         (package / directory).mkdir(parents=True)
     manifest = {'schema_version': 1, 'kind': 'benchmark-package', 'target': 'host-validation' if a.host_validation else 'x6200-buildroot',
                 'radio_control': False, 'hardware_qualified': False, 'sources': PINS,
-                'firmware_commit': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
-                'firmware_worktree_dirty': bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain'], text=True).strip()),
+                'firmware_commit': revision,
+                'firmware_worktree_dirty': False,
                 'compiler_version': subprocess.check_output([str(compiler), '--version'], text=True).splitlines()[0],
                 'sdk_manifest_sha256': sha(a.sdk_manifest) if a.sdk_manifest else None}
     for name in ('codec2', 'rade_c', 'opus'):
@@ -129,15 +135,15 @@ def main():
         ('codec2-frame-bench', 'codec2_frame_bench.c', [src / 'codec2/src'], ['-L' + str(work / 'codec2/src'), '-lcodec2']),
         ('rade-frame-bench', 'rade_frame_bench.c', [src / 'rade_c/src', opus / 'dnn', opus / 'celt', opus / 'include', opus], ['-L' + str(work / 'rade_c/src'), '-lrade', str(opus / '.libs/libopus.a')])]:
         run(compiler, '-O2', '-g', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-error=cpp',
-            *['-I' + str(i) for i in includes], ROOT / 'tools/freedv' / source,
+            *['-I' + str(i) for i in includes], code / 'tools/freedv' / source,
             *libs, '-lsamplerate', '-lm', '-Wl,-rpath,$ORIGIN/../lib', '-o', package / 'bin' / name)
     # Bundle codec libraries. The baseline supplies libc, libm and libsamplerate.
     for name, pattern in [('codec2', 'libcodec2.so*'), ('rade_c', 'librade.so*')]:
         for lib in (work / name / 'src').glob(pattern):
             shutil.copy2(lib, package / 'lib' / lib.name)
     for name in ('inventory.py', 'collect_benchmark.py', 'sources.json', 'run_benchmarks.py', 'THIRD-PARTY-NOTICES.md'):
-        shutil.copy2(ROOT / 'tools/freedv' / name, package / 'tools/freedv' / name)
-    shutil.copy2(ROOT / 'docs/freedv/benchmark-package.md', package / 'README.md')
+        shutil.copy2(code / 'tools/freedv' / name, package / 'tools/freedv' / name)
+    shutil.copy2(code / 'docs/freedv/benchmark-package.md', package / 'README.md')
     manifest['elf_dependencies'] = {}
     for binary in [*(package / 'bin').iterdir(), *(package / 'lib').iterdir()]:
         info = subprocess.check_output([str(readelf), '-d', str(binary)], text=True)
@@ -146,7 +152,7 @@ def main():
     with tarfile.open(source_archive, 'w:gz') as archive:
         for name in ('codec2', 'rade_c', 'opus'):
             archive.add(src / name, arcname=name, filter=lambda item: None if '/.git' in item.name else item)
-        archive.add(ROOT / 'tools/freedv', arcname='tools/freedv', filter=lambda item: None if '__pycache__' in item.name else item)
+        archive.add(code / 'tools/freedv', arcname='tools/freedv')
     manifest['corresponding_source_archive_sha256'] = sha(source_archive)
     (package / 'package-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     hashes = [sha(f) + '  ' + str(f.relative_to(package)) for f in sorted(package.rglob('*')) if f.is_file()]
