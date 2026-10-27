@@ -7,9 +7,10 @@ resampling separately, retaining the complete pipeline timer and its existing
 performance threshold.
 
 This is a separate diagnostic change from the acquisition optimization. The
-previously published acquisition-candidate package remains the next radio test.
-The stage instrumentation has passed host checks; target SDK execution and
-radio measurements have not yet been completed. It introduces no radio control,
+acquisition-only radio comparison is complete; the next test uses the
+[stage-timing SDK package](stage-timing-radio-test.md).
+The stage instrumentation has passed host checks and matching-SDK execution
+gates in run `40535053954`; radio stage measurements remain pending. It introduces no radio control,
 physical audio-device access or model changes.
 
 ## Measurements and JSON additions
@@ -114,9 +115,9 @@ python3 tools/freedv/test_stage_timing.py \
   --output /new/stage-validation-results
 ```
 
-Use a new output directory. Keep these host binaries off the radio. A subsequent
-deployable package must use the matching Buildroot SDK and record the changed
-worker hash, source revision and `rade_benchmark_timing` metadata in its manifest.
+Use a new output directory. Keep these host binaries off the radio. The deployable
+package uses the matching Buildroot SDK and records the changed worker hash,
+source revision and `rade_benchmark_timing` metadata in its manifest.
 The package includes this document as `STAGE-TIMING.md`. Existing collectors
 retain the additive JSON fields without interpreting host results as target
 qualification. Compare instrumented and original totals as different benchmark
