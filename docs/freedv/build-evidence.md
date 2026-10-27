@@ -16,9 +16,14 @@ extracted the SDK and ran its relocation script.
 | Input | Revision |
 | --- | --- |
 | Firmware milestone baseline | fd7f0bba70c0c8f8854219b6422600cbd428a6dc |
+| Application VERSION in that pinned source | OpenX6X00 v0.3.5 |
 | Upstream firmware starting point | d833e288026ad4a22575b897829c1c82d8437f92 |
 | X6200 Buildroot external tree | 8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3 |
 | Buildroot submodule | cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f |
+
+The operator reports application 0.3.6 and baseband 1.0.7 on the working card.
+The pinned milestone source reports v0.3.5; keep these identities separate and
+preserve the working card. No upstream update has been silently incorporated.
 
 The supplied live log showed GCC 12.3.0 and glibc 2.36 compilation before
 GitHub's display-size truncation. That truncation was not a build failure.
