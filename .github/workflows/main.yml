@@ -49,11 +49,12 @@ jobs:
         env:
           MODEL: x6200
         run: |
-          set -eu
+          set -euo pipefail
           df -h .
           test "$(git -C AetherX6200Buildroot/buildroot rev-parse HEAD)" = cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f
           GUI_DIR="$GITHUB_WORKSPACE/x6100_gui" BR_DIR="$GITHUB_WORKSPACE/AetherX6200Buildroot" \
-            bash x6100_gui/buildroot/local-build.sh
+            bash x6100_gui/buildroot/local-build.sh 2>&1 | tee "$RUNNER_TEMP/x6200-baseline-build.log" | \
+            awk 'BEGIN { last=systime() } /^>>>|^==|error:|fatal:|Error [0-9]/ { print; fflush(); last=systime(); next } systime()-last>=30 { print "[build active] " substr($0,1,180); fflush(); last=systime() }'
           cd AetherX6200Buildroot/build/images
           sha256sum OpenX6X00-x6200-local-sdcard.img > SHA256SUMS
           cp "$GITHUB_WORKSPACE/x6100_gui/tools/freedv/sources.json" sources.json
@@ -61,12 +62,22 @@ jobs:
           git -C "$GITHUB_WORKSPACE/AetherX6200Buildroot" rev-parse HEAD > buildroot-commit.txt
       - name: Package matching Buildroot SDK
         run: |
-          set -eu
-          make -C AetherX6200Buildroot/build sdk
+          set -euo pipefail
+          make -C AetherX6200Buildroot/build sdk 2>&1 | tee "$RUNNER_TEMP/x6200-sdk-build.log"
           cd AetherX6200Buildroot/build/images
           set -- *sdk*.tar.gz
           test "$#" = 1 && test -f "$1"
           sha256sum "$1" >> SHA256SUMS
+      - name: Preserve full build logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-baseline-build-logs
+          path: |
+            ${{ runner.temp }}/x6200-baseline-build.log
+            ${{ runner.temp }}/x6200-sdk-build.log
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload baseline image
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
