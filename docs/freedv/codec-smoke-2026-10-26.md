@@ -102,7 +102,10 @@ All RADE results report `opus_arch=0`. This alone does not prove scalar executio
 the pinned Opus can compile direct NEON calls when NEON is presumed, and its
 dispatch index can be zero in that configuration. Inspect the actual generated
 configuration, compiler flags and library-side dispatch before attributing the
-failure to missing SIMD. The pinned RADE V1 TX/RX source also supplies a literal
+failure to missing SIMD. The subsequently returned build log confirms ARM NEON
+and NE10 were enabled, with CPU features presumed; see the
+[build audit and deeper investigation](rade-investigation-2026-10-26.md).
+The pinned RADE V1 TX/RX source also supplies a literal
 architecture index 0 to its encoder/decoder; whether that bypasses optimized
 dispatch depends on that same Opus configuration. No CPU optimization claim or
 speedup is established by the returned bundle.
