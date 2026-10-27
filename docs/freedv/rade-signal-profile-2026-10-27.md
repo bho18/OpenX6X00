@@ -40,7 +40,7 @@ underruns, RF interoperability, intrinsic latency or sustained thermal behavior.
 ## Address mapping
 
 The report hides rows below 1%. The sums below include only the printed rows;
-they are rounded lower-bound contributions, not complete function percentages.
+they are partial contributions rounded by perf, not complete function percentages.
 
 | Address group | Exact function mapping | Sum of displayed percentages |
 | --- | --- | --- |
