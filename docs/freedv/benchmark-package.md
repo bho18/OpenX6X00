@@ -24,6 +24,9 @@ python3 tools/freedv/run_benchmarks.py --radio --output /mnt/freedv-smoke-01
 A smoke suite takes approximately one minute, plus model initialization. It runs
 700E and RADE TX, synchronized RX, no-sync RX and interrupted RADE RX. It produces
 versioned manifests, hashes, benchmark JSON, resource samples and events locally.
+`package-SHA256SUMS` retains the package file hashes verified before execution,
+including shared libraries. This identifies package files on disk; it does not
+trace which libraries the dynamic linker loaded.
 If all cases execute, run the longer suite (seven 30-minute workloads plus warm-up):
 
 ```sh
@@ -58,3 +61,10 @@ Make, C/C++ compilers, autoconf, automake, libtool, pkg-config and libsamplerate
 headers/libraries. TLS and Opus model SHA256 verification remain enabled.
 Source, compiler and model identities are recorded; generated output stays
 outside Git. Debug information remains in package binaries.
+
+Instrumented RADE builds also report `stage_timing` and
+`fixture_preparation_ms`. Their package manifest includes
+`rade_benchmark_timing`, and `STAGE-TIMING.md` describes the measured regions,
+warm-up exclusion and instrumentation overhead. Stage sums partition the full
+processing total; stage percentiles must not be added together. The full
+pipeline timing gate still applies.

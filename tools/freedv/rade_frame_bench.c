@@ -38,6 +38,23 @@ static int cmp_double(const void *a, const void *b) {
     double x = *(const double *)a, y = *(const double *)b;
     return (x > y) - (x < y);
 }
+/* Detailed stage diagnostics are additive to the original full-block timer. A call
+ * is one invocation of a timed region, not an internal neural layer/function.
+ * Per-block arrays are allocated before streaming; warm-up never enters them. */
+enum stage_id {
+    ST_INPUT_RESAMPLING, ST_TX_SPEECH, ST_RADE_TX, ST_RADE_RX,
+    ST_RX_SPEECH, ST_OUTPUT_RESAMPLING, ST_OTHER, ST_COUNT
+};
+static const char *const stage_names[ST_COUNT] = {
+    "input_resampling", "tx_speech_processing", "rade_tx", "rade_rx",
+    "rx_speech_processing", "output_resampling", "other"
+};
+struct stage_totals { uint64_t calls, active_blocks, sum_ns; };
+static int cmp_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return (x > y) - (x < y);
+}
+
 static long number(const char *text, long low, long high) {
     char *end;
     errno = 0;
@@ -113,7 +130,9 @@ int main(int argc, char **argv) {
     int in_rate = tx ? RADE_SPEECH_SAMPLE_RATE : RADE_MODEM_SAMPLE_RATE;
     int out_rate = tx ? RADE_MODEM_SAMPLE_RATE : RADE_SPEECH_SAMPLE_RATE;
     size_t fixture_count = 0, cursor = 0;
+    uint64_t fixture_start = now_ns();
     float *fixture = load_fixture(argv[2], in_rate, &fixture_count);
+    uint64_t fixture_ns = now_ns() - fixture_start;
     int error;
     SRC_STATE *input_src = src_new(SRC_SINC_FASTEST, 1, &error);
     SRC_STATE *output_src = src_new(SRC_SINC_FASTEST, 1, &error);
@@ -146,7 +165,9 @@ int main(int argc, char **argv) {
     size_t min_input = tx ? (size_t)speech_n : (size_t)(RADE_NMF - RADE_M);
     size_t stat_cap = (size_t)seconds * (size_t)in_rate / min_input + 2;
     double *ratios = calloc(stat_cap, sizeof(*ratios)), *milliseconds = calloc(stat_cap, sizeof(*milliseconds));
-    if (!input || !features || !eoo || !native_out || !converted || !pcm_in || !pcm_out || !iq || !ratios || !milliseconds)
+    uint64_t *stage_blocks = calloc(stat_cap * ST_COUNT, sizeof(*stage_blocks));
+    struct stage_totals stages[ST_COUNT] = {0};
+    if (!input || !features || !eoo || !native_out || !converted || !pcm_in || !pcm_out || !iq || !ratios || !milliseconds || !stage_blocks)
         die("buffer allocation failed");
     float cont[5 * NB_TOTAL_FEATURES] = {0};
     int cont_frames = 0;
@@ -162,9 +183,14 @@ int main(int argc, char **argv) {
         uint64_t interval = (uint64_t)n * UINT64_C(1000000000) / (uint64_t)in_rate;
         bool warming = warm_ns < (uint64_t)warmup_seconds * UINT64_C(1000000000);
         if (!warming && frames == 0) deadline = now_ns();
+        if (!warming && frames >= stat_cap) die("statistics buffer exhausted");
         uint64_t start = now_ns();
+        uint64_t block_ns[ST_COUNT] = {0}, block_calls[ST_COUNT] = {0};
         uint64_t block_muted = 0, block_nonzero = 0;
+        uint64_t stage_start = now_ns();
         input_samples(input_src, fixture, fixture_count, &cursor, input, (size_t)n, in_rate);
+        block_ns[ST_INPUT_RESAMPLING] = now_ns() - stage_start;
+        block_calls[ST_INPUT_RESAMPLING] = 1;
         if (interrupt) {
             /* Two seconds of silence every twelve seconds, including block edges. */
             for (int i = 0; i < n; ++i)
@@ -173,12 +199,18 @@ int main(int argc, char **argv) {
         stream_samples += (uint64_t)n;
         int produced = 0, synced = 0, valid = 0;
         if (tx) {
+            stage_start = now_ns();
             src_float_to_short_array(input, pcm_in, n);
             int feature_frames = feature_n / RADE_NB_TOTAL_FEATURES;
             for (int j = 0; j < feature_frames; ++j)
                 lpcnet_compute_single_frame_features(encoder, pcm_in + j * LPCNET_FRAME_SIZE,
                     features + j * RADE_NB_TOTAL_FEATURES, arch);
+            block_ns[ST_TX_SPEECH] = now_ns() - stage_start;
+            block_calls[ST_TX_SPEECH] = 1;
+            stage_start = now_ns();
             produced = rade_tx(r, iq, features);
+            block_ns[ST_RADE_TX] = now_ns() - stage_start;
+            block_calls[ST_RADE_TX] = 1;
             if (produced < 0 || (size_t)produced > max_n) die("invalid RADE TX output");
             for (int i = 0; i < produced; ++i) {
                 float value = iq[i].real * (RADE_INT16_SCALE / 32768.0f);
@@ -190,34 +222,67 @@ int main(int argc, char **argv) {
                 iq[i].imag = 0;
             }
             int has_eoo = 0;
+            stage_start = now_ns();
             int n_features = rade_rx(r, features, &has_eoo, eoo, iq);
+            block_ns[ST_RADE_RX] = now_ns() - stage_start;
+            block_calls[ST_RADE_RX] = 1;
             if (n_features < 0 || n_features > feature_n || n_features % RADE_NB_TOTAL_FEATURES) die("invalid RADE RX output");
             synced = rade_sync(r) != 0;
             valid = n_features > 0;
-            for (int j = 0; j < n_features / RADE_NB_TOTAL_FEATURES; ++j) {
-                const float *feat = features + j * RADE_NB_TOTAL_FEATURES;
-                if (!fargan_ready) {
-                    memcpy(cont + cont_frames * NB_TOTAL_FEATURES, feat, NB_TOTAL_FEATURES * sizeof(float));
-                    if (++cont_frames == 5) {
-                        float packed[5 * NB_FEATURES], zero[FARGAN_CONT_SAMPLES] = {0};
-                        for (int k = 0; k < 5; ++k)
-                            memcpy(packed + k * NB_FEATURES, cont + k * NB_TOTAL_FEATURES, NB_FEATURES * sizeof(float));
-                        fargan_cont(fargan, zero, packed);
-                        fargan_ready = true;
+            if (n_features > 0) {
+                stage_start = now_ns();
+                for (int j = 0; j < n_features / RADE_NB_TOTAL_FEATURES; ++j) {
+                    const float *feat = features + j * RADE_NB_TOTAL_FEATURES;
+                    if (!fargan_ready) {
+                        memcpy(cont + cont_frames * NB_TOTAL_FEATURES, feat, NB_TOTAL_FEATURES * sizeof(float));
+                        if (++cont_frames == 5) {
+                            float packed[5 * NB_FEATURES], zero[FARGAN_CONT_SAMPLES] = {0};
+                            for (int k = 0; k < 5; ++k)
+                                memcpy(packed + k * NB_FEATURES, cont + k * NB_TOTAL_FEATURES, NB_FEATURES * sizeof(float));
+                            fargan_cont(fargan, zero, packed);
+                            fargan_ready = true;
+                        }
+                        continue;
                     }
-                    continue;
+                    if ((size_t)produced + LPCNET_FRAME_SIZE > max_n) die("speech output buffer too small");
+                    fargan_synthesize(fargan, native_out + produced, feat);
+                    produced += LPCNET_FRAME_SIZE;
                 }
-                if ((size_t)produced + LPCNET_FRAME_SIZE > max_n) die("speech output buffer too small");
-                fargan_synthesize(fargan, native_out + produced, feat);
-                produced += LPCNET_FRAME_SIZE;
+                block_ns[ST_RX_SPEECH] = now_ns() - stage_start;
+                block_calls[ST_RX_SPEECH] = 1;
             }
         }
-        size_t out_n = produced ? output_samples(output_src, native_out, (size_t)produced, out_rate,
-                                                  converted, pcm_out, converted_cap, &block_nonzero) : 0;
+        size_t out_n = 0;
+        if (produced) {
+            stage_start = now_ns();
+            out_n = output_samples(output_src, native_out, (size_t)produced, out_rate,
+                                   converted, pcm_out, converted_cap, &block_nonzero);
+            block_ns[ST_OUTPUT_RESAMPLING] = now_ns() - stage_start;
+            block_calls[ST_OUTPUT_RESAMPLING] = 1;
+        }
+        /* Keep timestamp calls and ordinary stage bookkeeping inside the full
+         * timer. No measured instrumentation cost is subtracted from elapsed.
+         * Only closing-timestamp accounting/final statistics remain outside,
+         * just as the original benchmark updates its statistics after timing. */
+        uint64_t classified_ns = 0;
+        for (int stage = 0; stage < ST_OTHER; ++stage) {
+            classified_ns += block_ns[stage];
+            if (!warming) {
+                stage_blocks[(size_t)stage * stat_cap + frames] = block_ns[stage];
+                stages[stage].calls += block_calls[stage];
+                stages[stage].active_blocks += block_calls[stage] != 0;
+                stages[stage].sum_ns += block_ns[stage];
+            }
+        }
         uint64_t elapsed = now_ns() - start;
+        if (classified_ns > elapsed) die("stage timing exceeds full block timing");
         if (warming) warm_ns += interval;
         else {
-            if (frames >= stat_cap) die("statistics buffer exhausted");
+            uint64_t other_ns = elapsed - classified_ns;
+            stage_blocks[(size_t)ST_OTHER * stat_cap + frames] = other_ns;
+            stages[ST_OTHER].calls++;
+            stages[ST_OTHER].active_blocks++;
+            stages[ST_OTHER].sum_ns += other_ns;
             ratios[frames] = (double)elapsed / (double)interval;
             milliseconds[frames++] = (double)elapsed / 1e6;
             audio_ns += interval; compute_ns += elapsed;
@@ -234,6 +299,8 @@ int main(int argc, char **argv) {
     }
     qsort(ratios, frames, sizeof(*ratios), cmp_double);
     qsort(milliseconds, frames, sizeof(*milliseconds), cmp_double);
+    for (int stage = 0; stage < ST_COUNT; ++stage)
+        qsort(stage_blocks + (size_t)stage * stat_cap, frames, sizeof(*stage_blocks), cmp_u64);
     size_t p99 = (frames * 99 + 99) / 100 - 1;
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage)) die("getrusage failed");
@@ -248,14 +315,27 @@ int main(int argc, char **argv) {
            "\"sync_blocks\":%" PRIu64 ",\"feature_blocks\":%" PRIu64 ",\"nonzero_output_samples\":%" PRIu64 ","
            "\"interrupted_input_samples\":%" PRIu64 ","
            "\"sync_blocks_after_first_interrupt\":%" PRIu64 ","
-           "\"peak_rss_kib_linux\":%ld,\"opus_arch\":%d,\"resampling_included\":true,\"radio_io\":false,\"full_pipeline_qualified\":false}\n",
+           "\"peak_rss_kib_linux\":%ld,\"opus_arch\":%d,\"resampling_included\":true,\"radio_io\":false,\"full_pipeline_qualified\":false,",
            argv[1], argv[4], argv[6], frames, (double)audio_ns / 1e9, (double)warm_ns / 1e9,
            (double)init_ns / 1e6, (double)compute_ns / (double)audio_ns, ratios[p99], ratios[frames-1],
            milliseconds[p99], milliseconds[frames-1], misses_json, out_native, out_converted,
            sync_blocks, feature_blocks, nonzero, muted, sync_after_interrupt, usage.ru_maxrss, arch);
+    printf("\"fixture_preparation_ms\":%.3f,\"stage_timing\":{\"schema_version\":1,"
+           "\"unit\":\"nanoseconds\",\"calls_semantics\":\"timed_regions_other_counts_residual_evaluations\","
+           "\"percentile_population\":\"measured_blocks_including_inactive_zeros\","
+           "\"total_processing_ns\":%" PRIu64 ",\"other_is_residual\":true,\"stages\":{",
+           (double)fixture_ns / 1e6, compute_ns);
+    for (int stage = 0; stage < ST_COUNT; ++stage) {
+        const uint64_t *values = stage_blocks + (size_t)stage * stat_cap;
+        printf("%s\"%s\":{\"calls\":%" PRIu64 ",\"active_blocks\":%" PRIu64
+               ",\"sum_ns\":%" PRIu64 ",\"p99_block_ns\":%" PRIu64 ",\"max_block_ns\":%" PRIu64 "}",
+               stage ? "," : "", stage_names[stage], stages[stage].calls,
+               stages[stage].active_blocks, stages[stage].sum_ns, values[p99], values[frames - 1]);
+    }
+    printf("}}}\n");
     if (encoder) lpcnet_encoder_destroy(encoder);
     free(fargan); rade_close(r); rade_finalize(); src_delete(input_src); src_delete(output_src);
     free(fixture); free(input); free(features); free(eoo); free(native_out); free(converted); free(pcm_in); free(pcm_out); free(iq);
-    free(ratios); free(milliseconds);
+    free(ratios); free(milliseconds); free(stage_blocks);
     return 0;
 }

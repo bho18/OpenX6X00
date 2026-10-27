@@ -56,8 +56,10 @@ def main():
     p.add_argument('--radio', action='store_true', help='require the SDK package, ARM host and running GUI')
     a = p.parse_args()
     root = a.package.resolve()
-    manifest = json.loads((root / 'package-manifest.json').read_text())
-    for line in (root / 'SHA256SUMS').read_text().splitlines():
+    manifest_text = (root / 'package-manifest.json').read_text()
+    manifest = json.loads(manifest_text)
+    checksum_text = (root / 'SHA256SUMS').read_text()
+    for line in checksum_text.splitlines():
         expected, filename = line.split('  ', 1)
         path = (root / filename).resolve()
         if root not in path.parents or not path.is_file() or digest(path) != expected:
@@ -72,7 +74,10 @@ def main():
     if output == root or root in output.parents:
         p.error('store results outside the package')
     output.mkdir(parents=True, exist_ok=False)
-    (output / 'package-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    (output / 'package-manifest.json').write_text(manifest_text)
+    # Retain the locally verified package identities, including shared libraries.
+    # These describe files on disk, not an observation of the dynamic linker.
+    (output / 'package-SHA256SUMS').write_text(checksum_text)
     subprocess.run([sys.executable, str(root / 'tools/freedv/inventory.py'), '--output', str(output / 'inventory.json')], check=True)
     cases = [('700E', 'tx', '700e-speech', 'continuous'), ('700E', 'rx', '700e-modem', 'continuous'),
              ('700E', 'rx', 'silence', 'continuous'), ('RADE-V1', 'tx', 'rade-speech', 'continuous'),
@@ -111,6 +116,8 @@ def main():
     finally:
         complete = len(results) == len(cases) and all(r['return_code'] == 0 and r['validated'] for r in results)
         summary = {'schema_version': 1, 'suite': a.suite, 'cases': results,
+                   'package_checksums_verified_before_run': True,
+                   'package_checksum_file': 'package-SHA256SUMS',
                    'complete': complete, 'execution_complete': complete,
                    'codec_timing_check': timing_summary(results, complete),
                    'timing_check_is_full_qualification': False,

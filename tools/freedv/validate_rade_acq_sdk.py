@@ -37,6 +37,104 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def validate_rade_stage_timing(result):
+    """Validate measured-block stage accounting; never assess target speed."""
+    def integer(value, name, positive=False):
+        if type(value) is not int or not (1 if positive else 0) <= value <= (1 << 64) - 1:
+            raise ValueError(name + ': expected unsigned 64-bit integer' + (' > 0' if positive else ''))
+        return value
+
+    def finite(value, name, positive=False):
+        try:
+            valid = type(value) in (int, float) and math.isfinite(value) and value >= 0
+        except OverflowError:
+            valid = False
+        if not valid or (positive and value <= 0):
+            raise ValueError(name + ': expected finite nonnegative number' + (' > 0' if positive else ''))
+        return value
+
+    if not isinstance(result, dict) or result.get('mode') != 'RADE-V1' or result.get('direction') not in ('tx', 'rx'):
+        raise ValueError('stage timing requires a RADE-V1 TX/RX result')
+    frames = integer(result.get('frames'), 'frames', positive=True)
+    features = integer(result.get('feature_blocks'), 'feature_blocks')
+    output_samples = integer(result.get('output_samples'), 'output_samples')
+    if features > frames:
+        raise ValueError('feature count exceeds measured blocks')
+    finite(result.get('fixture_preparation_ms'), 'fixture_preparation_ms')
+    audio = finite(result.get('audio_seconds'), 'audio_seconds', positive=True)
+    ratio = finite(result.get('processing_realtime_factor'), 'processing_realtime_factor')
+    block_max = finite(result.get('max_block_ms'), 'max_block_ms')
+    block_p99 = finite(result.get('p99_block_ms'), 'p99_block_ms')
+    if block_p99 > block_max:
+        raise ValueError('full-block p99 exceeds maximum')
+    timing = result.get('stage_timing')
+    if not isinstance(timing, dict) or type(timing.get('schema_version')) is not int or timing['schema_version'] != 1:
+        raise ValueError('missing or unsupported stage timing schema')
+    if (timing.get('unit') != 'nanoseconds' or timing.get('other_is_residual') is not True or
+            timing.get('percentile_population') != 'measured_blocks_including_inactive_zeros' or
+            timing.get('calls_semantics') != 'timed_regions_other_counts_residual_evaluations'):
+        raise ValueError('stage timing semantics do not match measured-block schema')
+    total = integer(timing.get('total_processing_ns'), 'total_processing_ns', positive=True)
+    # Both ratio and audio_seconds are printed to six decimal places. Bound
+    # their independent rounding errors, plus one nanosecond for FP arithmetic.
+    rounding_ns = (0.5e-6 * audio + 0.5e-6 * ratio + 0.25e-12) * 1e9 + 1
+    expected_ns = ratio * audio * 1e9
+    if not math.isfinite(expected_ns) or not math.isfinite(rounding_ns) or abs(total - expected_ns) > rounding_ns:
+        raise ValueError('stage total differs from full processing timer')
+    # Existing millisecond fields have three fractional digits (<=500ns error).
+    if total > (block_max * 1e6 + 501) * frames:
+        raise ValueError('total processing time exceeds full maximum/frame bound')
+    names = {'input_resampling', 'tx_speech_processing', 'rade_tx', 'rade_rx',
+             'rx_speech_processing', 'output_resampling', 'other'}
+    stages = timing.get('stages')
+    if not isinstance(stages, dict) or set(stages) != names:
+        raise ValueError('missing or unexpected stage names')
+    keys = {'calls', 'active_blocks', 'sum_ns', 'p99_block_ns', 'max_block_ns'}
+    for name, stage in stages.items():
+        if not isinstance(stage, dict) or set(stage) != keys:
+            raise ValueError(name + ': missing or unexpected stage fields')
+        for key in keys:
+            integer(stage[key], name + '.' + key)
+        calls, active = stage['calls'], stage['active_blocks']
+        if calls != active or active > frames:
+            raise ValueError(name + ': calls/active blocks differ from measured region semantics')
+        if not active and any(stage.values()):
+            raise ValueError(name + ': inactive stage has nonzero statistics')
+        if not stage['p99_block_ns'] <= stage['max_block_ns'] <= stage['sum_ns']:
+            raise ValueError(name + ': inconsistent duration/percentile ordering')
+        if stage['sum_ns'] > stage['max_block_ns'] * active:
+            raise ValueError(name + ': sum exceeds maximum/active-block bound')
+        if (stage['max_block_ns'] > block_max * 1e6 + 501 or
+                stage['p99_block_ns'] > block_p99 * 1e6 + 501):
+            raise ValueError(name + ': stage percentile exceeds full-block percentile')
+        p99_index = (frames * 99 + 99) // 100 - 1
+        if p99_index < frames - active and stage['p99_block_ns'] != 0:
+            raise ValueError(name + ': percentile did not include inactive zero blocks')
+    if sum(stage['sum_ns'] for stage in stages.values()) != total:
+        raise ValueError('stage sums do not equal full processing time')
+    for name in ('input_resampling', 'other', 'rade_' + result['direction']):
+        if stages[name]['calls'] != frames:
+            raise ValueError(name + ': must execute once per measured block')
+    if result['direction'] == 'tx':
+        if features or not output_samples:
+            raise ValueError('TX feature/output counters are inconsistent')
+        for name in ('tx_speech_processing', 'output_resampling'):
+            if stages[name]['calls'] != frames:
+                raise ValueError(name + ': TX region did not cover every measured block')
+        unused = ('rade_rx', 'rx_speech_processing')
+    else:
+        if stages['rx_speech_processing']['calls'] != features:
+            raise ValueError('RX speech region count differs from feature blocks')
+        output_calls = stages['output_resampling']['calls']
+        if output_calls > features or bool(output_calls) != bool(output_samples):
+            raise ValueError('RX output region count differs from feature/output counters')
+        unused = ('rade_tx', 'tx_speech_processing')
+    if any(any(stages[name].values()) for name in unused):
+        raise ValueError('inactive direction has nonzero stage statistics')
+    return {'stage_schema_version': 1, 'accounting_checked': True,
+            'measured_frames': frames, 'total_processing_ns': total}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--work', type=Path, required=True)
@@ -222,8 +320,14 @@ def main():
             raise ValueError('missing output or receive synchronization')
         if workload == 'interrupt' and (result['interrupted_input_samples'] != 16000 or result['sync_blocks_after_first_interrupt'] <= 0):
             raise ValueError('interrupted RX did not demonstrate reacquisition')
-        bench_results.append({'mode': mode, 'direction': direction, 'fixture': fixture, 'workload': workload, 'passed': True})
+        checked = {'mode': mode, 'direction': direction, 'fixture': fixture, 'workload': workload, 'passed': True}
+        if mode == 'RADE-V1':
+            checked['stage_timing'] = validate_rade_stage_timing(result)
+        bench_results.append(checked)
 
+    stage_workloads_checked = sum('stage_timing' in item for item in bench_results)
+    if stage_workloads_checked != 4:
+        raise ValueError('all four RADE stage-accounting workloads must execute')
     summary = {'schema_version': 1, 'execution_environment': 'QEMU user-mode cortex-a7 with matching Buildroot SDK',
                'radio_hardware_tested': False, 'timing_qualifies_radio': False,
                'differential': differential,
@@ -235,9 +339,11 @@ def main():
                'minimum_retained_input_fraction': 0.95, 'source_speech_seconds': source_seconds,
                'feature_frames': feature_frames, 'feature_values_finite': True,
                'upstream_v1_reported_loss_rounded': reported_loss,
-               'upstream_v1_loss_threshold': 0.119, 'upstream_v1_loss_passed': True, 'benchmark_cases': bench_results}
+               'upstream_v1_loss_threshold': 0.119, 'upstream_v1_loss_passed': True, 'benchmark_cases': bench_results,
+               'rade_stage_timing_checked': True,
+               'rade_stage_timing_workloads_checked': stage_workloads_checked}
     (out / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
-    print('PASS: SDK differential, V1 text/speech/loss and seven codec workloads; no target performance qualification', flush=True)
+    print('PASS: SDK differential, V1 text/speech/loss, seven codec workloads and four RADE stage-accounting checks; no target performance qualification', flush=True)
 
 
 if __name__ == '__main__':
