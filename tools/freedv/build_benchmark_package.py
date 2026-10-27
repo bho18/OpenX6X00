@@ -47,11 +47,16 @@ def main():
             p.error('matching baseline buildroot-commit.txt is required')
         sdk = a.sdk.resolve()
         tc = sdk / 'share/buildroot/toolchainfile.cmake'
-        compilers = list((sdk / 'bin').glob('arm*-gcc'))
-        if not tc.is_file() or len(compilers) != 1:
-            p.error('expected relocated ARM Buildroot SDK with one arm*-gcc and CMake toolchain')
+        compilers = sorted((sdk / 'bin').glob('arm*-gcc'), key=lambda path: ('buildroot' not in path.name, path.name))
+        if not tc.is_file() or not compilers:
+            p.error(f'expected relocated ARM Buildroot SDK: toolchain={tc.is_file()}, compilers={[p.name for p in compilers]}')
         compiler = compilers[0]
         triplet = subprocess.check_output([str(compiler), '-dumpmachine'], text=True).strip()
+        if not triplet.startswith('arm') or 'buildroot' not in triplet:
+            p.error('compiler does not identify as an ARM Buildroot toolchain')
+        for alias in compilers[1:]:
+            if subprocess.check_output([str(alias), '-dumpmachine'], text=True).strip() != triplet:
+                p.error('SDK compiler aliases disagree on target')
         readelf = sdk / 'bin' / (triplet + '-readelf')
         sysroot = Path(subprocess.check_output([str(compiler), '-print-sysroot'], text=True).strip())
         cross = ['-DCMAKE_TOOLCHAIN_FILE=' + str(tc), '-DCMAKE_C_COMPILER_TARGET=' + triplet]
