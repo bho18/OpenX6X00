@@ -61,6 +61,7 @@ def main():
     parser.add_argument('--benchmark', required=True, type=Path, help='prebuilt matching in-memory benchmark')
     parser.add_argument('--fixture', required=True, type=Path, help='raw PCM fixture; not copied into the result')
     parser.add_argument('--direction', required=True, choices=('tx', 'rx'))
+    parser.add_argument('--execution', choices=('serial', 'parallel'), help='optional experimental RADE RX pipeline execution')
     parser.add_argument('--seconds', required=True, type=int, choices=range(1, 1801), metavar='1..1800')
     parser.add_argument('--pacing', required=True, choices=('paced', 'unpaced'))
     parser.add_argument('--warmup', type=int, choices=range(61), default=5, metavar='0..60')
@@ -73,6 +74,8 @@ def main():
         parser.error('sample interval must be 1..60 seconds')
     if args.workload == 'interrupt' and (args.mode != 'RADE-V1' or args.direction != 'rx'):
         parser.error('interrupt is only available for the RADE V1 RX prototype')
+    if args.execution and (args.mode != 'RADE-V1' or args.direction != 'rx'):
+        parser.error('--execution is only available for the experimental RADE V1 RX pipeline')
     exe, fixture = (p.resolve(strict=True) for p in (args.benchmark, args.fixture))
     models = [p.resolve(strict=True) for p in args.model]
     for path in (exe, fixture, *models, SOURCES):
@@ -85,7 +88,7 @@ def main():
         output.mkdir(parents=True, exist_ok=False)
     except FileExistsError:
         parser.error('output directory already exists; choose a new one')
-    common = [str(exe), args.direction, str(fixture), str(args.seconds), args.pacing]
+    common = [str(exe), args.execution or args.direction, str(fixture), str(args.seconds), args.pacing]
     command = common + (['resample', str(args.warmup)] if args.mode == '700E'
                         else [str(args.warmup), args.workload])
     metadata = {
@@ -102,6 +105,11 @@ def main():
         'hardware_routing_tested': False, 'controlled_rf_interoperability_tested': False,
         'recordings_included': False, 'automatic_upload': False,
     }
+    if args.execution:
+        metadata.update(experiment='rade-rx-two-worker', execution=args.execution,
+                        experimental_queue_counters_available=True,
+                        hardware_audio_underrun_counters_available=False,
+                        original_70_percent_assessment='unchanged_serial_reference_required')
     (output / 'manifest.json').write_text(json.dumps(metadata, indent=2) + '\n')
     started_utc = utc_now()
     start = time.monotonic()
@@ -132,17 +140,23 @@ def main():
     (output / 'events.json').write_text(json.dumps(events, indent=2) + '\n')
     if interrupted is not None:
         raise interrupted
-    if proc.returncode:
+    if proc.returncode and not args.execution:
         raise SystemExit(f'benchmark failed with exit code {proc.returncode}; see {output}/benchmark.stderr')
     try:
         result = json.loads((output / 'benchmark.stdout').read_text())
     except (ValueError, OSError) as exc:
         raise SystemExit(f'invalid benchmark output in {output}: {exc}') from exc
-    if (result.get('mode'), result.get('direction'), result.get('pacing')) != (args.mode, args.direction, args.pacing):
+    if args.execution:
+        identity = (result.get('experiment'), result.get('execution'), result.get('pacing'), result.get('workload'))
+        if identity != ('rade-rx-two-worker', args.execution, args.pacing, args.workload):
+            raise SystemExit(f'pipeline output does not match requested execution/pacing/workload; see {output}')
+    elif (result.get('mode'), result.get('direction'), result.get('pacing')) != (args.mode, args.direction, args.pacing):
         raise SystemExit(f'benchmark output does not match requested mode/direction/pacing; see {output}')
     if result.get('radio_io') is not False or result.get('full_pipeline_qualified') is not False:
         raise SystemExit(f'benchmark did not identify itself as a non-qualified, no-radio prototype; see {output}')
     (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+    if proc.returncode:
+        raise SystemExit(f'pipeline benchmark failed with exit code {proc.returncode}; structured failure retained in {output}/result.json')
     print(f'Collected local benchmark evidence in {output}; this does not qualify radio performance.')
 
 
