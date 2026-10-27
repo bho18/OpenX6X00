@@ -22,7 +22,8 @@ jobs:
           path: x6200-control-reference
       - name: Compile and run prototype checks
         run: |
-          set -eu
+          set -Eeuo pipefail
+          trap 'echo "::error::Prototype check failed while running: $BASH_COMMAND"' ERR
           cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
             tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
           /tmp/freedv-state-test
