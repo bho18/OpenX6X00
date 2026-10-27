@@ -105,6 +105,13 @@ def main():
     text = cm.read_text().replace('set(CONFIGURE_COMMAND ./autogen.sh && ./configure ',
         'set(CONFIGURE_COMMAND ./autogen.sh && ./configure CC=${CMAKE_C_COMPILER} AR=${CMAKE_AR} RANLIB=${CMAKE_RANLIB} ')
     cm.write_text(text)
+    cm = src / 'rade_c/CMakeLists.txt'
+    cm.write_text(cm.read_text().replace('include(cmake/BuildOpus.cmake)', '''include(cmake/BuildOpus.cmake)
+# Imported Opus otherwise drops its optional SDK NE10 link dependency.
+find_library(FREEDV_NE10_LIBRARY NAMES NE10)
+if(FREEDV_NE10_LIBRARY)
+  set_property(TARGET opus APPEND PROPERTY INTERFACE_LINK_LIBRARIES "${FREEDV_NE10_LIBRARY}")
+endif()'''))
     # Prevent SDK compiler settings from leaking into Codec2's host code generator.
     cm = src / 'codec2/src/CMakeLists.txt'
     cm.write_text(cm.read_text().replace('BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/codec2_native',
@@ -120,6 +127,9 @@ def main():
     if sha(model) != PINS['opus']['model_sha256']:
         raise ValueError('Opus model checksum mismatch')
     manifest['opus_model_sha256'] = sha(model)
+    ne10 = re.search(r'^FREEDV_NE10_LIBRARY:FILEPATH=(.*)$', (work / 'rade_c/CMakeCache.txt').read_text(), re.M).group(1)
+    ne10 = None if ne10.endswith('-NOTFOUND') else Path(ne10)
+    manifest['sdk_ne10_library_sha256'] = sha(ne10) if ne10 else None
     # Host transmitters generate portable fixtures, even for a target SDK build.
     host = work
     if a.sdk:
@@ -140,7 +150,7 @@ def main():
     (fixtures / 'silence.raw').write_bytes(bytes(16000))
     for name, source, includes, libs in [
         ('codec2-frame-bench', 'codec2_frame_bench.c', [src / 'codec2/src'], ['-L' + str(work / 'codec2/src'), '-lcodec2']),
-        ('rade-frame-bench', 'rade_frame_bench.c', [src / 'rade_c/src', opus / 'dnn', opus / 'celt', opus / 'include', opus], ['-L' + str(work / 'rade_c/src'), '-lrade', str(opus / '.libs/libopus.a')])]:
+        ('rade-frame-bench', 'rade_frame_bench.c', [src / 'rade_c/src', opus / 'dnn', opus / 'celt', opus / 'include', opus], ['-L' + str(work / 'rade_c/src'), '-lrade', str(opus / '.libs/libopus.a')] + ([str(ne10)] if ne10 else []))]:
         run(compiler, '-O2', '-g', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-error=cpp',
             *['-I' + str(i) for i in includes], code / 'tools/freedv' / source,
             *libs, '-lsamplerate', '-lm', '-Wl,-rpath,$ORIGIN/../lib', '-o', package / 'bin' / name)
