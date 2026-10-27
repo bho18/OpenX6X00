@@ -2,8 +2,23 @@
 
 This is the planned evidence record, not a procedure for the current read-only
 diagnostic page. Do not perform these cases until guarded route experiments and
-the diagnostic image have been implemented and tested. No hardware observations
-have been collected yet; every entry below is INCONCLUSIVE.
+the diagnostic image have been implemented and tested. The operator has reported
+the starting firmware versions below. Routing, recovery and codec performance
+have not been measured; every qualification entry below is INCONCLUSIVE.
+
+## Reported starting configuration
+
+| Item | Operator report | Evidence status |
+| --- | --- | --- |
+| Radio | Xiegu X6200 | User-provided equipment description |
+| OpenX6X00 application | 0.3.6 | Operator report, 2026-10-26 |
+| Xiegu baseband | 1.0.7 | Operator report, 2026-10-26 |
+| Installed application commit / image hash | Unknown | Awaiting inventory and image provenance |
+
+These versions describe the current working card, not a newly built diagnostic
+image. They do not establish routing capability or compatibility of diagnostic
+experiments. Preserve the working card and record versions again after booting
+any spare-card test image.
 
 Record the radio and baseband versions, firmware and benchmark source hashes,
 SDK, audio endpoints and channel mapping, mixer settings, CPU configuration,
