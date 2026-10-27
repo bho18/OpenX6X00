@@ -15,6 +15,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Verify synthetic card image preservation and rejection paths
         run: python3 tools/freedv/test_prepare_test_image.py
+      - name: Verify inventory packaging with and without gzip
+        run: python3 tools/freedv/test_collect_inventory.py
   prototype:
     runs-on: ubuntu-22.04
     steps:

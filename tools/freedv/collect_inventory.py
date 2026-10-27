@@ -14,13 +14,24 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def archive_format():
+    # Some Buildroot Python installations omit gzip/zlib. Plain tar needs neither.
+    try:
+        import gzip
+    except ImportError:
+        return '.tar', 'x:'
+    return '.tar.gz', 'x:gz'
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', required=True, type=Path, help='new result directory on a writable data partition')
     a = p.parse_args()
     output = a.output.resolve()
-    archive = output.with_name(output.name + '.tar.gz')
-    if output.exists() or archive.exists():
+    suffix, archive_mode = archive_format()
+    archive = output.with_name(output.name + suffix)
+    archive_candidates = [output.with_name(output.name + ext) for ext in ('.tar.gz', '.tar')]
+    if output.exists() or any(path.exists() for path in archive_candidates):
         p.error('result directory/archive already exists; choose a new name')
     here = Path(__file__).resolve().parent
     package = here / 'PACKAGE.json'
@@ -52,7 +63,7 @@ def main():
         '- Any missing endpoint/mixer observations:\n\n'
         'No microphone, RF or routing experiment was performed by this inventory.\n')
     (output / 'SHA256SUMS').write_text(''.join(digest(f) + '  ' + f.name + '\n' for f in sorted(output.iterdir()) if f.is_file()))
-    with tarfile.open(archive, 'w:gz') as tar:
+    with tarfile.open(archive, archive_mode) as tar:
         tar.add(output, arcname=output.name)
     print('Inventory archive saved locally:', archive)
     print('Return the archive with application/baseband versions and operator observations. Nothing was uploaded.')
