@@ -113,3 +113,13 @@ operator's returned result bundle will retain that package's validation summary.
 No real-radio speed measurement exists for this candidate yet. Follow the
 [separate RAM benchmark procedure](acquisition-neon-radio-test.md) for the short
 comparison on the working radio.
+
+## Returned radio smoke comparison
+
+The [2026-10-27 radio comparison](rade-acquisition-radio-2026-10-27.md) records
+a 20.3% reduction in no-sync mean processing time, from 1.505031 to 1.199747
+times represented audio. Synchronized RX remains approximately 1.26, and all
+three RADE receive workloads still miss every measured deadline. All reported
+functional counters match the original. This is one matched short run; it does
+not qualify sustained operation or waveform equality. Follow-up stage timing
+will distinguish the remaining core decoder, FARGAN and resampling costs.
