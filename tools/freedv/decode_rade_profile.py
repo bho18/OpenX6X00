@@ -151,6 +151,9 @@ def decode(directory, capture_name='rade-rx-profile.data'):
         require(start >= feature_table_end, 'overlapping perf feature data')
         block(raw, start, size, f'perf feature {feature}')
     mappings = []
+    pending_samples = []
+    exec_times = collections.defaultdict(list)
+    timed_record_times = []
     samples = []
     records = collections.Counter()
     dso_periods, function_periods, address_periods = (collections.Counter() for _ in range(3))
@@ -169,34 +172,25 @@ def decode(directory, capture_name='rade-rx-profile.data'):
             pid, tid, start, length, pgoff, _major, _minor, _ino, _gen, prot, _mapflags = unpack('<IIQQQIIQQII', payload, 0, 'MMAP2 fixed fields')
             name = cstring(payload[64:-16], 0, 'MMAP2 filename')
             require(length > 0, 'empty MMAP2 range')
-            trailer_pid, trailer_tid, _time = unpack('<IIQ', payload, len(payload) - 16, 'MMAP2 sample_id')
+            trailer_pid, trailer_tid, time = unpack('<IIQ', payload, len(payload) - 16, 'MMAP2 sample_id')
             require((trailer_pid, trailer_tid) == (pid, tid), 'MMAP2 sample identity mismatch')
-            mappings.append(dict(pid=pid, tid=tid, start=start, length=length, pgoff=pgoff, name=name, prot=prot))
+            mappings.append(dict(pid=pid, tid=tid, start=start, length=length, pgoff=pgoff, name=name, prot=prot,
+                                 time=time, record_offset=offset))
+            timed_record_times.append(time)
         elif kind == 9:  # PERF_RECORD_SAMPLE
             require(size == 40 and misc & 7 == 2, 'unsupported non-userspace sample or sample layout')
             ip, pid, tid, time, period = unpack('<QIIQQ', payload, 0, 'sample')
             require(period > 0, 'sample period must be positive')
-            candidates = [m for m in mappings if m['pid'] == pid and m['start'] <= ip < m['start'] + m['length']]
-            require(candidates, 'sample has no preceding matching mapping: ' + hex(ip))
-            mapping = candidates[-1]
-            recorded_path = mapping['name']
-            file_offset = ip - mapping['start'] + mapping['pgoff']
-            symbol, virtual = '<library not provided>', None
-            if recorded_path in files:
-                segments, symbols = files[recorded_path]
-                matching_segments = [s for s in segments if s[0] == 1 and s[1] <= file_offset < s[1] + s[4]]
-                require(len(matching_segments) == 1, 'sample does not map to exactly one ELF LOAD segment')
-                segment = matching_segments[0]
-                virtual = file_offset - segment[1] + segment[2]
-                matching_symbols = [s for s in symbols if s[0] <= virtual < s[0] + s[1]]
-                symbol = min(matching_symbols, key=lambda s: s[1])[2] if matching_symbols else '<no function symbol>'
-                address_periods[(recorded_path, virtual)] += period
-                address_counts[(recorded_path, virtual)] += 1
-            dso_periods[recorded_path] += period
-            dso_counts[recorded_path] += 1
-            function_periods[(recorded_path, symbol)] += period
-            function_counts[(recorded_path, symbol)] += 1
-            samples.append(dict(time=time, period=period, path=recorded_path, virtual=virtual))
+            pending_samples.append(dict(ip=ip, pid=pid, tid=tid, time=time, period=period, record_offset=offset))
+            timed_record_times.append(time)
+        elif kind == 3 and misc & (1 << 13):  # PERF_RECORD_COMM with EXEC flag
+            require(len(payload) >= 32, 'truncated COMM_EXEC payload')
+            pid, tid = unpack('<II', payload, 0, 'COMM_EXEC identity')
+            cstring(payload[8:-16], 0, 'COMM_EXEC command')
+            trailer_pid, trailer_tid, time = unpack('<IIQ', payload, len(payload) - 16, 'COMM_EXEC sample_id')
+            require((trailer_pid, trailer_tid) == (pid, tid), 'COMM_EXEC sample identity mismatch')
+            exec_times[pid].append(time)
+            timed_record_times.append(time)
         elif kind == 2:  # PERF_RECORD_LOST
             require(len(payload) == 32, 'unsupported LOST layout')
             _event_id, lost = unpack('<QQ', payload, 0, 'LOST fields')
@@ -207,8 +201,43 @@ def decode(directory, capture_name='rade-rx-profile.data'):
         elif kind not in (3, 4, 68, 69, 73, 74, 78, 82):
             raise DecodeError('unsupported perf record type: ' + str(kind))
         offset += size
-    require(offset == data_end and samples, 'profile must contain complete sample records')
+    require(offset == data_end and pending_samples, 'profile must contain complete sample records')
     require(any(m['name'] in RUNTIME_PATHS for m in mappings), 'expected runtime binary paths were not captured')
+    # perf drains per-CPU ring buffers independently. Physical file order is not
+    # global event order: mappings written later can describe earlier samples.
+    # Use the recorded timestamps, never a guessed base address or future map.
+    mappings.sort(key=lambda m: (m['time'], m['record_offset']))
+    pending_samples.sort(key=lambda sample: (sample['time'], sample['record_offset']))
+    for sample in pending_samples:
+        ip, pid, tid, time, period = (sample[key] for key in ('ip', 'pid', 'tid', 'time', 'period'))
+        require(time not in exec_times[pid], 'ambiguous sample/exec timestamp tie')
+        preceding_exec = max((when for when in exec_times[pid] if when < time), default=0)
+        candidates = [m for m in mappings if m['pid'] == pid and m['time'] >= preceding_exec
+                      and m['time'] <= time and m['start'] <= ip < m['start'] + m['length']]
+        require(candidates, 'sample has no earlier matching mapping: ' + hex(ip))
+        require(candidates[-1]['time'] < time, 'ambiguous sample/mapping timestamp tie')
+        latest = [m for m in candidates if m['time'] == candidates[-1]['time']]
+        identities = {(m['name'], ip - m['start'] + m['pgoff']) for m in latest}
+        require(len(identities) == 1, 'ambiguous simultaneous mappings for sample: ' + hex(ip))
+        mapping = latest[-1]
+        recorded_path = mapping['name']
+        file_offset = ip - mapping['start'] + mapping['pgoff']
+        symbol, virtual = '<library not provided>', None
+        if recorded_path in files:
+            segments, symbols = files[recorded_path]
+            matching_segments = [s for s in segments if s[0] == 1 and s[1] <= file_offset < s[1] + s[4]]
+            require(len(matching_segments) == 1, 'sample does not map to exactly one ELF LOAD segment')
+            segment = matching_segments[0]
+            virtual = file_offset - segment[1] + segment[2]
+            matching_symbols = [s for s in symbols if s[0] <= virtual < s[0] + s[1]]
+            symbol = min(matching_symbols, key=lambda s: s[1])[2] if matching_symbols else '<no function symbol>'
+            address_periods[(recorded_path, virtual)] += period
+            address_counts[(recorded_path, virtual)] += 1
+        dso_periods[recorded_path] += period
+        dso_counts[recorded_path] += 1
+        function_periods[(recorded_path, symbol)] += period
+        function_counts[(recorded_path, symbol)] += 1
+        samples.append(dict(time=time, period=period, path=recorded_path, virtual=virtual))
     period_sum = sum(s['period'] for s in samples)
 
     def rows(periods, counts):
@@ -222,6 +251,8 @@ def decode(directory, capture_name='rade-rx-profile.data'):
         event=dict(type=event_type, config=config, frequency=frequency, sample_type=sample_type,
                    exclude_kernel=True, exclude_user=False, sample_id_all=True),
         record_counts=records, feature_bits=feature_bits, build_id_feature_present=2 in feature_bits,
+        timestamp_ordered_mapping_resolution=True,
+        file_record_times_out_of_order=any(b < a for a, b in zip(timed_record_times, timed_record_times[1:])),
         first_sample_time=min(s['time'] for s in samples), last_sample_time=max(s['time'] for s in samples),
         sample_span_seconds=(max(s['time'] for s in samples) - min(s['time'] for s in samples)) / 1e9,
         verified_sha256={name:entry[1] for name,entry in checked.items()}, mappings=mappings,
@@ -235,6 +266,7 @@ def decode(directory, capture_name='rade-rx-profile.data'):
             'Package checksums are checked for supplied files; they are not an authenticated signature.',
             'Recorded build IDs are not matched by this helper; exact path and returned package checksums support identity.',
             'Symbols use exact recorded runtime paths and their supplied ELF LOAD offsets; system-library files were not supplied.',
+            'Mappings are selected by their recorded timestamp and process exec epoch; ambiguous timestamp ties fail.',
             'Self samples only; no callchain or inclusive per-function timing.',
             'The whole command includes startup, warm-up, processing and teardown; no steady-state partitioning.',
             'Limited-format independent decoder, not upstream perf or a general-purpose parser.'])

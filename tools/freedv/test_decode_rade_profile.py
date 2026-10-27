@@ -44,6 +44,32 @@ def synthetic_capture(path='/tmp/freedv-benchmark/lib/librade.so.0.1'):
     return data + records
 
 
+def rewrite_records(*records):
+    header = synthetic_capture()[:256]
+    payload = b''.join(records)
+    struct.pack_into('<Q', header, 48, len(payload))
+    return header + payload
+
+
+def mmap_record(path='/tmp/freedv-benchmark/lib/librade.so.0.1', time=1):
+    data = synthetic_capture(path)
+    size = struct.unpack_from('<H', data, 262)[0]
+    record = data[256:256 + size]
+    struct.pack_into('<Q', record, len(record) - 8, time)
+    return record
+
+
+def sample_record(time=10):
+    record = synthetic_capture()[-40:]
+    struct.pack_into('<Q', record, 24, time)
+    return record
+
+
+def exec_record(time=15):
+    payload = struct.pack('<II', 123, 123) + b'worker\0\0' + struct.pack('<IIQ', 123, 123, time)
+    return struct.pack('<IHH', 3, 1 << 13, len(payload) + 8) + payload
+
+
 class DecoderTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -68,6 +94,47 @@ class DecoderTests(unittest.TestCase):
         self.assertEqual(result['function_totals'][0]['percent'], 100)
         self.assertEqual(result['lost_samples'], 0)
         self.assertIsNone(result['original_binary_hotspot'])
+
+    def test_metadata_written_after_samples_uses_event_time(self):
+        (self.directory / 'rade-rx-profile.data').write_bytes(rewrite_records(sample_record(), mmap_record()))
+        result = decoder.decode(self.directory)
+        self.assertEqual(result['samples'], 1)
+        self.assertEqual(result['function_totals'][0]['key'], ('/tmp/freedv-benchmark/lib/librade.so.0.1', 'foo'))
+        self.assertTrue(result['file_record_times_out_of_order'])
+        self.assertTrue(result['timestamp_ordered_mapping_resolution'])
+
+    def test_remapping_follows_timestamp_not_file_order(self):
+        (self.directory / 'rade-rx-profile.data').write_bytes(rewrite_records(
+            mmap_record('/tmp/freedv-benchmark/bin/rade-frame-bench', time=20), sample_record(time=30),
+            mmap_record(time=1), sample_record(time=10)))
+        result = decoder.decode(self.directory)
+        self.assertEqual(result['samples'], 2)
+        counts = {row['key']: row['samples'] for row in result['function_totals']}
+        self.assertEqual(counts, {
+            ('/tmp/freedv-benchmark/lib/librade.so.0.1', 'foo'): 1,
+            ('/tmp/freedv-benchmark/bin/rade-frame-bench', 'foo'): 1})
+
+    def test_future_mapping_is_not_used(self):
+        (self.directory / 'rade-rx-profile.data').write_bytes(rewrite_records(mmap_record(time=20), sample_record(time=10)))
+        with self.assertRaisesRegex(decoder.DecodeError, 'no earlier matching mapping'):
+            decoder.decode(self.directory)
+
+    def test_pre_exec_mapping_is_not_reused(self):
+        (self.directory / 'rade-rx-profile.data').write_bytes(rewrite_records(sample_record(time=20), mmap_record(), exec_record()))
+        with self.assertRaisesRegex(decoder.DecodeError, 'no earlier matching mapping'):
+            decoder.decode(self.directory)
+
+    def test_ambiguous_timestamps_are_rejected(self):
+        variants = [
+            (mmap_record(time=10), sample_record(time=10)),
+            (mmap_record(), mmap_record('/tmp/freedv-benchmark/bin/rade-frame-bench'), sample_record()),
+            (mmap_record(), exec_record(time=10), sample_record(time=10)),
+        ]
+        for records in variants:
+            with self.subTest(records=len(records)):
+                (self.directory / 'rade-rx-profile.data').write_bytes(rewrite_records(*records))
+                with self.assertRaisesRegex(decoder.DecodeError, 'ambiguous'):
+                    decoder.decode(self.directory)
 
     def test_truncated_header_record_and_elf(self):
         capture = synthetic_capture()

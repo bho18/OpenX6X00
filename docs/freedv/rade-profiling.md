@@ -101,6 +101,12 @@ System-library functions remain unresolved unless their files are separately
 provided to another suitable analysis tool. Use `--capture-name NAME.data` for
 a differently named capture using the same documented recording command.
 
+Mappings are resolved by their recorded timestamps and process exec epoch,
+because perf's per-CPU buffers can put earlier mapping events later in the file.
+Future mappings and ambiguous timestamp ties cause failure rather than guessed
+symbol assignments. This ordering was verified against both returned radio
+captures and synthetic remapping/exec cases.
+
 After reviewing that report, repeat with `fixtures/rade-modem.raw` and a new
 profile filename to examine synchronization, decoding and FARGAN. Do not assume
 the no-sync bottleneck also dominates synchronized reception.

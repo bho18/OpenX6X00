@@ -138,8 +138,8 @@ installed-feature report. Offline symbol resolution has removed that blocker.
 
 Target acquisition cost is now established independently of the earlier host
 profile. The subsequent [signal-input profile](rade-signal-profile-2026-10-27.md)
-shows hot addresses in already-vectorized neural kernels; complete counts and
-stage attribution remain pending. Any optimization must retain the complete
+attributes 64.56% of samples to shared, already-vectorized neural matrix kernels;
+separating RADE decoding from FARGAN stage cost remains pending. Any optimization must retain the complete
 acquisition search, thresholds and model and pass correctness tests before
 target timing is compared. Native audio routing, PTT behavior and overall
 hardware feasibility remain unqualified.
