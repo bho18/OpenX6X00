@@ -31,3 +31,9 @@ carry the following notice:
 
 This notice does not replace the notices for RADE, Opus, its model assets,
 libsamplerate or other dependencies when distributing binaries.
+
+The frozen RADE V1 receive fixture in `tools/freedv/fixtures/` was generated
+from the pinned RADE C project's `input_sample.wav` using `rade_tx_wav.c`.
+The fixture's README and provenance JSON identify the input, generator and
+model versions; `rade_c-LICENSE` preserves the repository's BSD 2-Clause notice.
+The fixture is distributed in benchmark packages as `fixtures/rade-modem.raw`.

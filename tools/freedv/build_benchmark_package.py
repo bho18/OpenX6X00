@@ -29,6 +29,25 @@ def sha(path):
     return h.hexdigest()
 
 
+def copy_rade_modem_fixture(code, fixtures):
+    """Copy the frozen waveform only after its authoritative pin is verified."""
+    pin = PINS['rade_c']['modem_fixture']
+    source = code / pin['path']
+    payload = source.read_bytes()
+    if len(payload) != pin['bytes'] or hashlib.sha256(payload).hexdigest() != pin['sha256']:
+        raise ValueError('pinned RADE modem fixture checksum/size mismatch')
+    metadata = code / pin['metadata_path']
+    if json.loads(metadata.read_text())['fixture_revision'] != pin['revision']:
+        raise ValueError('pinned RADE modem fixture metadata revision mismatch')
+    (fixtures / 'rade-modem.raw').write_bytes(payload)
+    shutil.copy2(metadata, fixtures / 'rade-modem.json')
+    shutil.copy2(source.parent / 'README.md', fixtures / 'README.md')
+    shutil.copy2(source.parent / 'rade_c-LICENSE', fixtures / 'rade_c-LICENSE')
+    return {'pin': dict(pin), 'package_path': 'fixtures/rade-modem.raw',
+            'metadata_path': 'fixtures/rade-modem.json', 'metadata_sha256': sha(metadata),
+            'generation_in_this_build': False}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--work', required=True, type=Path, help='new build directory outside the checkout')
@@ -119,8 +138,8 @@ def main():
         run('git', '-C', src / 'rade_c', 'apply', '--check', patch)
         run('git', '-C', src / 'rade_c', 'apply', patch)
         acq_cmake = src / 'rade_c/src/CMakeLists.txt'
-        # Source-local options keep Opus, the rest of RADE and host fixture
-        # generation on their existing build configuration.
+        # Source-local options keep Opus and the rest of RADE on their
+        # existing build configuration.
         acq_cmake.write_text(acq_cmake.read_text() + '''
 option(RADE_ACQ_NEON "Experimental four-time-lane ARM acquisition" OFF)
 if(RADE_ACQ_NEON)
@@ -198,19 +217,20 @@ endif()'''))
     ne10 = re.search(r'^FREEDV_NE10_LIBRARY:FILEPATH=(.*)$', (work / 'rade_c/CMakeCache.txt').read_text(), re.M).group(1)
     ne10 = None if ne10.endswith('-NOTFOUND') else Path(ne10)
     manifest['sdk_ne10_library_sha256'] = sha(ne10) if ne10 else None
-    # Host transmitters generate portable fixtures, even for a target SDK build.
+    # The 700E fixture retains its host generator. RADE RX uses frozen bytes
+    # because host Opus CPU dispatch can change the generated waveform.
     host = work
     if a.sdk:
         host = work / 'host'
-        for name, target in [('codec2', 'freedv_tx'), ('rade_c', 'rade_tx_wav')]:
+        for name, target in [('codec2', 'freedv_tx')]:
             run('cmake', '-S', src / name, '-B', host / name, '-DCMAKE_BUILD_TYPE=Release',
                 '-DUNITTEST=OFF', '-DLPCNET=OFF', '-DOPUS_URL=' + opus_zip.as_uri())
             run('cmake', '--build', host / name, '--target', target, '-j', a.jobs)
     fixtures = package / 'fixtures'
     shutil.copy2(src / 'codec2/raw/ve9qrp_10s.raw', fixtures / '700e-speech.raw')
     run(host / 'codec2/src/freedv_tx', '700E', fixtures / '700e-speech.raw', fixtures / '700e-modem.raw')
-    run(host / 'rade_c/src/rade_tx_wav', src / 'rade_c/input_sample.wav', work / 'rade-modem.wav')
-    for label, path, rate in [('rade-speech', src / 'rade_c/input_sample.wav', 16000), ('rade-modem', work / 'rade-modem.wav', 8000)]:
+    manifest['rade_modem_fixture'] = copy_rade_modem_fixture(code, fixtures)
+    for label, path, rate in [('rade-speech', src / 'rade_c/input_sample.wav', 16000)]:
         with wave.open(str(path), 'rb') as f:
             if (f.getnchannels(), f.getsampwidth(), f.getframerate()) != (1, 2, rate):
                 raise ValueError('unexpected fixture WAV format')

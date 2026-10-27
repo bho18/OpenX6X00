@@ -45,7 +45,17 @@
   "rade_c": {
     "repository": "https://github.com/freedv/rade_c",
     "commit": "c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9",
-    "speech_fixture_sha256": "a53d3cc835a5668c4687dba80314b82d8a96d9e0431e5de5072fa397fc8c4a79"
+    "speech_fixture_sha256": "a53d3cc835a5668c4687dba80314b82d8a96d9e0431e5de5072fa397fc8c4a79",
+    "modem_fixture": {
+      "revision": "rade-v1-host-reference-1",
+      "path": "tools/freedv/fixtures/rade-v1-reference-s16le.raw",
+      "metadata_path": "tools/freedv/fixtures/rade-v1-reference.json",
+      "sha256": "f4b0ce17951109d33abbf72f865bdec9e718044e869cde3ffdbdcf3191592d21",
+      "bytes": 159744,
+      "sample_format": "signed-16-bit-little-endian",
+      "sample_rate_hz": 8000,
+      "channels": 1
+    }
   },
   "radae_reference": {
     "repository": "https://github.com/drowe67/radae",
