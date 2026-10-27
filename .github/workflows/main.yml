@@ -70,9 +70,24 @@ jobs:
           "$relocation"
           dirname "$relocation" > sdk-path.txt
       - name: Install build prerequisites
+        timeout-minutes: 18
         run: |
-          sudo apt-get update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev python3 python3-venv qemu-user
+          set -eu
+          run_prerequisite() {
+            "$@" > "$RUNNER_TEMP/freedv-prerequisites.log" 2>&1 || {
+              status=$?
+              tail -60 "$RUNNER_TEMP/freedv-prerequisites.log"
+              python3 -c 'import os,pathlib; text=pathlib.Path(os.environ["RUNNER_TEMP"],"freedv-prerequisites.log").read_text(errors="replace")[-2500:]; print("::error title=SDK build prerequisite failed::"+text.replace("%","%25").replace("\r","%0D").replace("\n","%0A"))'
+              exit "$status"
+            }
+          }
+          run_prerequisite timeout --kill-after=10s 4m sudo apt-get \
+            -o Acquire::Retries=1 -o Acquire::ForceIPv4=true \
+            -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          run_prerequisite timeout --kill-after=10s 12m sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=1 -o Acquire::ForceIPv4=true \
+            -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
+            -o Dpkg::Use-Pty=0 install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev python3 python3-venv qemu-user
       - name: Install upstream loss-check dependencies
         if: ${{ inputs.rade_acq_neon }}
         run: |
