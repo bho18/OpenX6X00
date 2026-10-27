@@ -3,7 +3,7 @@ name: FreeDV feasibility checks
 on:
   pull_request:
   push:
-    branches: [feature/freedv-x6200, experiment/freedv-integration]
+    branches: [feature/freedv-x6200, experiment/freedv-integration, experiment/x6200-parallel-acquisition]
 
 permissions:
   contents: read
