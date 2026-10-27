@@ -6,6 +6,11 @@ on:
         description: Successful or running pinned baseline image/SDK workflow run ID
         required: true
         type: string
+      rade_acq_neon:
+        description: Build experimental acquisition candidate with mandatory SDK correctness gates
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
   actions: read
@@ -15,6 +20,13 @@ jobs:
     timeout-minutes: 210
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check out pinned V1 loss reference
+        if: ${{ inputs.rade_acq_neon }}
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: drowe67/radae
+          ref: 89220e28fcc25138c0e038849e653dba30ec2dd6
+          path: radae-reference
       - name: Wait for and verify baseline SDK artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,13 +64,32 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev python3
-      - name: Build pinned benchmarks with matching SDK
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev python3 python3-venv qemu-user
+      - name: Install upstream loss-check dependencies
+        if: ${{ inputs.rade_acq_neon }}
         run: |
           set -eu
+          python3 -m venv "$RUNNER_TEMP/rade-validation-venv"
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install numpy==2.1.3 matplotlib==3.9.2
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip freeze > "$RUNNER_TEMP/rade-validation-requirements.txt"
+      - name: Build pinned benchmarks with matching SDK
+        env:
+          NEON_REQUEST: ${{ inputs.rade_acq_neon }}
+        run: |
+          set -eu
+          candidate_args=()
+          if [ "$NEON_REQUEST" = true ]; then
+            candidate_args=(--rade-acq-neon --radae-reference "$GITHUB_WORKSPACE/radae-reference" --validation-python "$RUNNER_TEMP/rade-validation-venv/bin/python")
+          fi
           python3 tools/freedv/build_benchmark_package.py --work "$RUNNER_TEMP/freedv-package" \
-            --sdk "$(cat sdk-path.txt)" --sdk-manifest baseline/buildroot-commit.txt --jobs 2 \
-            > "$RUNNER_TEMP/freedv-package-build.log" 2>&1 || { tail -80 "$RUNNER_TEMP/freedv-package-build.log"; exit 1; }
+            --sdk "$(cat sdk-path.txt)" --sdk-manifest baseline/buildroot-commit.txt --jobs 2 "${candidate_args[@]}" \
+            > "$RUNNER_TEMP/freedv-package-build.log" 2>&1 || {
+              status=$?
+              tail -80 "$RUNNER_TEMP/freedv-package-build.log"
+              python3 -c 'import os,pathlib; text=pathlib.Path(os.environ["RUNNER_TEMP"],"freedv-package-build.log").read_text(errors="replace")[-3500:]; print("::error title=SDK acquisition build failed::"+text.replace("%","%25").replace("\r","%0D").replace("\n","%0A"))'
+              exit "$status"
+            }
           cp baseline-run.json "$RUNNER_TEMP/freedv-package/"
           cd "$RUNNER_TEMP/freedv-package"
           sha256sum freedv-benchmark-package.tar.gz freedv-benchmark-sources.tar.gz > ARCHIVE-SHA256SUMS
@@ -66,12 +97,14 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: x6200-freedv-benchmark-package
+          name: ${{ inputs.rade_acq_neon && 'x6200-freedv-acquisition-neon-package' || 'x6200-freedv-benchmark-package' }}
           path: |
             ${{ runner.temp }}/freedv-package/freedv-benchmark-package.tar.gz
             ${{ runner.temp }}/freedv-package/freedv-benchmark-sources.tar.gz
             ${{ runner.temp }}/freedv-package/ARCHIVE-SHA256SUMS
             ${{ runner.temp }}/freedv-package/baseline-run.json
             ${{ runner.temp }}/freedv-package-build.log
+            ${{ runner.temp }}/freedv-package/sdk-validation/
+            ${{ runner.temp }}/rade-validation-requirements.txt
           if-no-files-found: error
           retention-days: 14
