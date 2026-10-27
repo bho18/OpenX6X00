@@ -3,8 +3,9 @@
 This is the planned evidence record, not a procedure for the current read-only
 diagnostic page. Do not perform these cases until guarded route experiments and
 the diagnostic image have been implemented and tested. The operator has reported
-the starting firmware versions below. Routing, recovery and codec performance
-have not been measured; every qualification entry below is INCONCLUSIVE.
+the starting firmware versions below. Initial on-radio codec smoke measurements
+are now recorded separately; routing, recovery and full 30-minute performance
+qualification remain INCONCLUSIVE.
 
 ## Reported starting configuration
 
@@ -90,6 +91,15 @@ observed TX is false. Use the service stop/start mechanism for controlled
 recovery; the supervisor restarts an individually killed GUI process.
 
 ## Codec workloads
+
+The [first on-radio smoke report](codec-smoke-2026-10-26.md) records seven
+executed workloads. 700E stayed within the short timing limits. This RADE build
+exceeded the proposed p99 headroom target on TX and failed real-time deadlines
+on all RX workloads. Those are measured failures of this build's short timing
+check; the full qualification entries below remain INCONCLUSIVE. Do not start
+30-minute runs of this unchanged RADE build or silently change the product scope
+to legacy-only FreeDV. Review build configuration and stage costs before a
+separately identified rebuild and repeat smoke test.
 
 | Mode | TX | Synchronized RX | Acquisition/no-sync RX |
 | --- | --- | --- | --- |
