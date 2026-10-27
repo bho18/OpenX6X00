@@ -109,7 +109,27 @@ actual version/image stamp and remain preliminary until the full sustained-load
 gates are measured. Do not replace system libraries or flash the older v0.3.5
 test images to resolve a runtime mismatch.
 
+The subsequent partition/mount listing confirms `/dev/mmcblk0p3` exists, with
+61809664 KiB (approximately 59 GiB), on a card with 62367744 KiB. No DATA partition
+is mounted anywhere in the returned `/proc/mounts`. The third partition's `blkid`
+output contains a PARTUUID but no filesystem TYPE or LABEL, and
+`/tmp/data_fsck.log` does not exist. These observations do not establish that the
+partition is blank, identify damage or justify formatting it. Upstream's startup
+code deliberately skips an existing third partition not recognized as FAT32;
+that is consistent with these observations but does not prove which code ran
+on this radio. No repair, mount, format or card rewrite was requested.
+
 The next executable test is a short, in-memory 700E/RADE benchmark with no audio
-device or radio-control access, subject to that runtime compatibility check.
-Keep the normal GUI/waterfall active in receive. The 30-minute workloads follow
-only after successful short runs and review of timing/resource results.
+device or radio-control access. The [RAM smoke-test procedure](ram-smoke-test.md)
+uses the existing SDK package on this working installation: `/tmp` is mounted
+as writable tmpfs without `noexec` in the returned mount listing. Check free
+tmpfs space and executable dependency resolution first, record this as a
+different runtime from the pinned test image, and retain the package's source
+and model identities. RAM storage consumes memory; the suite's fresh inventory
+and resource samples must reflect that setup. Copy the results before shutdown.
+
+Keep the normal GUI/waterfall active in receive. This compatibility/execution
+smoke test and preliminary timing do not qualify sustained performance. The
+30-minute qualification workloads remain pending until the storage/runtime setup
+and the short results are reviewed. Filesystem investigation is a separate open
+item; it need not prevent this non-persistent test.
