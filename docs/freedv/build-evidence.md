@@ -47,3 +47,17 @@ The offline image tool's synthetic ext4 test passed locally and in GitHub,
 including boot-region/source preservation, retained settings sentinel, verified
 file replacement and checksum/overwrite rejection. It does not demonstrate
 that the resulting X6200 image boots.
+
+## SDK benchmark execution
+
+Run 40431458405 produced `x6200-freedv-benchmark-package` using the matching SDK:
+https://github.com/bho18/OpenX6X00/actions/runs/40431458405/artifacts/12701848926
+The subsequent GUI-image configuration in that run failed because LVGL was not
+checked out; it did not invalidate the separately produced benchmark artifact.
+
+Run 40432198181 fetched the pinned GUI submodule and passed all four SDK benchmark
+execution checks under QEMU user-mode Cortex-A7: 700E TX/RX and RADE V1 TX/RX, with
+positive RX synchronization and output counters. This verifies ARM execution
+under emulation. Its timing is not evidence of X6200 real-time performance. The
+paired baseline/read-only diagnostic image builds were still in progress at this
+record update; their boot and audio behavior require operator measurements.
