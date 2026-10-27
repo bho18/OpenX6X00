@@ -11,17 +11,19 @@ have not been measured; every qualification entry below is INCONCLUSIVE.
 | Item | Operator report | Evidence status |
 | --- | --- | --- |
 | Radio | Xiegu X6200 | User-provided equipment description |
-| OpenX6X00 application | 0.3.6 | Operator report, 2026-10-26 |
+| OpenX6X00 application | 0.3.6 | Operator report and returned inventory, 2026-10-26 |
 | Xiegu baseband | 1.0.7 | Operator report, 2026-10-26 |
-| Installed application commit / image hash | Unknown | Awaiting inventory and image provenance |
+| Installed application commit / image hash | Unknown | Inventory confirms version, not exact source/image provenance |
 
 The operator subsequently confirmed application 0.3.6 and reported syncing the
 fork with upstream. GitHub `bho18/OpenX6X00:main` was observed at
 `e4f0dc7b08f7e95fd53495baeb55d35c19857cf1`, whose application VERSION is v0.3.6.
 This identifies the fork source; it does not identify the installed radio's
-exact commit or image hash. SSH setup is pending with the operator. Collect the
-first read-only inventory on the working v0.3.6 installation before asking for a
-spare-card firmware change.
+exact commit or image hash. SSH is now working and the operator returned the
+first read-only inventory from the working v0.3.6 installation. The
+[inventory review](hardware-inventory-2026-10-26.md) records the observed endpoints,
+resources, provenance and remaining evidence gaps. No spare-card firmware change
+has been requested for this test.
 
 These versions describe the current working card, not a newly built diagnostic
 image. They do not establish routing capability or compatibility of diagnostic
