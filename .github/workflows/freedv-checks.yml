@@ -238,14 +238,34 @@ jobs:
           set -Eeuo pipefail
           trap 'echo "::error::Host check failed while running: $BASH_COMMAND"; tail -40 "$RUNNER_TEMP/freedv-gui.log" || true' ERR
           export SDL_VIDEODRIVER=dummy
+          export SDL_NO_SIGNAL_HANDLERS=1
+          python3 tools/freedv/test_stop_host_process.py
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/freedv-runtime"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
           gui_pid=
           pulse_pid=
+          stop_process() {
+            local process_pid=$1 status=0
+            # Success proves exit via pidfd before the shell reaps its child.
+            # Explicitly return on failure even when called inside an if/trap.
+            if ! python3 tools/freedv/stop_host_process.py "$process_pid"; then return 1; fi
+            wait "$process_pid" || status=$?
+            case "$status" in
+              0|137|143) return 0 ;;
+              *) echo "::error::Host child exited unexpectedly with status $status"; return "$status" ;;
+            esac
+          }
           cleanup() {
-            [ -z "$gui_pid" ] || kill "$gui_pid" 2>/dev/null || true
-            [ -z "$pulse_pid" ] || kill "$pulse_pid" 2>/dev/null || true
+            local status=$? stopped=0 process_pid
+            trap - EXIT
+            for process_pid in "$gui_pid" "$pulse_pid"; do
+              [ -n "$process_pid" ] || continue
+              stopped=0
+              stop_process "$process_pid" || stopped=$?
+              if [ "$status" -eq 0 ] && [ "$stopped" -ne 0 ]; then status=$stopped; fi
+            done
+            exit "$status"
           }
           trap cleanup EXIT
           pulseaudio --daemonize=no --exit-idle-time=-1 > "$RUNNER_TEMP/freedv-pulse.log" 2>&1 &
@@ -268,13 +288,17 @@ jobs:
             done
             test "$ready" = 1
           }
+          echo "::notice title=Host UI phase::Exercise diagnostics-disabled GUI"
           start_gui
           timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py
-          kill "$gui_pid"
-          wait "$gui_pid" || true
+          echo "::notice title=Host UI phase::Stop first GUI"
+          stop_process "$gui_pid"
           gui_pid=
-          cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          echo "::notice title=Host UI phase::Configure and build diagnostics-enabled GUI"
+          timeout --kill-after=10s 2m cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
           timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test freedv_packet_tx_test freedv_stub_snapshot_test freedv_watchdog_test freedv_wav_capture_test freedv_control_lease_test freedv_session_controller_test
-          ctest --test-dir build-host -R '^freedv_' --output-on-failure
+          echo "::notice title=Host UI phase::Run diagnostic CTests"
+          timeout --kill-after=10s 5m ctest --test-dir build-host -R '^freedv_' --timeout 60 --output-on-failure
+          echo "::notice title=Host UI phase::Exercise diagnostics-enabled GUI"
           start_gui
           timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py --snapshot
