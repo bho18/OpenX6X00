@@ -15,6 +15,8 @@ jobs:
     timeout-minutes: 210
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: true
       - name: Wait for and verify baseline SDK artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,7 +54,7 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev python3 e2fsprogs
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev python3 e2fsprogs qemu-user
       - name: Build pinned benchmarks with matching SDK
         run: |
           set -eu
@@ -62,9 +64,17 @@ jobs:
           cp baseline-run.json "$RUNNER_TEMP/freedv-package/"
           cd "$RUNNER_TEMP/freedv-package"
           sha256sum freedv-benchmark-package.tar.gz freedv-benchmark-sources.tar.gz > ARCHIVE-SHA256SUMS
+      - name: Check SDK ARM execution under emulation
+        run: |
+          set -eu
+          sdk_dir=$(cat sdk-path.txt)
+          compiler=$(find "$sdk_dir/bin" -maxdepth 1 -name 'arm*-gcc' | head -1)
+          python3 tools/freedv/qemu_smoke.py --package "$RUNNER_TEMP/freedv-package/package" \
+            --sysroot "$("$compiler" -print-sysroot)" --output "$RUNNER_TEMP/freedv-package/qemu-smoke"
       - name: Compile matching baseline and read-only diagnostic GUIs
         run: |
           set -eu
+          trap 'echo "::error::Test image step failed at: $BASH_COMMAND"' ERR
           sdk_dir=$(cat sdk-path.txt)
           revision=$(git rev-parse HEAD)
           mkdir "$RUNNER_TEMP/test-images"
@@ -110,5 +120,6 @@ jobs:
             ${{ runner.temp }}/freedv-package/ARCHIVE-SHA256SUMS
             ${{ runner.temp }}/freedv-package/baseline-run.json
             ${{ runner.temp }}/freedv-package-build.log
+            ${{ runner.temp }}/freedv-package/qemu-smoke/
           if-no-files-found: error
           retention-days: 14
