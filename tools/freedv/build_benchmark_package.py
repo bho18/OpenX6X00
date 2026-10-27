@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+import urllib.request
 import wave
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,6 +97,23 @@ def main():
     for name, fixture in [('codec2', 'raw/ve9qrp_10s.raw'), ('rade_c', 'input_sample.wav')]:
         if sha(src / name / fixture) != PINS[name]['speech_fixture_sha256']:
             raise ValueError('fixture hash mismatch: ' + name)
+    samplerate_tar = work / 'libsamplerate.tar.xz'
+    with urllib.request.urlopen('https://github.com/libsndfile/libsamplerate/releases/download/0.2.2/libsamplerate-0.2.2.tar.xz', timeout=60) as response, samplerate_tar.open('wb') as target:
+        shutil.copyfileobj(response, target)
+    if sha(samplerate_tar) != PINS['x6200_libsamplerate']['source_sha256']:
+        raise ValueError('libsamplerate source checksum mismatch')
+    with tarfile.open(samplerate_tar) as archive:
+        for member in archive.getmembers():
+            if Path(member.name).is_absolute() or '..' in Path(member.name).parts or member.issym() or member.islnk():
+                raise ValueError('unexpected libsamplerate archive path')
+        archive.extractall(src)
+    samplerate_source = src / 'libsamplerate-0.2.2'
+    shutil.copy2(samplerate_source / 'COPYING', package / 'licenses/libsamplerate-COPYING')
+    run('cmake', '-S', samplerate_source, '-B', work / 'samplerate', '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
+        '-DBUILD_SHARED_LIBS=OFF', '-DBUILD_TESTING=OFF', '-DLIBSAMPLERATE_EXAMPLES=OFF', *cross)
+    run('cmake', '--build', work / 'samplerate', '--target', 'samplerate', '-j', a.jobs)
+    samplerate_library = work / 'samplerate/src/libsamplerate.a'
+    manifest['libsamplerate_static_sha256'] = sha(samplerate_library)
     # Opus source is generated from the pinned Git object, not an unversioned download.
     opus_zip = work / 'opus.zip'
     run('git', '-C', src / 'opus', 'archive', '--format=zip', '--prefix=opus/', '-o', opus_zip, PINS['opus']['commit'])
@@ -154,9 +172,9 @@ endif()'''))
         ('rade-frame-bench', 'rade_frame_bench.c', [src / 'rade_c/src', opus / 'dnn', opus / 'celt', opus / 'include', opus], ['-L' + str(work / 'rade_c/src'), '-lrade', str(opus / '.libs/libopus.a')] + ([str(ne10)] if ne10 else []))]:
         run(compiler, '-O2', '-g', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-error=cpp',
             *(['-include', str(opus / 'config.h')] if name == 'rade-frame-bench' else []),
-            *['-I' + str(i) for i in includes], code / 'tools/freedv' / source,
-            *libs, '-lsamplerate', '-lm', '-Wl,-rpath,$ORIGIN/../lib', '-o', package / 'bin' / name)
-    # Bundle codec libraries. The baseline supplies libc, libm and libsamplerate.
+            *['-I' + str(i) for i in [*includes, samplerate_source / 'include']], code / 'tools/freedv' / source,
+            *libs, samplerate_library, '-lm', '-Wl,-rpath,$ORIGIN/../lib', '-o', package / 'bin' / name)
+    # Bundle codec libraries. The baseline supplies libc/libm; resampling is static.
     for name, pattern in [('codec2', 'libcodec2.so*'), ('rade_c', 'librade.so*')]:
         for lib in (work / name / 'src').glob(pattern):
             shutil.copy2(lib, package / 'lib' / lib.name)
@@ -171,6 +189,7 @@ endif()'''))
     with tarfile.open(source_archive, 'w:gz') as archive:
         for name in ('codec2', 'rade_c', 'opus'):
             archive.add(src / name, arcname=name, filter=lambda item: None if '/.git' in item.name else item)
+        archive.add(samplerate_source, arcname='libsamplerate-0.2.2')
         archive.add(code / 'tools/freedv', arcname='tools/freedv')
     manifest['corresponding_source_archive_sha256'] = sha(source_archive)
     (package / 'package-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

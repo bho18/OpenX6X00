@@ -11,6 +11,10 @@ copies only the GUI, benchmark package and an explicit build record. Source,
 compiler/model identities and checksums accompany the package. Host emulation and
 successful compilation do not establish that the card will boot or audio will work.
 
+The pinned milestone application source reports v0.3.5, while the operator's
+working card reports application 0.3.6 and baseband 1.0.7. This is an intentional
+source pin; compare and record both rather than assuming identical versions.
+
 Use the spare microSD card. Preserve the working card and back up settings using
 the firmware's supported backup procedure. Do not apply a baseband update for these
 tests. Verify downloaded image hashes against SHA256SUMS before writing the spare
