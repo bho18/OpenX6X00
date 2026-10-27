@@ -95,3 +95,21 @@ probe, nonfinite inputs, signed zero, magnitude boundaries, non-default rounding
 noise, pilots, ties, timing tails and near-threshold cases. These development
 binaries are not deployable substitutes for the matching Buildroot SDK. The SDK
 build repeats the checks and inspects the actual packaged library.
+
+## Matching SDK artifact
+
+[Run 40522638111](https://github.com/bho18/OpenX6X00/actions/runs/40522638111)
+completed successfully from experimental source commit
+`1df458d0280d0c78cc8fd117d28cd01532a495fd`, including the mandatory SDK validation
+step and artifact upload. It used the existing pinned baseline SDK. Artifact
+`12744035005`, `x6200-freedv-acquisition-neon-package`, contains runtime/source
+archives, checksums, build logs and validation outputs. GitHub reports artifact
+ZIP digest `93d4bde2c2e6ae3ab86d04349a8119d4917076a74e2ff73547c99dd33c8be8e1`.
+
+Run/job success was verified through GitHub metadata. Individual SDK loss values
+and archive bytes were not independently downloaded in the cloud environment;
+the build only creates its runtime archive after all enforced gates pass. The
+operator's returned result bundle will retain that package's validation summary.
+No real-radio speed measurement exists for this candidate yet. Follow the
+[separate RAM benchmark procedure](acquisition-neon-radio-test.md) for the short
+comparison on the working radio.
