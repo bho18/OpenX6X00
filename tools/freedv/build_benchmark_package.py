@@ -319,6 +319,8 @@ endif()'''))
         for name in ('run_acquisition_benchmarks.py', 'acquisition_evidence.py'):
             shutil.copy2(code / 'tools/freedv' / name, package / 'tools/freedv' / name)
         shutil.copy2(code / 'docs/freedv/rade-acquisition-parallel.md', package / 'ACQUISITION-PARALLEL.md')
+        guide = 'rade-acquisition-parallel-radio-test.md'
+        shutil.copy2(code / 'docs/freedv' / guide, package / guide)
     shutil.copy2(code / 'docs/freedv/benchmark-package.md', package / 'README.md')
     shutil.copy2(code / 'docs/freedv/rade-benchmark-stage-timing.md', package / 'STAGE-TIMING.md')
     manifest['elf_dependencies'] = {}
