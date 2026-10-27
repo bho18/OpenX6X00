@@ -58,3 +58,10 @@ Make, C/C++ compilers, autoconf, automake, libtool, pkg-config and libsamplerate
 headers/libraries. TLS and Opus model SHA256 verification remain enabled.
 Source, compiler and model identities are recorded; generated output stays
 outside Git. Debug information remains in package binaries.
+
+Instrumented RADE builds also report `stage_timing` and
+`fixture_preparation_ms`. Their package manifest includes
+`rade_benchmark_timing`, and `STAGE-TIMING.md` describes the measured regions,
+warm-up exclusion and instrumentation overhead. Stage sums partition the full
+processing total; stage percentiles must not be added together. The full
+pipeline timing gate still applies.

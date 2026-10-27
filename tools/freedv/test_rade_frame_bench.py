@@ -3,8 +3,10 @@
 import argparse
 import hashlib
 import json
+import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import wave
 
@@ -16,6 +18,8 @@ def main():
     parser.add_argument('--benchmark', required=True, type=Path)
     parser.add_argument('--tx', required=True, type=Path, help='pinned rade_tx_wav executable')
     parser.add_argument('--speech', required=True, type=Path, help='pinned 16 kHz input_sample.wav')
+    parser.add_argument('--stage-baseline', type=Path,
+                        help='pre-instrumentation benchmark built with the same flags and libraries')
     args = parser.parse_args()
     expected = json.loads((ROOT / 'tools/freedv/sources.json').read_text())['rade_c']['speech_fixture_sha256']
     if hashlib.sha256(args.speech.read_bytes()).hexdigest() != expected:
@@ -55,7 +59,16 @@ def main():
         assert no_sync['sync_blocks'] == 0 and no_sync['output_samples'] == 0
         assert interrupted['interrupted_input_samples'] == 16000 and interrupted['sync_blocks_after_first_interrupt'] > 0
         assert paced['deadline_misses'] >= 0 and paced['warmup_audio_seconds'] >= 1
-        print('PASS: RADE V1 TX, synchronized RX, no-sync RX, interruption and paced streaming prototype')
+        print('PASS: RADE V1 TX, synchronized RX, no-sync RX, interruption and paced streaming prototype', flush=True)
+        if args.stage_baseline:
+            # Reuse the verified speech and generated modem fixtures. These
+            # aliases match the benchmark package's public fixture names.
+            shutil.copyfile(tmp / 'speech.raw', tmp / 'rade-speech.raw')
+            shutil.copyfile(tmp / 'modem.raw', tmp / 'rade-modem.raw')
+            subprocess.run([sys.executable, str(ROOT / 'tools/freedv/test_stage_timing.py'),
+                            '--baseline', str(args.stage_baseline.resolve()),
+                            '--candidate', str(benchmark), '--fixtures', str(tmp),
+                            '--output', str(tmp / 'stage-results')], check=True)
 
 
 if __name__ == '__main__':
