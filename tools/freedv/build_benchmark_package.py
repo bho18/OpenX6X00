@@ -35,11 +35,18 @@ def main():
     p.add_argument('--sdk', type=Path, help='relocated matching Buildroot SDK directory')
     p.add_argument('--sdk-manifest', type=Path, help='baseline buildroot-commit.txt from the SDK build')
     p.add_argument('--host-validation', action='store_true')
+    p.add_argument('--rade-acq-neon', action='store_true', help='experimental SDK-only acquisition kernel; requires QEMU correctness gates')
+    p.add_argument('--radae-reference', type=Path, help='clean pinned RADAE checkout for upstream V1 loss validation')
+    p.add_argument('--validation-python', type=Path, help='Python with upstream RADAE loss dependencies')
     p.add_argument('--cache-root', type=Path, help='optional local Git object cache')
     p.add_argument('--jobs', type=int, default=2)
     a = p.parse_args()
     if bool(a.sdk) == a.host_validation or not 1 <= a.jobs <= 8:
         p.error('choose exactly one of --sdk or --host-validation; jobs must be 1..8')
+    if a.rade_acq_neon and (not a.sdk or not a.radae_reference or not a.validation_python):
+        p.error('--rade-acq-neon requires --sdk, --radae-reference and --validation-python')
+    if a.rade_acq_neon and not shutil.which('qemu-arm'):
+        p.error('--rade-acq-neon requires qemu-arm; validation cannot be skipped')
     work = a.work.resolve()
     if work == ROOT or ROOT in work.parents:
         p.error('work directory must be outside the repository')
@@ -94,6 +101,37 @@ def main():
         for license_file in (src / name).glob('*'):
             if license_file.is_file() and license_file.name.upper().startswith(('LICENSE', 'COPYING')):
                 shutil.copy2(license_file, package / 'licenses' / (name + '-' + license_file.name))
+    if a.rade_acq_neon:
+        # Only this exact pinned input may receive the experimental patch.
+        acq_source = src / 'rade_c/src/rade_acq.c'
+        expected_acq = 'e3f22479ed8cbfa477f65b52968072fc3ab1cd1aa9c70a5b3ab23d2c8fd4fa5a'
+        if sha(acq_source) != expected_acq:
+            raise ValueError('acquisition source does not match inspected baseline')
+        shutil.copy2(acq_source, work / 'rade-acq-reference.c')
+        patch = code / 'tools/freedv/patches/rade-acq-neon.patch'
+        run('git', '-C', src / 'rade_c', 'apply', '--check', patch)
+        run('git', '-C', src / 'rade_c', 'apply', patch)
+        acq_cmake = src / 'rade_c/src/CMakeLists.txt'
+        # Source-local options keep Opus, the rest of RADE and host fixture
+        # generation on their existing build configuration.
+        acq_cmake.write_text(acq_cmake.read_text() + '''
+option(RADE_ACQ_NEON "Experimental four-time-lane ARM acquisition" OFF)
+if(RADE_ACQ_NEON)
+  if(NOT CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "RADE_ACQ_NEON is enabled only for the matching ARM SDK")
+  endif()
+  set_source_files_properties(rade_acq.c PROPERTIES
+    COMPILE_DEFINITIONS RADE_ACQ_NEON=1
+    COMPILE_OPTIONS "-marm;-mfpu=neon-vfpv4;-ffp-contract=fast")
+endif()
+''')
+        manifest['rade_acquisition_experiment'] = {
+            'enabled': True, 'production_qualified': False,
+            'patch_sha256': sha(patch), 'original_source_sha256': expected_acq,
+            'patched_source_sha256': sha(acq_source), 'source_cmake_sha256': sha(acq_cmake),
+            'source_local_definitions': ['RADE_ACQ_NEON=1'],
+            'source_local_options': ['-marm', '-mfpu=neon-vfpv4', '-ffp-contract=fast'],
+            'differential_harness_sha256': sha(code / 'tools/freedv/rade_acq_differential.c')}
     for name, fixture in [('codec2', 'raw/ve9qrp_10s.raw'), ('rade_c', 'input_sample.wav')]:
         if sha(src / name / fixture) != PINS[name]['speech_fixture_sha256']:
             raise ValueError('fixture hash mismatch: ' + name)
@@ -136,9 +174,13 @@ endif()'''))
         'CMAKE_ARGS -DCMAKE_C_COMPILER=/usr/bin/cc -DCMAKE_CXX_COMPILER=/usr/bin/c++\n       BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/codec2_native'))
     for name in ('codec2', 'rade_c'):
         extra = ['-DUNITTEST=OFF', '-DLPCNET=OFF'] if name == 'codec2' else ['-DOPUS_URL=' + opus_zip.as_uri()]
+        if name == 'rade_c' and a.rade_acq_neon:
+            extra += ['-DRADE_ACQ_NEON=ON']
         run('cmake', '-S', src / name, '-B', work / name, '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
             '-DCMAKE_INSTALL_RPATH=$ORIGIN', '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON', *cross, *extra)
         target = ['codec2', 'freedv_tx'] if name == 'codec2' else ['rade', 'rade_tx_wav']
+        if name == 'rade_c' and a.rade_acq_neon:
+            target += ['rade_rx_wav', 'rade_v1_text_test']
         run('cmake', '--build', work / name, '--target', *target, '-j', a.jobs)
     opus = work / 'rade_c/build_opus-prefix/src/build_opus'
     model = opus / ('opus_data-' + PINS['opus']['model_sha256'] + '.tar.gz')
@@ -185,6 +227,17 @@ endif()'''))
     for binary in [*(package / 'bin').iterdir(), *(package / 'lib').iterdir()]:
         info = subprocess.check_output([str(readelf), '-d', str(binary)], text=True)
         manifest['elf_dependencies'][str(binary.relative_to(package))] = re.findall(r'Shared library: \[(.*?)\]', info)
+    if a.rade_acq_neon:
+        # No deployable archive is produced until matching-SDK execution checks
+        # have passed. Emulation establishes correctness, never radio timing.
+        run('python3', code / 'tools/freedv/validate_rade_acq_sdk.py', '--work', work,
+            '--compiler', compiler, '--sysroot', sysroot,
+            '--radae-reference', a.radae_reference.resolve(),
+            '--validation-python', a.validation_python.absolute())
+        validation = work / 'sdk-validation/summary.json'
+        manifest['rade_acquisition_experiment']['sdk_validation_summary_sha256'] = sha(validation)
+        manifest['rade_acquisition_experiment']['sdk_validation'] = json.loads(validation.read_text())
+        manifest['rade_acquisition_experiment']['flags_make'] = (work / 'rade_c/src/CMakeFiles/rade.dir/flags.make').read_text()
     source_archive = work / 'freedv-benchmark-sources.tar.gz'
     with tarfile.open(source_archive, 'w:gz') as archive:
         for name in ('codec2', 'rade_c', 'opus'):
