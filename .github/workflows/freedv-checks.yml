@@ -196,7 +196,9 @@ jobs:
         run: |
           set -eu
           timeout --kill-after=10s 4m sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
-          timeout --kill-after=10s 6m sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
+          timeout --kill-after=10s 12m sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get \
+            -o Acquire::Retries=1 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
+            -o Dpkg::Use-Pty=0 install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
             libtool pkg-config sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
             libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev libpulse-dev \
             libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr
