@@ -1,6 +1,9 @@
 # Parallel acquisition: development validation, 2026-10-27
 
-Status: **development correctness PASS; matching SDK and radio capacity pending**.
+Subsequent matching-SDK records and radio measurements are documented in the
+[acquisition worker radio report](rade-acquisition-radio-2026-10-27.md).
+
+Status at initial publication: **development correctness PASS; matching SDK and radio capacity pending**.
 This records the optional implementation introduced in `5683bd6`, using patch
 SHA256 `4343c892e60199677fe363940f144566229c14dd77c79bab14f1e9a1c1fe4ef3`.
 The source, model and frozen waveform pins remain in the package manifest.
