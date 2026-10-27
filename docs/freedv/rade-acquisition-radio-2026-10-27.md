@@ -79,7 +79,7 @@ Candidate sampled RADE resident memory reaches 8,116 KiB for TX, 8,680 KiB for s
 
 Available memory in the one-time inventories changes from 858,596 to 791,548 KiB, alongside higher shared-memory use. This is not sufficient evidence of a codec leak. No long-duration memory-stability conclusion is justified.
 
-The requested test procedure keeps the ordinary GUI and waterfall active. These bundles do not record the GUI's process load, frame rate, responsiveness or uninterrupted waterfall operation, so those conditions and user-visible impact cannot be inferred from benchmark timing alone. Operator observations remain separate evidence. The benchmark also lacks production queue-depth and audio-underrun instrumentation.
+After returning this bundle, the operator confirmed that the normal radio GUI and waterfall stayed active and responsive, with no other digital-mode application running. This is operator evidence for the required test conditions. The bundles do not record GUI process load or frame rate, and the observation does not establish long-duration stability. The benchmark also lacks production queue-depth and audio-underrun instrumentation.
 
 ## Package provenance and included SDK validation
 
