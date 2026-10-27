@@ -38,6 +38,16 @@ must be <=70% of its represented audio interval, with stable memory and thermal
 behavior. Live queues/underruns and routing remain separate incomplete gates.
 Do not interpret ARM emulation or host timing as X6200 performance.
 
+The runner reports workload execution and timing separately. `complete` and
+`execution_complete` describe successful workload execution/validation, not a
+timing pass. Each case has a `timing` assessment, and `codec_timing_check`
+summarizes the measured checks: `FAIL` when p99 exceeds 0.70 (without rounding),
+`REVIEW` for reported deadline misses when p99 is otherwise within target,
+`WITHIN_LIMITS` for complete cases within the measured limits, and `INCONCLUSIVE`
+for missing/invalid evidence. A short run within limits still cannot establish
+30-minute stability or a full hardware PASS. Historical packages lack these
+additional fields; inspect their raw p99 ratios and deadline counts directly.
+
 For a host-validation package, omit `--radio` and use a new local result directory.
 The qualification suite refuses a host-validation package.
 

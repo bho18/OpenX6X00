@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import platform
 import subprocess
@@ -15,6 +16,36 @@ def digest(path):
         for b in iter(lambda: f.read(1024 * 1024), b''):
             h.update(b)
     return h.hexdigest()
+
+
+def assess_timing(result):
+    """Screen measured timing independently of workload execution or qualification."""
+    p99 = result.get('p99_frame_ratio')
+    misses = result.get('deadline_misses')
+    valid_p99 = type(p99) in (int, float) and math.isfinite(p99) and p99 >= 0
+    valid_misses = type(misses) is int and misses >= 0
+    if not valid_p99 or not valid_misses:
+        return {'status': 'INCONCLUSIVE', 'p99_target_ratio': 0.70,
+                'reason': 'Missing or invalid p99 ratio or paced deadline count.'}
+    # Do not round before comparison: the first radio TX result was 0.700613.
+    status = 'FAIL' if p99 > 0.70 else ('REVIEW' if misses else 'WITHIN_LIMITS')
+    return {'status': status, 'p99_target_ratio': 0.70, 'p99_frame_ratio': p99,
+            'p99_within_target': p99 <= 0.70, 'deadline_misses': misses,
+            'reason': ('p99 exceeds the proposed 70% target.' if status == 'FAIL' else
+                       'Deadline misses need review for sustained failure.' if status == 'REVIEW' else
+                       'Measured p99 is within target and no deadline misses were reported.'),
+            'full_qualification': False}
+
+
+def timing_summary(cases, execution_complete):
+    statuses = [case.get('timing', {}).get('status', 'INCONCLUSIVE') for case in cases]
+    if 'FAIL' in statuses:
+        return 'FAIL'
+    if 'REVIEW' in statuses:
+        return 'REVIEW'
+    if execution_complete and statuses and all(status == 'WITHIN_LIMITS' for status in statuses):
+        return 'WITHIN_LIMITS'
+    return 'INCONCLUSIVE'
 
 
 def main():
@@ -74,14 +105,22 @@ def main():
                 if workload == 'interrupt' and data['sync_blocks_after_first_interrupt'] <= 0:
                     raise ValueError('receiver did not reacquire after interruption')
             entry['validated'] = True
+            entry['timing'] = assess_timing(data)
+            print('Execution validated; timing:', entry['timing']['status'], '-',
+                  entry['timing']['reason'], flush=True)
     finally:
+        complete = len(results) == len(cases) and all(r['return_code'] == 0 and r['validated'] for r in results)
         summary = {'schema_version': 1, 'suite': a.suite, 'cases': results,
-                   'complete': len(results) == len(cases) and all(r['return_code'] == 0 and r['validated'] for r in results),
+                   'complete': complete, 'execution_complete': complete,
+                   'codec_timing_check': timing_summary(results, complete),
+                   'timing_check_is_full_qualification': False,
                    'hardware_qualification': 'INCONCLUSIVE',
                    'reason': 'Routing and PTT unmeasured; queue/underrun instrumentation remains incomplete.',
                    'automatic_upload': False}
         (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print('Results saved locally to', output)
+    print('Execution complete:', complete, '; codec timing check:', summary['codec_timing_check'],
+          '; full hardware qualification: INCONCLUSIVE')
 
 
 if __name__ == '__main__':

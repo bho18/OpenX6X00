@@ -9,6 +9,12 @@ permissions:
   contents: read
 
 jobs:
+  benchmark-timing:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Distinguish workload execution from timing assessment
+        run: python3 tools/freedv/test_run_benchmarks.py
   prototype:
     runs-on: ubuntu-22.04
     steps:
