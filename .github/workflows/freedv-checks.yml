@@ -194,14 +194,20 @@ jobs:
           submodules: true
       - name: Install host dependencies
         run: |
-          set -eu
-          timeout --kill-after=10s 4m sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          set -Eeuo pipefail
+          install_error() {
+            status=$?
+            tail -12 "$RUNNER_TEMP/host-dependencies.log" | tac | head -8 | sed 's/%/%25/g; s/^/::error::/'
+            exit "$status"
+          }
+          trap install_error ERR
+          timeout --kill-after=10s 4m sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update > "$RUNNER_TEMP/host-dependencies.log" 2>&1
           timeout --kill-after=10s 12m sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get \
             -o Acquire::Retries=1 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
             -o Dpkg::Use-Pty=0 install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
             libtool pkg-config sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
             libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev libpulse-dev \
-            libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr
+            libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr >> "$RUNNER_TEMP/host-dependencies.log" 2>&1
       - name: Prepare pinned host dependencies
         run: |
           set -eu
