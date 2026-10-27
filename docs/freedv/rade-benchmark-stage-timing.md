@@ -88,6 +88,13 @@ The differential tests compare every original functional JSON field and
 counter, not PCM samples. Code review verifies unchanged DSP call order;
 unchanged counts alone are not proof of identical decoded audio.
 
+The matching-SDK package gate also requires valid stage timing in all four RADE
+workloads. It checks schema and units, nonnegative integer counters, exact summed
+time, rounded full-timer agreement, direction/feature activation, inactive zeros
+and percentile bounds. Missing or inconsistent stage evidence prevents archive
+release. The SDK validation summary records the checked workloads; QEMU timing
+does not qualify radio performance.
+
 ## Reproduction and package identification
 
 The `rade-prototype` job in `.github/workflows/freedv-checks.yml` builds both
