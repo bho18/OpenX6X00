@@ -59,8 +59,14 @@ Builders use `tools/freedv/build_benchmark_package.py --work /new/build --sdk
 validation build uses `--host-validation` instead. The builder needs Git, CMake,
 Make, C/C++ compilers, autoconf, automake, libtool, pkg-config and libsamplerate
 headers/libraries. TLS and Opus model SHA256 verification remain enabled.
-Source, compiler and model identities are recorded; generated output stays
-outside Git. Debug information remains in package binaries.
+Source, compiler and model identities are recorded; build output stays outside
+Git. Debug information remains in package binaries. The small frozen RADE RX
+fixture is versioned in `tools/freedv/fixtures/`; its authoritative SHA256 and
+revision are under `rade_c.modem_fixture` in `sources.json`. The builder verifies
+and copies those bytes, retaining provenance in `fixtures/rade-modem.json` and
+`rade_modem_fixture` in the package manifest. Revision `rade-v1-host-reference-1`
+is a new fixed-input baseline; compare fixture hashes with historical results
+whose modem input was generated on each build host.
 
 Instrumented RADE builds also report `stage_timing` and
 `fixture_preparation_ms`. Their package manifest includes
