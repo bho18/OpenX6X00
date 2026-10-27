@@ -10,7 +10,7 @@ This is a separate diagnostic change from the acquisition optimization. The
 acquisition-only radio comparison is complete; the next test uses the
 [stage-timing SDK package](stage-timing-radio-test.md).
 The stage instrumentation has passed host checks and matching-SDK execution
-gates in run `40535053954`; radio stage measurements remain pending. It introduces no radio control,
+gates in run `40535053954`; the [returned radio measurements](rade-stage-radio-2026-10-27.md) now separate the processing costs. It introduces no radio control,
 physical audio-device access or model changes.
 
 ## Measurements and JSON additions
@@ -122,3 +122,18 @@ The package includes this document as `STAGE-TIMING.md`. Existing collectors
 retain the additive JSON fields without interpreting host results as target
 qualification. Compare instrumented and original totals as different benchmark
 builds: the extra clocks and bookkeeping may affect processing time.
+
+## Returned radio evidence
+
+The 2026-10-27 smoke run measures synchronized reception at 154.921 ms per
+120 ms block: RADE RX 64.273 ms, speech/FARGAN 74.489 ms, resampling 16.110 ms,
+and residual 0.049 ms. All 25 measured deadlines are missed. The serial path
+therefore exceeds real time independently of the proposed 70% margin. The
+no-sync path spends 95.10% of its time inside RADE RX and remains a separate
+optimization problem.
+
+The modem fixture changed between generated packages, so this is stage
+attribution within the returned run, not an identical-input A/B comparison.
+Fixture pinning and a separate two-worker benchmark are follow-up work. See
+[timing acceptance](timing-acceptance.md) for the distinction between margin,
+throughput and full-path latency.
