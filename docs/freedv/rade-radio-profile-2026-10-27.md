@@ -137,8 +137,9 @@ build without libelf remains a possible explanation, not confirmed by an
 installed-feature report. Offline symbol resolution has removed that blocker.
 
 Target acquisition cost is now established independently of the earlier host
-profile. Profile synchronized RX separately: it need not share this no-sync
-bottleneck. Any optimization must retain the complete
+profile. The subsequent [signal-input profile](rade-signal-profile-2026-10-27.md)
+shows hot addresses in already-vectorized neural kernels; complete counts and
+stage attribution remain pending. Any optimization must retain the complete
 acquisition search, thresholds and model and pass correctness tests before
 target timing is compared. Native audio routing, PTT behavior and overall
 hardware feasibility remain unqualified.
