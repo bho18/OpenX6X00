@@ -83,8 +83,11 @@ jobs:
           submodules: true
       - name: Install host dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
+          set -eu
+          timeout --kill-after=10s 4m sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          timeout --kill-after=10s 12m sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get \
+            -o Acquire::Retries=1 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
+            -o Dpkg::Use-Pty=0 install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
             libtool pkg-config sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
             libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev libpulse-dev \
             libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr
@@ -97,7 +100,9 @@ jobs:
           test "$(git -C build-host/deps/src/liquid-dsp rev-parse HEAD)" = 3b8a6f07ba6780b7a3d4be148461257515d183ad
           git clone https://github.com/gdyuldin/ft8_lib.git build-host/deps/src/ft8_lib
           git -C build-host/deps/src/ft8_lib checkout --detach 73b0db861dc41c7ca9f3dedc73ee148daa06dd0e
-      - name: Build and exercise both host configurations
+      - name: Build host simulator with diagnostics disabled
+        run: timeout --kill-after=10s 12m host/build.sh build
+      - name: Exercise both host configurations
         run: |
           set -eu
           export SDL_VIDEODRIVER=dummy
@@ -106,8 +111,19 @@ jobs:
           chmod 700 "$XDG_RUNTIME_DIR"
           gui_pid=
           pulse_pid=
+          stop_gui() {
+            [ -n "$gui_pid" ] || return 0
+            kill "$gui_pid" 2>/dev/null || true
+            for attempt in $(seq 1 30); do
+              kill -0 "$gui_pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            kill -KILL "$gui_pid" 2>/dev/null || true
+            wait "$gui_pid" 2>/dev/null || true
+            gui_pid=
+          }
           cleanup() {
-            [ -z "$gui_pid" ] || kill "$gui_pid" 2>/dev/null || true
+            stop_gui
             [ -z "$pulse_pid" ] || kill "$pulse_pid" 2>/dev/null || true
           }
           trap cleanup EXIT
@@ -115,12 +131,11 @@ jobs:
           pulse_pid=$!
           ready=0
           for i in $(seq 1 30); do
-            if pactl list short sinks >/dev/null 2>&1; then ready=1; break; fi
+            if timeout --kill-after=2s 3s pactl list short sinks >/dev/null 2>&1; then ready=1; break; fi
             kill -0 "$pulse_pid" || { cat "$RUNNER_TEMP/freedv-pulse.log"; exit 1; }
             sleep 1
           done
           test "$ready" = 1
-          host/build.sh build
           start_gui() {
             build-host/src/x6100_gui > "$RUNNER_TEMP/freedv-gui.log" 2>&1 &
             gui_pid=$!
@@ -133,12 +148,10 @@ jobs:
             test "$ready" = 1
           }
           start_gui
-          python3 tools/freedv/host_ui_check.py
-          kill "$gui_pid"
-          wait "$gui_pid" || true
-          gui_pid=
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py
+          stop_gui
           cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build-host --target x6100_gui freedv_diagnostic_state_test
+          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test
           ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure
           start_gui
-          python3 tools/freedv/host_ui_check.py --snapshot
+          timeout --kill-after=5s 90s python3 tools/freedv/host_ui_check.py --snapshot
