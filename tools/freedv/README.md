@@ -68,6 +68,12 @@ cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
 /tmp/freedv-state-test
 ```
 
+The opt-in control-owner lease can refuse a diagnostic claim when a remote
+owner is active or the radio state is not RX, and it prevents remote control
+claims from taking the lease. It is not yet wired to the diagnostic page and
+does **not** block all local TX/audio writers, active workers or hardware PTT.
+Those exclusions and fresh packet checks are prerequisites for a real session.
+
 For the host GUI build, configure with `-DENABLE_FREEDV_DIAGNOSTICS=ON` and run
 `ctest --test-dir build-host -R '^freedv_diagnostic_state$' --output-on-failure`.
 The option defaults to OFF. When enabled on X6200 or the host simulator,
