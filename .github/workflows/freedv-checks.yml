@@ -21,6 +21,13 @@ jobs:
         run: python3 tools/freedv/test_validate_rade_stage.py
       - name: Check experimental pipeline collection and evidence validation
         run: python3 tools/freedv/test_pipeline_collection.py
+      - name: Check acquisition worker collection, evidence and SDK gates
+        run: |
+          set -eu
+          python3 tools/freedv/test_parallel_package.py
+          python3 tools/freedv/test_acquisition_evidence.py
+          python3 tools/freedv/test_acquisition_collection.py
+          python3 tools/freedv/test_validate_rade_parallel_sdk.py
       - name: Verify frozen RADE receive fixture
         run: python3 tools/freedv/test_pinned_rade_fixture.py
   prototype:

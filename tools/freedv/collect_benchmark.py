@@ -62,6 +62,7 @@ def main():
     parser.add_argument('--fixture', required=True, type=Path, help='raw PCM fixture; not copied into the result')
     parser.add_argument('--direction', required=True, choices=('tx', 'rx'))
     parser.add_argument('--execution', choices=('serial', 'parallel'), help='optional experimental RADE RX pipeline execution')
+    parser.add_argument('--acquisition-workers', type=int, choices=range(1, 5), help='optional experimental acquisition participants including caller')
     parser.add_argument('--seconds', required=True, type=int, choices=range(1, 1801), metavar='1..1800')
     parser.add_argument('--pacing', required=True, choices=('paced', 'unpaced'))
     parser.add_argument('--warmup', type=int, choices=range(61), default=5, metavar='0..60')
@@ -76,6 +77,8 @@ def main():
         parser.error('interrupt is only available for the RADE V1 RX prototype')
     if args.execution and (args.mode != 'RADE-V1' or args.direction != 'rx'):
         parser.error('--execution is only available for the experimental RADE V1 RX pipeline')
+    if args.acquisition_workers is not None and not args.execution:
+        parser.error('--acquisition-workers requires the experimental pipeline --execution option')
     exe, fixture = (p.resolve(strict=True) for p in (args.benchmark, args.fixture))
     models = [p.resolve(strict=True) for p in args.model]
     for path in (exe, fixture, *models, SOURCES):
@@ -91,6 +94,8 @@ def main():
     common = [str(exe), args.execution or args.direction, str(fixture), str(args.seconds), args.pacing]
     command = common + (['resample', str(args.warmup)] if args.mode == '700E'
                         else [str(args.warmup), args.workload])
+    if args.acquisition_workers is not None:
+        command += ['--acquisition-workers', str(args.acquisition_workers)]
     metadata = {
         'schema_version': 1, 'kind': 'codec-benchmark-collection', 'created_utc': utc_now(),
         'mode': args.mode, 'direction': args.direction, 'seconds_requested': args.seconds,
@@ -110,6 +115,10 @@ def main():
                         experimental_queue_counters_available=True,
                         hardware_audio_underrun_counters_available=False,
                         original_70_percent_assessment='unchanged_serial_reference_required')
+    if args.acquisition_workers is not None:
+        metadata.update(acquisition_workers_requested=args.acquisition_workers,
+                        acquisition_workers_include_caller=True,
+                        acquisition_helper_cpu_excluded_from_a_cpu_ns=True)
     (output / 'manifest.json').write_text(json.dumps(metadata, indent=2) + '\n')
     started_utc = utc_now()
     start = time.monotonic()
@@ -154,6 +163,10 @@ def main():
         raise SystemExit(f'benchmark output does not match requested mode/direction/pacing; see {output}')
     if result.get('radio_io') is not False or result.get('full_pipeline_qualified') is not False:
         raise SystemExit(f'benchmark did not identify itself as a non-qualified, no-radio prototype; see {output}')
+    if args.acquisition_workers is not None:
+        actual = result.get('acquisition_workers', {})
+        if (actual.get('requested'), actual.get('effective')) != (args.acquisition_workers, args.acquisition_workers):
+            raise SystemExit(f'acquisition worker count differs from requested count; see {output}')
     (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     if proc.returncode:
         raise SystemExit(f'pipeline benchmark failed with exit code {proc.returncode}; structured failure retained in {output}/result.json')

@@ -48,6 +48,38 @@ def copy_rade_modem_fixture(code, fixtures):
             'generation_in_this_build': False}
 
 
+def apply_rade_acquisition_parallel(code, rade_source):
+    """Apply the frozen multicore experiment only to its exact guarded baseline."""
+    patch = code / 'tools/freedv/patches/rade-acq-parallel.patch'
+    pin_path = patch.with_suffix('.json')
+    pin = json.loads(pin_path.read_text())
+    if (pin['schema_version'] != 1 or pin['base_rade_commit'] != PINS['rade_c']['commit'] or
+            pin['default_enabled'] is not False or pin['requires_guarded_neon_patch'] is not True or
+            pin['target_definition'] != 'RADE_ACQ_PARALLEL=1' or sha(patch) != pin['patch_sha256']):
+        raise ValueError('parallel acquisition patch/source pin mismatch')
+    for name, expected in pin['baseline_files'].items():
+        if sha(rade_source / name) != expected:
+            raise ValueError('parallel acquisition baseline mismatch: ' + name)
+    if any((rade_source / name).exists() for name in pin['new_files']):
+        raise ValueError('parallel acquisition source already contains experiment files')
+    run('git', '-C', rade_source, 'apply', '--check', patch)
+    run('git', '-C', rade_source, 'apply', patch)
+    for name, expected in pin['candidate_files'].items():
+        if sha(rade_source / name) != expected:
+            raise ValueError('parallel acquisition patched source mismatch: ' + name)
+    if sha(rade_source / 'src/rade_acq.c') != pin['unchanged_guarded_acquisition_sha256']:
+        raise ValueError('parallel acquisition changed the guarded full-search translation unit')
+    return {'enabled': True, 'production_qualified': False, 'radio_io': False,
+            'revision': pin['revision'], 'patch_sha256': sha(patch),
+            'source_pin_sha256': sha(pin_path), 'source_pin': pin,
+            'target_wide_definition': pin['target_definition'],
+            'worker_counts': [1, 2, 3, 4], 'workers_include_calling_thread': True,
+            'acquisition_reuse_enabled': False,
+            'validation_harness_sha256': sha(code / 'tools/freedv/validate_rade_parallel_sdk.py'),
+            'evidence_validator_sha256': sha(code / 'tools/freedv/acquisition_evidence.py'),
+            'original_70_percent_assessment': 'unchanged_serial_reference_required'}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--work', required=True, type=Path, help='new build directory outside the checkout')
@@ -55,6 +87,7 @@ def main():
     p.add_argument('--sdk-manifest', type=Path, help='baseline buildroot-commit.txt from the SDK build')
     p.add_argument('--host-validation', action='store_true')
     p.add_argument('--rade-acq-neon', action='store_true', help='experimental SDK-only acquisition kernel; requires QEMU correctness gates')
+    p.add_argument('--rade-acq-parallel', action='store_true', help='experimental multicore acquisition; requires SDK, guarded NEON and pipeline gates')
     p.add_argument('--rade-pipeline', action='store_true', help='experimental two-worker RX executable; requires matching SDK and acquisition validation')
     p.add_argument('--radae-reference', type=Path, help='clean pinned RADAE checkout for upstream V1 loss validation')
     p.add_argument('--validation-python', type=Path, help='Python with upstream RADAE loss dependencies')
@@ -69,6 +102,8 @@ def main():
         p.error('--rade-acq-neon requires qemu-arm; validation cannot be skipped')
     if a.rade_pipeline and (not a.sdk or not a.rade_acq_neon):
         p.error('--rade-pipeline requires --sdk and --rade-acq-neon; existing correctness gates remain mandatory')
+    if a.rade_acq_parallel and (not a.sdk or not a.rade_acq_neon or not a.rade_pipeline):
+        p.error('--rade-acq-parallel requires --sdk, --rade-acq-neon and --rade-pipeline; correctness gates cannot be skipped')
     work = a.work.resolve()
     if work == ROOT or ROOT in work.parents:
         p.error('work directory must be outside the repository')
@@ -161,6 +196,9 @@ endif()
             'source_local_definitions': ['RADE_ACQ_NEON=1'],
             'source_local_options': ['-marm', '-mfpu=neon-vfpv4', '-ffp-contract=fast'],
             'differential_harness_sha256': sha(code / 'tools/freedv/rade_acq_differential.c')}
+    if a.rade_acq_parallel:
+        shutil.copy2(src / 'rade_c/src/rade_acq.c', work / 'rade-acq-parallel-reference.c')
+        manifest['rade_acquisition_parallel_experiment'] = apply_rade_acquisition_parallel(code, src / 'rade_c')
     for name, fixture in [('codec2', 'raw/ve9qrp_10s.raw'), ('rade_c', 'input_sample.wav')]:
         if sha(src / name / fixture) != PINS[name]['speech_fixture_sha256']:
             raise ValueError('fixture hash mismatch: ' + name)
@@ -205,6 +243,8 @@ endif()'''))
         extra = ['-DUNITTEST=OFF', '-DLPCNET=OFF'] if name == 'codec2' else ['-DOPUS_URL=' + opus_zip.as_uri()]
         if name == 'rade_c' and a.rade_acq_neon:
             extra += ['-DRADE_ACQ_NEON=ON']
+        if name == 'rade_c' and a.rade_acq_parallel:
+            extra += ['-DRADE_ACQ_PARALLEL=ON', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON']
         run('cmake', '-S', src / name, '-B', work / name, '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
             '-DCMAKE_INSTALL_RPATH=$ORIGIN', '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON', *cross, *extra)
         target = ['codec2', 'freedv_tx'] if name == 'codec2' else ['rade', 'rade_tx_wav']
@@ -244,12 +284,14 @@ endif()'''))
         ('rade-frame-bench', 'rade_frame_bench.c', [src / 'rade_c/src', opus / 'dnn', opus / 'celt', opus / 'include', opus], ['-L' + str(work / 'rade_c/src'), '-lrade', str(opus / '.libs/libopus.a')] + ([str(ne10)] if ne10 else []))]:
         run(compiler, '-O2', '-g', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-error=cpp',
             *(['-include', str(opus / 'config.h')] if name == 'rade-frame-bench' else []),
+            *(['-DRADE_ACQ_PARALLEL=1'] if a.rade_acq_parallel and name == 'rade-frame-bench' else []),
             *['-I' + str(i) for i in [*includes, samplerate_source / 'include']], code / 'tools/freedv' / source,
             *libs, samplerate_library, '-lm', '-Wl,-rpath,$ORIGIN/../lib', '-o', package / 'bin' / name)
     if a.rade_pipeline:
         pipeline_source = code / 'tools/freedv/rade_pipeline_bench.c'
         run(compiler, '-O2', '-g', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-error=cpp',
             '-pthread', '-include', opus / 'config.h',
+            *(['-DRADE_ACQ_PARALLEL=1'] if a.rade_acq_parallel else []),
             *['-I' + str(i) for i in [src / 'rade_c/src', opus / 'dnn', opus / 'celt', opus / 'include', opus, samplerate_source / 'include']],
             pipeline_source, '-L' + str(work / 'rade_c/src'), '-lrade', opus / '.libs/libopus.a',
             *([ne10] if ne10 else []), samplerate_library, '-lm', '-Wl,-rpath,$ORIGIN/../lib',
@@ -273,6 +315,10 @@ endif()'''))
             shutil.copy2(code / 'tools/freedv' / name, package / 'tools/freedv' / name)
         shutil.copy2(code / 'docs/freedv/rade-pipeline-benchmark.md', package / 'PIPELINE.md')
         shutil.copy2(code / 'docs/freedv/rade-pipeline-design.md', package / 'rade-pipeline-design.md')
+    if a.rade_acq_parallel:
+        for name in ('run_acquisition_benchmarks.py', 'acquisition_evidence.py'):
+            shutil.copy2(code / 'tools/freedv' / name, package / 'tools/freedv' / name)
+        shutil.copy2(code / 'docs/freedv/rade-acquisition-parallel.md', package / 'ACQUISITION-PARALLEL.md')
     shutil.copy2(code / 'docs/freedv/benchmark-package.md', package / 'README.md')
     shutil.copy2(code / 'docs/freedv/rade-benchmark-stage-timing.md', package / 'STAGE-TIMING.md')
     manifest['elf_dependencies'] = {}
@@ -296,6 +342,15 @@ endif()'''))
         validation = work / 'pipeline-sdk-validation/summary.json'
         manifest['rade_pipeline_experiment']['sdk_validation_summary_sha256'] = sha(validation)
         manifest['rade_pipeline_experiment']['sdk_validation'] = json.loads(validation.read_text())
+    if a.rade_acq_parallel:
+        run('python3', code / 'tools/freedv/validate_rade_parallel_sdk.py', '--work', work,
+            '--compiler', compiler, '--sysroot', sysroot,
+            '--radae-reference', a.radae_reference.resolve(),
+            '--validation-python', a.validation_python.absolute())
+        validation = work / 'parallel-sdk-validation/summary.json'
+        manifest['rade_acquisition_parallel_experiment']['sdk_validation_summary_sha256'] = sha(validation)
+        manifest['rade_acquisition_parallel_experiment']['sdk_validation'] = json.loads(validation.read_text())
+        manifest['rade_acquisition_parallel_experiment']['compile_commands_sha256'] = sha(work / 'rade_c/compile_commands.json')
     source_archive = work / 'freedv-benchmark-sources.tar.gz'
     with tarfile.open(source_archive, 'w:gz') as archive:
         for name in ('codec2', 'rade_c', 'opus'):

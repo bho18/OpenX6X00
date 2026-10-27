@@ -17,6 +17,17 @@ def integer(value, label, positive=False):
     return value
 
 
+def interrupted_samples(start_ns, duration_ns):
+    """Native 8 kHz samples muted in [10,12) seconds of each 12-second cycle."""
+    def before(ns):
+        samples, residue = divmod(ns * 8000, 1_000_000_000)
+        if residue:
+            raise ValueError('input interval is not an integral modem sample count')
+        cycles, offset = divmod(samples, 12 * 8000)
+        return cycles * 2 * 8000 + max(0, offset - 10 * 8000)
+    return before(start_ns + duration_ns) - before(start_ns)
+
+
 def validate_pipeline_result(result, *, execution, pacing, workload, seconds,
                              warmup, fixture_name, require_complete=True,
                              allow_test_hooks=False):
@@ -142,8 +153,13 @@ def validate_pipeline_result(result, *, execution, pacing, workload, seconds,
                 raise ValueError('silence unexpectedly synchronized or produced speech')
         elif not (measured['sync_blocks'] and measured['feature_blocks'] and measured['output_samples']):
             raise ValueError('signal fixture did not synchronize and decode')
-        if workload == 'interrupt' and (measured['interrupted_input_samples'] != 16000 or not measured['sync_blocks_after_first_interrupt']):
-            raise ValueError('interrupted receiver did not demonstrate recovery')
+        if workload == 'interrupt':
+            expected_muted = interrupted_samples(result['warmup_audio_ns'], measured['audio_ns'])
+            if measured['interrupted_input_samples'] != expected_muted:
+                raise ValueError('interrupted receiver muted an unexpected sample count')
+            if (expected_muted and full['audio_ns'] > 12_000_000_000 and
+                    not measured['sync_blocks_after_first_interrupt']):
+                raise ValueError('interrupted receiver did not demonstrate recovery')
     return {'execution_validated': complete, 'capacity_qualification': 'INCONCLUSIVE',
             'original_70_percent_assessment': 'unchanged_serial_reference_required'}
 

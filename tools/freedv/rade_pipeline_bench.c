@@ -119,6 +119,7 @@ static uint64_t hash_word(uint64_t h, uint64_t value) {
 struct record {
     uint64_t sequence, sample_start, interval_ns, release_ns, a_start_ns, a_end_ns;
     uint64_t a_cpu_ns, publish_ns, b_start_ns, b_end_ns, b_cpu_ns;
+    uint64_t acquisition_helper_cpu_ns;
     uint64_t input_ns, rade_ns, speech_ns, output_ns, producer_wait_ns;
     uint64_t muted, nonzero, native_count, converted_count;
     uint64_t feature_hash, native_hash, pcm_hash, eoo_hash;
@@ -145,6 +146,10 @@ struct queue {
 struct context {
     bool parallel, paced, interrupt;
     int fail_b_after, delay_a_ms;
+    unsigned acquisition_workers;
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+    uint64_t acquisition_samples, recovered_sync[155], recovered_features[155];
+#endif
     size_t max_n, converted_cap, stat_cap, fixture_count, cursor;
     int feature_n, eoo_n;
     struct rade *rade;
@@ -201,10 +206,20 @@ static void cond_wait(struct queue *q) {
     if (rc && rc != ETIMEDOUT) set_failure_locked(q, "condition_wait_failed");
     if (atomic_load_explicit(&interrupted, memory_order_relaxed)) set_failure_locked(q, "interrupted");
 }
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+static uint64_t acquisition_helper_cpu(struct rade *rade) {
+    struct rade_acquisition_stats stats;
+    if (rade_get_acquisition_stats(rade, &stats)) die("acquisition CPU statistics unavailable");
+    return stats.helper_cpu_ns[0] + stats.helper_cpu_ns[1] + stats.helper_cpu_ns[2];
+}
+#endif
 /* Worker A exclusively owns input resampling, fixture cursor, IQ conversion,
  * rade_nin/rade_rx/rade_sync and all receiver/random state. */
 static void run_a(struct context *c, struct record *r) {
     uint64_t cpu = cpu_ns();
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+    uint64_t helper_cpu_before = acquisition_helper_cpu(c->rade);
+#endif
     if (c->delay_a_ms) wait_until(now_ns() + (uint64_t)c->delay_a_ms * UINT64_C(1000000));
     uint64_t t = now_ns();
     input_samples(c->input_src, c->fixture, c->fixture_count, &c->cursor,
@@ -226,6 +241,20 @@ static void run_a(struct context *c, struct record *r) {
     if (r->nfeatures < 0 || r->nfeatures > c->feature_n || r->nfeatures % NB_TOTAL_FEATURES)
         die("invalid RADE RX output");
     r->synced = rade_sync(c->rade) != 0;
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+    uint64_t helper_cpu_after = acquisition_helper_cpu(c->rade);
+    if (helper_cpu_after < helper_cpu_before) die("acquisition CPU counter moved backwards");
+    r->acquisition_helper_cpu_ns = helper_cpu_after - helper_cpu_before;
+    c->acquisition_samples = r->sample_start + (uint64_t)r->nin;
+    if (c->interrupt) {
+        uint64_t cycle = r->sample_start / (12u * RADE_MODEM_SAMPLE_RATE);
+        uint64_t position = r->sample_start % (12u * RADE_MODEM_SAMPLE_RATE);
+        if (cycle && cycle <= 155 && position < 10u * RADE_MODEM_SAMPLE_RATE) {
+            c->recovered_sync[cycle - 1] += r->synced != 0;
+            c->recovered_features[cycle - 1] += r->nfeatures != 0;
+        }
+    }
+#endif
     r->feature_hash = hash_bytes(HASH_INIT, r->features, (size_t)r->nfeatures * sizeof(float));
     r->eoo_hash = hash_bytes(HASH_INIT, c->eoo, r->has_eoo ? (size_t)c->eoo_n * sizeof(float) : 0);
     r->a_cpu_ns = cpu_ns() - cpu;
@@ -382,17 +411,25 @@ int main(int argc, char **argv) {
     if (argc < 7 || (strcmp(argv[1], "serial") && strcmp(argv[1], "parallel")) ||
         (strcmp(argv[4], "paced") && strcmp(argv[4], "unpaced")) ||
         (strcmp(argv[6], "continuous") && strcmp(argv[6], "interrupt"))) {
-        fprintf(stderr, "usage: %s serial|parallel fixture.raw seconds paced|unpaced warmup-seconds continuous|interrupt [--test-hold-b-until-full] [--test-fail-b-after N] [--test-delay-a-ms N]\n", argv[0]);
+        fprintf(stderr, "usage: %s serial|parallel fixture.raw seconds paced|unpaced warmup-seconds continuous|interrupt"
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+                " [--acquisition-workers 1..4]"
+#endif
+                " [--test-hold-b-until-full] [--test-fail-b-after N] [--test-delay-a-ms N]\n", argv[0]);
         return 2;
     }
     struct context c = {.parallel = !strcmp(argv[1], "parallel"), .paced = !strcmp(argv[4], "paced"),
-        .interrupt = !strcmp(argv[6], "interrupt"), .fail_b_after = -1};
+        .interrupt = !strcmp(argv[6], "interrupt"), .fail_b_after = -1, .acquisition_workers = 1};
     for (int arg = 7; arg < argc; ++arg) {
         if (!strcmp(argv[arg], "--test-hold-b-until-full")) c.q.hold_b = true;
         else if (!strcmp(argv[arg], "--test-fail-b-after") && arg + 1 < argc)
             c.fail_b_after = (int)number(argv[++arg], 0, 1000);
         else if (!strcmp(argv[arg], "--test-delay-a-ms") && arg + 1 < argc)
             c.delay_a_ms = (int)number(argv[++arg], 0, 1000);
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+        else if (!strcmp(argv[arg], "--acquisition-workers") && arg + 1 < argc)
+            c.acquisition_workers = (unsigned)number(argv[++arg], 1, 4);
+#endif
         else die("unknown argument");
     }
     if (!c.parallel && (c.q.hold_b || c.fail_b_after >= 0)) die("failure hooks require parallel mode");
@@ -415,6 +452,15 @@ int main(int argc, char **argv) {
     rade_initialize(); char model[] = "built-in";
     c.rade = rade_open(model, RADE_VERBOSE_0);
     if (!c.rade) die("rade_open failed");
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+    int pool_error = rade_set_acquisition_workers(c.rade, c.acquisition_workers);
+    if (pool_error) {
+        fprintf(stderr, "acquisition workers %u: %s\n", c.acquisition_workers, strerror(pool_error));
+        die("acquisition worker configuration failed");
+    }
+    if (rade_get_acquisition_workers(c.rade) != c.acquisition_workers)
+        die("requested acquisition worker count was not configured");
+#endif
     fargan_init(&c.fargan);
     uint64_t initialization_ns = now_ns() - t;
     c.feature_n = rade_n_features_in_out(c.rade);
@@ -476,12 +522,24 @@ int main(int argc, char **argv) {
     c.q.done = true; pthread_cond_broadcast(&c.q.changed);
     pthread_mutex_unlock(&c.q.mutex);
     if (c.parallel && pthread_join(thread, NULL)) die("worker join failed");
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+    struct rade_acquisition_stats acquisition_stats;
+    if (rade_get_acquisition_stats(c.rade, &acquisition_stats) ||
+        acquisition_stats.workers != c.acquisition_workers)
+        die("acquisition worker statistics unavailable or changed");
+    uint64_t acquisition_shutdown_start = now_ns();
+    rade_close(c.rade); c.rade = NULL; rade_finalize();
+    uint64_t acquisition_shutdown_ns = now_ns() - acquisition_shutdown_start;
+#endif
     bool complete = !c.q.failed && c.completed == c.submitted && audio_ns >= (uint64_t)seconds * UINT64_C(1000000000);
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage)) die("getrusage failed");
     size_t frames = (size_t)c.measured.frames;
     uint64_t fullpath_misses = 0, nominal_misses = 0, busy_total = 0, a_total = 0, b_total = 0;
     uint64_t a_cpu_total = 0, b_cpu_total = 0;
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+    uint64_t acquisition_helper_cpu_total = 0;
+#endif
     for (size_t i = 0; i < frames; ++i) {
         const struct record *r = &c.stats[i];
         if (r->b_end_ns - r->a_start_ns > r->interval_ns) ++fullpath_misses;
@@ -490,6 +548,9 @@ int main(int argc, char **argv) {
         uint64_t b = r->b_end_ns - r->b_start_ns;
         a_total += a; b_total += b; busy_total += a + b;
         a_cpu_total += r->a_cpu_ns; b_cpu_total += r->b_cpu_ns;
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+        acquisition_helper_cpu_total += r->acquisition_helper_cpu_ns;
+#endif
     }
     uint64_t wall_ns = frames ? c.last_measured_finish - c.first_measured_start : 0;
     printf("{\"schema_version\":1,\"experiment\":\"rade-rx-two-worker\",\"execution\":\"%s\","
@@ -497,6 +558,35 @@ int main(int argc, char **argv) {
            argv[1], argv[4], argv[6], complete ? "true" : "false");
     if (c.q.failure) printf("\"%s\"", c.q.failure); else printf("null");
     printf(",\"test_hooks_used\":%s", (c.q.hold_b || c.fail_b_after >= 0 || c.delay_a_ms) ? "true" : "false");
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+    printf(",\"acquisition_workers\":{\"requested\":%u,\"effective\":%u,"
+           "\"includes_calling_thread\":true,\"helper_threads\":%u,\"separate_fargan_thread\":%s,"
+           "\"helper_threads_joined\":true,\"shutdown_ms\":%.6f,"
+           "\"statistics_scope\":\"whole_stream_including_warmup\","
+           "\"calls\":%" PRIu64 ",\"parallel_calls\":%" PRIu64 ",\"serial_calls\":%" PRIu64
+           ",\"helper_jobs\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "],"
+           "\"helper_cpu_ns\":[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "],\"dispatch_wait_ns\":%" PRIu64 "}",
+           c.acquisition_workers, acquisition_stats.workers, acquisition_stats.workers - 1,
+           c.parallel ? "true" : "false", acquisition_shutdown_ns / 1e6,
+           acquisition_stats.calls, acquisition_stats.parallel_calls,
+           acquisition_stats.serial_calls, acquisition_stats.helper_jobs[0], acquisition_stats.helper_jobs[1],
+           acquisition_stats.helper_jobs[2], acquisition_stats.helper_cpu_ns[0], acquisition_stats.helper_cpu_ns[1],
+           acquisition_stats.helper_cpu_ns[2], acquisition_stats.dispatch_wait_ns);
+    printf(",\"a_cpu_scope\":\"measured_caller_thread_only_excludes_acquisition_helpers\","
+           "\"acquisition_recovery\":{\"scope\":\"whole_processed_input_including_warmup\","
+           "\"processed_input_samples\":%" PRIu64 ",\"windows\":[", c.acquisition_samples);
+    if (c.interrupt) {
+        for (unsigned window = 0; window < 155 &&
+             (uint64_t)(window + 1) * 12u * RADE_MODEM_SAMPLE_RATE <= c.acquisition_samples; ++window) {
+            if (window) printf(",");
+            printf("{\"end_input_sample\":%" PRIu64 ",\"sync_blocks_before_next_mute\":%" PRIu64
+                   ",\"feature_blocks_before_next_mute\":%" PRIu64 "}",
+                   (uint64_t)(window + 1) * 12u * RADE_MODEM_SAMPLE_RATE,
+                   c.recovered_sync[window], c.recovered_features[window]);
+        }
+    }
+    printf("]}");
+#endif
     printf(",\"radio_io\":false,\"full_pipeline_qualified\":false,\"workers_joined\":true,"
            "\"original_70_percent_assessment\":\"unchanged_serial_reference_required\","
            "\"checksum_algorithm\":\"fnv1a64-noncryptographic\",\"checksum_cost_in_service_timing\":true,"
@@ -518,6 +608,11 @@ int main(int argc, char **argv) {
            ",\"fullpath_one_input_interval_misses\":%" PRIu64 ",\"nominal_release_one_interval_misses\":",
            wall_ns, busy_total, a_total, b_total, a_cpu_total, b_cpu_total, fullpath_misses);
     if (c.paced) printf("%" PRIu64, nominal_misses); else printf("null");
+#if defined(RADE_ACQ_PARALLEL) && RADE_ACQ_PARALLEL
+    printf(",\"acquisition_helper_cpu_ns\":%" PRIu64 ",\"total_dsp_cpu_ns\":%" PRIu64
+           ",\"dsp_cpu_scope\":\"completed_measured_records_excludes_warmup\"",
+           acquisition_helper_cpu_total, a_cpu_total + b_cpu_total + acquisition_helper_cpu_total);
+#endif
     printf(",\"ingress_late_more_than_one_interval\":%" PRIu64 ",\"ingress_late_max_ns\":%" PRIu64
            ",\"maximum_virtual_input_backlog_ns_including_warmup\":%" PRIu64 ",\"offline_output_samples_per_wall_second\":",
            c.ingress_deadline_misses, c.ingress_late_max, c.maximum_virtual_input_backlog_ns);
@@ -562,7 +657,8 @@ int main(int argc, char **argv) {
     printf("}}\n");
     free(c.fixture); free(c.input); free(c.eoo); free(c.native_out); free(c.converted);
     free(c.pcm_out); free(c.iq); free(c.stats); free(values);
-    src_delete(c.input_src); src_delete(c.output_src); rade_close(c.rade); rade_finalize();
+    src_delete(c.input_src); src_delete(c.output_src);
+    if (c.rade) { rade_close(c.rade); rade_finalize(); }
     pthread_cond_destroy(&c.q.changed); pthread_mutex_destroy(&c.q.mutex);
     return complete ? 0 : 3;
 }

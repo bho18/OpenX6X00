@@ -135,6 +135,20 @@ def validate_rade_stage_timing(result):
             'measured_frames': frames, 'total_processing_ns': total}
 
 
+def acquisition_callees(assembly):
+    """Follow only the explicit serial detector and bounded acquisition helpers."""
+    branch = r'\b(?:blx|bl|b)(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?(?:\.w)?\s+[^<\n]*<([^>]+)>'
+    helper = r'(?:rade_acq_grid_neon|rade_acq_correlate4)(?:\.(?:constprop|isra|part)\.[0-9]+)*'
+    targets = set()
+    for target in re.findall(branch, assembly):
+        target = re.sub(r'\+0x[0-9a-fA-F]+$', '', target)
+        if target.endswith('@plt'):
+            target = target[:-4]
+        if target in ('rade_acq_pool_detect', 'rade_acq_detect_pilots_serial') or re.fullmatch(helper, target):
+            targets.add(target)
+    return sorted(targets)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--work', type=Path, required=True)
@@ -232,10 +246,7 @@ def main():
                        [objdump, '-d', '--disassemble=' + function, package / 'lib/librade.so.0.1'])
         if re.search(r'\bvfma\.f32\s+q', assembly):
             vector_functions.append(function)
-        for target in re.findall(r'\b(?:blx|bl|b)(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?(?:\.w)?\s+[^<\n]*<([^>]+)>', assembly):
-            target = target.split('+', 1)[0]
-            if target.startswith(('rade_acq_grid_neon', 'rade_acq_correlate4')):
-                pending.append(target)
+        pending.extend(acquisition_callees(assembly))
     if not vector_functions:
         raise ValueError('packaged acquisition call tree did not contain vector FMA instructions')
 
