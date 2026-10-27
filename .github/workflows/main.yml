@@ -1,146 +1,150 @@
-# Builds the SD card images on GitHub, one per radio: this repository (OpenX6X00) is the GUI
-# package of gdyuldin's AetherX6100Buildroot (the X6100) and AetherX6200Buildroot (the X6200),
-# built from the checkout instead of upstream. buildroot/local-build.sh does the patching and
-# the build, here as in the container at home.
-name: Build image
-
-# By hand only (Actions > Build image > Run workflow): releases are built
-# locally and the images attached by hand; building on every tag only made a
-# second copy, took 2 hours and failed now and then.
+name: FreeDV benchmark package
 on:
+  push:
+    branches: [experiment/x6200-rx-pipeline]
   workflow_dispatch:
-
-# Write access for the Release step (the default token is read-only)
+    inputs:
+      baseline_run:
+        description: Successful or running pinned baseline image/SDK workflow run ID
+        required: true
+        type: string
+      rade_acq_neon:
+        description: Build experimental acquisition candidate with mandatory SDK correctness gates
+        required: false
+        default: false
+        type: boolean
+      rade_pipeline:
+        description: Add experimental two-worker RX benchmark (requires rade_acq_neon)
+        required: false
+        default: false
+        type: boolean
 permissions:
-  contents: write
-
+  contents: read
+  actions: read
 jobs:
-  build:
+  register-workflow:
+    if: github.event_name == 'push'
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - model: x6100
-            tree: AetherX6100Buildroot
-            out: OpenX6X00-x6100
-          - model: x6200
-            tree: AetherX6200Buildroot
-            out: OpenX6X00-x6200
-    defaults:
-      run:
-        shell: bash
-
-    env:
-      X6CI_IMAGES: ${{ matrix.tree }}/build/images
-      X6CI_IMG: ${{ matrix.out }}-${{ github.ref_name }}-sdcard.img
-      X6CI_BUNDLE: ${{ matrix.out }}-${{ github.ref_name }}-update.tar.gz
-
     steps:
-    # A full buildroot build needs more room than the runner leaves free:
-    # drop the SDKs we do not use (the tool cache and the big packages stay)
-    - name: Free Disk Space (Ubuntu)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        tool-cache: false
-        android: true
-        dotnet: true
-        haskell: true
-        large-packages: false
-        docker-images: true
-        swap-storage: true
-    - name: check free space
-      run: |
-        df -h
-        pwd
-
-    - name: Checkout GUI
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-        path: x6100_gui
-
-    - name: Checkout buildroot
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-        repository: gdyuldin/${{ matrix.tree }}
-        path: ${{ matrix.tree }}
-
-    # ccache kept between runs, one cache per radio. The cache key carries the time of the
-    # run, so every run saves a new one and restores the latest by prefix.
-    - name: Prepare ccache timestamp
-      id: ccache_cache_timestamp
-      shell: cmake -P {0}
-      run: |
-        string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
-        file(APPEND "$ENV{GITHUB_OUTPUT}" "timestamp=${current_date}")
-
-    # Restore here and save right after Build, even when Build fails, so a
-    # failed attempt still leaves its compiled work for the next one.
-    - name: Restore ccache
-      uses: actions/cache/restore@v4
-      with:
-        path: ~/.buildroot-ccache
-        key: ${{ runner.os }}-${{ matrix.model }}-ccache-${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.model }}-ccache-
-
-    # The update bundle a running radio installs by itself (x6100-update) is signed with the
-    # repository secret UPDATE_SIGNING_KEY (an EC P-256 private key in PEM; its public half is
-    # rootfs/usr/share/x6100/update.pub). Without the secret the bundle is unsigned and radios
-    # refuse it. The script also patches the buildroot tree, configures and builds, puts our
-    # U-Boot on the X6100's image and names it <out>-local-sdcard.img.
-    - name: Build
-      env:
-        UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-      run: |
-        if [ -n "$UPDATE_SIGNING_KEY" ]; then
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > /tmp/update-key.pem
-          export UPDATE_KEY=/tmp/update-key.pem
-        fi
-        MODEL=${{ matrix.model }} GUI_DIR=$GITHUB_WORKSPACE/x6100_gui BR_DIR=$GITHUB_WORKSPACE/${{ matrix.tree }} \
-          bash x6100_gui/buildroot/local-build.sh
-        rm -f /tmp/update-key.pem
-
-    - name: Save ccache
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: ~/.buildroot-ccache
-        key: ${{ runner.os }}-${{ matrix.model }}-ccache-${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-
-    # The release names: <out>-<ref>-sdcard.img.zip and <out>-<ref>-update.tar.gz (the script
-    # named the bundle after the version in src/main.h)
-    - name: Name the image and the bundle
-      run: |
-        cd $X6CI_IMAGES
-        mv ${{ matrix.out }}-local-sdcard.img $X6CI_IMG
-        zip $X6CI_IMG.zip $X6CI_IMG
-        mv ${{ matrix.out }}-v*-update.tar.gz $X6CI_BUNDLE
-        ls -la $X6CI_IMG.zip $X6CI_BUNDLE
-
-    # Always keep the image and the bundle as workflow artifacts: branch runs have no
-    # release to attach to, and on a tag they survive a failed Release step.
-    - name: Upload image
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.X6CI_IMG }}.zip
-        path: ${{ env.X6CI_IMAGES }}/${{ env.X6CI_IMG }}.zip
-        retention-days: 30
-
-    - name: Upload update bundle
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.X6CI_BUNDLE }}
-        path: ${{ env.X6CI_IMAGES }}/${{ env.X6CI_BUNDLE }}
-        retention-days: 30
-
-    # On a tag: GitHub release with the image and the update bundle (what radios look for)
-    - name: Release
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: |
-          ${{ env.X6CI_IMAGES }}/${{ env.X6CI_IMG }}.zip
-          ${{ env.X6CI_IMAGES }}/${{ env.X6CI_BUNDLE }}
+      - run: echo 'Pipeline SDK experiment registered; builds require manual dispatch.'
+  build-package:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 210
+    steps:
+      - name: Check optional experiment prerequisites
+        env:
+          PIPELINE_REQUEST: ${{ inputs.rade_pipeline }}
+          NEON_REQUEST: ${{ inputs.rade_acq_neon }}
+        run: |
+          if [ "$PIPELINE_REQUEST" = true ] && [ "$NEON_REQUEST" != true ]; then
+            echo '::error::rade_pipeline requires rade_acq_neon and its mandatory correctness checks'
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check out pinned V1 loss reference
+        if: ${{ inputs.rade_acq_neon }}
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: drowe67/radae
+          ref: 89220e28fcc25138c0e038849e653dba30ec2dd6
+          path: radae-reference
+      - name: Wait for and verify baseline SDK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -eu
+          case "$BASELINE_RUN" in ''|*[!0-9]*) exit 1;; esac
+          for attempt in $(seq 1 150); do
+            state=$(gh api "repos/$REPOSITORY/actions/runs/$BASELINE_RUN" --jq '.status')
+            if [ "$state" = completed ]; then break; fi
+            echo "Waiting for pinned baseline SDK: $state ($attempt/150)"
+            sleep 60
+          done
+          gh api "repos/$REPOSITORY/actions/runs/$BASELINE_RUN" > baseline-run.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('baseline-run.json'))
+          assert r['conclusion']=='success', 'baseline did not succeed'
+          assert r['head_branch']=='experiment/x6200-baseline-sdk', 'unexpected baseline branch'
+          assert r['path']=='.github/workflows/main.yml', 'unexpected baseline workflow'
+          PY
+          gh run download "$BASELINE_RUN" --repo "$REPOSITORY" --name x6200-freedv-baseline --dir baseline
+          (cd baseline && sha256sum -c SHA256SUMS)
+          test "$(cat baseline/buildroot-commit.txt)" = 8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3
+          test "$(cat baseline/firmware-commit.txt)" = fd7f0bba70c0c8f8854219b6422600cbd428a6dc
+          mkdir sdk
+          set -- baseline/*sdk*.tar.gz
+          test "$#" = 1
+          tar -xzf "$1" -C sdk
+          relocation=$(find "$PWD/sdk" -name relocate-sdk.sh -type f)
+          test -n "$relocation"
+          "$relocation"
+          dirname "$relocation" > sdk-path.txt
+      - name: Install build prerequisites
+        timeout-minutes: 18
+        run: |
+          set -eu
+          run_prerequisite() {
+            "$@" > "$RUNNER_TEMP/freedv-prerequisites.log" 2>&1 || {
+              status=$?
+              tail -60 "$RUNNER_TEMP/freedv-prerequisites.log"
+              python3 -c 'import os,pathlib; text=pathlib.Path(os.environ["RUNNER_TEMP"],"freedv-prerequisites.log").read_text(errors="replace")[-2500:]; print("::error title=SDK build prerequisite failed::"+text.replace("%","%25").replace("\r","%0D").replace("\n","%0A"))'
+              exit "$status"
+            }
+          }
+          run_prerequisite timeout --kill-after=10s 4m sudo apt-get \
+            -o Acquire::Retries=1 -o Acquire::ForceIPv4=true \
+            -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          run_prerequisite timeout --kill-after=10s 12m sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=1 -o Acquire::ForceIPv4=true \
+            -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
+            -o Dpkg::Use-Pty=0 install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev python3 python3-venv qemu-user
+      - name: Install upstream loss-check dependencies
+        if: ${{ inputs.rade_acq_neon }}
+        run: |
+          set -eu
+          python3 -m venv "$RUNNER_TEMP/rade-validation-venv"
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install numpy==2.1.3 matplotlib==3.9.2
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip freeze > "$RUNNER_TEMP/rade-validation-requirements.txt"
+      - name: Build pinned benchmarks with matching SDK
+        env:
+          NEON_REQUEST: ${{ inputs.rade_acq_neon }}
+          PIPELINE_REQUEST: ${{ inputs.rade_pipeline }}
+        run: |
+          set -eu
+          candidate_args=()
+          if [ "$NEON_REQUEST" = true ]; then
+            candidate_args=(--rade-acq-neon --radae-reference "$GITHUB_WORKSPACE/radae-reference" --validation-python "$RUNNER_TEMP/rade-validation-venv/bin/python")
+          fi
+          if [ "$PIPELINE_REQUEST" = true ]; then candidate_args+=(--rade-pipeline); fi
+          python3 tools/freedv/build_benchmark_package.py --work "$RUNNER_TEMP/freedv-package" \
+            --sdk "$(cat sdk-path.txt)" --sdk-manifest baseline/buildroot-commit.txt --jobs 2 "${candidate_args[@]}" \
+            > "$RUNNER_TEMP/freedv-package-build.log" 2>&1 || {
+              status=$?
+              tail -80 "$RUNNER_TEMP/freedv-package-build.log"
+              python3 -c 'import os,pathlib; text=pathlib.Path(os.environ["RUNNER_TEMP"],"freedv-package-build.log").read_text(errors="replace")[-3500:]; print("::error title=SDK acquisition build failed::"+text.replace("%","%25").replace("\r","%0D").replace("\n","%0A"))'
+              exit "$status"
+            }
+          cp baseline-run.json "$RUNNER_TEMP/freedv-package/"
+          cd "$RUNNER_TEMP/freedv-package"
+          sha256sum freedv-benchmark-package.tar.gz freedv-benchmark-sources.tar.gz > ARCHIVE-SHA256SUMS
+      - name: Upload benchmark test package and build record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ inputs.rade_pipeline && 'x6200-freedv-pipeline-package' || inputs.rade_acq_neon && 'x6200-freedv-acquisition-neon-package' || 'x6200-freedv-benchmark-package' }}
+          path: |
+            ${{ runner.temp }}/freedv-package/freedv-benchmark-package.tar.gz
+            ${{ runner.temp }}/freedv-package/freedv-benchmark-sources.tar.gz
+            ${{ runner.temp }}/freedv-package/ARCHIVE-SHA256SUMS
+            ${{ runner.temp }}/freedv-package/baseline-run.json
+            ${{ runner.temp }}/freedv-package-build.log
+            ${{ runner.temp }}/freedv-package/sdk-validation/
+            ${{ runner.temp }}/freedv-package/pipeline-sdk-validation/
+            ${{ runner.temp }}/rade-validation-requirements.txt
+          if-no-files-found: error
+          retention-days: 14
