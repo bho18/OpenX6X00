@@ -19,6 +19,8 @@ jobs:
         run: python3 tools/freedv/test_decode_rade_profile.py
       - name: Validate SDK stage-accounting checks
         run: python3 tools/freedv/test_validate_rade_stage.py
+      - name: Check experimental pipeline collection and evidence validation
+        run: python3 tools/freedv/test_pipeline_collection.py
       - name: Verify frozen RADE receive fixture
         run: python3 tools/freedv/test_pinned_rade_fixture.py
   prototype:
@@ -197,7 +199,7 @@ jobs:
             cc -O2 -g -std=c11 -Wall -Wextra -Werror -Wno-error=cpp \
               -include "$opus_dir/config.h" \
               -Irade-reference/src -I"$opus_dir/dnn" -I"$opus_dir/celt" -I"$opus_dir/include" -I"$opus_dir" \
-              "$1" -L/tmp/rade-build/src -lrade "$opus_dir/.libs/libopus.a" \
+              "$1" "${@:3}" -L/tmp/rade-build/src -lrade "$opus_dir/.libs/libopus.a" \
               -lsamplerate -lm -Wl,-rpath,/tmp/rade-build/src -o "$2"
           }
           build_benchmark /tmp/rade-frame-bench-baseline.c /tmp/rade-frame-bench-baseline
@@ -205,6 +207,20 @@ jobs:
           python3 tools/freedv/test_rade_frame_bench.py --benchmark /tmp/rade-frame-bench \
             --tx /tmp/rade-build/src/rade_tx_wav --speech rade-reference/input_sample.wav \
             --stage-baseline /tmp/rade-frame-bench-baseline
+          build_benchmark tools/freedv/rade_pipeline_bench.c /tmp/rade-pipeline-bench -pthread
+          python3 - <<'PYFIXTURE'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools/freedv')
+          from build_benchmark_package import copy_rade_modem_fixture
+          fixtures = Path('/tmp/rade-pipeline-fixtures')
+          fixtures.mkdir()
+          copy_rade_modem_fixture(Path.cwd(), fixtures)
+          (fixtures / 'silence.raw').write_bytes(bytes(16000))
+          PYFIXTURE
+          python3 tools/freedv/test_rade_pipeline.py --binary /tmp/rade-pipeline-bench \
+            --fixtures /tmp/rade-pipeline-fixtures --original-stage-binary /tmp/rade-frame-bench \
+            --output /tmp/rade-pipeline-tests
 
   host-ui:
     runs-on: ubuntu-24.04

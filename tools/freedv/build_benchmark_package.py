@@ -55,6 +55,7 @@ def main():
     p.add_argument('--sdk-manifest', type=Path, help='baseline buildroot-commit.txt from the SDK build')
     p.add_argument('--host-validation', action='store_true')
     p.add_argument('--rade-acq-neon', action='store_true', help='experimental SDK-only acquisition kernel; requires QEMU correctness gates')
+    p.add_argument('--rade-pipeline', action='store_true', help='experimental two-worker RX executable; requires matching SDK and acquisition validation')
     p.add_argument('--radae-reference', type=Path, help='clean pinned RADAE checkout for upstream V1 loss validation')
     p.add_argument('--validation-python', type=Path, help='Python with upstream RADAE loss dependencies')
     p.add_argument('--cache-root', type=Path, help='optional local Git object cache')
@@ -66,6 +67,8 @@ def main():
         p.error('--rade-acq-neon requires --sdk, --radae-reference and --validation-python')
     if a.rade_acq_neon and not shutil.which('qemu-arm'):
         p.error('--rade-acq-neon requires qemu-arm; validation cannot be skipped')
+    if a.rade_pipeline and (not a.sdk or not a.rade_acq_neon):
+        p.error('--rade-pipeline requires --sdk and --rade-acq-neon; existing correctness gates remain mandatory')
     work = a.work.resolve()
     if work == ROOT or ROOT in work.parents:
         p.error('work directory must be outside the repository')
@@ -243,12 +246,33 @@ endif()'''))
             *(['-include', str(opus / 'config.h')] if name == 'rade-frame-bench' else []),
             *['-I' + str(i) for i in [*includes, samplerate_source / 'include']], code / 'tools/freedv' / source,
             *libs, samplerate_library, '-lm', '-Wl,-rpath,$ORIGIN/../lib', '-o', package / 'bin' / name)
+    if a.rade_pipeline:
+        pipeline_source = code / 'tools/freedv/rade_pipeline_bench.c'
+        run(compiler, '-O2', '-g', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-error=cpp',
+            '-pthread', '-include', opus / 'config.h',
+            *['-I' + str(i) for i in [src / 'rade_c/src', opus / 'dnn', opus / 'celt', opus / 'include', opus, samplerate_source / 'include']],
+            pipeline_source, '-L' + str(work / 'rade_c/src'), '-lrade', opus / '.libs/libopus.a',
+            *([ne10] if ne10 else []), samplerate_library, '-lm', '-Wl,-rpath,$ORIGIN/../lib',
+            '-o', package / 'bin/rade-pipeline-bench')
+        manifest['rade_pipeline_experiment'] = {
+            'enabled': True, 'production_qualified': False, 'radio_io': False,
+            'source_sha256': sha(pipeline_source), 'additional_link_option': '-pthread',
+            'opus_config_sha256': sha(opus / 'config.h'),
+            'validation_harness_sha256': sha(code / 'tools/freedv/validate_rade_pipeline_sdk.py'),
+            'evidence_validator_sha256': sha(code / 'tools/freedv/pipeline_evidence.py'),
+            'original_70_percent_assessment': 'unchanged_serial_reference_required',
+        }
     # Bundle codec libraries. The baseline supplies libc/libm; resampling is static.
     for name, pattern in [('codec2', 'libcodec2.so*'), ('rade_c', 'librade.so*')]:
         for lib in (work / name / 'src').glob(pattern):
             shutil.copy2(lib, package / 'lib' / lib.name)
     for name in ('inventory.py', 'collect_benchmark.py', 'sources.json', 'run_benchmarks.py', 'THIRD-PARTY-NOTICES.md'):
         shutil.copy2(code / 'tools/freedv' / name, package / 'tools/freedv' / name)
+    if a.rade_pipeline:
+        for name in ('run_pipeline_benchmarks.py', 'pipeline_evidence.py'):
+            shutil.copy2(code / 'tools/freedv' / name, package / 'tools/freedv' / name)
+        shutil.copy2(code / 'docs/freedv/rade-pipeline-benchmark.md', package / 'PIPELINE.md')
+        shutil.copy2(code / 'docs/freedv/rade-pipeline-design.md', package / 'rade-pipeline-design.md')
     shutil.copy2(code / 'docs/freedv/benchmark-package.md', package / 'README.md')
     shutil.copy2(code / 'docs/freedv/rade-benchmark-stage-timing.md', package / 'STAGE-TIMING.md')
     manifest['elf_dependencies'] = {}
@@ -266,6 +290,12 @@ endif()'''))
         manifest['rade_acquisition_experiment']['sdk_validation_summary_sha256'] = sha(validation)
         manifest['rade_acquisition_experiment']['sdk_validation'] = json.loads(validation.read_text())
         manifest['rade_acquisition_experiment']['flags_make'] = (work / 'rade_c/src/CMakeFiles/rade.dir/flags.make').read_text()
+    if a.rade_pipeline:
+        run('python3', code / 'tools/freedv/validate_rade_pipeline_sdk.py', '--work', work,
+            '--compiler', compiler, '--sysroot', sysroot)
+        validation = work / 'pipeline-sdk-validation/summary.json'
+        manifest['rade_pipeline_experiment']['sdk_validation_summary_sha256'] = sha(validation)
+        manifest['rade_pipeline_experiment']['sdk_validation'] = json.loads(validation.read_text())
     source_archive = work / 'freedv-benchmark-sources.tar.gz'
     with tarfile.open(source_archive, 'w:gz') as archive:
         for name in ('codec2', 'rade_c', 'opus'):

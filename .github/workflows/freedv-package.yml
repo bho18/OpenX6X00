@@ -11,6 +11,11 @@ on:
         required: false
         default: false
         type: boolean
+      rade_pipeline:
+        description: Add experimental two-worker RX benchmark (requires rade_acq_neon)
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
   actions: read
@@ -19,6 +24,15 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 210
     steps:
+      - name: Check optional experiment prerequisites
+        env:
+          PIPELINE_REQUEST: ${{ inputs.rade_pipeline }}
+          NEON_REQUEST: ${{ inputs.rade_acq_neon }}
+        run: |
+          if [ "$PIPELINE_REQUEST" = true ] && [ "$NEON_REQUEST" != true ]; then
+            echo '::error::rade_pipeline requires rade_acq_neon and its mandatory correctness checks'
+            exit 1
+          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Check out pinned V1 loss reference
         if: ${{ inputs.rade_acq_neon }}
@@ -91,12 +105,14 @@ jobs:
       - name: Build pinned benchmarks with matching SDK
         env:
           NEON_REQUEST: ${{ inputs.rade_acq_neon }}
+          PIPELINE_REQUEST: ${{ inputs.rade_pipeline }}
         run: |
           set -eu
           candidate_args=()
           if [ "$NEON_REQUEST" = true ]; then
             candidate_args=(--rade-acq-neon --radae-reference "$GITHUB_WORKSPACE/radae-reference" --validation-python "$RUNNER_TEMP/rade-validation-venv/bin/python")
           fi
+          if [ "$PIPELINE_REQUEST" = true ]; then candidate_args+=(--rade-pipeline); fi
           python3 tools/freedv/build_benchmark_package.py --work "$RUNNER_TEMP/freedv-package" \
             --sdk "$(cat sdk-path.txt)" --sdk-manifest baseline/buildroot-commit.txt --jobs 2 "${candidate_args[@]}" \
             > "$RUNNER_TEMP/freedv-package-build.log" 2>&1 || {
@@ -112,7 +128,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ inputs.rade_acq_neon && 'x6200-freedv-acquisition-neon-package' || 'x6200-freedv-benchmark-package' }}
+          name: ${{ inputs.rade_pipeline && 'x6200-freedv-pipeline-package' || inputs.rade_acq_neon && 'x6200-freedv-acquisition-neon-package' || 'x6200-freedv-benchmark-package' }}
           path: |
             ${{ runner.temp }}/freedv-package/freedv-benchmark-package.tar.gz
             ${{ runner.temp }}/freedv-package/freedv-benchmark-sources.tar.gz
@@ -120,6 +136,7 @@ jobs:
             ${{ runner.temp }}/freedv-package/baseline-run.json
             ${{ runner.temp }}/freedv-package-build.log
             ${{ runner.temp }}/freedv-package/sdk-validation/
+            ${{ runner.temp }}/freedv-package/pipeline-sdk-validation/
             ${{ runner.temp }}/rade-validation-requirements.txt
           if-no-files-found: error
           retention-days: 14
