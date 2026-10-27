@@ -67,6 +67,8 @@ Every case returns zero and is marked validated. Every reported functional count
 
 Both interrupted runs mute 16,000 input samples and report 23 synchronized blocks after the first interruption, supporting recovery for this deterministic fixture. The 700E synchronized fixture reports 38 synchronized frames in each run; the silence fixture reports zero.
 
+The no-sync fixture is literal zero PCM, not receiver hiss. It exercises repeated acquisition but cannot validate weak-signal sensitivity or a proposed RF noise gate. See [acquisition and gating follow-ups](rade-acquisition-followups.md).
+
 Actual output PCM and feature arrays are absent from these radio result bundles. Matching counters do not establish sample-by-sample equality, perceptual quality or interoperability. The benchmarks have no radio-control or physical-audio access. This is software fixture processing, not controlled RF receive interoperability.
 
 ## Resource observations and limits
