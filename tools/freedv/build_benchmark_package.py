@@ -127,6 +127,7 @@ endif()'''))
     if sha(model) != PINS['opus']['model_sha256']:
         raise ValueError('Opus model checksum mismatch')
     manifest['opus_model_sha256'] = sha(model)
+    manifest['opus_config_sha256'] = sha(opus / 'config.h')
     ne10 = re.search(r'^FREEDV_NE10_LIBRARY:FILEPATH=(.*)$', (work / 'rade_c/CMakeCache.txt').read_text(), re.M).group(1)
     ne10 = None if ne10.endswith('-NOTFOUND') else Path(ne10)
     manifest['sdk_ne10_library_sha256'] = sha(ne10) if ne10 else None
@@ -152,6 +153,7 @@ endif()'''))
         ('codec2-frame-bench', 'codec2_frame_bench.c', [src / 'codec2/src'], ['-L' + str(work / 'codec2/src'), '-lcodec2']),
         ('rade-frame-bench', 'rade_frame_bench.c', [src / 'rade_c/src', opus / 'dnn', opus / 'celt', opus / 'include', opus], ['-L' + str(work / 'rade_c/src'), '-lrade', str(opus / '.libs/libopus.a')] + ([str(ne10)] if ne10 else []))]:
         run(compiler, '-O2', '-g', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-error=cpp',
+            *(['-include', str(opus / 'config.h')] if name == 'rade-frame-bench' else []),
             *['-I' + str(i) for i in includes], code / 'tools/freedv' / source,
             *libs, '-lsamplerate', '-lm', '-Wl,-rpath,$ORIGIN/../lib', '-o', package / 'bin' / name)
     # Bundle codec libraries. The baseline supplies libc, libm and libsamplerate.
