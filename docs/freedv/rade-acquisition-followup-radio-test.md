@@ -31,7 +31,7 @@ $RadioIp = "192.168.100.64"
 $RemoteBench = "/tmp/freedv-acquisition-parallel-20261027-165525"
 $TestStamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $LocalHelper = "$env:USERPROFILE\Downloads\run_acquisition_endurance-$TestStamp.py"
-$HelperUrl = "https://raw.githubusercontent.com/bho18/OpenX6X00/topic/rade-parallel-acquisition/tools/freedv/run_acquisition_endurance.py"
+$HelperUrl = "https://raw.githubusercontent.com/bho18/OpenX6X00/c7a9f41a4a8206b4c0f7953de3e77ca2690203b2/tools/freedv/run_acquisition_endurance.py"
 $ExpectedHelperSha = "37ab64011732a5db446b8d1d2a7714c02366d1268f580a7f23d9c1bd4e69ffda"
 Invoke-WebRequest -UseBasicParsing -Uri $HelperUrl -OutFile $LocalHelper -ErrorAction Stop
 if ((Get-FileHash -LiteralPath $LocalHelper -Algorithm SHA256).Hash -ne $ExpectedHelperSha) { throw "Helper checksum differs; use the current guide and helper together." }
