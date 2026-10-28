@@ -1,149 +1,166 @@
-# Builds the SD card images on GitHub, one per radio: this repository (OpenX6X00) is the GUI
-# package of our forks of Aether Radio's AetherX6100Buildroot (the X6100) and AetherX6200Buildroot (the X6200),
-# built from the checkout instead of upstream. buildroot/local-build.sh does the patching and
-# the build, here as in the container at home.
-name: Build image
+name: X6200 native FreeDV diagnostic images
 
-# By hand only (Actions > Build image > Run workflow): releases are built
-# locally and the images attached by hand; building on every tag only made a
-# second copy, took 2 hours and failed now and then.
+# Experiment-branch workflow: manual only, read permissions, no releases or
+# upstream actions. The fork's main branch retains the upstream image workflow.
 on:
   workflow_dispatch:
 
-# Write access for the Release step (the default token is read-only)
 permissions:
-  contents: write
+  contents: read
+  actions: read
 
 jobs:
-  build:
+  native-images:
+    if: github.repository == 'bho18/OpenX6X00' && github.ref == 'refs/heads/experiment/x6200-native-diagnostics'
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - model: x6100
-            tree: AetherX6100Buildroot
-            out: OpenX6X00-x6100
-          - model: x6200
-            tree: AetherX6200Buildroot
-            out: OpenX6X00-x6200
-    defaults:
-      run:
-        shell: bash
-
-    env:
-      X6CI_IMAGES: ${{ matrix.tree }}/build/images
-      X6CI_IMG: ${{ matrix.out }}-${{ github.ref_name }}-sdcard.img
-      X6CI_BUNDLE: ${{ matrix.out }}-${{ github.ref_name }}-update.tar.gz
-
+    timeout-minutes: 360
     steps:
-    # A full buildroot build needs more room than the runner leaves free:
-    # drop the SDKs we do not use (the tool cache and the big packages stay)
-    - name: Free Disk Space (Ubuntu)
-      uses: jlumbroso/free-disk-space@main
-      with:
-        tool-cache: false
-        android: true
-        dotnet: true
-        haskell: true
-        large-packages: false
-        docker-images: true
-        swap-storage: true
-    - name: check free space
-      run: |
-        df -h
-        pwd
-
-    - name: Checkout GUI
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-        path: x6100_gui
-
-    # Our forks of Aether Radio's trees: an upstream change reaches an image only once merged into
-    # the fork. local-build.sh warns on the run (and in its summary) when upstream has commits the
-    # fork has not
-    - name: Checkout buildroot
-      uses: actions/checkout@v4
-      with:
-        submodules: true
-        repository: Guru-RF/${{ matrix.tree }}
-        path: ${{ matrix.tree }}
-
-    # ccache kept between runs, one cache per radio. The cache key carries the time of the
-    # run, so every run saves a new one and restores the latest by prefix.
-    - name: Prepare ccache timestamp
-      id: ccache_cache_timestamp
-      shell: cmake -P {0}
-      run: |
-        string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
-        file(APPEND "$ENV{GITHUB_OUTPUT}" "timestamp=${current_date}")
-
-    # Restore here and save right after Build, even when Build fails, so a
-    # failed attempt still leaves its compiled work for the next one.
-    - name: Restore ccache
-      uses: actions/cache/restore@v4
-      with:
-        path: ~/.buildroot-ccache
-        key: ${{ runner.os }}-${{ matrix.model }}-ccache-${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.model }}-ccache-
-
-    # The update bundle a running radio installs by itself (x6100-update) is signed with the
-    # repository secret UPDATE_SIGNING_KEY (an EC P-256 private key in PEM; its public half is
-    # rootfs/usr/share/x6100/update.pub). Without the secret the bundle is unsigned and radios
-    # refuse it. The script also patches the buildroot tree (the X6100's U-Boot: mainline 2026.07,
-    # its tarball checked), configures and builds, and names the image <out>-local-sdcard.img.
-    - name: Build
-      env:
-        UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-      run: |
-        if [ -n "$UPDATE_SIGNING_KEY" ]; then
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > /tmp/update-key.pem
-          export UPDATE_KEY=/tmp/update-key.pem
-        fi
-        MODEL=${{ matrix.model }} GUI_DIR=$GITHUB_WORKSPACE/x6100_gui BR_DIR=$GITHUB_WORKSPACE/${{ matrix.tree }} \
-          bash x6100_gui/buildroot/local-build.sh
-        rm -f /tmp/update-key.pem
-
-    - name: Save ccache
-      if: always()
-      uses: actions/cache/save@v4
-      with:
-        path: ~/.buildroot-ccache
-        key: ${{ runner.os }}-${{ matrix.model }}-ccache-${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-
-    # The release names: <out>-<ref>-sdcard.img.zip and <out>-<ref>-update.tar.gz (the script
-    # named the bundle after the version in src/main.h)
-    - name: Name the image and the bundle
-      run: |
-        cd $X6CI_IMAGES
-        mv ${{ matrix.out }}-local-sdcard.img $X6CI_IMG
-        zip $X6CI_IMG.zip $X6CI_IMG
-        mv ${{ matrix.out }}-v*-update.tar.gz $X6CI_BUNDLE
-        ls -la $X6CI_IMG.zip $X6CI_BUNDLE
-
-    # Always keep the image and the bundle as workflow artifacts: branch runs have no
-    # release to attach to, and on a tag they survive a failed Release step.
-    - name: Upload image
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.X6CI_IMG }}.zip
-        path: ${{ env.X6CI_IMAGES }}/${{ env.X6CI_IMG }}.zip
-        retention-days: 30
-
-    - name: Upload update bundle
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.X6CI_BUNDLE }}
-        path: ${{ env.X6CI_IMAGES }}/${{ env.X6CI_BUNDLE }}
-        retention-days: 30
-
-    # On a tag: GitHub release with the image and the update bundle (what radios look for)
-    - name: Release
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: |
-          ${{ env.X6CI_IMAGES }}/${{ env.X6CI_IMG }}.zip
-          ${{ env.X6CI_IMAGES }}/${{ env.X6CI_BUNDLE }}
+      - name: Free space on the disposable runner
+        uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Check out the exact integration source and history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Check out pinned X6200 control headers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gdyuldin/X6200Control
+          ref: 0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8
+          path: control-x6200-reference
+      - name: Check out pinned X6100 compatibility headers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gdyuldin/X6100Control
+          ref: 1426f56ef6759dc1c90cb76478c6e524e08c5c94
+          path: control-x6100-reference
+      - name: Check out pinned RADE V1 loss reference
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: drowe67/radae
+          ref: 89220e28fcc25138c0e038849e653dba30ec2dd6
+          path: radae-reference
+      - name: Install build and test prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=1 update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 install -y --no-install-recommends \
+            build-essential cmake ninja-build autoconf automake libtool pkg-config \
+            libsamplerate0-dev python3 python3-venv python3-pip e2fsprogs qemu-user \
+            sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
+            libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev \
+            libpulse-dev libasound2-dev libfftw3-dev libboost-dev pulseaudio libgpiod-dev libgps-dev
+          python3 -m venv "$RUNNER_TEMP/rade-validation-venv"
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install numpy==2.1.3 matplotlib==3.9.2
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip freeze > "$RUNNER_TEMP/validation-requirements.txt"
+      - name: Verify offline image editing behavior
+        run: python3 tools/freedv/test_native_image.py
+      - name: Build normal/diagnostic hosts and execute real integration fault tests
+        run: |
+          set -euo pipefail
+          python3 tools/freedv/validate_native_host.py --work "$RUNNER_TEMP/native-host-gates" \
+            --x6200-control control-x6200-reference --x6100-control control-x6100-reference --jobs 2 \
+            > "$RUNNER_TEMP/native-host-build.log" 2>&1 || { status=$?; tail -80 "$RUNNER_TEMP/native-host-build.log"; exit "$status"; }
+      - name: Exercise real codec-enabled adapter and shared reference equality on the host
+        run: |
+          set -euo pipefail
+          python3 tools/freedv/validate_native_host_codec.py --work "$RUNNER_TEMP/native-host-codec-gates" --jobs 2 \
+            > "$RUNNER_TEMP/native-host-codec.log" 2>&1 || { status=$?; tail -80 "$RUNNER_TEMP/native-host-codec.log"; exit "$status"; }
+      - name: Recover checksummed baseline image and exact matching SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/freedv/fetch_native_baseline.py --output "$RUNNER_TEMP/native-baseline"
+      - name: Build codec package and execute required SDK correctness checks
+        run: |
+          set -euo pipefail
+          sdk=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/native-baseline/recovery.json"))["sdk"])')
+          python3 tools/freedv/build_benchmark_package.py --work "$RUNNER_TEMP/native-benchmarks" \
+            --sdk "$sdk" --sdk-manifest "$RUNNER_TEMP/native-baseline/baseline/buildroot-commit.txt" \
+            --rade-acq-neon --rade-pipeline --rade-acq-parallel --radae-reference "$GITHUB_WORKSPACE/radae-reference" \
+            --validation-python "$RUNNER_TEMP/rade-validation-venv/bin/python" --jobs 2 \
+            > "$RUNNER_TEMP/native-codec-build.log" 2>&1 || { status=$?; tail -80 "$RUNNER_TEMP/native-codec-build.log"; exit "$status"; }
+      - name: Execute traditional FreeDV and RADE reference TX/RX under QEMU
+        run: |
+          set -euo pipefail
+          sdk=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/native-baseline/recovery.json"))["sdk"])')
+          compiler=$(find "$sdk/bin" -maxdepth 1 -name 'arm*-gcc' | head -1)
+          python3 tools/freedv/qemu_smoke.py --package "$RUNNER_TEMP/native-benchmarks/package" \
+            --sysroot "$("$compiler" -print-sysroot)" --output "$RUNNER_TEMP/native-qemu-smoke"
+      - name: Add pinned continuous fixture without looping end-of-over frames
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tools/freedv/fetch_native_fixture.py --package-work "$RUNNER_TEMP/native-benchmarks" \
+            --work "$RUNNER_TEMP/native-fixture"
+      - name: Validate the new streaming engine with the matching SDK
+        run: |
+          set -euo pipefail
+          sdk=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/native-baseline/recovery.json"))["sdk"])')
+          python3 tools/freedv/validate_native_codec_sdk.py --sdk "$sdk" \
+            --benchmark-work "$RUNNER_TEMP/native-benchmarks" --output "$RUNNER_TEMP/native-stream-sdk-gates"
+      - name: Build and verify both spare-card images
+        run: |
+          set -euo pipefail
+          python3 tools/freedv/build_native_images.py --recovery "$RUNNER_TEMP/native-baseline/recovery.json" \
+            --benchmark-work "$RUNNER_TEMP/native-benchmarks" --host-gates "$RUNNER_TEMP/native-host-gates/summary.json" \
+            --codec-gates "$RUNNER_TEMP/native-stream-sdk-gates/summary.json" \
+            --host-codec-gates "$RUNNER_TEMP/native-host-codec-gates/summary.json" \
+            --work "$RUNNER_TEMP/native-image-build" --output "$RUNNER_TEMP/native-images" --jobs 2 \
+            > "$RUNNER_TEMP/native-image-build.log" 2>&1 || { status=$?; tail -80 "$RUNNER_TEMP/native-image-build.log"; exit "$status"; }
+      - name: Publish test artifacts only after all required gates pass
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-native-diagnostic-images
+          path: ${{ runner.temp }}/native-images/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Keep corresponding codec sources and benchmark package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-native-codec-package-and-sources
+          path: |
+            ${{ runner.temp }}/native-benchmarks/freedv-benchmark-package.tar.gz
+            ${{ runner.temp }}/native-benchmarks/freedv-benchmark-sources.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+      - name: Keep the verified matching SDK for reproducible rebuilds
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-native-matching-sdk
+          path: |
+            ${{ runner.temp }}/native-baseline/baseline/*sdk*.tar.gz
+            ${{ runner.temp }}/native-baseline/baseline/SHA256SUMS
+            ${{ runner.temp }}/native-baseline/baseline/buildroot-commit.txt
+            ${{ runner.temp }}/native-baseline/baseline/sources.json
+            ${{ runner.temp }}/native-baseline/recovery.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Preserve build/test evidence, including failures
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-native-build-record-not-for-flashing
+          path: |
+            ${{ runner.temp }}/native-*.log
+            ${{ runner.temp }}/native-host-gates/
+            ${{ runner.temp }}/native-host-codec-gates/summary.json
+            ${{ runner.temp }}/native-host-codec-gates/*.stdout
+            ${{ runner.temp }}/native-host-codec-gates/*.stderr
+            ${{ runner.temp }}/native-host-codec-gates/shared-speech-checks/
+            ${{ runner.temp }}/native-stream-sdk-gates/
+            ${{ runner.temp }}/native-qemu-smoke/
+            ${{ runner.temp }}/native-benchmarks/sdk-validation/
+            ${{ runner.temp }}/native-benchmarks/pipeline-sdk-validation/
+            ${{ runner.temp }}/native-benchmarks/parallel-sdk-validation/
+            ${{ runner.temp }}/validation-requirements.txt
+          if-no-files-found: warn
+          retention-days: 14

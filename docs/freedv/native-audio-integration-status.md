@@ -1,103 +1,90 @@
-# Native audio integration: development status
+# Native diagnostic image: implementation and qualification status
 
-Updated 2026-10-28. This is source development, **not a diagnostic-card release**.
-Do not use the read-only Info page as a routing test interface. Hardware gates
-remain INCONCLUSIVE. The accepted procedure remains the
-[combined validation plan](combined-validation-plan.md).
+Updated 2026-10-28. The implementation is present; image readiness requires the
+mandatory automated host, matching-SDK and actual-image checks below. Physical
+routing/PTT/audio/RF gates remain **INCONCLUSIVE** until the operator returns a
+result bundle. Follow [the short radio procedure](native-radio-test.md) only with
+a diagnostic candidate image that has passed those automated gates.
 
-## Baseline and evidence
+## Fixed baseline
 
-The integration branch is `experiment/x6200-native-diagnostics`, with fork
-v0.3.6 commit `91f3b5e03f8cf7bffc58a1c44eaef6221be21631` merged explicitly.
-`tools/freedv/sources.json` retains the measured Buildroot, model and codec pins,
-and records the previous SDK manifest hash and compiler identity. Generated
-release manifests must additionally record the actual integration commit,
-working-tree status, compiler/sysroot identity and packaged-file hashes.
-The existing radio measurements still describe their original package; they do
-not qualify this extraction, the new GUI baseline or physical audio adapters.
-The 70% synchronized-RX margin finding remains FAIL.
+The integration branch is `experiment/x6200-native-diagnostics` in
+`bho18/OpenX6X00`, based explicitly on v0.3.6 commit
+`91f3b5e03f8cf7bffc58a1c44eaef6221be21631`. The fork logo is retained; no upstream
+mutation or submission is authorized. `tools/freedv/sources.json` retains codec,
+model, Buildroot and control-library pins. Generated image manifests record the
+actual integration commit and effective compiler/library/fixture identities.
 
-All branches and pushes remain in `bho18/OpenX6X00`. The working fork logo is
-preserved. No upstream issue, PR or maintainer contact is part of this work.
+The recovered baseline SDK archive SHA256 is
+`bc253744032e1acfbb219fb22d07d3ec8024269da84dc02404048fc365a0b528`.
+Its GCC 12.3.0, glibc 2.36 loader and SDK NE10 identity match the measured package.
+The older SDK-manifest hash identifies the Buildroot commit text, not a unique
+SDK archive. Both outer artifact and inner archive checksums were verified;
+normalizations of three canonical SDK symlink aliases are recorded explicitly.
 
-## Implemented foundations
+Previously completed radio measurements still describe their original package.
+They establish file-processing capacity, not the new physical audio path. The
+original synchronized-RX 70% margin remains **FAIL**; sustained throughput passed.
 
-- Explicit passive, routing, receive-playback and microphone-TX case types.
-  Every routing/TX case still requires local arming and has a ten-second limit.
-  Receive playback can run for two minutes only after a completed unkeyed route
-  probe and explicit local confirmation. Qualification expires with ownership.
-- A controller monitor independent of LVGL and file workers rejects stale status
-  and aborts unexpected TX in receive cases. Restoration requires both playback
-  cancellation acknowledgement and a fresh post-command-clear RX packet.
-  Timer cancellation after an automatic abort permits subsequent tests.
-- A writer reservation rejects acquisition during in-flight admitted mutations.
-  Nested mutations retain their admission. Persistent/computed parameter writes,
-  manager mode/band changes, legacy preference setters, radio setters and setting
-  observers, ordinary playback/TX players, recorder starts and screen-record
-  toggles use the gate. SWR protection retains an explicit unkey path.
-  This is not yet a complete hardware session: active applications, direct
-  ingress paths and queued work still require the backend's complete audit.
-- Explicit PulseAudio playback handles support cancellation from another thread,
-  provide a lock-free stop fence, expose flush acknowledgement and preserve partial-write
-  counts. Requested buffering is capped at 200 ms; granted attributes are
-  reported. RF stop uses the lock-free request before clearing commands; server
-  flush runs afterward outside that critical path. Handles must outlive all users; joins/destruction are outside RF Stop.
-- One capture dispatcher reads physical capture and fans out to separate codec
-  and recording queues. Backlog limits are 500 ms and one second respectively.
-  Source holes and stalled consumers fail the affected measurement. The WAV
-  writer can consume a supplied queue without acquiring physical capture.
-- Both RADE benchmark implementations use the shared allocation-free speech
-  kernels. Encoder features and FARGAN continuation sequencing are shared;
-  the benchmark remains device-free. A new standalone streaming engine adds
-  stateful 44.1 kHz resampling, bounded input/output queues, RX/FARGAN workers,
-  three acquisition participants, TX encoding, generation checks and atomic
-  abort. Its native lifecycle/backlog test passes. Firmware adapters, graceful
-  TX end-of-over, synchronized streaming reference checks and SDK validation
-  remain outstanding; the engine is not linked into the GUI yet.
+## Implemented
 
-## Verification completed
+- Real in-process radio backend with exclusive writer reservation, fresh packet
+  status, exact cached snapshots, low-power guarded experiments and transient-only
+  restoration. Snapshot/readback includes microphone/gains, VOX, route commands,
+  levels, speaker/monitor, power and unchanged tuning/filter/protected bits.
+- Competing app/audio/control start checks, guarded parameter/queued writes and
+  worker-safe busy observations. SWR/baseband protections and keepalive remain
+  operational. Diagnostic startup defers analog restoration while TX/status blocks it.
+- Explicit case capabilities and cancellable preparation. Local Arm/Run are
+  distinct; RF cases remain bounded to ten seconds. Failed clear retries run
+  independently of GUI/disk joins. Flush acknowledgement and fresh post-clear RX
+  precede mixer/radio restoration. Failed release/readback retains ownership and
+  re-enters restoration. The first stop cause is retained and exported.
+- Real MFK/front-panel UI beside the normal waterfall. A serialized remote-input
+  fence drains old injected/held events and admits fresh local controls. Close
+  waits for safe release; no arming or test resumes after restart.
+- Bounded hardware-free RADE engine with stateful resampling, receiver plus two
+  acquisition helpers, separate FARGAN output, generation fencing and graceful
+  end-of-over inside the outer RF deadline. Fixture input is streamed.
+- Capture fan-out, exact partial-write handling, explicit cross-thread playback
+  cancellation, selected stereo channels/supported mixer alternatives and exact
+  restoration. Callbacks do not write files. Excerpts are bounded; full counters,
+  cancelled tails and deliberate excerpt truncation remain distinct.
+- Clean 120-second fixture playback, interrupted short fixture playback, live RX,
+  live microphone TX, the eight route probes and stop/timeout/failure cases.
+  Per-configuration confirmations gate dependent tests; qualification expires
+  when the session releases.
+- Private consolidated exports with selected manifests, cached commands versus
+  packet observations, before/after radio/ALSA state, WAV excerpts, codec/audio
+  metrics and resource samples. No automatic uploads or configuration databases.
 
-- v0.3.6 host GUI builds with diagnostics enabled and disabled.
-- All 13 diagnostic CTest cases pass, including the real mocked audio callback,
-  cross-thread playback cancellation, acknowledged flush, full/partial writes,
-  capture fan-out, stalled consumers, source holes, WAV queue input, reservation
-  races, rejected preference changes, timeout and held-TX restoration.
-- The X6100 backend compiles against its pinned control-library headers. The
-  complete X6100 host link remains unverified because the previous native
-  control-library installation is absent.
-- Nine native reference/shared benchmark comparisons pass. Pipeline comparisons
-  include exact feature, native-float, PCM and metadata hashes for synchronized,
-  silence and interrupted input with three acquisition participants.
-- A separate kernel check verifies exact TX-feature equality against the original
-  encoder loop and exact RX output across arbitrary feature chunking, empty
-  sync-gap calls and rejected output capacity (37,600 output samples).
+## Checks and release path
 
-Reproduce speech checks with `tools/freedv/validate_shared_speech.py`, providing
-`--rade-source`, `--rade-library`, `--opus-build`, `--fixtures` and `--output`.
-These inputs must be the pinned parallel-acquisition RADE and Opus build trees.
-The default frozen benchmark reference is `4f3be47`; the summary records its
-resolved commit, current source identity and library/core hashes. These native
-checks establish correctness, not ARM performance or SDK compatibility.
+Local diagnostic CTests (19 tests without the optional native-codec targets) pass.
+The real backend, mocked audio adapter, stereo/mixer, input provenance, release,
+preparation, failed-clear retry and stop-cause paths are exercised. Native codec
+checks cover speech-kernel equality, streaming/EOO, synchronized and interrupted
+fixtures, and codec output accepted by mocked playback. These are development
+checks; they do not qualify radio throughput, acoustics or RF.
 
-## Remaining implementation and release gates
+The image workflow requires fresh source-matching reports for diagnostics ON/OFF,
+actual simulator protocol/screen checks, X6100 backend compilation, native codec
+reference checks, matching-SDK/QEMU correctness and actual-image ELF closure.
+It builds paired normal/diagnostic images with current runtime assets, symbols,
+checksums and manifests in disposable verified image copies. Baseband and updater
+signature enforcement remain unchanged. See [build instructions](native-image-build.md).
+No hardware-ready claim is implied merely by the source being committed.
 
-1. Implement the real backend under the radio lock, complete transient/mixer
-   snapshot/readback/restoration, busy-session checks, full ingress exclusion,
-   protection integration and diagnostic startup recovery.
-2. Complete bounded streaming RX/TX/resampling and lifecycle adapters; connect
-   capture, codec, recorder and explicit playback handle with generation checks.
-   Add diagnostics-only stereo/channel and supported mixer alternatives.
-3. Connect local Info-page controls, named presets, operator qualifications,
-   timing/resource/event collection and bounded consolidated export. No RF
-   controls are exposed before the backend and fault tests are complete.
-4. Build with the matching SDK, run SDK correctness and ABI checks, then package
-   normal/diagnostic images with current runtime assets, symbols and checksums.
-5. Deliver one guided session: two-minute speaker case, brief routing/PTT cases,
-   live-mic RF trials and a five-to-ten-minute mixed exercise, then one export.
-   No routine repeat of the unchanged codec/endurance batch is required.
+The remaining operator qualification is one guided session with the hand mic and
+speaker first, a two-minute audible decode, brief routing/recovery/RF cases and
+5–10 minutes of mixed turns. Complete relevant built-in/stereo/mixer alternatives;
+missing observations stay INCONCLUSIVE. Controlled RF receive interoperability
+still needs a peer transmitter/source. No routine 30-minute audio test is required.
 
-The matching SDK is not present in this workspace. GitHub API requests currently
-fail at proxy CONNECT with HTTP 403, before repository permissions are evaluated;
-Git transport works. This blocks SDK-artifact retrieval, workflow dispatch and
-PR creation here. It does not account for the unfinished software work above.
-No target image, hardware-ready label or new radio qualification is claimed.
+## Cloud environment publication
+
+The user's Publish operation reported a generic saved-settings error. No backend
+publication logs are exposed; its root cause and successful snapshot publication
+remain unconfirmed. GitHub API and artifact-storage access now work after runtime
+reconnection, and the matching SDK has been recovered. A publication error is no
+longer the SDK network blocker. Never describe a saved draft as proof of publication.

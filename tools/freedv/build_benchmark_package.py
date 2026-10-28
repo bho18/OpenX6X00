@@ -108,6 +108,11 @@ def main():
     if work == ROOT or ROOT in work.parents:
         p.error('work directory must be outside the repository')
     if a.sdk:
+        # Rootless native development prefixes must never leak into deployment
+        # headers, library lookup or target pkg-config resolution. The matching
+        # Buildroot CMake toolchain supplies all target search paths.
+        for name in ('CPATH','LIBRARY_PATH','PKG_CONFIG_PATH','CMAKE_PREFIX_PATH'):
+            os.environ.pop(name, None)
         if not a.sdk_manifest or a.sdk_manifest.read_text().strip() != PINS['x6200_buildroot']['commit']:
             p.error('matching baseline buildroot-commit.txt is required')
         sdk = a.sdk.resolve()

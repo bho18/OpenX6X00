@@ -84,7 +84,7 @@ jobs:
             src/freedv/wav_capture.c tools/freedv/wav_capture_test.c -Wl,--wrap=fwrite -o /tmp/freedv-wav-test
           /tmp/freedv-wav-test
           cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -pthread -I. \
-            src/control_owner.c tools/freedv/control_lease_test.c -o /tmp/freedv-control-lease-test
+            src/control_owner.c src/freedv/writer_gate.c tools/freedv/control_lease_test.c -o /tmp/freedv-control-lease-test
           /tmp/freedv-control-lease-test
           python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
           python3 -m json.tool tools/freedv/sources.json > /dev/null
