@@ -1,5 +1,9 @@
 # X6200 acquisition endurance and steady speech control — October 27, 2026
 
+Follow-up: the [subsequent sustained speech report](rade-long-sync-radio-2026-10-27.md)
+now supplies the continuous synchronized measurement identified below as next
+work. The observations in this earlier report remain scoped to their own runs.
+
 The three-participant RADE acquisition implementation meets the narrow
 30-minute zero-input timing screen. The short synchronized control also keeps
 pace, with a separate, measurable pipeline latency. Sustained synchronized

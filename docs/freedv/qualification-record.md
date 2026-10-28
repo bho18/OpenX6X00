@@ -9,8 +9,9 @@ not claim endurance or thermal qualification from the shorter measurements.
 
 This is the planned evidence record, not a procedure for the current read-only
 diagnostic page. Do not perform these cases until guarded route experiments and
-the diagnostic image have been implemented and tested. No hardware observations
-have been collected yet; every entry below is INCONCLUSIVE.
+the diagnostic image have been implemented and tested. Physical routing and
+PTT observations remain uncollected; the codec evidence below is file-based
+processing on the radio and does not qualify the physical audio path.
 
 Record the radio and baseband versions, firmware and benchmark source hashes,
 SDK, audio endpoints and channel mapping, mixer settings, CPU configuration,
@@ -75,8 +76,14 @@ recovery; the supervisor restarts an individually killed GUI process.
 
 | Mode | TX | Synchronized RX | Acquisition/no-sync RX |
 | --- | --- | --- | --- |
-| RADE V1 | INCONCLUSIVE | INCONCLUSIVE | INCONCLUSIVE |
+| RADE V1 | INCONCLUSIVE | File throughput PASS; original 70% margin FAIL | Zero-input timing PASS; receiver noise INCONCLUSIVE |
 | 700E | INCONCLUSIVE | INCONCLUSIVE | INCONCLUSIVE |
+
+These are separate narrow findings, not an overall hardware qualification.
+See the [sustained speech report](rade-long-sync-radio-2026-10-27.md) and the
+[zero-input report](rade-acquisition-endurance-2026-10-27.md) for measured scope,
+versions and limitations. Live capture/playback and physical underruns remain
+INCONCLUSIVE.
 
 Each result needs pinned fixture and model hashes, warm-up and initialization
 times, then two measured minutes of paced input with the normal GUI and

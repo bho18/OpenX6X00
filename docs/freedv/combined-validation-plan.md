@@ -1,8 +1,9 @@
 # Complete remaining validation with short native voice tests
 
-Status: implementation and test plan, not a released test procedure. The current
-30-minute synchronized RADE radio result is pending. No speaker, microphone,
-routing or physical PTT qualification is claimed here.
+Status: implementation and test plan, not a released test procedure. The
+[sustained synchronized RADE result](rade-long-sync-radio-2026-10-27.md) confirms
+real-time offline speech throughput; the original 70% margin remains unmet.
+No speaker, microphone, routing or physical PTT qualification is claimed here.
 
 The user's direction is to finish the remaining validation promptly and show
 usable native voice, while shortening audio runs. Keep the remaining codec,
@@ -31,12 +32,13 @@ It met the proposed 70% timing screen for that specific workload with the normal
 GUI and waterfall active. Zero input does not establish behavior on receiver
 noise or interference.
 
-Assess the pending continuous-speech result when it arrives, but continue audio
-integration meanwhile. Do not request another long run to unlock that work.
-Retain three acquisition participants as the current candidate; do not run
-another worker-count sweep without a measured reason. Reuse existing results for
-their original SDK package and fixtures. Measure the new integrated audio path
-directly in the short demonstration.
+Retain the completed continuous-speech result: all 15,000 measured blocks stayed
+synchronized and produced speech, with no dropped blocks or queue overflow.
+Proceed with audio integration without another long run. Retain three
+acquisition participants as the current candidate; do not run another worker-count
+sweep without a measured reason. Reuse existing results for their original SDK
+package and fixtures. Measure the new integrated audio path directly in the
+short demonstration.
 
 ### Retain coverage and shorten durations
 
@@ -55,8 +57,8 @@ capacity, not endurance.
 | 700E no-sync RX | 2 minutes | Reference acquisition load |
 | RADE RX with deterministic nonzero noise | 2 minutes | Acquisition beyond literal zeros and false detections |
 
-Use the pending synchronized RADE result when available and directly check the
-new integrated decoder during the two-minute speaker case. Cover interruptions,
+Reuse the completed synchronized RADE result and directly check the new
+integrated decoder during the two-minute speaker case. Cover interruptions,
 EOO/new-over behavior and reacquisition in the 5-10-minute conversation exercise
 below. There is no need for a separate long transition benchmark before that
 exercise. Keep 700E available for short speaker comparison if it helps diagnose
