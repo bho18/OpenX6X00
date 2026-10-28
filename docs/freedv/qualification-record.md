@@ -76,14 +76,18 @@ recovery; the supervisor restarts an individually killed GUI process.
 
 | Mode | TX | Synchronized RX | Acquisition/no-sync RX |
 | --- | --- | --- | --- |
-| RADE V1 | INCONCLUSIVE | File throughput PASS; original 70% margin FAIL | Zero-input timing PASS; receiver noise INCONCLUSIVE |
-| 700E | INCONCLUSIVE | INCONCLUSIVE | INCONCLUSIVE |
+| RADE V1 | Short file timing PASS | File throughput PASS; original 70% margin FAIL | Zero-input and short synthetic-noise timing PASS |
+| 700E | Short file timing PASS | Short file timing/sync PASS | Short silence timing/no-sync PASS |
 
 These are separate narrow findings, not an overall hardware qualification.
 See the [sustained speech report](rade-long-sync-radio-2026-10-27.md) and the
 [zero-input report](rade-acquisition-endurance-2026-10-27.md) for measured scope,
 versions and limitations. Live capture/playback and physical underruns remain
 INCONCLUSIVE.
+The [short codec report](short-codec-radio-2026-10-27.md) completes the five
+remaining file-based cases for the tested SDK package. Synthetic noise does not
+qualify off-air sensitivity, and the 700E no-sync API's output content was not
+captured. No routine repeat of the unchanged codec batch is required.
 
 Each result needs pinned fixture and model hashes, warm-up and initialization
 times, then two measured minutes of paced input with the normal GUI and

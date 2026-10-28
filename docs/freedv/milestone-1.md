@@ -102,6 +102,10 @@ establish [zero-input acquisition timing](rade-acquisition-endurance-2026-10-27.
 and [sustained synchronized speech throughput](rade-long-sync-radio-2026-10-27.md).
 The latter does not meet the original 70% margin. Neither report qualifies live
 capture/playback, physical underruns or RF routing.
+The [short remaining-codec batch](short-codec-radio-2026-10-27.md) subsequently
+passed RADE TX, RADE synthetic-noise acquisition and all three 700E file-based
+timing screens. These cases are complete for the tested package; native audio
+and PTT integration remain the next validation work.
 
 The required target benchmark must measure RADE V1 and 700E TX, synced RX and
 acquisition/no-sync on the actual radio, using the matching SDK. With normal GUI

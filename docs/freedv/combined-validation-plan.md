@@ -10,6 +10,9 @@ for the completed runner/playback work and development checks. The firmware's
 real session backend and integrated audio test controls remain outstanding.
 The [short codec radio guide](short-validation-radio-test.md) runs the five
 remaining file-only cases with the existing SDK package and one result export.
+Those [five short cases are now complete](short-codec-radio-2026-10-27.md), with
+all p99 screens met and no reported deadline misses. Retain that evidence and
+focus the remaining work on the physical audio/session integration.
 
 The user's direction is to finish the remaining validation promptly and show
 usable native voice, while shortening audio runs. Keep the remaining codec,
@@ -46,14 +49,14 @@ sweep without a measured reason. Reuse existing results for their original SDK
 package and fixtures. Measure the new integrated audio path directly in the
 short demonstration.
 
-### Retain coverage and shorten durations
+### Completed short codec batch
 
-Verify source, model, fixture and executable hashes, free memory/storage and the
-running GUI automatically. Run the five remaining file-only workloads below for
-two measured minutes each after five seconds of warm-up. Collect them together,
-sequentially, with no competing codec tests. The batch represents about ten
-minutes plus warm-up and preparation; it measures short-run correctness and
-capacity, not endurance.
+The five file-only workloads below completed on the radio for two measured
+minutes each after five seconds of warm-up. Hashes, source identities and
+resources were recorded, with no competing digital application reported. Preserve
+these results for the unchanged SDK package; they establish short-run capacity,
+not endurance. Recheck affected cases only when implementation changes or new
+evidence justify it.
 
 | Case | Measured duration | Purpose |
 | --- | --- | --- |
