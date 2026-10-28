@@ -6,9 +6,13 @@ while playing decoded speech on its speaker. It also requires measuring 700E
 and RADE V1 on the actual radio with the GUI and waterfall active.
 
 The [combined validation plan](combined-validation-plan.md) specifies the next
-delivery: one diagnostic-card release, an unattended remaining-codec suite and
-a guided routing, recovery and decoded-speaker session. It records remaining
-implementation work and does not authorize tests on the current read-only page.
+delivery: one diagnostic-card release for short audible decode, hand-mic encode
+and repeated half-duplex turnarounds, plus the remaining codec, routing and
+recovery checks. At the user's direction, audio cases now use two measured
+minutes and a 5-10-minute mixed TX/RX exercise, rather than 30-minute runs. Retain
+the coverage and report the shorter observation window explicitly. The plan
+records remaining implementation work and does not authorize tests on the
+current read-only page.
 
 When the diagnostic option is enabled, Settings → Info contains a read-only
 snapshot of cached RECORD/MODEM/PTT commands, the last radio state, and a
@@ -97,7 +101,9 @@ progressive memory growth, and has not been built with the matching radio SDK.
 
 The required target benchmark must measure RADE V1 and 700E TX, synced RX and
 acquisition/no-sync on the actual radio, using the matching SDK. With normal GUI
-and waterfall load, run each workload for 30 minutes after warm-up and record
+and waterfall load, use two measured minutes after warm-up for the remaining
+audio cases and a 5-10-minute mixed TX/RX exercise, as specified in the current
+combined validation plan. Reuse completed evidence for unchanged builds. Record
 p99/max block time, queue growth, underruns, CPU frequency/throttling, RSS and
 available temperature. The proposed p99 processing target is no more than 70%
 of the represented audio interval, with no sustained underruns or queue growth.

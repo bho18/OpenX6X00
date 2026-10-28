@@ -1,20 +1,28 @@
-# Complete codec qualification and diagnostic firmware together
+# Complete remaining validation with short native voice tests
 
 Status: implementation and test plan, not a released test procedure. The current
 30-minute synchronized RADE radio result is pending. No speaker, microphone,
 routing or physical PTT qualification is claimed here.
 
-The next delivery should be one versioned diagnostic-card release with a guided
-hardware session and an unattended codec batch. Avoid another operator download,
-flash and upload for each individual experiment. Small development and startup
-checks remain automatic gates inside the build or suite, rather than separate
-requests to the operator.
+The user's direction is to finish the remaining validation promptly and show
+usable native voice, while shortening audio runs. Keep the remaining codec,
+routing and recovery coverage; do not defer that work wholesale. This supersedes
+the earlier 30-minute audio durations, 2-hour-45-minute batch and speaker soak.
+Use short cases and repeated half-duplex turnarounds. Longer runs are follow-up
+tools when a measured problem justifies them, not an automatic requirement.
+
+The next delivery should be one versioned diagnostic-card release with short
+codec cases, a guided hardware session and consolidated results. Avoid another
+operator download, flash and upload for each individual experiment. Keep build
+and startup checks automatic. Order the hardware cases to demonstrate audible
+voice as soon as its route is established, then finish the remaining coverage in
+the same package and session.
 
 All branches, builds, issues and eventual review PRs remain in `bho18/OpenX6X00`.
 The custom logo remains fork-only. Do not submit anything upstream in this
 milestone.
 
-## 1. Finish codec qualification
+## 1. Finish the remaining codec checks in a short batch
 
 ### Preserve completed evidence
 
@@ -23,32 +31,40 @@ It met the proposed 70% timing screen for that specific workload with the normal
 GUI and waterfall active. Zero input does not establish behavior on receiver
 noise or interference.
 
-Assess the pending continuous-speech result before selecting the final pipeline
-configuration. Retain three acquisition participants as the current candidate;
-do not run another worker-count sweep without a measured reason. Reuse the
-pending result for its original SDK package and fixture. An integrated audio
-test on the new firmware is a different workload and still needs measurement.
+Assess the pending continuous-speech result when it arrives, but continue audio
+integration meanwhile. Do not request another long run to unlock that work.
+Retain three acquisition participants as the current candidate; do not run
+another worker-count sweep without a measured reason. Reuse existing results for
+their original SDK package and fixtures. Measure the new integrated audio path
+directly in the short demonstration.
 
-### One unattended batch
+### Retain coverage and shorten durations
 
-Package a single runner that verifies the source, model, fixture and executable
-hashes, checks free memory/storage and the running GUI, then runs these cases
-sequentially. Codec workloads must not compete with one another. Each endurance
-case has 30 seconds of warm-up followed by 30 minutes of measured input.
+Verify source, model, fixture and executable hashes, free memory/storage and the
+running GUI automatically. Run the five remaining file-only workloads below for
+two measured minutes each after five seconds of warm-up. Collect them together,
+sequentially, with no competing codec tests. The batch represents about ten
+minutes plus warm-up and preparation; it measures short-run correctness and
+capacity, not endurance.
 
-| Case | Work performed | Principal evidence |
+| Case | Measured duration | Purpose |
 | --- | --- | --- |
-| RADE TX | Speech feature extraction, encoding and input/output resampling | Sustained output, processing tails, deadlines and resources |
-| 700E TX | Speech encoding and resampling | Reference TX timing and resources |
-| 700E synchronized RX | Continuous valid modem input, decoding and resampling | Actual synchronization, speech output and deadlines |
-| 700E no-sync RX | Pinned no-signal input | Acquisition load and lack of false speech/sync |
-| RADE receiver-noise RX | Pinned deterministic, nonzero band-limited noise | Acquisition capacity beyond literal zeros; false detections |
-| RADE transition exercise | About 15 minutes of clean speech, controlled dropouts, EOO/new-over boundaries, noise and known reacquisition opportunities | Per-block state transitions, worker/fallback paths, output gaps, queue recovery and reacquisition time |
+| RADE TX with speech processing and resampling | 2 minutes | Encoder capacity and output continuity |
+| 700E TX with resampling | 2 minutes | Reference encoding |
+| 700E synchronized RX with resampling | 2 minutes | Reference decoding and actual synchronization |
+| 700E no-sync RX | 2 minutes | Reference acquisition load |
+| RADE RX with deterministic nonzero noise | 2 minutes | Acquisition beyond literal zeros and false detections |
 
-Allow approximately 2 hours 45 minutes plus startup/fixture preparation. This
-does not repeat the pending long synchronized case or the completed zero-input
-endurance case. Changed codec/worker implementations invalidate reuse of the
-affected timing evidence and require the runner to explain the necessary repeat.
+Use the pending synchronized RADE result when available and directly check the
+new integrated decoder during the two-minute speaker case. Cover interruptions,
+EOO/new-over behavior and reacquisition in the 5-10-minute conversation exercise
+below. There is no need for a separate long transition benchmark before that
+exercise. Keep 700E available for short speaker comparison if it helps diagnose
+a routing versus codec problem.
+
+Changed codec/worker implementations require relevant correctness and short
+timing checks, and the report must distinguish the new build from earlier
+endurance evidence. They do not automatically trigger another long run.
 
 Validate new fixtures against the pinned native reference before publishing
 them. A repeated finite over is a transition fixture, not a continuous-sync
@@ -64,7 +80,7 @@ cases. Integrity failures stop launch; sustained overload, lost GUI or resource
 limits stop the affected run and preserve evidence. No automatic retries,
 uploads, RF control or physical audio-device access are added to the benchmark.
 
-### Completion criteria
+### Criteria and measurement limits
 
 Report the original p99 processing/interval <= 0.70 screen explicitly. Also
 report input backlog, stage capacity, output cadence, queue bounds and full-path
@@ -72,10 +88,20 @@ latency separately for the overlapping RX stages. One block taking more than
 120 ms through two overlapping stages is not by itself proof of lost throughput.
 Conversely, a responsive GUI is not evidence of intact audio delivery.
 
-Do not silently change the original criterion. If sustained throughput passes
-but the original criterion fails, retain both findings and present a concrete
-buffering/latency acceptance proposal for the product decision. Initialization,
-fixture storage, intrinsic codec delay and added buffering remain separate.
+The original 70% margin is a reported engineering measurement, not a blocker for
+attempting this short proof of concept. A successful demonstration requires
+intelligible decoded speech, no unaccounted dropped audio or post-startup
+playback underruns during the measured speech intervals, bounded queues and
+repeatable TX/RX recovery. Do not call a failed original margin a pass. Explain
+any output gaps caused deliberately by loss of signal separately from delivery
+faults. Initialization, intrinsic codec delay and added buffering remain separate.
+
+Retain all short-run timing, synchronization, output-integrity, queue and resource
+checks. Report sample counts and exact measured durations with percentiles. The
+remaining routing and recovery checklist is still in scope. Select longer tests
+only when observations justify them. Long idle listening still exercises
+acquisition even when nobody speaks; the shorter protocol does not claim thermal
+or long-duration leak qualification, and records that limit explicitly.
 
 ## 2. Complete and validate the diagnostic image
 
@@ -106,8 +132,8 @@ fixture storage, intrinsic codec delay and added buffering remain separate.
    instead of bringing the current large whole-file conversion into the GUI.
 5. **Add named diagnostic presets and export.** Provide local Arm, Run, Stop,
    commanded/observed TX, capture/playback counters and restoration status. Include
-   fixture-to-speaker, live capture observation, route matrix, recovery and a
-   gated microphone-to-RADE TX preset. No diagnostic session or arming resumes
+   fixture-to-speaker, live capture observation, all route matrix cases,
+   recovery and a gated microphone-to-RADE TX preset. No diagnostic session or arming resumes
    after restart. The bench helper may collect results but cannot arm or key.
 6. **Validate and package the whole delivery.** Run host builds with diagnostics
    OFF/ON, host backend fault tests and the shared X6100 compile check. Cover
@@ -118,12 +144,12 @@ fixture storage, intrinsic codec delay and added buffering remain separate.
    X6200 Buildroot SDK, preserving update-signature enforcement and baseband.
 
 The release includes both image checksums, the SDK identity, source/model
-manifest, symbols, codec suite, validated fixtures, operator guide and recovery
+manifest, symbols, short codec checks, validated fixtures, operator guide and recovery
 instructions. Pin any chosen upstream update explicitly; do not build whichever
 `main` happens to contain. A failed required build/validation gate prevents
 publishing a hardware-ready label.
 
-### One guided hardware session on the spare card
+### One guided hardware session, with proof of concept early
 
 Back up settings and preserve the working card. Use the spare card for the
 diagnostic image. Verify ordinary receive, controls, waterfall, speaker and
@@ -133,26 +159,36 @@ data partition or rely on `/tmp` surviving a reboot.
 
 | Phase | Operator and firmware actions | What it establishes |
 | --- | --- | --- |
-| Baseline and routes | Inventory automatically; exercise all eight RECORD x MODEM x software-PTT combinations with hand mic first, dummy load and SDR. Distinguish spoken mic audio, generated playback and received audio. Capture raw PCM and state/RF transitions. | Which native routes expose microphone/RX audio and carry playback to speaker/RF, whether capture/playback coexist, and whether they contaminate one another |
-| Recovery | In the same guided session exercise GUI/front-panel PTT, hand-mic PTT, timeout, injected worker failure, Stop while physical PTT is held, and controlled service restart after ordinary cases are predictable. | Stop latency, held-PTT behavior, first/last-frame analog leakage and restoration |
-| Decode and speaker | Once a route is demonstrated safe for unkeyed playback, run 30 minutes of the known continuous RADE modem fixture through live decode, FARGAN, resampling and the radio speaker. Keep raw RX capture running where the measured route permits it. Follow with the transition fixture and a short 700E playback reference. | Actual decoded speech delivery, physical playback continuity, integrated CPU/memory load and whether simultaneous RX capture remains usable |
-| Integrated microphone trial | After the relevant hand-mic/generated-RF route and stop tests pass, locally arm short microphone -> RADE encoder -> modem playback -> RF trials into the dummy load. Record RF with the SDR for reference decode on the PC. | A diagnostic end-to-end TX chain and actual RF waveform, subject to usable SDR capture and successful reference decoding |
-| Remaining native alternatives | Repeat relevant cases with the built-in mic, including actual keyed operation. Inspect separate ALSA channels and supported mixer alternatives if a required native route remains unresolved. | Built-in behavior and evidence needed before considering external audio |
+| Baseline and candidate routes | Inventory automatically; test the candidate speaker and hand-mic/generated-RF routes first, with dummy load and SDR. Distinguish spoken mic audio, playback and received audio. Capture raw PCM and state/RF transitions. Do not wait to finish all eight combinations before exercising a working route. | Whether the required native paths exist, coexist and avoid contamination |
+| First audible decode | Once unkeyed playback is established, decode two measured minutes of a known RADE modem recording through FARGAN and resampling to the radio speaker. Speech should be audible within the first seconds after acquisition. Keep RX capture running where the measured route permits it. | Recognizable decoded speech on the actual speaker, accounted output and short-run capacity |
+| Hand-mic capture and generated RF | Capture 10-20 seconds of spoken hand-mic audio. In a separately armed case, send a distinguishable generated waveform for at most 10 seconds while checking that microphone capture survives and analog speech does not leak to RF. | The independent input/output route needed for live encoding |
+| Stop and restore | Before live-mic RF trials, exercise Stop, timeout and injected worker failure; verify fresh observed RX and saved-state restoration. Check held physical PTT separately, without claiming software can override it. | Software stop behavior and repeatable recovery |
+| Integrated microphone trial | After the relevant route and stop checks pass, locally arm a 5-10-second microphone -> RADE encoder -> modem playback -> RF trial into the dummy load. Record RF with the SDR and attempt reference decoding on the PC. | A short end-to-end TX demonstration, subject to usable SDR capture and successful reference decoding |
+| Repeated conversation turns | Run ten guided cycles of about 20 seconds of fixture RX/decode-to-speaker, 5-10 seconds of locally armed live-mic TX, then about 5 seconds of idle/acquisition. Vary a few received segments with known signal interruptions. Keep the same session/worker lifecycle intended for the integrated mode and record every transition. | First/last speech delivery, TX/RX turnaround, reacquisition, stale audio, queue reset and resource behavior across mode changes |
+| Finish remaining coverage | Complete the remaining RECORD x MODEM x software-PTT combinations, relevant built-in-mic cases including actual keyed operation, GUI/front-panel and hand-mic PTT behavior, and controlled service restart after ordinary cases behave predictably. Inspect separate channels and supported mixer alternatives where routing remains unresolved. | Complete the routing and recovery checklist with brief cases and explicit unresolved results |
 
-Budget roughly 1-2 hours of attended routing/recovery work plus a 30-minute
-speaker soak and about 15 minutes of transition playback. Alternatives may take
-longer. These are planning estimates, not shortened acceptance runs. The image
-contains all cases up front; a failed route disables dependent cases and records
-why, without preventing unrelated measurements or requiring a fresh build.
+The conversation exercise represents about 5-6 minutes of scheduled input;
+allow roughly 5-10 minutes with local controls. Setup and initial route diagnosis
+are additional and may take longer. Combine the proof-of-concept cases in one
+image and export, with visible progress toward audible RX and encoded TX. A
+failed route disables its dependent cases and records why, while unrelated
+measurements remain available.
+
+Finish the remaining route matrix, relevant built-in-mic cases, restart
+characterization and necessary channel/mixer alternatives in this validation
+delivery, with short observations. Do not declare native routing unusable before
+the supported alternatives have been tested. Preserve any unresolved result
+explicitly and direct follow-up at that problem rather than automatically asking
+for a longer run of every workload.
 
 All unqualified route combinations are potentially keyed: each requires local
 arming and explicit execution, starts at 1 W requested power, and is limited to
 10 seconds of automatically controlled TX. No unattended sweep across RF cases.
-The long speaker run is unlocked only for a demonstrated unkeyed route, with
+Speaker playback is unlocked only for a demonstrated unkeyed route, with
 continuous observed-TX monitoring and abort on unexpected TX. Hardware-held PTT
 still requires the operator to release it; software cannot guarantee RF stop.
 
-The 30-minute codec TX batch is file-only and never transmits RF. For
+Any file-only codec TX check never transmits RF. For
 software-owned hardware TX, require command clearing and observed RF cessation
 within 500 ms of abort under the tested conditions. Hold restoration while
 physical PTT remains active, display `Release microphone PTT`, and wait for fresh
@@ -180,18 +216,20 @@ Export one folder per large session, with a top-level summary that can be
 collected together. Include exact versions, source/model/fixture hashes, case
 definitions, timestamped state/path events, per-block timing, resource samples,
 queue/drop/underrun counters, before/after restoration comparisons, selected WAV
-captures and operator/SDR observations. Keep full counters for endurance runs but
-use bounded audio excerpts at startup, middle, end and transitions; preflight
+captures and operator/SDR observations. Keep counters for the complete short
+session and bounded audio excerpts around speech and transitions; preflight
 and cap recording storage rather than filling the small root filesystem.
 Preserve SDR recordings on the PC and associate them by case/time/hash. No
 automatic upload or full configuration-database export.
 
-The final report keeps separate PASS/FAIL/INCONCLUSIVE decisions for codec
+The validation report keeps separate PASS/FAIL/INCONCLUSIVE decisions for codec
 workloads, speaker delivery, simultaneous RX capture, hand-mic TX routing,
 built-in mic, PTT/recovery and RF interoperability. Missing evidence stays
 INCONCLUSIVE. Native-route failures require the documented alternatives before
 external audio is considered. The measured pipeline timing may require an
-explicit product decision even if audio is usable.
+explicit product decision even if audio is usable. Mark untested cases as not
+run. Results apply to the stated shorter protocol; do not claim 30-minute
+endurance, thermal stability or controlled RF receive interoperability from it.
 
 Production FreeDV UI, activity-frequency markers, logging, remote microphones
 and upstream submission remain subsequent work. These broader diagnostics

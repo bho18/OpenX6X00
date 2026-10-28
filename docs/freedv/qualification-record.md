@@ -1,5 +1,12 @@
 # X6200 FreeDV qualification record
 
+The [current validation protocol](combined-validation-plan.md) retains the
+remaining coverage below while shortening audio runs to two measured minutes
+and a 5-10-minute mixed TX/RX exercise. Demonstrate audible decoding and hand-mic
+encoding early, then finish the remaining routing/recovery checks. This replaces
+the original 30-minute duration requirement at the user's direction; it does
+not claim endurance or thermal qualification from the shorter measurements.
+
 This is the planned evidence record, not a procedure for the current read-only
 diagnostic page. Do not perform these cases until guarded route experiments and
 the diagnostic image have been implemented and tested. No hardware observations
@@ -72,7 +79,9 @@ recovery; the supervisor restarts an individually killed GUI process.
 | 700E | INCONCLUSIVE | INCONCLUSIVE | INCONCLUSIVE |
 
 Each result needs pinned fixture and model hashes, warm-up and initialization
-times, then a 30-minute paced run with the normal GUI and waterfall active.
+times, then two measured minutes of paced input with the normal GUI and
+waterfall active. Retain completed measurements for unchanged builds and record
+the 5-10-minute mixed TX/RX exercise separately.
 Record real-time factor, p99 and maximum codec-plus-resampling block time,
 represented audio intervals, deadline misses, dropped blocks, queue depth,
 underruns, peak and evolving RSS, CPU frequency and available thermal/throttling
