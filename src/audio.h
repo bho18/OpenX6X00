@@ -52,6 +52,25 @@ float audio_set_rec_vol(float db);
 float audio_get_peak_db();
 
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include <sys/types.h>
+#include <stdint.h>
+/* The diagnostic session must own routing and competing audio writers before
+ * opening this stream. All calls come from its single playback worker. Samples
+ * not accepted remain the caller's responsibility; -1 is a stream/write error.
+ * This API never selects a radio route or keys RF. */
+typedef struct {
+    uint64_t accepted_samples;
+    uint64_t write_errors;
+    uint64_t underflows; /* includes startup; compare snapshots after warm-up */
+    uint64_t flushes;
+    bool latency_known;
+    uint64_t queued_latency_us; /* PulseAudio observation, not acoustic latency */
+} audio_freedv_playback_stats_t;
+bool audio_freedv_playback_begin(void);
+ssize_t audio_freedv_playback_write(const int16_t *samples, size_t count);
+audio_freedv_playback_stats_t audio_freedv_playback_stats(void);
+void audio_freedv_playback_end(void); /* flush and disconnect, no drain wait */
+
 /* A future exclusive diagnostic session owns this capture. It must stop and
  * join its sole reader before starting another capture. PCM is the existing
  * mono PulseAudio stream at AUDIO_CAPTURE_RATE, before application decimation;

@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 #include <pulse/pulseaudio.h>
 #include <alsa/asoundlib.h>
@@ -43,6 +44,12 @@ static char                 *play_device = BOARD_PA_SINK;
 /* Local playback on the Bluetooth headphones (audio_play_bt_begin), per
  * thread: the TX players never see it, so TX audio always goes to the codec. */
 static __thread pa_stream   *bt_stm = NULL;
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static __thread bool diagnostic_playback_active;
+/* Accessed under mloop, including by the PulseAudio underflow callback. The
+ * owning worker must disconnect before exiting so callback userdata stays live. */
+static __thread audio_freedv_playback_stats_t diagnostic_playback_stats;
+#endif
 
 static pa_stream            *capture_stm;
 static char                 *capture_device = BOARD_PA_SOURCE;
@@ -439,6 +446,81 @@ bool audio_play_if_room(int16_t *samples_buf, size_t samples) {
     pa_threaded_mainloop_unlock(mloop);
     return bytes > 0;
 }
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static void diagnostic_playback_underflow(pa_stream *stream, void *userdata) {
+    (void)stream;
+    audio_freedv_playback_stats_t *stats = userdata;
+    ++stats->underflows;
+}
+
+bool audio_freedv_playback_begin(void) {
+    if (!mloop || diagnostic_playback_active || !audio_play_lowlat_begin()) return false;
+    pa_threaded_mainloop_lock(mloop);
+    memset(&diagnostic_playback_stats, 0, sizeof(diagnostic_playback_stats));
+    diagnostic_playback_active = true;
+    pa_stream_set_underflow_callback(bt_stm, diagnostic_playback_underflow, &diagnostic_playback_stats);
+    pa_threaded_mainloop_unlock(mloop);
+    return true;
+}
+
+ssize_t audio_freedv_playback_write(const int16_t *samples, size_t count) {
+    if (!mloop || !diagnostic_playback_active || !bt_stm) return -1;
+    pa_threaded_mainloop_lock(mloop);
+    ssize_t accepted = -1;
+    if ((count && !samples) || count > SIZE_MAX / sizeof(*samples) || count > SSIZE_MAX ||
+        pa_stream_get_state(bt_stm) != PA_STREAM_READY) goto error;
+    if (!count) { accepted = 0; goto done; }
+    size_t bytes = pa_stream_writable_size(bt_stm);
+    if (bytes == (size_t)-1) goto error;
+    size_t available = bytes / sizeof(*samples);
+    size_t n = count < available ? count : available;
+    if (!n) { accepted = 0; goto done; }
+    if (pa_stream_write(bt_stm, samples, n * sizeof(*samples), NULL, 0, PA_SEEK_RELATIVE) < 0)
+        goto error;
+    diagnostic_playback_stats.accepted_samples += n;
+    accepted = (ssize_t)n;
+    goto done;
+error:
+    ++diagnostic_playback_stats.write_errors;
+done:
+    pa_threaded_mainloop_unlock(mloop);
+    return accepted;
+}
+
+audio_freedv_playback_stats_t audio_freedv_playback_stats(void) {
+    if (!mloop) return (audio_freedv_playback_stats_t){0};
+    pa_threaded_mainloop_lock(mloop);
+    audio_freedv_playback_stats_t out = diagnostic_playback_stats;
+    out.latency_known = false;
+    if (diagnostic_playback_active && bt_stm) {
+        pa_usec_t latency;
+        int negative;
+        if (pa_stream_get_latency(bt_stm, &latency, &negative) == 0 && !negative) {
+            out.latency_known = true;
+            out.queued_latency_us = latency;
+        }
+    }
+    pa_threaded_mainloop_unlock(mloop);
+    return out;
+}
+
+void audio_freedv_playback_end(void) {
+    if (!mloop || !diagnostic_playback_active || !bt_stm) return;
+    pa_threaded_mainloop_lock(mloop);
+    pa_stream_set_underflow_callback(bt_stm, NULL, NULL);
+    pa_operation *op = pa_stream_flush(bt_stm, NULL, NULL);
+    if (op) {
+        ++diagnostic_playback_stats.flushes;
+        pa_operation_unref(op);
+    } else ++diagnostic_playback_stats.write_errors;
+    pa_stream_disconnect(bt_stm);
+    pa_stream_unref(bt_stm);
+    bt_stm = NULL;
+    diagnostic_playback_active = false;
+    pa_threaded_mainloop_unlock(mloop);
+}
+#endif
 
 bool audio_play_bt_begin(void) {
     char              sink[128];

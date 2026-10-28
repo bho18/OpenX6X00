@@ -5,6 +5,10 @@ Status: implementation and test plan, not a released test procedure. The
 real-time offline speech throughput; the original 70% margin remains unmet.
 No speaker, microphone, routing or physical PTT qualification is claimed here.
 
+See [short validation implementation status](short-validation-development.md)
+for the completed runner/playback work and development checks. The firmware's
+real session backend and integrated audio test controls remain outstanding.
+
 The user's direction is to finish the remaining validation promptly and show
 usable native voice, while shortening audio runs. Keep the remaining codec,
 routing and recovery coverage; do not defer that work wholesale. This supersedes
