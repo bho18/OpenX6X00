@@ -11,13 +11,15 @@ import os
 from pathlib import Path
 import re
 import socket
+import shlex
+import tempfile
 import struct
 import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_TESTS = {'freedv_session_controller', 'freedv_audio_playback', 'freedv_capture_dispatch',
-                  'freedv_writer_preferences', 'freedv_native_radio_backend', 'freedv_native_audio_adapter',
+                  'freedv_writer_preferences', 'freedv_native_radio_backend', 'freedv_native_coordinator', 'freedv_native_audio_adapter',
                   'freedv_input_fence', 'freedv_front_input', 'freedv_remote_input_fence'}
 
 
@@ -67,6 +69,142 @@ def prepare_host_boost():
                     shutil.copyfileobj(original,output)
     if not (boost/required).is_file(): raise ValueError('verified Boost archive lacks required JS8 header')
 
+
+
+def _activate_host_deps():
+    # Scoped to this host-validation process and its children. SDK builders use
+    # their own toolchain/sysroot and clear these development environment paths.
+    prefix=ROOT/'build-host/deps'
+    for name,path in [('PKG_CONFIG_PATH',prefix/'lib/pkgconfig'),
+                      ('CMAKE_PREFIX_PATH',prefix),('LD_LIBRARY_PATH',prefix/'lib')]:
+        old=os.environ.get(name,'')
+        values=[str(path)]+[item for item in old.split(os.pathsep) if item and item!=str(path)]
+        os.environ[name]=os.pathsep.join(values)
+    return prefix
+
+
+def _probe_host_sndfile(prefix):
+    """Compile the exact MPEG enums and execute a real MP3 write/read check."""
+    checks=prefix/'checks'; checks.mkdir(parents=True,exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='sndfile-',dir=checks) as temporary:
+        work=Path(temporary); source=work/'probe.c'; executable=work/'probe'
+        source.write_text(r'''#include <sndfile.h>
+#include <stdio.h>
+int main(int argc,char **argv) {
+    if(argc!=2)return 2;
+    SF_INFO info={0}; info.samplerate=44100; info.channels=1;
+    info.format=SF_FORMAT_MPEG|SF_FORMAT_MPEG_LAYER_III;
+    if(!sf_format_check(&info)){fputs("MP3 recording format is unavailable\n",stderr);return 3;}
+    SNDFILE *file=sf_open(argv[1],SFM_WRITE,&info);
+    if(!file){fprintf(stderr,"MP3 write open: %s\n",sf_strerror(NULL));return 4;}
+    short pcm[44100]={0}; sf_count_t written=sf_writef_short(file,pcm,44100);
+    int closed=sf_close(file);
+    if(written!=44100||closed){fputs("MP3 encoding failed\n",stderr);return 5;}
+    info=(SF_INFO){0}; file=sf_open(argv[1],SFM_READ,&info);
+    if(!file){fprintf(stderr,"MP3 read open: %s\n",sf_strerror(NULL));return 6;}
+    sf_count_t read=sf_readf_short(file,pcm,1024); closed=sf_close(file);
+    if(read!=1024||closed){fputs("MP3 decoding failed\n",stderr);return 7;}
+    puts(sf_version_string()); return 0;
+}
+''')
+        flags=subprocess.run(['pkg-config','--cflags','--libs','sndfile'],capture_output=True,text=True)
+        if flags.returncode:
+            return None,'pkg-config cannot resolve sndfile'
+        command=['cc','-std=c11','-Wall','-Wextra','-Werror','-I'+str(prefix/'include'),str(source)]
+        command+=shlex.split(flags.stdout)+['-o',str(executable)]
+        compiled=subprocess.run(command,capture_output=True,text=True)
+        if compiled.returncode:
+            return None,compiled.stderr[-4000:]
+        result=subprocess.run([str(executable),str(work/'probe.mp3')],capture_output=True,text=True)
+        if result.returncode:
+            return None,result.stderr[-4000:]
+        return result.stdout.strip(),None
+
+
+
+def _host_sndfile_cmake_args():
+    # FindPkgConfig combines -L directories from libnm and other modules, so a
+    # grouped dependency query may otherwise select the older system sndfile.
+    # Pin the library chosen by sndfile's OWN pkg-config module in host builds.
+    directory=subprocess.check_output(['pkg-config','--variable=libdir','sndfile'],text=True).strip()
+    library=Path(directory)/'libsndfile.so'
+    if not library.is_file(): raise RuntimeError('Selected host libsndfile shared library is missing: '+str(library))
+    return ['-Dpkgcfg_lib_deps_sndfile:FILEPATH='+str(library)]
+
+def prepare_host_sndfile(jobs=2,force=False):
+    """Supply v0.3.6's MP3 API on Ubuntu22 without changing the radio SDK.
+
+    Ubuntu22 ships1.0.31, before SF_FORMAT_MPEG. Build the official1.2.2
+    release into the existing private host dependency prefix when necessary.
+    SHA256 is independently published in Buildroot's libsndfile.hash after
+    upstream PGP verification; TLS and the pinned digest remain mandatory:
+    https://raw.githubusercontent.com/buildroot/buildroot/2024.02/package/libsndfile/libsndfile.hash
+    """
+    prefix=_activate_host_deps()
+    version_result=subprocess.run(['pkg-config','--modversion','sndfile'],capture_output=True,text=True)
+    minimum=subprocess.run(['pkg-config','--atleast-version=1.1.0','sndfile'],capture_output=True)
+    version=version_result.stdout.strip() if version_result.returncode==0 else 'unavailable'
+    observed,reason=_probe_host_sndfile(prefix) if minimum.returncode==0 else (None,'MP3 enums require libsndfile>=1.1.0')
+    if not force and observed:
+        print('Host libsndfile ready: '+version+'; MP3 write/read probe passed',flush=True)
+        return {'provider':'available-host-library','version':version,'mp3_write_read':'PASS','runtime':observed,
+                'cmake_args':_host_sndfile_cmake_args()}
+    print('Preparing private host libsndfile1.2.2; found '+version+'; '+(reason or 'explicit source-build validation'),flush=True)
+    source_parent=prefix/'src'; source_parent.mkdir(parents=True,exist_ok=True)
+    archive=source_parent/'libsndfile-1.2.2.tar.xz'
+    expected='3799ca9924d3125038880367bf1468e53a1b7e3686a934f098b7e1d286cdb80e'
+    url='https://github.com/libsndfile/libsndfile/releases/download/1.2.2/libsndfile-1.2.2.tar.xz'
+    if not archive.exists():
+        temporary=archive.with_suffix('.download')
+        try:
+            with urllib.request.urlopen(url,timeout=60) as response,temporary.open('wb') as output:
+                shutil.copyfileobj(response,output)
+            temporary.rename(archive)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError('Cannot download official libsndfile1.2.2 release over verified HTTPS') from None
+    actual=hashlib.sha256(archive.read_bytes()).hexdigest()
+    if actual!=expected: raise ValueError('libsndfile1.2.2 archive SHA256 mismatch: '+actual)
+    source=source_parent/'libsndfile-1.2.2'
+    with tarfile.open(archive,'r:xz') as tar:
+        for member in tar.getmembers():
+            parts=Path(member.name).parts
+            if not parts or parts[0]!=source.name or '..' in parts or Path(member.name).is_absolute() or not (member.isdir() or member.isfile()):
+                raise ValueError('Unexpected libsndfile source archive entry')
+            target=source_parent/member.name
+            if not target.resolve().is_relative_to(source_parent.resolve()):
+                raise ValueError('libsndfile source extraction escapes private host prefix')
+            if member.isdir(): target.mkdir(parents=True,exist_ok=True)
+            else:
+                with tar.extractfile(member) as original:
+                    if target.exists():
+                        if target.is_symlink() or target.read_bytes()!=original.read():
+                            raise ValueError('Existing private libsndfile source differs: '+str(target))
+                    else:
+                        target.parent.mkdir(parents=True,exist_ok=True)
+                        with target.open('xb') as output: shutil.copyfileobj(original,output)
+                        target.chmod(member.mode&0o777)
+    build=source_parent/'libsndfile-1.2.2-build'
+    run('cmake','-S',source,'-B',build,'-DCMAKE_BUILD_TYPE=Release',
+        '-DCMAKE_INSTALL_PREFIX='+str(prefix),'-DCMAKE_INSTALL_LIBDIR=lib',
+        '-DBUILD_SHARED_LIBS=ON','-DBUILD_PROGRAMS=OFF','-DBUILD_EXAMPLES=OFF',
+        '-DBUILD_TESTING=OFF','-DENABLE_CPACK=OFF','-DENABLE_MPEG=ON',
+        '-DENABLE_EXTERNAL_LIBS=ON','-DINSTALL_PKGCONFIG_MODULE=ON')
+    config=(build/'src/config.h').read_text()
+    if not re.search(r'^#define HAVE_MPEG 1$',config,re.MULTILINE):
+        raise RuntimeError('Host libsndfile MP3 support was not enabled; install libmpg123-dev and libmp3lame-dev')
+    run('cmake','--build',build,'--parallel',jobs)
+    run('cmake','--install',build)
+    observed,reason=_probe_host_sndfile(prefix)
+    if not observed: raise RuntimeError('Private host libsndfile MP3 API/write/read validation failed: '+str(reason))
+    version=subprocess.check_output(['pkg-config','--modversion','sndfile'],text=True).strip()
+    if version!='1.2.2': raise RuntimeError('Private host libsndfile pkg-config resolution drifted: '+version)
+    record={'provider':'private-host-source-build','version':version,'source_url':url,
+            'source_sha256':expected,'prefix':str(prefix),'mp3_write_read':'PASS','runtime':observed,
+            'cmake_args':_host_sndfile_cmake_args()}
+    (prefix/'sndfile-provenance.json').write_text(json.dumps(record,indent=2)+'\n')
+    print('Private host libsndfile1.2.2 ready; MP3 write/read probe passed',flush=True)
+    return record
 
 def smoke_gui(gui, output):
     runtime = output/'runtime'; runtime.mkdir(); runtime.chmod(0o700)
@@ -156,9 +294,10 @@ def main():
     # The repository's supported host helper owns build-host/deps. Signed system
     # Boost headers avoid an unrelated archive download.
     prepare_host_boost()
+    sndfile=prepare_host_sndfile(a.jobs)
     run('bash','host/build.sh','build',cwd=ROOT)
     on=ROOT/'build-host'
-    run('cmake','-S',ROOT,'-B',on,'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=ON',
+    run('cmake','-S',ROOT,'-B',on,'-U','__pkg_config_checked_deps','-U','pkgcfg_lib_deps_sndfile',*sndfile['cmake_args'],'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=ON',
         '-DENABLE_FREEDV_NATIVE_CODEC=OFF','-DX6200_CONTROL_INCLUDE_DIR='+str(a.x6200_control.resolve()/'include'))
     run('cmake','--build',on,'-j',a.jobs)
     tests=json.loads(subprocess.check_output(['ctest','--test-dir',str(on),'-N','--show-only=json-v1'],text=True))
@@ -168,7 +307,7 @@ def main():
     smoke=smoke_gui(on/'src/x6100_gui',work)
     off=work/'host-off'
     run('cmake','-S',ROOT,'-B',off,'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=OFF',
-        '-DENABLE_FREEDV_NATIVE_CODEC=OFF','-DCMAKE_BUILD_TYPE=RelWithDebInfo')
+        '-DENABLE_FREEDV_NATIVE_CODEC=OFF','-DCMAKE_BUILD_TYPE=RelWithDebInfo',*sndfile['cmake_args'])
     run('cmake','--build',off,'--target','x6100_gui','-j',a.jobs)
     control=work/'x6100-control'
     run('cmake','-S',a.x6100_control.resolve(),'-B',control,'-DAETHER_X6100CTRL_USE_LTO=OFF')
@@ -177,7 +316,7 @@ def main():
         '-c',ROOT/'src/hw/x6100/hw_x6100.c','-o',work/'x6100-backend.o')
     record={'schema_version':1,'firmware_commit':revision,'status':'PASS','hardware_qualified':False,
             'host_diagnostics_on':'PASS','host_diagnostics_off':'PASS','x6100_backend_compile':'PASS',
-            'required_tests':sorted(REQUIRED_TESTS),'executed_diagnostic_tests':sorted(selected),'gui_smoke':smoke}
+            'host_sndfile':sndfile,'required_tests':sorted(REQUIRED_TESTS),'executed_diagnostic_tests':sorted(selected),'gui_smoke':smoke}
     (work/'summary.json').write_text(json.dumps(record,indent=2)+'\n')
     print('PASS: host builds, mandatory integration tests, live GUI and X6100 compile')
 

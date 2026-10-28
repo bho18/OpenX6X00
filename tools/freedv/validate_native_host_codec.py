@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 from build_benchmark_package import apply_rade_acquisition_parallel
 from native_image import sha
+from validate_native_host import prepare_host_sndfile
 
 ROOT=Path(__file__).resolve().parents[2]
 # Must match the pinned SDK builder's baseline exactly. Patch-manifest hash
@@ -38,6 +39,7 @@ def main():
     parser.add_argument('--jobs',type=int,default=2)
     a=parser.parse_args(); work=a.work.resolve(); work.mkdir(parents=True,exist_ok=False)
     revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+    sndfile=prepare_host_sndfile(a.jobs)
     package=work/'reference-build'
     run('python3',ROOT/'tools/freedv/build_benchmark_package.py','--host-validation','--work',package,'--jobs',a.jobs)
     source=package/'sources/rade_c'
@@ -56,7 +58,7 @@ def main():
            'FREEDV_SAMPLERATE_LIBRARY':package/'samplerate/src/libsamplerate.a',
            'FREEDV_SAMPLERATE_INCLUDE_DIR':package/'sources/libsamplerate-0.2.2/include'}
     build=ROOT/'build-host'
-    run('cmake','-S',ROOT,'-B',build,'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=ON',
+    run('cmake','-S',ROOT,'-B',build,'-U','__pkg_config_checked_deps','-U','pkgcfg_lib_deps_sndfile',*sndfile['cmake_args'],'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=ON',
         '-DENABLE_FREEDV_NATIVE_CODEC=ON',*['-D'+k+'='+str(v) for k,v in paths.items()])
     run('cmake','--build',build,'--target','freedv_native_audio_codec_adapter_test',
         'freedv_native_stream_test','freedv_native_stream_fixture_test','-j',a.jobs)
@@ -69,7 +71,7 @@ def main():
         (work/(executable+'.stdout')).write_text(result.stdout); (work/(executable+'.stderr')).write_text(result.stderr)
         results[executable]={'status':'PASS','stdout':result.stdout}
     summary={'schema_version':1,'status':'PASS','hardware_qualified':False,'timing_qualifies_radio':False,
-             'firmware_commit':revision,'parallel_patch_sha256':patch['patch_sha256'],
+             'host_sndfile':sndfile,'firmware_commit':revision,'parallel_patch_sha256':patch['patch_sha256'],
              'shared_speech_summary_sha256':sha(work/'shared-speech-checks/summary.json'),'executed_checks':results}
     (work/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print('PASS: full native codec/adapter, shared reference equality and bounded lifecycle checks')
