@@ -60,9 +60,13 @@ original synchronized-RX 70% margin remains **FAIL**; sustained throughput passe
 
 ## Checks and release path
 
-Local diagnostic CTests (19 tests without the optional native-codec targets) pass.
+Local diagnostic CTests (20 tests without the optional native-codec targets) pass.
 The real backend, mocked audio adapter, stereo/mixer, input provenance, release,
-preparation, failed-clear retry and stop-cause paths are exercised. Native codec
+preparation, failed-clear retry and stop-cause paths are exercised. The production
+coordinator is tested through local Arm/Run, completion, fresh-RX restoration and
+unkeyed-route confirmation. A deterministic watchdog-tail regression prevents a
+new case being advertised ready before the previous timer callback has retired.
+Native codec
 checks cover speech-kernel equality, streaming/EOO, synchronized and interrupted
 fixtures, and codec output accepted by mocked playback. These are development
 checks; they do not qualify radio throughput, acoustics or RF.

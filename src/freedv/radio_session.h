@@ -36,6 +36,10 @@ const char *radio_freedv_error_string(fd_radio_error);
  * and safely release/clear/wait if physical PTT races that recheck. False means
  * no ownership was acquired. Acquiring never changes routes or key commands. */
 bool radio_freedv_session_acquire(fd_radio_session *, fd_observation *);
+/* Caller serializes session lifetime with the controller mutex. The accessor
+ * takes the radio lock to include asynchronous protection bookkeeping; no
+ * audio, file or GUI lock may be held while calling it. It never mutates source. */
+void radio_freedv_session_snapshot(const fd_radio_session *, fd_radio_session *out);
 bool radio_freedv_session_observe(fd_observation *);
 bool radio_freedv_session_tx_permitted(fd_radio_session *);
 bool radio_freedv_session_apply(fd_radio_session *, const fd_case *, radio_mic_sel_t);

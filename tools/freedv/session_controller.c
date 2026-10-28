@@ -3,15 +3,31 @@
 #include <string.h>
 #include <time.h>
 
+/* observe() also communicates the case's liveness. A local/natural stop may
+ * return false while still supplying a fresh packet: that does not mean the
+ * measured route suddenly keyed RF. Faults and missing physical evidence still
+ * invalidate the probe, and no later observation can revive an invalid probe. */
+static bool benign_stop(fd_stop_reason reason) {
+    return reason == FD_STOP_OPERATOR || reason == FD_STOP_CLOSE || reason == FD_STOP_NATURAL;
+}
+static void note_probe(fd_controller *c, bool alive, fd_observation packet, fd_stop_reason cause) {
+    if (c->state.selected_case.kind != FD_CASE_ROUTE) return;
+    fd_stop_reason first = c->state.stop_reason;
+    bool outcome_valid = first == FD_STOP_NONE || first == FD_STOP_TIMEOUT || benign_stop(first);
+    bool measured_rx = packet.known && packet.fresh && !packet.tx;
+    bool usable = outcome_valid && measured_rx && (alive || benign_stop(cause));
+    if (!usable) c->probe_unkeyed = false;
+    if (usable && packet.sequence > c->probe_start_sequence) c->probe_observed = true;
+}
 /* Called with the controller lock held. A failed clear keeps the session in
  * WAIT_RX with ownership held; a later poll retries instead of restoring. */
 static bool clear_locked(fd_controller *c) {
     uint64_t sequence = 0;
     if (c->state.selected_case.kind == FD_CASE_ROUTE) {
         fd_observation o = {0};
-        bool valid = c->backend.observe(c->context, &o) && o.known && o.fresh;
-        if (!valid || o.tx) c->probe_unkeyed = false;
-        if (valid && o.sequence > c->probe_start_sequence) c->probe_observed = true;
+        bool alive = c->backend.observe(c->context, &o);
+        fd_stop_reason cause = !alive && c->backend.abort_reason ? c->backend.abort_reason(c->context) : FD_STOP_NONE;
+        note_probe(c, alive, o, cause);
     }
     if (!c->backend.quiesce(c->context, &sequence)) return false;
     return fd_commands_cleared(&c->state, sequence);
@@ -44,18 +60,15 @@ static void *monitor_session(void *arg) {
         bool cancel_timer = false;
         if (c->state.state == FD_RUNNING) {
             fd_observation o = {0};
-            bool valid = c->backend.observe(c->context, &o) && o.known && o.fresh;
-            if (c->state.selected_case.kind == FD_CASE_ROUTE) {
-                if (!valid || o.tx) c->probe_unkeyed = false;
-                if (valid && o.sequence > c->probe_start_sequence) c->probe_observed = true;
-            }
+            bool alive = c->backend.observe(c->context, &o);
+            bool valid = alive && o.known && o.fresh;
             fd_stop_reason reason = !valid ? FD_STOP_OBSERVATION : FD_STOP_UNEXPECTED_TX;
             if (!valid && c->backend.abort_reason) {
                 fd_stop_reason cached = c->backend.abort_reason(c->context);
                 if (cached != FD_STOP_NONE) reason = cached;
             }
+            note_probe(c, alive, o, valid ? FD_STOP_NONE : reason);
             if ((!valid || (!c->state.tx_case && o.tx)) && stop_locked(c, reason)) {
-                c->probe_unkeyed = false;
                 (void)clear_locked(c);
                 c->cancelling = cancel_timer = true;
             }
@@ -205,6 +218,16 @@ bool fd_controller_poll_restore(fd_controller *c) {
             if (c->backend.restore_if_safe(c->context, c->state.clear_sequence)) {
                 if (c->state.selected_case.kind == FD_CASE_ROUTE && c->probe_unkeyed && c->probe_observed)
                     c->completed_probe = c->state.matrix_case;
+                /* The timeout callback releases this mutex before the timer
+                 * worker retires watchdog.executing. Keep RESTORE fenced until
+                 * that tail is complete, otherwise READY can advertise a new
+                 * run whose watchdog refuses to arm. Never wait with the
+                 * controller/radio lock held: a callback may still need it. */
+                c->cancelling = true;
+                pthread_mutex_unlock(&c->mutex);
+                freedv_watchdog_cancel(&c->watchdog);
+                pthread_mutex_lock(&c->mutex);
+                c->cancelling = false;
                 ok = fd_restored(&c->state);
             } else {
                 /* Restoration may have failed partway. Clear again and require
@@ -285,6 +308,11 @@ bool fd_controller_begin_prepare(fd_controller *c) {
     pthread_mutex_lock(&c->mutex);
     fd_observation o = {0};
     bool ok = !c->cancelling && c->backend.observe(c->context, &o) && o.known && o.fresh && !o.tx && fd_begin_prepare(&c->state);
+    if (ok) {
+        c->state.stop_reason = FD_STOP_NONE;
+        c->completed_probe = -1;
+        c->probe_unkeyed = c->probe_observed = false;
+    }
     pthread_mutex_unlock(&c->mutex);
     return ok;
 }

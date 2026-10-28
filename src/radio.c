@@ -1735,6 +1735,12 @@ static bool freedv_observe_locked(fd_observation *o) {
     *o = (fd_observation){p.known, p.known && p.age_ms <= FD_RADIO_PACKET_MAX_AGE_MS, p.tx, p.sequence};
     return p.known;
 }
+void radio_freedv_session_snapshot(const fd_radio_session *session, fd_radio_session *out) {
+    if (!session || !out) return;
+    radio_lock();
+    *out = *session;
+    radio_unlock();
+}
 bool radio_freedv_session_observe(fd_observation *o) {
     if (!o) return false;
     radio_lock();

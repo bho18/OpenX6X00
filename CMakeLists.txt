@@ -81,6 +81,15 @@ if(ENABLE_FREEDV_DIAGNOSTICS)
                 endforeach()
                 find_package(PkgConfig REQUIRED)
                 pkg_check_modules(FREEDV_BACKEND_DEPS REQUIRED IMPORTED_TARGET libnm dbus-glib-1)
+                add_executable(freedv_native_coordinator_test tools/freedv/native_coordinator_test.c
+                    tools/freedv/session_controller.c src/freedv/watchdog.c)
+                target_include_directories(freedv_native_coordinator_test PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src
+                    ${CMAKE_SOURCE_DIR}/build-host/deps/include)
+                target_compile_definitions(freedv_native_coordinator_test PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1)
+                target_compile_options(freedv_native_coordinator_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+                target_link_options(freedv_native_coordinator_test PRIVATE -Wl,--gc-sections)
+                target_link_libraries(freedv_native_coordinator_test PRIVATE freedv_diagnostic_state Threads::Threads m)
+                add_test(NAME freedv_native_coordinator COMMAND freedv_native_coordinator_test)
                 add_executable(freedv_native_radio_backend_test tools/freedv/native_radio_backend_test.c
                     src/hw/stub/hw_stub.c src/control_owner.c src/freedv/packet_tx.c)
                 target_include_directories(freedv_native_radio_backend_test PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src

@@ -99,7 +99,7 @@ def main():
         raise ValueError('completed source-matching host and codec gates required')
     required={'freedv_native_radio_backend','freedv_native_audio_adapter','freedv_session_controller',
               'freedv_capture_dispatch','freedv_audio_playback','freedv_writer_preferences',
-              'freedv_input_fence','freedv_front_input','freedv_remote_input_fence'}
+              'freedv_input_fence','freedv_front_input','freedv_remote_input_fence','freedv_native_coordinator'}
     if not required<=set(host.get('executed_diagnostic_tests',[])):
         raise ValueError('real backend/audio fault tests must execute before imaging')
     for name,expected in codec['source_sha256'].items():

@@ -129,7 +129,10 @@ Get-FileHash "$Results.zip" -Algorithm SHA256
 If modern `scp` reports that the radio has no SFTP server, retry with `scp -O`
 if your Windows OpenSSH supports it. Copying/collecting results never arms RF.
 Add the PC notes and SDR references before making the final ZIP. For TX evidence, record demodulated USB audio to a WAV with about one second
-before/after keying; note its sample rate. Keep large raw-IQ SDR recordings on
+before/after keying; note its sample rate. If no PC reference decoder is set up,
+include that demodulated WAV in the result bundle for decoding with the pinned
+host reference tools. Keep transmitted-speech recovery INCONCLUSIVE until that
+decode is intelligible. Keep large raw-IQ SDR recordings on
 the PC; include their case association and hashes. Recordings on
 radio are bounded excerpts (normally the first four seconds of selected streams),
 while counters cover the whole case. Intentional excerpt truncation and explicit

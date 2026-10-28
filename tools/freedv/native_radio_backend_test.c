@@ -188,6 +188,10 @@ int main(void) {
     assert(radio_freedv_session_acquire(&s,&o)); assert(radio_freedv_session_apply(&s,&chosen,radio_mic_handle));
     freedv_protection_trip(); /* radio-thread protection does not wait for LVGL */
     assert(s.abort_reason==FD_RADIO_TX_GUARD);
+    fd_radio_session cached;
+    radio_freedv_session_snapshot(&s,&cached);
+    assert(cached.owned && cached.abort_reason==FD_RADIO_TX_GUARD && cached.last_error==FD_RADIO_TX_GUARD);
+    cached.last_error=FD_RADIO_OK;assert(s.last_error==FD_RADIO_TX_GUARD); /* copy cannot mutate the owner */
     assert(!radio_freedv_session_observe(&o));
     snapshot(&after); assert(!after.route.modem && !after.route.ptt);
     assert(radio_freedv_session_clear(&s,&sequence)); observed(false);

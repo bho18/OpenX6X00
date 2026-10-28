@@ -12,6 +12,7 @@
 #include "../front_keys.h"
 #include "../key_input.h"
 #include "../screen_main.h"
+#include "../gui_styles.h"
 #include "../msg.h"
 #include "../cfg/cfg_api.h"
 #include "lvgl/lvgl.h"
@@ -48,6 +49,12 @@
 static const char *case_names[] = {"Capture 10s", "Route R0 M0 P0", "Route R0 M0 P1", "Route R0 M1 P0", "Route R0 M1 P1", "Route R1 M0 P0", "Route R1 M0 P1", "Route R1 M1 P0", "Route R1 M1 P1", "RADE fixture to speaker 120s", "Hand/built-in mic RADE TX 8s", "Live receive RADE 120s", "Local tone during receive 20s", "Manual Stop test", "Watchdog timeout test", "Audio failure test", "Confirm unkeyed RX route", "Confirm independent mic/TX route", "Confirm Stop/timeout/failure observations", "Interrupted RADE fixture 20s"};
 typedef enum { CMD_ACQUIRE, CMD_ARM, CMD_RUN, CMD_EXPORT } command_kind;
 typedef struct { command_kind command; unsigned selected, route, mic, channel, mixer; } command;
+typedef struct {
+    fd_native_stats audio;
+    bool audio_known, radio_owned, radio_restored, radio_readback_match;
+    unsigned case_number, transport_failures, restoration_failures, radio_error;
+    uint64_t sampled_ms;
+} diagnostic_progress;
 static struct {
     pthread_mutex_t mutex;
     pthread_t worker;
@@ -69,6 +76,8 @@ static struct {
     fd_native_stats final_audio;
     bool have_result;
     fd_stop_reason observed_cause, last_stop_reason;
+    diagnostic_progress progress;
+    uint64_t last_progress_ms;
 } d = {.mutex=PTHREAD_MUTEX_INITIALIZER};
 static struct {
     lv_obj_t *panel,*status,*note,*cases,*route,*mic,*channel,*mixer;
@@ -127,16 +136,53 @@ static bool bundle_open(void) {
     if(f) {fputs("{\"schema_version\":1,\"application\":",f);json_string(f,VERSION);fputs(",\"baseband\":",f);json_string(f,radio_base_ver_str());fputs(",\"machine\":",f);json_string(f,u.machine);fputs(",\"kernel\":",f);json_string(f,u.release);fprintf(f,",\"codec_available\":%s,\"physical_qualification\":\"INCONCLUSIVE\"}\n",fd_native_audio_codec_available()?"true":"false");fclose(f);}
     event("session_open");return true;
 }
+/* Coordinator/export data. Cached commands and packet measurements deliberately
+ * remain distinct, including when the newest packet is unknown or stale. */
+static void radio_observation_json(FILE *f,const radio_commanded_audio_route_t *route,bool supported,uint64_t begin_ms,uint64_t sampled_ms) {
+    fprintf(f,"{\"sampled_monotonic_ms\":%llu,\"snapshot_window_ms\":%llu,\"cached_commands\":{\"available\":%s",
+        (unsigned long long)sampled_ms,(unsigned long long)(sampled_ms-begin_ms),supported?"true":"false");
+    if(supported)fprintf(f,",\"record\":%s,\"modem\":%s,\"software_ptt\":%s",route->commanded_record?"true":"false",route->commanded_modem?"true":"false",route->commanded_ptt?"true":"false");
+    fputs("},\"physical_packet\":{\"source\":\"baseband_packet_tx_flag\",\"known\":",f);
+    bool known=supported&&route->packet_tx_known;
+    fputs(known?"true":"false",f);
+    if(known) {
+        fprintf(f,",\"tx\":%s,\"sequence\":%llu,\"age_ms\":%llu,\"fresh\":%s,\"received_monotonic_ms_estimate\":",route->packet_tx?"true":"false",(unsigned long long)route->packet_sequence,(unsigned long long)route->packet_age_ms,route->packet_age_ms<=FD_RADIO_PACKET_MAX_AGE_MS?"true":"false");
+        if(route->packet_age_ms<=sampled_ms)fprintf(f,"%llu",(unsigned long long)(sampled_ms-route->packet_age_ms));else fputs("null",f);
+        if(!route->packet_tx)fprintf(f,",\"rx_sequence\":%llu",(unsigned long long)route->packet_sequence);
+    } else fputs(",\"tx\":null,\"sequence\":null,\"age_ms\":null,\"fresh\":false,\"received_monotonic_ms_estimate\":null",f);
+    fputs("}}",f);
+}
+/* Only the coordinator reads d.audio. GUI readers get this bounded cached copy,
+ * so slow joins, disk/ALSA operations or preparation never move into LVGL. */
+static void cache_progress(void) {
+    uint64_t now=milliseconds();if(now-d.last_progress_ms<100)return;d.last_progress_ms=now;
+    diagnostic_progress progress={.case_number=d.case_number,.sampled_ms=now};
+    fd_radio_session radio;
+    pthread_mutex_lock(&d.controller.mutex);
+    radio_freedv_session_snapshot(&d.radio,&radio);
+    pthread_mutex_unlock(&d.controller.mutex);
+    progress.radio_owned=radio.owned;progress.radio_restored=radio.restoration_complete;
+    progress.radio_readback_match=radio.readback_match;
+    progress.transport_failures=radio.transport_failures;
+    progress.restoration_failures=radio.restoration_failures;progress.radio_error=radio.last_error;
+    progress.audio_known=d.audio!=NULL||d.have_result;
+    if(d.audio)progress.audio=fd_native_audio_observe(d.audio);
+    else if(d.have_result)progress.audio=d.final_audio;
+    pthread_mutex_lock(&d.mutex);d.progress=progress;pthread_mutex_unlock(&d.mutex);
+}
 static void resources(void) {
     uint64_t now=milliseconds();if(now-d.last_resource_ms<1000||!d.directory[0])return;d.last_resource_ms=now;
-    char path[384];snprintf(path,sizeof(path),"%s/resources.jsonl",d.directory);FILE *f=fopen(path,"a");if(!f)return;fchmod(fileno(f),0600);
+    char path[384];snprintf(path,sizeof(path),"%s/resources.jsonl",d.directory);FILE *f=fopen(path,"a");if(!f){atomic_store(&d.evidence_failed,true);return;}fchmod(fileno(f),0600);
     fprintf(f,"{\"monotonic_ms\":%llu,\"cpu_frequency_khz\":[",(unsigned long long)now);
     for(unsigned cpu=0;cpu<4;++cpu){snprintf(path,sizeof(path),"/sys/devices/system/cpu/cpu%u/cpufreq/scaling_cur_freq",cpu);FILE *in=fopen(path,"r");unsigned khz=0;bool ok=in&&fscanf(in,"%u",&khz)==1;if(in)fclose(in);if(cpu)fputc(',',f);if(ok)fprintf(f,"%u",khz);else fputs("null",f);}
     fputs("],\"rss_kib\":",f);FILE *status=fopen("/proc/self/status","r");unsigned rss=0;bool have_rss=false;
     if(status){char line[128];while(fgets(line,sizeof(line),status))if(sscanf(line,"VmRSS: %u",&rss)==1){have_rss=true;break;}fclose(status);}if(have_rss)fprintf(f,"%u",rss);else fputs("null",f);
     fputs(",\"temperature_millidegrees\":[",f);bool any=false;
     for(unsigned zone=0;zone<8;++zone){snprintf(path,sizeof(path),"/sys/class/thermal/thermal_zone%u/temp",zone);FILE *in=fopen(path,"r");long temp=0;if(in){if(fscanf(in,"%ld",&temp)==1){if(any)fputc(',',f);fprintf(f,"%ld",temp);any=true;}fclose(in);}}
-    fprintf(f,"],\"case\":%u}\n",d.case_number);fclose(f);
+    fprintf(f,"],\"case\":%u,\"radio\":",d.case_number);
+    radio_commanded_audio_route_t route={0};uint64_t snapshot_begin=milliseconds();bool supported=radio_get_commanded_audio_route(&route);
+    radio_observation_json(f,&route,supported,snapshot_begin,milliseconds());fputs("}\n",f);
+    bool bad=ferror(f)!=0;if(fclose(f))bad=true;if(bad)atomic_store(&d.evidence_failed,true);
 }
 /* Controller callbacks must stay bounded and never do file I/O or worker joins. */
 static bool acquire_snapshot(void *arg,bool *quiet,fd_observation *o) {
@@ -147,15 +193,18 @@ static bool acquire_snapshot(void *arg,bool *quiet,fd_observation *o) {
 static bool release_radio(void *arg) {(void)arg;return radio_freedv_session_release(&d.radio);}
 static bool observe_radio(void *arg,fd_observation *o) {
     (void)arg;d.observed_cause=FD_STOP_NONE;
-    if(atomic_load(&d.case_running)) {
+    /* A worker ending is distinct from losing the radio observation. Keep the
+     * fresh packet available for route qualification and post-clear recovery.
+     * Controller callbacks run under its lock, so this state read is serialized. */
+    bool ok=radio_freedv_session_observe(o);
+    if(!ok||!o->known||!o->fresh){d.observed_cause=FD_STOP_OBSERVATION;return false;}
+    if(atomic_load(&d.case_running)&&d.controller.state.state==FD_RUNNING) {
         if(atomic_load(&d.close))d.observed_cause=FD_STOP_CLOSE;
         else if(atomic_load(&d.stop))d.observed_cause=FD_STOP_OPERATOR;
         else if(atomic_load(&d.evidence_failed))d.observed_cause=FD_STOP_EVIDENCE;
         else if(d.audio&&fd_native_audio_stop_requested(d.audio))d.observed_cause=fd_native_audio_failed(d.audio)?FD_STOP_AUDIO:FD_STOP_NATURAL;
         if(d.observed_cause!=FD_STOP_NONE)return false;
     }
-    bool ok=radio_freedv_session_observe(o);
-    if(!ok||!o->known||!o->fresh)d.observed_cause=FD_STOP_OBSERVATION;
     return ok;
 }
 static fd_stop_reason observed_cause(void *arg) { (void)arg;return d.observed_cause; }
@@ -227,6 +276,10 @@ static void save_case(void) {
     fd_native_stats a=d.final_audio;
     fprintf(f,"{\"schema_version\":1,\"case_number\":%u,\"name\":",d.case_number);json_string(f,case_names[d.current_case]);
     fprintf(f,",\"matrix_case\":%u,\"microphone\":%u,\"capture_channel\":%u,\"mixer_choice\":%u,\"seen_packet_tx\":%s,\"manual_stop\":%s,\"started_monotonic_ms\":%llu,\"abort_requested_monotonic_ms_low32\":%u,\"command_clear_monotonic_ms_low32\":%u,\"command_clear_elapsed_ms\":%u,\"preparation_failed\":%s,\"run_started\":%s,\"first_stop_reason\":%u,\"audio_failures\":%u,\"restoration_complete\":%s,\"transport_attempts\":%u,\"transport_failures\":%u,\"rf_result\":\"INCONCLUSIVE: attach SDR observation\"",d.current_route,d.current_mic,d.current_channel,d.current_mixer,d.seen_tx?"true":"false",d.manually_stopped?"true":"false",(unsigned long long)d.started_ms,atomic_load(&d.abort_ms),atomic_load(&d.clear_ms),atomic_load(&d.clear_ms)-atomic_load(&d.abort_ms),d.preparation_failed?"true":"false",d.run_started?"true":"false",(unsigned)d.last_stop_reason,a.failures,d.radio.restoration_complete?"true":"false",d.radio.transport_attempts,d.radio.transport_failures);
+    number(f,"acquired_packet_sequence",d.radio.acquired_sequence);
+    number(f,"command_clear_packet_sequence",d.radio.clear_sequence);
+    radio_commanded_audio_route_t route={0};uint64_t snapshot_begin=milliseconds();bool supported=radio_get_commanded_audio_route(&route);
+    fputs(",\"radio_at_result_export\":",f);radio_observation_json(f,&route,supported,snapshot_begin,milliseconds());
     number(f,"restoration_failures",d.radio.restoration_failures);number(f,"readback_match",d.radio.readback_match);number(f,"last_radio_error",d.radio.last_error);number(f,"radio_abort_reason",d.radio.abort_reason);number(f,"base_error_events",d.radio.base_error_events);
     fputs(",\"radio_before\":",f);snapshot_json(f,&d.radio.saved);fputs(",\"radio_after\":",f);snapshot_json(f,&d.radio.restored);
     fputs(",\"audio\":",f);audio_json(f,&a);
@@ -299,6 +352,22 @@ static void command_execute(command cmd) {
     if(fd_controller_run(&d.controller,d.started_ms,timeout)){message("Running. Stop is always available.");event("case_run");}
     else {message("Run refused by RX/frequency/protection guards; restoring prepared resources");fd_controller_stop(&d.controller);}
 }
+/* Worker joins and export stay outside the watchdog/controller lock. */
+static void restore_case_iteration(const fd_session *status) {
+    if(d.audio&&!d.audio_joined&&fd_native_audio_finish(d.audio)){d.audio_joined=true;d.final_audio=fd_native_audio_observe(d.audio);event("audio_workers_joined");}
+    fd_observation o={0};bool rx=radio_freedv_session_observe(&o)&&o.known&&o.fresh&&!o.tx&&status->software_cleared&&o.sequence>status->clear_sequence;
+    if(rx&&d.audio&&d.audio_joined&&!d.audio_restored&&fd_native_audio_quiescent(d.audio)){d.audio_restored=fd_native_audio_restore(d.audio);if(d.audio_restored)event("mixer_restored");}
+    if(fd_controller_poll_restore(&d.controller)){
+        fd_session restored;fd_controller_status(&d.controller,&restored);d.last_stop_reason=restored.stop_reason;
+        event("radio_restored");
+        if(d.audio){d.final_audio=fd_native_audio_observe(d.audio);save_case();d.last_case=d.current_case;d.last_route=d.current_route;d.last_mic=d.current_mic;d.last_channel=d.current_channel;d.last_mixer=d.current_mixer;d.have_result=d.run_started&&!d.preparation_failed&&!atomic_load(&d.evidence_failed);
+            if(d.seen_tx){if(d.current_case==CASE_STOP&&d.last_stop_reason==FD_STOP_OPERATOR&&!d.final_audio.failures)d.stop_checks[d.current_mic][d.current_channel][d.current_mixer][d.current_route]|=1;if(d.current_case==CASE_TIMEOUT&&d.last_stop_reason==FD_STOP_TIMEOUT&&!d.final_audio.failures)d.stop_checks[d.current_mic][d.current_channel][d.current_mixer][d.current_route]|=2;if(d.current_case==CASE_FAILURE&&d.last_stop_reason==FD_STOP_AUDIO&&d.final_audio.failures)d.stop_checks[d.current_mic][d.current_channel][d.current_mixer][d.current_route]|=4;}
+            fd_native_audio_destroy(d.audio);d.audio=NULL;
+        }
+        if(!d.audio&&d.preparation_failed)save_case();
+        message("Restored. Record operator/SDR observations; continue with another case.");export_summary();
+    }else if(o.known&&o.tx)message("Release microphone PTT. Restoration remains blocked while TX is observed.");
+}
 static void *coordinator(void *unused) {
     (void)unused;
     fd_controller_backend backend={.acquire_snapshot=acquire_snapshot,.release=release_radio,.observe=observe_radio,.tx_permitted=tx_permitted,.start=start_case,.quiesce=clear_case,.audio_quiescent=audio_quiet,.restore_if_safe=restore_radio,.abort_reason=observed_cause};
@@ -310,21 +379,7 @@ static void *coordinator(void *unused) {
         fd_session status={0};fd_controller_status(&d.controller,&status);
         unsigned clears=atomic_load(&d.clears);if(clears!=seen_clears){seen_clears=clears;event("software_commands_cleared_or_retry");}
         if(status.state==FD_RUNNING){fd_observation o={0};if(radio_freedv_session_observe(&o)&&o.known&&o.fresh&&o.tx)d.seen_tx=true;}
-        if(status.state==FD_WAIT_RX){
-            if(d.audio&&!d.audio_joined&&fd_native_audio_finish(d.audio)){d.audio_joined=true;d.final_audio=fd_native_audio_observe(d.audio);event("audio_workers_joined");}
-            fd_observation o={0};bool rx=radio_freedv_session_observe(&o)&&o.known&&o.fresh&&!o.tx&&status.software_cleared&&o.sequence>status.clear_sequence;
-            if(rx&&d.audio&&d.audio_joined&&!d.audio_restored&&fd_native_audio_quiescent(d.audio)){d.audio_restored=fd_native_audio_restore(d.audio);if(d.audio_restored)event("mixer_restored");}
-            if(fd_controller_poll_restore(&d.controller)){
-                fd_session restored;fd_controller_status(&d.controller,&restored);d.last_stop_reason=restored.stop_reason;
-                event("radio_restored");
-                if(d.audio){d.final_audio=fd_native_audio_observe(d.audio);save_case();d.last_case=d.current_case;d.last_route=d.current_route;d.last_mic=d.current_mic;d.last_channel=d.current_channel;d.last_mixer=d.current_mixer;d.have_result=d.run_started&&!d.preparation_failed&&!atomic_load(&d.evidence_failed);
-                    if(d.seen_tx){if(d.current_case==CASE_STOP&&d.last_stop_reason==FD_STOP_OPERATOR&&!d.final_audio.failures)d.stop_checks[d.current_mic][d.current_channel][d.current_mixer][d.current_route]|=1;if(d.current_case==CASE_TIMEOUT&&d.last_stop_reason==FD_STOP_TIMEOUT&&!d.final_audio.failures)d.stop_checks[d.current_mic][d.current_channel][d.current_mixer][d.current_route]|=2;if(d.current_case==CASE_FAILURE&&d.last_stop_reason==FD_STOP_AUDIO&&d.final_audio.failures)d.stop_checks[d.current_mic][d.current_channel][d.current_mixer][d.current_route]|=4;}
-                    fd_native_audio_destroy(d.audio);d.audio=NULL;
-                }
-                if(!d.audio&&d.preparation_failed)save_case();
-                message("Restored. Record operator/SDR observations; continue with another case.");export_summary();
-            }else if(o.known&&o.tx)message("Release microphone PTT. Restoration remains blocked while TX is observed.");
-        }
+        if(status.state==FD_WAIT_RX)restore_case_iteration(&status);
         fd_controller_status(&d.controller,&status);
         if(atomic_load(&d.close)){
             if(status.state==FD_READY){if(fd_controller_release(&d.controller)){atomic_store(&d.input_release_pending,true);event("radio_session_released");export_summary();atomic_store(&d.close,false);message("Radio restored and released. Results remain in the /tmp folder.");}}
@@ -334,7 +389,7 @@ static void *coordinator(void *unused) {
         command cmd;bool have=false;
         pthread_mutex_lock(&d.mutex);if(d.count){cmd=d.commands[d.head];d.head=(d.head+1)%8;--d.count;have=true;}pthread_mutex_unlock(&d.mutex);
         if(have)command_execute(cmd);
-        resources();struct timespec delay={0,20000000};nanosleep(&delay,NULL);
+        cache_progress();resources();struct timespec delay={0,20000000};nanosleep(&delay,NULL);
     }
     return NULL;
 }
@@ -365,11 +420,24 @@ static void deleted(lv_event_t *e) {
 }
 static void refresh(lv_timer_t *timer) {
     (void)timer;if(!ui.panel)return;
-    char text[640],info[180],directory[256];bool ready;
-    pthread_mutex_lock(&d.mutex);snprintf(info,sizeof(info),"%s",d.message);snprintf(directory,sizeof(directory),"%s",d.directory);ready=d.controller_ready;pthread_mutex_unlock(&d.mutex);
+    char text[1100],info[180],directory[256],route_text[160],counters[420];bool ready;diagnostic_progress progress;
+    pthread_mutex_lock(&d.mutex);snprintf(info,sizeof(info),"%s",d.message);snprintf(directory,sizeof(directory),"%s",d.directory);ready=d.controller_ready;progress=d.progress;pthread_mutex_unlock(&d.mutex);
     fd_session state={0};if(ready)fd_controller_status(&d.controller,&state);
     radio_commanded_audio_route_t route={0};bool observed=radio_get_commanded_audio_route(&route);
-    snprintf(text,sizeof(text),"%s\nCommands R%d M%d P%d | packet %s (%llu ms)\n%s",radio_freedv_startup_waiting()?"Release PTT: startup waiting for fresh RX":ready?state_name(state.state):"Starting diagnostics",route.commanded_record,route.commanded_modem,route.commanded_ptt,!observed||!route.packet_tx_known?"unknown":route.packet_tx?"TX":"RX",(unsigned long long)route.packet_age_ms,info);
+    if(!observed)snprintf(route_text,sizeof(route_text),"Commands unavailable | packet unknown");
+    else if(!route.packet_tx_known)snprintf(route_text,sizeof(route_text),"Cmd R%d M%d P%d | packet unknown",route.commanded_record,route.commanded_modem,route.commanded_ptt);
+    else snprintf(route_text,sizeof(route_text),"Cmd R%d M%d P%d | %s #%llu age %llu ms%s",route.commanded_record,route.commanded_modem,route.commanded_ptt,route.packet_tx?"TX":"RX",(unsigned long long)route.packet_sequence,(unsigned long long)route.packet_age_ms,route.packet_age_ms>FD_RADIO_PACKET_MAX_AGE_MS?" STALE":"");
+    if(progress.audio_known) {
+        fd_native_stats *a=&progress.audio;fd_stream_stats *c=&a->codec;
+        const char *restoration=!progress.radio_owned?"released":progress.radio_restored&&progress.radio_readback_match&&a->mixer_restored?"verified":"pending";
+        uint64_t now=milliseconds(),age=now>=progress.sampled_ms?now-progress.sampled_ms:0;
+        snprintf(counters,sizeof(counters),"Input %llu / play %llu | audio faults %u\nCodec %llu blocks / sync %llu | uf(all) %llu\nQ in/out/f %u/%u/%u cap %u | D/H %u/%u\nRestore %s | bus errors %u | c%u cache %llu ms",
+            (unsigned long long)a->input_samples,(unsigned long long)a->output_samples,a->failures,
+            (unsigned long long)c->blocks,(unsigned long long)c->synchronized_blocks,(unsigned long long)a->playback.underflows,
+            c->input_depth,c->output_depth,c->feature_depth,a->capture.queued_samples,a->capture.dropped_samples,a->capture.hole_samples,
+            restoration,progress.transport_failures,progress.case_number,(unsigned long long)age);
+    } else snprintf(counters,sizeof(counters),"Audio counters: preparing / not sampled");
+    snprintf(text,sizeof(text),"%s\n%s\n%s\n%s",radio_freedv_startup_waiting()?"Release PTT: startup waiting for fresh RX":ready?state_name(state.state):"Starting diagnostics",info,route_text,counters);
     lv_label_set_text(ui.status,text);lv_label_set_text(ui.note,directory[0]?directory:"Use a dummy load and the receive-only SDR. Choose USB before acquiring.");
 }
 /* This GUI timer remains alive after a forced panel deletion. Remote injection
@@ -401,7 +469,7 @@ static void open_panel(void *unused) {
         if((type==LV_INDEV_TYPE_KEYPAD||type==LV_INDEV_TYPE_ENCODER)&&ui.device_count<16){unsigned i=ui.device_count++;ui.devices[i]=device;ui.groups[i]=device->group;lv_indev_reset(device,NULL);lv_indev_set_group(device,ui.group);}
     }
     main_screen_keys_enable(false);
-    ui.panel=lv_obj_create(lv_scr_act());lv_obj_set_size(ui.panel,390,440);lv_obj_set_pos(ui.panel,BOARD_DISP_W-395,20);lv_obj_set_style_pad_all(ui.panel,8,0);lv_obj_clear_flag(ui.panel,LV_OBJ_FLAG_SCROLLABLE);
+    ui.panel=lv_obj_create(lv_scr_act());lv_obj_set_size(ui.panel,390,440);lv_obj_set_pos(ui.panel,BOARD_DISP_W-395,20);lv_obj_set_style_pad_all(ui.panel,8,0);lv_obj_set_style_text_font(ui.panel,&sony_14,0);lv_obj_set_style_text_line_space(ui.panel,1,0);lv_obj_clear_flag(ui.panel,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *title=lv_label_create(ui.panel);lv_label_set_text(title,"FreeDV Diagnostics | MFK turn / press");lv_obj_set_pos(title,0,0);
     char options[1100]={0};for(unsigned i=0;i<sizeof(case_names)/sizeof(case_names[0]);++i){if(i)strcat(options,"\n");strcat(options,case_names[i]);}
     ui.cases=choice(ui.panel,options,0,25,370);ui.route=choice(ui.panel,"R0 M0 P0\nR0 M0 P1\nR0 M1 P0\nR0 M1 P1\nR1 M0 P0\nR1 M0 P1\nR1 M1 P0\nR1 M1 P1",0,63,180);
