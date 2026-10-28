@@ -30,6 +30,11 @@ jobs:
           python3 tools/freedv/test_validate_rade_parallel_sdk.py
       - name: Check existing-package acquisition follow-up collection
         run: python3 tools/freedv/test_acquisition_endurance.py
+      - name: Check continuous fixture and sustained speech collection
+        run: |
+          set -eu
+          python3 tools/freedv/test_long_sync_fixture.py
+          python3 tools/freedv/test_long_sync_benchmark.py
       - name: Verify frozen RADE receive fixture
         run: python3 tools/freedv/test_pinned_rade_fixture.py
   prototype:

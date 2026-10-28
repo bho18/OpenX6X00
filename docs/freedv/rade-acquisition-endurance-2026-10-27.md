@@ -120,6 +120,12 @@ without the short fixture's intervening EOO/wrap. Keep the existing fixture as
 a separate transition/reacquisition stress case. Per-block transition/path
 observations are still needed to attribute its occasional delays precisely.
 
+The [sustained speech test guide](rade-long-sync-radio-test.md) uses a separately
+generated continuous waveform and the unchanged SDK runtime. It includes a
+short radio smoke check before the endurance case and records fixture storage
+separately from codec memory. Native generation/validation does not qualify radio
+timing or replace the radio measurements.
+
 Native microphone/speaker routing, PTT recovery, RF interoperability, physical
 underruns, TX endurance and the overall feasibility decision remain outstanding.
 All work and results remain in the fork; no upstream submission was made.

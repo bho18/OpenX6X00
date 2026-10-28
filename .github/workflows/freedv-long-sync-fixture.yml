@@ -1,0 +1,77 @@
+name: FreeDV continuous RX fixture
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-fixture:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out reviewed fixture producer
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Install native build prerequisites
+        timeout-minutes: 18
+        run: |
+          set -eu
+          timeout --kill-after=10s 4m sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          timeout --kill-after=10s 12m sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get \
+            -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
+            -o Dpkg::Use-Pty=0 install -y --no-install-recommends \
+            build-essential cmake autoconf automake libtool pkg-config python3 ca-certificates unzip
+      - name: Check fixture metadata, collection and failure gates
+        run: |
+          set -eu
+          python3 tools/freedv/test_long_sync_fixture.py
+          python3 tools/freedv/test_long_sync_benchmark.py
+      - name: Build pinned native reference tools
+        run: |
+          set -eu
+          python3 tools/freedv/build_benchmark_package.py --host-validation \
+            --work "$RUNNER_TEMP/long-sync-host" --jobs 2 \
+            > "$RUNNER_TEMP/long-sync-host-build.log" 2>&1 || {
+              status=$?
+              tail -80 "$RUNNER_TEMP/long-sync-host-build.log"
+              exit "$status"
+            }
+      - name: Generate one long transmission and validate all measured speech blocks
+        run: |
+          set -eu
+          python3 tools/freedv/make_long_sync_fixture.py \
+            --host-work "$RUNNER_TEMP/long-sync-host" \
+            --output "$RUNNER_TEMP/long-sync-fixture" \
+            > "$RUNNER_TEMP/long-sync-fixture-build.log" 2>&1 || {
+              status=$?
+              tail -80 "$RUNNER_TEMP/long-sync-fixture-build.log"
+              exit "$status"
+            }
+          cd "$RUNNER_TEMP/long-sync-fixture/artifact"
+          sha256sum -c SHA256SUMS
+      - name: Upload validated PCM fixture and provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-freedv-long-sync-fixture
+          path: ${{ runner.temp }}/long-sync-fixture/artifact/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload native build and validation records
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: x6200-freedv-long-sync-build-record
+          path: |
+            ${{ runner.temp }}/long-sync-host-build.log
+            ${{ runner.temp }}/long-sync-fixture-build.log
+            ${{ runner.temp }}/long-sync-host/package/package-manifest.json
+            ${{ runner.temp }}/long-sync-fixture/generator.stdout
+            ${{ runner.temp }}/long-sync-fixture/generator.stderr
+            ${{ runner.temp }}/long-sync-fixture/native-validation.stderr
+            ${{ runner.temp }}/long-sync-fixture/pending/native-validation.json
+            ${{ runner.temp }}/long-sync-fixture/artifact/native-validation.json
+          if-no-files-found: warn
+          retention-days: 14
