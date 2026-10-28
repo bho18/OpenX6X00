@@ -22,19 +22,20 @@ its files with host binaries or edit files covered by its checksum list.
 Run this block in Windows PowerShell:
 
 ```powershell
+& {
 $RadioIp = "192.168.100.64"
 $RemoteBench = "/tmp/freedv-acquisition-parallel-20261027-165525"
 $TestStamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $LocalHelper = Join-Path $env:USERPROFILE "Downloads\run_short_validation-$TestStamp.py"
-$HelperUrl = "https://raw.githubusercontent.com/bho18/OpenX6X00/6a6aeb430d79312a32dec4bdcbd60f39ef456682/tools/freedv/run_short_validation.py"
-$ExpectedHelperSha = "b2147d59b813c04bebe5342f5fd8be118e6f50081826c59576861485d88c1f16"
+$HelperUrl = "https://raw.githubusercontent.com/bho18/OpenX6X00/bca6eae8b4f4f018a67f3529b0d4886c7708115b/tools/freedv/run_short_validation.py"
+$ExpectedHelperSha = "a94e567ba6d7f3cd9e633f74c4931ebf42a0f47195d995fde8a82b9ea27d5bda"
 Invoke-WebRequest -UseBasicParsing -Uri $HelperUrl -OutFile $LocalHelper -ErrorAction Stop
 if ((Get-FileHash -LiteralPath $LocalHelper -Algorithm SHA256).Hash -ne $ExpectedHelperSha) {
     throw "Helper checksum mismatch. Use the matching guide and source."
 }
 $RemoteHelper = "/tmp/freedv-short-helper-$TestStamp.py"
 $RemoteResults = "/tmp/freedv-short-results-$TestStamp"
-ssh "root@$RadioIp" "test -x '$RemoteBench/bin/rade-pipeline-bench' && test -x '$RemoteBench/bin/rade-frame-bench' && test -x '$RemoteBench/bin/codec2-frame-bench' && test ! -e '$RemoteHelper' && test ! -e '$RemoteResults'"
+ssh "root@$RadioIp" "test -f '$RemoteBench/bin/rade-pipeline-bench' && test -f '$RemoteBench/bin/rade-frame-bench' && test -f '$RemoteBench/bin/codec2-frame-bench' && chmod +x '$RemoteBench/bin/rade-pipeline-bench' '$RemoteBench/bin/rade-frame-bench' '$RemoteBench/bin/codec2-frame-bench' && test -x '$RemoteBench/bin/rade-pipeline-bench' && test -x '$RemoteBench/bin/rade-frame-bench' && test -x '$RemoteBench/bin/codec2-frame-bench' && test ! -e '$RemoteHelper' && test ! -e '$RemoteResults'"
 if ($LASTEXITCODE -ne 0) { throw "Check runtime path, execute permissions and SSH; no tests started." }
 scp $LocalHelper "root@${RadioIp}:$RemoteHelper"
 if ($LASTEXITCODE -ne 0) { throw "Helper transfer failed." }
@@ -46,7 +47,27 @@ if ($LASTEXITCODE -ne 0) { throw "Results could not be retrieved. Keep console e
 $ResultZip = "$ReturnDir.zip"
 Compress-Archive -LiteralPath $ReturnDir -DestinationPath $ResultZip -ErrorAction Stop
 Write-Host "Suite exit: $SuiteExit; result ZIP: $ResultZip"
+}
 ```
+
+The enclosing script block stops subsequent transfer/test commands if a check
+throws, including when pasted interactively. The execute-bit restoration changes
+file metadata only; the runner still verifies the original package hashes.
+
+## Retry the four frame cases after an execute-permission failure
+
+Let any running noise case finish first and preserve its original results.
+Download the updated helper using the URL/hash above. Restore execute permission
+as shown above. In the test command, add:
+
+```text
+--cases rade-tx 700e-tx 700e-rx 700e-no-sync
+```
+
+Always choose a fresh result directory; do not overwrite the original noise
+case. This retry measures about eight minutes plus preparation. Its summary
+identifies the selected four cases; it does not claim all-five coverage. Retrieve
+both original and retry folders for a combined assessment.
 
 Retrieve partial results even if a case fails. If a failure occurs before the
 result folder is created, preserve the console error instead. Return the ZIP
