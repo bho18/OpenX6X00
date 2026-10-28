@@ -48,8 +48,12 @@ preserved. No upstream issue, PR or maintainer contact is part of this work.
   writer can consume a supplied queue without acquiring physical capture.
 - Both RADE benchmark implementations use the shared allocation-free speech
   kernels. Encoder features and FARGAN continuation sequencing are shared;
-  resampling, receiver workers and device/session adapters still need extraction
-  into the complete streaming engine. The benchmark remains device-free.
+  the benchmark remains device-free. A new standalone streaming engine adds
+  stateful 44.1 kHz resampling, bounded input/output queues, RX/FARGAN workers,
+  three acquisition participants, TX encoding, generation checks and atomic
+  abort. Its native lifecycle/backlog test passes. Firmware adapters, graceful
+  TX end-of-over, synchronized streaming reference checks and SDK validation
+  remain outstanding; the engine is not linked into the GUI yet.
 
 ## Verification completed
 

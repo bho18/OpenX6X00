@@ -42,6 +42,11 @@ def main():
         ['-o', out / 'rade-speech-test'])
     kernel_result = run([out / 'rade-speech-test'])
     (out / 'speech-kernel-test.txt').write_text(kernel_result)
+    run(flags + ['-UNDEBUG', '-I' + str(root), root / 'tools/freedv/rade_stream.c',
+                 root / 'tools/freedv/rade_stream_test.c', root / 'src/freedv/capture_ring.c'] +
+        libraries + ['-o', out / 'rade-stream-test'])
+    stream_result = run([out / 'rade-stream-test'])
+    (out / 'stream-test.txt').write_text(stream_result)
     cases = []
     for mode, fixture in [('tx', 'rade-speech.raw'), ('rx', 'rade-modem.raw'), ('rx', 'silence.raw')]:
         for workload in (['continuous'] if mode == 'tx' else ['continuous', 'interrupt']):
@@ -79,7 +84,7 @@ def main():
                 'compiler': run([args.compiler, '--version']).splitlines()[0],
                 'rade_library_sha256': hashlib.sha256(library.read_bytes()).hexdigest(),
                 'speech_core_sha256': hashlib.sha256((root / 'tools/freedv/rade_speech.h').read_bytes()).hexdigest(),
-                'kernel_test': kernel_result.strip(), 'cases': results}
+                'stream_test': stream_result.strip(), 'kernel_test': kernel_result.strip(), 'cases': results}
     (out / 'summary.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print(f'PASS: {len(results)} native comparisons; results in {out}; radio performance was not qualified')
 
