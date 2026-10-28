@@ -15,9 +15,11 @@
  *
  *  Frames: binary, 8 bytes header {u16 width, u16 height, u32 sequence} little endian, then JPEG.
  *  Commands (text): "key NAME 1|0" (press, release), "knob main|vol|mfk N" (detents, signed),
- *  "ping". Answers: "hello <version> <boot>", "size W H", "pong", "err <text>". <boot> is a number
- *  chosen when the GUI started: a page that sees it change knows the radio restarted and
- *  nothing it had asked for survived (R6).
+ *  "ping [N]". Answers: "hello <version> <boot>", "size W H", "pong [N]", "err <text>". <boot> is a
+ *  number chosen when the GUI started: a page that sees it change knows the radio restarted and
+ *  nothing it had asked for survived (R6). The pong repeats the ping's number: a pong is dropped
+ *  with the rest when the client's queue is full, so the page tells by the number which ping it
+ *  answers rather than by counting (audit C02).
  *
  *  Sessions and control (R3): a new connection may only watch and listen ("role view 0 -").
  *  "pair?" puts a six-digit code on the radio's screen for two minutes; "pair CODE NAME" with
@@ -29,9 +31,10 @@
  *  "ctl WHO MINE" tells every client who has it (none, local, tci, browser NAME). The log needs
  *  operate. An admin lists the sessions ("sessions" -> "sessions [...]") and ends one ("revoke
  *  N": its sockets close, its token is gone); "unpair" forgets the caller's own. A held PTT
- *  key is a lease: the page repeats "key PTT 1" every second, the radio unkeys without it for
- *  three seconds, and after three minutes whatever happens (R4). "tx 0|1" goes to every client
- *  when the radio's TX state changes.
+ *  key is a lease: "key PTT 1 HOLD" presses it, HOLD the page's number for the press, and the
+ *  page repeats it every second; the radio unkeys without it for three seconds, and after three
+ *  minutes whatever happens (R4). A hold that ended stays ended: only a new number keys again
+ *  (audit C02). "tx 0|1" goes to every client when the radio's TX state changes.
  *
  *  The Panel page works the radio natively instead of through a picture of its screen: a client
  *  that sends "panel 1" gets the radio's state as JSON ("state {...}": frequency, mode, filter,
@@ -42,7 +45,8 @@
  *  per bin (the waterfall's own FFT, up to 15 a second, a kilobyte each where a screen frame is
  *  thirty). "screen 0" stops the screen frames for a client that does not show them. "set NAME
  *  VALUE" changes the radio on the LVGL thread: freq, mode, agc, pre, att, nb, nr, sql, rfg,
- *  vol, pwr (tenths of a watt), step, zoom, band (+1/-1), vfo (toggle), filter LO HI, atu, lock.
+ *  vol, pwr (tenths of a watt), step, zoom, band (+1/-1), vfo (toggle), filter LO HI, atu, lock;
+ *  one refused ("err ...") is followed by the whole state, changed or not (audit C13).
  *  A panel thread reads the radio (the settings' getters are safe from any thread, as the TCI
  *  server uses them) and tells the panel clients what changed every 50 ms. The apps: the FT8
  *  list's rows go out as they come ("ft8r {...}", the last 48 to a page that opens later), the
@@ -50,9 +54,10 @@
  *  open|close|cq|stop|auto|hold|mode", "ft8 txfreq HZ", "ft8 reply ID" work the app, "log
  *  CALL|RSTS|RSTR|NAME" writes the day's log as the CW keyboard does ("logged ok|no"). "logq ID
  *  CALL|..." is the same with a number the page chose: the answer is "logged ID ok|no", kept for
- *  the last sixteen, and "logq? ID" asks for it again after a dropped connection or a reload, so
- *  a QSO sent into a gap is found ("ok", "no", "pending" while the GUI still has it) or declared
- *  "unknown", never logged twice by a retry (R6).
+ *  the last 64, and "logq? ID CALL|..." asks for it again after a dropped connection or a reload,
+ *  so a QSO sent into a gap is found ("ok", "no", "pending" while the GUI still has it) or declared
+ *  "unknown", never logged twice by a retry (R6). A receipt is bound to its QSO: the same number
+ *  with another QSO is answered "conflict", never with the other QSO's answer (audit C03).
  *
  *  The Origin check of ws_handshake() keeps pages from other sites out; like the TCI server there
  *  is no login: the radio's own network is trusted.
@@ -166,11 +171,13 @@ typedef struct {
     uint64_t        screen_ms;      /* its last frame */
     bool            panel;          /* wants the state, the spectrum and the spots (the Panel page) */
     bool            panel_fresh;    /* just subscribed: the whole state goes out next */
+    atomic_bool     state_due;      /* a "set" refused: the state goes out to it next, changed or not */
     int             sess;           /* the session it authenticated as, -1 none (a viewer) */
     uint8_t         role;           /* ROLE_VIEW, ROLE_OPERATE, ROLE_ADMIN */
     bool            tx_ok;          /* the session may transmit */
     uint64_t        ptt_ms;         /* the PTT key held: its last renewal, and when it began */
     uint64_t        ptt_start_ms;
+    uint32_t        ptt_hold;       /* the page's number for its last PTT press: renewed while held, then over */
     uint32_t        ctl_told;       /* the control version last told ("ctl"), 0 never */
 } client_t;
 
@@ -230,6 +237,7 @@ static atomic_int  port    = REMOTE_DEFAULT_PORT;
 static atomic_int  nclients;
 static atomic_int  npanel;          /* clients on the panel feed */
 static atomic_bool spots_resend;    /* a new panel client: the spots go out again */
+static atomic_bool state_resend;    /* a "set" dropped on the LVGL thread: the state goes out to all again */
 static int         wake_fd[2] = {-1, -1};
 static int         dev_keypad = -1, dev_power = -1, dev_main = -1, dev_vol = -1, dev_mfk = -1;
 
@@ -535,11 +543,26 @@ static void power_cb(void *arg) {
     keypad_power_set(*(bool *)arg);
 }
 
+/* The POWER key where there is no device for it (the X6200), as radio.c posts the base's: told until its job is
+ * in. A release dropped by a full queue left the press alone, and its hold timer (front_keys.c, KEYPAD_LONG)
+ * powered the radio off: a click became a power-off. power_told: what the GUI was told; the server loop tries
+ * again. A press that cannot go in and is let go before there is room is not told at all. Socket thread */
+static bool power_down, power_told;
+
+static void power_post(void) {
+    if (power_down != power_told) {
+        bool down = power_down;
+
+        if (scheduler_put_urgent(power_cb, &down, sizeof(down)))
+            power_told = down;
+    }
+}
+
 static void key_emit(uint16_t code, bool down) {
     ctl_injected();
     if (code == KEY_POWER && dev_power < 0) {
-        /* No device for it (the X6200: the base reports the key): as the base's packets do */
-        scheduler_put(power_cb, &down, sizeof(down));
+        power_down = down;
+        power_post();
         return;
     }
     emit(code == KEY_POWER ? dev_power : dev_keypad, EV_KEY, code, down ? 1 : 0);
@@ -670,10 +693,14 @@ static void panel_apply(void *arg) {
             backlight_tick();
             if (!main_screen_freq_locked() && cfg_is_valid_hw_freq(p->a))
                 main_screen_set_freq((uint64_t)p->a);
+            else
+                atomic_store(&state_resend, true);  /* locked since panel_set looked: no page keeps what it asked (C13) */
             break;
         case P_MODE:
             if (!main_screen_mode_locked() && mode_supported(p->a))
                 cparam_i_set(cfg_cur_mode, p->a);
+            else
+                atomic_store(&state_resend, true);
             break;
         case P_AGC:    cparam_i_set(cfg_cur_agc, LV_CLAMP(0, p->a, 3)); break;
         case P_PRE:    cparam_i_set(cfg_cur_pre, p->a != 0); break;
@@ -689,6 +716,8 @@ static void panel_apply(void *arg) {
         case P_BAND:
             if (!main_screen_band_locked())
                 cfg_band_load_next(p->a > 0);
+            else
+                atomic_store(&state_resend, true);
             break;
         case P_VFO:    cfg_vfo_toggle(); break;
         case P_FILTER:
@@ -705,13 +734,22 @@ static void panel_apply(void *arg) {
     }
 }
 
-static void panel_put(pcmd_id_t id, int32_t a, int32_t b) {
+static bool panel_put(pcmd_id_t id, int32_t a, int32_t b) {
     pcmd_t p = {.id = id, .a = a, .b = b};
-    scheduler_put(panel_apply, &p, sizeof(p));
+    return scheduler_put(panel_apply, &p, sizeof(p));
 }
 
-/* "set NAME VALUE [VALUE2]": 0 done, 1 no such setting, 2 a mode this radio has not */
-static int panel_set(const char *name, const char *v1, const char *v2) {
+/* A "set" refused, in words; and the state goes out to the client again, changed or not, so a page that showed
+ * what it asked for shows the radio's again (audit C13) */
+static void set_refused(client_t *c, const char *why) {
+    client_textf(c, "err %s", why);
+    atomic_store(&c->state_due, true);
+}
+
+/* "set NAME VALUE [VALUE2]", for the LVGL thread. What panel_apply would drop without a word (the frequency
+ * locked, by LOCK or an app, or one this radio does not tune) is refused here first; one locked in between is
+ * still dropped there, with the state to every page again (state_resend) */
+static void panel_set(client_t *c, const char *name, const char *v1, const char *v2) {
     static const struct {
         const char *name;
         pcmd_id_t   id;
@@ -731,11 +769,20 @@ static int panel_set(const char *name, const char *v1, const char *v2) {
             if (a > b) { int32_t t = a; a = b; b = t; }
         }
         if (names[i].id == P_MODE && !mode_supported(a))
-            return 2;
-        panel_put(names[i].id, a, b);
-        return 0;
+            set_refused(c, "mode: not on this radio");
+        else if (names[i].id == P_FREQ && main_screen_freq_locked())
+            set_refused(c, "freq: locked (LOCK, or an app holds the frequency)");
+        else if (names[i].id == P_FREQ && !cfg_is_valid_hw_freq(a))
+            set_refused(c, "freq: not a frequency this radio tunes");
+        else if (!panel_put(names[i].id, a, b)) {
+            char why[48];                       /* named as the others: a page takes "busy..." for its PTT's refusal */
+            snprintf(why, sizeof(why), "%s: the radio is busy, try again", names[i].name);
+            set_refused(c, why);
+        }
+        return;
     }
-    return 1;
+    client_textf(c, "err unknown setting %s", name);
+    atomic_store(&c->state_due, true);
 }
 
 /* Any thread */
@@ -949,8 +996,9 @@ static size_t      cw_hist_len;
 static uint32_t    boot_id;         /* this GUI run, told in "hello" */
 #define LOG_ANSWERS 64
 static struct {                     /* the last log commands' answers: id 0 is the old "log" without one */
-    uint64_t who;                   /* the session that sent it: every page counts from 1 (audit B07) */
-    uint32_t id;
+    uint64_t who;                   /* the session that sent it: older pages count from 1 (audit B07) */
+    uint64_t id;                    /* the page's number: random, 53 bits, from any tab of the browser (C03) */
+    uint64_t sum;                   /* its QSO's text, hashed: the receipt is this QSO's only (audit C03) */
     uint8_t  result;                /* 0 still with the GUI thread, 1 logged, 2 refused */
     bool     told;                  /* gone out to the session's panel clients */
 } log_ans[LOG_ANSWERS];
@@ -1070,8 +1118,9 @@ typedef struct {
     bool        has_cell;
     cell_data_t cell;
     char        text[200];
-    uint32_t    log_id;     /* A_LOG: the page's number for its answer, 0 for none */
+    uint64_t    log_id;     /* A_LOG: the page's number for its answer, 0 for none */
     uint64_t    who;        /* A_LOG: the session it came from */
+    uint64_t    sum;        /* A_LOG: its text as sent, hashed (log_sum) */
 } acmd_t;
 
 /* The session a client logs under: its token hashed (FNV-1a); the one value for the unpaired */
@@ -1086,8 +1135,17 @@ static uint64_t sess_key(const client_t *c) {
     return h;
 }
 
+/* A QSO's text as the page sent it, hashed (FNV-1a): what a receipt is for */
+static uint64_t log_sum(const char *text) {
+    uint64_t h = 1469598103934665603ULL;
+
+    for (const char *p = text; *p; p++)
+        h = (h ^ (uint8_t)*p) * 1099511628211ULL;
+    return h;
+}
+
 /* A log command's place in the ring: its own if it has one (queued earlier), else the next */
-static int log_slot(uint64_t who, uint32_t id) {
+static int log_slot(uint64_t who, uint64_t id) {
     if (id)
         for (int i = 0; i < LOG_ANSWERS; i++)
             if (log_ans[i].id == id && log_ans[i].who == who)
@@ -1100,44 +1158,48 @@ static int log_slot(uint64_t who, uint32_t id) {
 }
 
 /* A log command queued for the GUI thread: "pending" to a query until its answer is in */
-static void log_queued(uint64_t who, uint32_t id) {
+static void log_queued(uint64_t who, uint64_t id, uint64_t sum) {
     pthread_mutex_lock(&app_mux);
     int i = log_slot(who, id);
+    log_ans[i].sum    = sum;
     log_ans[i].result = 0;
     log_ans[i].told   = true;
     pthread_mutex_unlock(&app_mux);
 }
 
 /* The answer to a log command, kept; the panel thread tells the session's clients */
-static void log_answer(uint64_t who, uint32_t id, bool ok) {
+static void log_answer(uint64_t who, uint64_t id, uint64_t sum, bool ok) {
     pthread_mutex_lock(&app_mux);
     int i = log_slot(who, id);
+    log_ans[i].sum    = sum;
     log_ans[i].result = ok ? 1 : 2;
     log_ans[i].told   = false;
     pthread_mutex_unlock(&app_mux);
     atomic_store(&log_pending, true);
 }
 
-/* "logq? ID": the answer kept for this session's ID, pending while the GUI thread has it, or
+/* "logq? ID CALL|...": the answer kept for this session's ID, pending while the GUI thread has it, or
  * unknown (the radio restarted, the command never arrived, or the answer is too old to be kept:
- * the page leaves it to the operator) */
-static void log_query(client_t *c, uint32_t id) {
+ * the page leaves it to the operator). Kept for another QSO under that number: "conflict", that
+ * QSO's answer is not this one's (audit C03). A page from before C03 asks without the QSO */
+static void log_query(client_t *c, uint64_t id, const char *text) {
     const char *r   = "unknown";
     uint64_t    who = sess_key(c);
 
     pthread_mutex_lock(&app_mux);
     for (int i = 0; i < LOG_ANSWERS; i++)
         if (log_ans[i].id == id && id && log_ans[i].who == who)
-            r = log_ans[i].result == 1 ? "ok" : log_ans[i].result == 2 ? "no" : "pending";
+            r = text && log_ans[i].sum != log_sum(text) ? "conflict"
+              : log_ans[i].result == 1 ? "ok" : log_ans[i].result == 2 ? "no" : "pending";
     pthread_mutex_unlock(&app_mux);
-    client_textf(c, "logged %u %s", id, r);
+    client_textf(c, "logged %llu %s", (unsigned long long)id, r);
 }
 
 /* The answers not yet told, from the panel thread: each to the panel clients of its session.
- * Every page counts its QSOs from 1, so a receipt broadcast to all confirmed another page's
+ * Older pages count their QSOs from 1, so a receipt broadcast to all confirmed another page's
  * QSO 1 (audit B07) */
 static void log_flush(void) {
-    struct { uint64_t who; uint32_t id; uint8_t result; } out[LOG_ANSWERS];
+    struct { uint64_t who; uint64_t id; uint8_t result; } out[LOG_ANSWERS];
     int  n = 0;
     char line[64];
 
@@ -1154,7 +1216,7 @@ static void log_flush(void) {
     pthread_mutex_unlock(&app_mux);
     for (int k = 0; k < n; k++) {
         if (out[k].id)
-            snprintf(line, sizeof(line), "logged %u %s", out[k].id, out[k].result == 1 ? "ok" : "no");
+            snprintf(line, sizeof(line), "logged %llu %s", (unsigned long long)out[k].id, out[k].result == 1 ? "ok" : "no");
         else
             snprintf(line, sizeof(line), "logged %s", out[k].result == 1 ? "ok" : "no");
         for (int i = 0; i < MAX_CLIENTS; i++)
@@ -1181,7 +1243,7 @@ static void app_apply(void *arg) {
             ft8_window_remote((ft8_rc_t)a->what, a->arg, a->has_cell ? &a->cell : NULL);
             break;
         case A_LOG:
-            log_answer(a->who, a->log_id, dialog_field_qso_log(a->text));
+            log_answer(a->who, a->log_id, a->sum, dialog_field_qso_log(a->text));
             break;
     }
 }
@@ -1225,10 +1287,12 @@ static bool app_ft8_cmd(const char *what, const char *arg) {
 /* "log CALL|RSTS|RSTR|NAME|QTH|GRID|COUNTRY" (dialog_field_qso_log's text), the day's log;
  * "logq ID CALL|..." the same, answered with the ID. A queue with no room answers "no" at once:
  * the page must not believe a QSO sent into nothing was logged (audit A21). An ID this session
- * sent before is not written again: its answer goes out once more (audit B07) */
-static void app_log_cmd(client_t *c, uint32_t id, const char *text) {
+ * sent before with this QSO is not written again: its answer goes out once more (audit B07). With
+ * another QSO it is a "conflict", not written and not answered with the other's result: two tabs
+ * of one browser share the session, and pages before C03 each counted from 1 */
+static void app_log_cmd(client_t *c, uint64_t id, const char *text) {
     uint64_t who = sess_key(c);
-    acmd_t   a   = {.id = A_LOG, .log_id = id, .who = who};
+    acmd_t   a   = {.id = A_LOG, .log_id = id, .who = who, .sum = log_sum(text)};
 
     snprintf(a.text, sizeof(a.text), "%s", text);
     if (id) {
@@ -1236,19 +1300,22 @@ static void app_log_cmd(client_t *c, uint32_t id, const char *text) {
         for (int i = 0; i < LOG_ANSWERS; i++) {
             if (log_ans[i].id != id || log_ans[i].who != who)
                 continue;
-            if (log_ans[i].result) {
+            bool same = log_ans[i].sum == a.sum;
+            if (same && log_ans[i].result) {
                 log_ans[i].told = false;
                 atomic_store(&log_pending, true);
             }
             pthread_mutex_unlock(&app_mux);
+            if (!same)
+                client_textf(c, "logged %llu conflict", (unsigned long long)id);
             return;
         }
         pthread_mutex_unlock(&app_mux);
-        log_queued(who, id);
+        log_queued(who, id, a.sum);
     }
     if (!scheduler_put(app_apply, &a, sizeof(a))) {
         if (id)
-            log_answer(who, id, false); /* told by the panel thread, kept for a query */
+            log_answer(who, id, a.sum, false); /* told by the panel thread, kept for a query */
         else
             client_text(c, "logged no");
     }
@@ -1311,10 +1378,12 @@ static void *panel_thread(void *arg) {
                 last      = s;
                 have_last = true;
             }
+            bool all_due = atomic_exchange(&state_resend, false);
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 client_t *c = &clients[i];
                 if (c->fd < 0 || !c->up || !c->panel)
                     continue;
+                bool due = atomic_exchange(&c->state_due, false) || all_due;
                 if (c->panel_fresh) {
                     c->panel_fresh = false;
                     panel_hello(c);
@@ -1327,7 +1396,9 @@ static void *panel_thread(void *arg) {
                     panel_app_history(c);
                     if (changed)
                         pstate_line(line, sizeof(line), &s);     /* the line the others get */
-                } else if (changed) {
+                } else if (changed || due) {
+                    if (!changed)
+                        pstate_line(line, sizeof(line), &s);     /* a "set" refused: the state as it is */
                     client_text(c, line);
                 }
             }
@@ -1425,6 +1496,55 @@ static bool allowed(client_t *c, uint8_t role, bool control) {
     return true;
 }
 
+/* "key PTT 1 HOLD": the radio's own microphone keyed, HOLD the page's number for this press; the page sends the
+ * same every second to renew the lease (ptt_lease). Only the hold that keyed is renewed: one that ended (the lease
+ * ran out, three minutes, a release) or was refused stays ended, so the renewals a stalled link delivers late key
+ * nothing, and a press on purpose comes with a new number (audit C02). A page without the numbers, open since
+ * before an update, renewed with the press itself: it is told to reload. Socket thread */
+static void ptt_down(client_t *c, const char *hold_text) {
+    uint32_t hold = hold_text ? (uint32_t)strtoul(hold_text, NULL, 10) : 0;
+    int      k    = 0;
+
+    while (k < c->nheld && c->held[k] != BTN_TRIGGER_HAPPY4) k++;
+    if (!hold) {
+        client_text(c, "err this session may not transmit from a page older than the radio: reload the page");
+        return;
+    }
+    if (hold < c->ptt_hold || (hold == c->ptt_hold && k == c->nheld))
+        return;                                 /* an ended hold's renewal: the page was told when it ended */
+    c->ptt_hold = hold;                         /* a press counts once, taken or refused */
+    if (!allowed(c, ROLE_OPERATE, true))
+        return;
+    if (!c->tx_ok) {
+        client_text(c, "err this session may not transmit");
+        return;
+    }
+    c->ptt_ms = now_ms();
+    if (k < c->nheld)
+        return;                                 /* down already: the lease renewed, the three minutes count on */
+    if (c->nheld == MAX_HELD) {
+        client_text(c, "err too many keys held");
+        return;
+    }
+    c->ptt_start_ms = c->ptt_ms;
+    c->held[c->nheld++] = BTN_TRIGGER_HAPPY4;
+    key_emit(BTN_TRIGGER_HAPPY4, true);
+}
+
+/* A held PTT is a lease (R4): renewed every second by the page, or let go here; three minutes at most. Its hold
+ * stays ended (ptt_down). Server thread */
+static void ptt_lease(client_t *c, uint64_t now) {
+    int k = 0;
+
+    while (k < c->nheld && c->held[k] != BTN_TRIGGER_HAPPY4) k++;
+    if (k < c->nheld && (now - c->ptt_ms > PTT_LEASE_MS || now - c->ptt_start_ms > PTT_LIMIT_MS)) {
+        c->held[k] = c->held[--c->nheld];
+        key_emit(BTN_TRIGGER_HAPPY4, false);
+        client_text(c, now - c->ptt_start_ms > PTT_LIMIT_MS ? "err ptt released: three minutes on the air"
+                                                            : "err ptt released: no renewal from the page");
+    }
+}
+
 static void sessions_tell(client_t *c) {
     char line[1024];
     int  n = snprintf(line, sizeof(line), "sessions [");
@@ -1465,13 +1585,16 @@ static void handle_text(client_t *c, char *text) {
             app_log_cmd(c, 0, text + 4);
         return;
     }
-    if (!strncmp(text, "logq? ", 6)) {
-        log_query(c, (uint32_t)strtoul(text + 6, NULL, 10));
+    /* The numbers are 53 bits: strtoull, as strtoul stops at 32 bits on the radio */
+    if (!strncmp(text, "logq? ", 6)) {      /* "logq? ID TEXT", "logq? ID" from a page before C03 */
+        char    *end;
+        uint64_t id = strtoull(text + 6, &end, 10);
+        log_query(c, id, *end == ' ' ? end + 1 : NULL);
         return;
     }
     if (!strncmp(text, "logq ", 5)) {       /* "logq ID TEXT" */
         char    *end;
-        uint32_t id = (uint32_t)strtoul(text + 5, &end, 10);
+        uint64_t id = strtoull(text + 5, &end, 10);
         if (!allowed(c, ROLE_OPERATE, false))
             return;
         if (id && *end == ' ')
@@ -1508,7 +1631,10 @@ static void handle_text(client_t *c, char *text) {
     if (n == 0)
         return;
     if (!strcmp(a[0], "ping")) {
-        client_text(c, "pong");
+        if (n >= 2)
+            client_textf(c, "pong %llu", strtoull(a[1], NULL, 10));
+        else
+            client_text(c, "pong");
     } else if (!strcmp(a[0], "auth") && n >= 2) {
         int i = strlen(a[1]) == TOKEN_LEN ? sess_find(a[1]) : -1;
         if (i < 0) {
@@ -1574,13 +1700,11 @@ static void handle_text(client_t *c, char *text) {
             }
         }
     } else if (!strcmp(a[0], "set") && n >= 2) {
-        if (!allowed(c, ROLE_OPERATE, true))
+        if (!allowed(c, ROLE_OPERATE, true)) {
+            atomic_store(&c->state_due, true);     /* as set_refused: the state again (audit C13) */
             return;
-        int r = panel_set(a[1], n >= 3 ? a[2] : NULL, n >= 4 ? a[3] : NULL);
-        if (r == 1)
-            client_textf(c, "err unknown setting %s", a[1]);
-        else if (r == 2)
-            client_text(c, "err mode: not on this radio");
+        }
+        panel_set(c, a[1], n >= 3 ? a[2] : NULL, n >= 4 ? a[3] : NULL);
     } else if (!strcmp(a[0], "ft8") && n >= 2) {
         if (!allowed(c, ROLE_OPERATE, true))
             return;
@@ -1593,30 +1717,22 @@ static void handle_text(client_t *c, char *text) {
             client_textf(c, "err unknown key %s", a[1]);
             return;
         }
+        if (code == BTN_TRIGGER_HAPPY4 && down) {  /* PTT: the radio's own microphone, a lease */
+            ptt_down(c, n >= 4 ? a[3] : NULL);
+            return;
+        }
         int i = 0;
         while (i < c->nheld && c->held[i] != code) i++;
         if (down) {
             if (!allowed(c, ROLE_OPERATE, true))
                 return;
-            if (code == BTN_TRIGGER_HAPPY4) {       /* PTT: the radio's own microphone */
-                if (!c->tx_ok) {
-                    client_text(c, "err this session may not transmit");
-                    return;
-                }
-                c->ptt_ms = now_ms();
-                if (i < c->nheld)
-                    return;                         /* the lease renewed, the key stays down */
-                c->ptt_start_ms = c->ptt_ms;
-            }
-            if (i == c->nheld) {
-                if (c->nheld == MAX_HELD) {
-                    client_text(c, "err too many keys held");
-                    return;
-                }
-                c->held[c->nheld++] = (uint16_t)code;
-            } else if (i < c->nheld) {
+            if (i < c->nheld)
                 return;                             /* already down: the hardware saw it */
+            if (c->nheld == MAX_HELD) {
+                client_text(c, "err too many keys held");
+                return;
             }
+            c->held[c->nheld++] = (uint16_t)code;
         } else if (i < c->nheld) {
             c->held[i] = c->held[--c->nheld];
         } else {
@@ -1719,6 +1835,8 @@ static void client_read(client_t *c) {
                 break;
         }
     }
+    if (c->fd < 0)      /* what it asked closed it: "unpair", or its own session revoked */
+        return;
     if (pos) {
         c->in_len -= pos;
         memmove(c->in, c->in + pos, c->in_len);
@@ -1773,10 +1891,12 @@ static void accept_client(int listen_fd) {
         c->screen_stale = true;
         c->screen_ms    = 0;
         c->panel   = c->panel_fresh = false;
+        atomic_store(&c->state_due, false);
         c->sess    = -1;
         c->role    = ROLE_VIEW;
         c->tx_ok   = false;
         c->ptt_ms  = c->ptt_start_ms = 0;
+        c->ptt_hold = 0;
         c->ctl_told = 0;
         c->last_ms = c->ping_ms = now_ms();
         inet_ntop(AF_INET, &peer.sin_addr, c->ip, sizeof(c->ip));
@@ -1824,10 +1944,12 @@ static void *server_thread(void *arg) {
             slot[n]  = i;
             pfd[n++] = (struct pollfd){.fd = c->fd, .events = ev};
         }
-        if (poll(pfd, n, n > 2 ? 100 : listen_fd >= 0 ? 500 : 1000) < 0 && errno != EINTR) {
+        /* A POWER key not told yet (power_post): tried again about as often as the base's packets */
+        if (poll(pfd, n, power_down != power_told ? 30 : n > 2 ? 100 : listen_fd >= 0 ? 500 : 1000) < 0 && errno != EINTR) {
             usleep(100000);
             continue;
         }
+        power_post();
         if (pfd[0].revents & POLLIN) {
             char buf[64];
             while (read(wake_fd[0], buf, sizeof(buf)) > 0) {}
@@ -1873,8 +1995,7 @@ static void *server_thread(void *arg) {
                 }
             }
         }
-        /* A held PTT is a lease (R4): renewed every second by the page, or let go here; three
-         * minutes at most. Who controls the radio, and its TX state, to everyone. */
+        /* The PTT leases (ptt_lease). Who controls the radio, and its TX state, to everyone. */
         {
             bool tx = ctl_transmitting();
             bool tx_changed = tx != atomic_exchange(&tx_last, tx);
@@ -1883,14 +2004,7 @@ static void *server_thread(void *arg) {
                 client_t *c = &clients[i];
                 if (c->fd < 0 || !c->up)
                     continue;
-                int k = 0;
-                while (k < c->nheld && c->held[k] != BTN_TRIGGER_HAPPY4) k++;
-                if (k < c->nheld && (now - c->ptt_ms > PTT_LEASE_MS || now - c->ptt_start_ms > PTT_LIMIT_MS)) {
-                    c->held[k] = c->held[--c->nheld];
-                    key_emit(BTN_TRIGGER_HAPPY4, false);
-                    client_text(c, now - c->ptt_start_ms > PTT_LIMIT_MS ? "err ptt released: three minutes on the air"
-                                                                        : "err ptt released: no renewal from the page");
-                }
+                ptt_lease(c, now);
                 if (tx_changed)
                     client_textf(c, "tx %d", tx ? 1 : 0);
                 if (c->ctl_told != ver)

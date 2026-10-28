@@ -313,7 +313,7 @@ static void theme_apply(void *arg) {
 static void font_update_cb(lv_event_t * e) {
     uint8_choice_cb(e);
     if (theme_shape.font >= 0) {
-        msg_update_text_fmt("Font: this theme has its own");   /* Black Metal, Total Black, a file that sets one */
+        msg_update_text_fmt("Font: this theme has its own");   /* Black Metal, Total Black, 1bit, a file that sets one */
         return;
     }
     params_flush();
@@ -2467,7 +2467,10 @@ static void wv_update() {
     wl_pill(wv.pill, name ? "connected" : NULL, theme_hex(TC_ok_bg), theme_hex(TC_ok));
     lv_label_set_text(wv.client, name ? name : "no client");
     lv_obj_set_style_text_color(wv.client, name ? TC(text) : TC(text_faint), 0);
-    if (wv.trust) {
+    /* Not while the list is open: the knob moves the dropdown's selection before the press
+     * confirms it, and putting it back to the setting every second turned a Listen only
+     * being chosen back into Operate before the press could take it (#17) */
+    if (wv.trust && !lv_dropdown_is_open(wv.trust)) {
         uint16_t want = tci_server_get_trust_operate() ? 0 : 1;
         if (lv_dropdown_get_selected(wv.trust) != want)
             lv_dropdown_set_selected(wv.trust, want);

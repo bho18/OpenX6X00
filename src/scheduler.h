@@ -35,7 +35,7 @@ bool scheduler_put(scheduler_fn_t fn, void *arg, size_t arg_size);
 
 /**
  * The same with room kept beyond the usual bound: for what must get through when the queue
- * is flooded (an unkey, a stop)
+ * is flooded (an unkey, a stop, a change that nothing would post again: radio.c, remote_server.c)
  */
 bool scheduler_put_urgent(scheduler_fn_t fn, void *arg, size_t arg_size);
 
@@ -43,6 +43,13 @@ bool scheduler_put_urgent(scheduler_fn_t fn, void *arg, size_t arg_size);
  * Run fn(NULL) on the GUI thread later. False: the queue is full
  */
 bool scheduler_put_noargs(scheduler_fn_t fn);
+
+/**
+ * Run fn(NULL) on the GUI thread later, once however often it is asked before it runs: for a job that
+ * shows what is there when it runs (a redraw), asked for at each frame of the DSP. True also when one
+ * is queued already; one asked while it runs runs again after. False: the queue is full
+ */
+bool scheduler_put_coalesced(scheduler_fn_t fn);
 
 /**
  * Run fn(arg) on the GUI thread and wait for it; on the GUI thread itself it runs at once.

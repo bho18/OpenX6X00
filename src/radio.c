@@ -50,6 +50,8 @@
 #include "base_guard.h"
 #include "audio.h"
 #include "bat_est.h"
+#include "bat_watch.h"
+#include "start_trace.h"
 #include "clock.h"
 #include "wifi.h"
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
@@ -72,11 +74,6 @@
 #define FILTER_2_OFFSET 60
 #define FILTER_2_OFFSET_IN 20
 #define FILTER_2_OFFSET_OUT (FILTER_2_OFFSET - FILTER_2_OFFSET_IN)
-
-/* Battery voltage in 0.1 V units; LOW + HYSTERESIS = HIGH (upstream 21c2b93) */
-#define LOW_BATTERY_VBAT_LOW     60
-#define LOW_BATTERY_HYSTERESIS   2
-#define LOW_BATTERY_VBAT_HIGH    (LOW_BATTERY_VBAT_LOW + LOW_BATTERY_HYSTERESIS)
 
 /**********************
  *      MACROS
@@ -211,29 +208,37 @@ void radio_bb_reset() {
     hw_bb_reset();
 }
 
-void radio_init() {
-    if (!hw_init())
-        return;
+bool radio_init() {
+    if (!hw_init()) {
+        start_trace("base: its pins or its line could not be opened");
+        return false;
+    }
 
     /* Back off (0.1 .. 25.6 s) and, once, after about 6 s without an answer,
      * pulse the baseband reset pin instead of waiting forever (upstream 37f3894) */
-    uint8_t cnt = 0;
+    uint8_t  cnt = 0;
+    unsigned tries = 0;
 
     while (!hw_control_init()) {
+        start_trace("base: no answer (try %u)", ++tries);
         usleep(100000 << cnt);
         if (cnt < 8) cnt++;
         if (cnt == 6) {
             fprintf(stderr, "Baseband not answering, reset\n");
+            start_trace("base: reset");
             radio_bb_reset();
             usleep(1000000);
         }
     }
+    start_trace("base answered");
+    return true;
 }
 
 void radio_start() {
 
     hw_start();
     base_ver = hw_base_ver();
+    start_trace("base: version %s", hw_base_ver_str());
     /* What the digital TX level comes from, for a report of an app at 0 W (#16); the base version was nowhere */
     fprintf(stderr, "radio: base %s, line_in %u, line_out %u, play %.1f dB, rec %.1f dB, digital level %.1f dB\n",
             hw_base_ver_str(), params.line_in, params.line_out, params.play_gain_db_f.x, params.rec_gain_db_f.x,
@@ -654,6 +659,10 @@ void radio_poweroff() {
     }
     cfg_api_flush_all();
     cfg_db_shutdown();
+    /* Onto the card before the base cuts the power: the settings are written with synchronous=OFF (params/db.c), the
+     * FAT keeps its table and folder changes in memory, and the kernel writes them out some 30 s later. Cut before,
+     * params.db and its WAL can be left half written on the card, and the files written last lost */
+    sync();
     state = RADIO_POWEROFF;
 }
 
@@ -702,7 +711,7 @@ int radio_get_mic(void) {
     return mic_override < 0 ? param_i_get(cfg_mic) : mic_override;
 }
 
-static bool modem_on;
+static atomic_bool modem_on;    /* read on other threads (Winlink's on_air) while tx_player's thread keys */
 
 /* In split the audio goes out on the TX frequency through radio_set_tx_freq, as the apps' tone does (TCI's audio,
  * the voice messages): the active VFO moved before keying and back after; an app that moved it for its tone keeps
@@ -717,7 +726,7 @@ void radio_set_modem(bool tx) {
         radio_set_tx_freq(radio_tx_freq());
         moved = true;
     }
-    modem_on = tx;
+    atomic_store(&modem_on, tx);
     WITH_RADIO_LOCK(hw_set_i(HW_MODEM, tx));
     if (!tx && moved) {
         moved = false;
@@ -726,7 +735,7 @@ void radio_set_modem(bool tx) {
 }
 
 bool radio_get_modem(void) {
-    return modem_on;
+    return atomic_load(&modem_on);
 }
 
 /* Under the lock: the record, PTT, modem, tune and split bits share one register, and the
@@ -1108,6 +1117,29 @@ static void battery_warn_cb(void *arg) {
     }
 }
 
+/* The model, and the log fed again, once at the base's first reading, whatever it says: the stretch on battery goes
+ * on across a GUI restart (the model learns only what is newer than it); no model yet, it learns from the old log
+ * too. During the start, as before the readings had to settle (bat_watch.h): 15 s into a running GUI the replay of
+ * a full log would hold the radio thread, and with it the spectrum, the S-meter and the X6200's register keepalive */
+static void battery_model_load(void) {
+    static bool done;
+
+    if (done) {
+        return;
+    }
+    done = true;
+
+    uint64_t t0 = get_time();
+
+    if (!bat_est_load(BATTERY_MODEL)) {
+        bat_est_replay(BATTERY_LOG ".1");
+    }
+    bat_est_replay(BATTERY_LOG);
+    bat_est_save(BATTERY_MODEL);
+    fprintf(stderr, "battery: model and log read at %llu ms, in %llu ms\n", (unsigned long long)(now_time - start_time),
+            (unsigned long long)(get_time() - t0));
+}
+
 static void battery_log(const hw_pack_t *p) {
     static time_t   last;
     static uint64_t prev_ms;
@@ -1130,15 +1162,6 @@ static void battery_log(const hw_pack_t *p) {
     if (t - last < 60) {
         return;
     }
-    /* At start the log is fed again: the stretch on battery goes on across a GUI restart (the
-     * model learns only what is newer than it). No model yet: learn from the old log too */
-    if (!last) {
-        if (!bat_est_load(BATTERY_MODEL)) {
-            bat_est_replay(BATTERY_LOG ".1");
-        }
-        bat_est_replay(BATTERY_LOG);
-        bat_est_save(BATTERY_MODEL);
-    }
     last = t;
     if ((f = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "r"))) {
         if (fscanf(f, "%u", &mhz) == 1) {
@@ -1147,7 +1170,9 @@ static void battery_log(const hw_pack_t *p) {
         fclose(f);
     }
     bat_sample_t s = {
-        .t = t, .vbat = p->vbat * 0.1f, .cap = p->batcap, .vext = p->vext * 0.1f, .charging = p->charging,
+        /* the % shown on battery (bat_watch_cap: the base's can be far off, #49), else the base's */
+        .t = t, .vbat = p->vbat * 0.1f, .cap = bat_pct >= 0 ? bat_pct : p->batcap, .vext = p->vext * 0.1f,
+        .charging = p->charging,
         .tx_s = tx_s, .tx_w = tx_s > 0 ? tx_ws / tx_s : 0, .bl = backlight_level(),
         .wifi = wifi_get_status() != WIFI_OFF,
         .bt = access("/sys/class/bluetooth/hci0", F_OK) == 0,
@@ -1162,8 +1187,8 @@ static void battery_log(const hw_pack_t *p) {
     clock_update_estimate(min, approx);
 
     /* On battery at 10% or less: a warning every minute (the 30 s power-off comes at 6.0 V) */
-    if (s.vext < 3.0f && s.vbat >= 3.0f && p->batcap <= 10) {
-        int w[2] = { p->batcap, min };
+    if (s.vext < 3.0f && s.vbat >= 3.0f && s.cap <= 10) {
+        int w[2] = { s.cap, min };
 
         scheduler_put(battery_warn_cb, w, sizeof(w));
     }
@@ -1197,12 +1222,49 @@ static void battery_log(const hw_pack_t *p) {
     fclose(f);
 }
 
+/* On the GUI thread: the trace syncs the card, which the flow must not wait for */
+static void start_trace_cb(void *arg) {
+    start_trace("%s", (const char *)arg);
+}
+
+/* The base's supply readings until they count, into the run's log: what it sends at power-on, for a
+ * report (#17). A line for each change, then one when they count */
+static void battery_startup_log(const bat_watch_t *w, const hw_pack_t *p) {
+    static bool     done;
+    static uint16_t shown = UINT16_MAX;     /* vbat, batcap */
+    static uint8_t  shown_ext;
+
+    if (done) {
+        return;
+    }
+    if (w->counts) {
+        char line[96];
+
+        snprintf(line, sizeof(line), "battery: readings count from %llu ms: %.1f V %u%%, external %.1f V",
+                 (unsigned long long)(now_time - start_time), p->vbat * 0.1f, p->batcap, p->vext * 0.1f);
+        fprintf(stderr, "%s\n", line);
+        scheduler_put(start_trace_cb, line, sizeof(line));  /* the card's write off this thread */
+        done = true;
+        return;
+    }
+    if (shown == (p->vbat << 8 | p->batcap) && shown_ext == p->vext) {
+        return;
+    }
+    shown = p->vbat << 8 | p->batcap;
+    shown_ext = p->vext;
+    fprintf(stderr, "battery: start-up reading at %llu ms: %.1f V %u%%, external %.1f V (flag %u, charging %u)\n",
+            (unsigned long long)(now_time - start_time), p->vbat * 0.1f, p->batcap, p->vext * 0.1f, p->vext_flag,
+            p->charging);
+}
+
 static swr_guard_t swr_guard;
 static atomic_uint swr_trips;
+static atomic_bool swr_trip_queued;     /* a trip's job waits in the queue: one stops TX, more add nothing */
 
 /* SWR protection, on the GUI thread: what the GUI keys lets go (a PTT held on the radio or the
  * mic, VOX and the radio's own keyer are the base's: they may key again) */
 static void swr_trip_cb(void *arg) {
+    atomic_store(&swr_trip_queued, false);  /* out of the queue: a trip from now on is posted again */
     atomic_fetch_add(&swr_trips, 1);    /* before the modem bit drops: whoever sees it gone can tell why */
     cw_encoder_stop();
     paddle_keyer_stop();
@@ -1243,6 +1305,15 @@ static void atu_give_up(radio_state_t from, const char *why) {
     msg_schedule_text_fmt("%s", why);
 }
 
+/* What the base reports by a change alone goes to the GUI thread once: the low battery, the POWER key, a hand mic
+ * key, the tuner's network. Nothing posts it again, so a job dropped by a full queue was lost for good: a POWER
+ * release lost let the hold timer turn a tap into a power-off, a low battery lost never started the 30 s
+ * power-off, a network lost was not kept (#33's start: the DSP's redraws held all 64 places for seconds). Such a
+ * job takes the urgent reserve, and the change counts as told only once its job is in: if even the reserve is
+ * full, the next packet (for the battery, the next reading) tries again */
+static uint32_t atu_network;        /* the tuner's network, for atu_done_cb */
+static bool     atu_network_due;    /* found, its job not in the queue yet */
+
 static bool radio_tick() {
     if (now_time < prev_time) {
         prev_time = now_time;
@@ -1263,40 +1334,43 @@ static bool radio_tick() {
 
         if (delay++ > 10) {
             delay = 0;
-            clock_update_power(pack->vext * 0.1f, pack->vbat*0.1f, pack->batcap, pack->charging);
-            battery_log(pack);
-            /* Only on a change, with hysteresis: around 6.0 V the 30 s
-             * power-off timer was started and stopped over and over */
-            /* External power: the flag alone is not enough, charging an
-             * empty battery it stayed clear with 11.7 V on the jack and the
-             * radio switched itself off on the charger */
-            bool ext = pack->vext_flag || pack->charging || pack->vext >= 90;
-            /* At power-on the base sends a few packets before it has measured anything (0 V on both):
-             * one of them alone started "Low battery!" with a full battery on the charger. Low only
-             * after 3 readings in a row (about 1.2 s), and never on a reading of nothing */
-            static uint8_t low_reads;
-            bool           measured = pack->vbat > 0 || pack->vext > 0;
+            /* The base's first readings after power-on are not the battery's (bat_watch.h): the top bar,
+             * the battery log and time left, its warnings and the power-off wait until they count */
+            static bat_watch_t bat_watch;
+
+            bat_watch_reading(&bat_watch, pack->vbat, pack->vext, pack->vext_flag, pack->charging, now_time);
+
+            battery_startup_log(&bat_watch, pack);
+            battery_model_load();
+            if (bat_watch.counts) {
+                clock_update_power(pack->vext * 0.1f, pack->vbat * 0.1f, pack->batcap, pack->charging);
+                battery_log(pack);
+            }
 
             /* The % sags under the TX current and comes back slowly: the last RX reading holds
              * while transmitting and for 30 s after (also in the top bar, clock.c) */
             static uint64_t hold_until;
             static int8_t   held_cap = -1;
-            int8_t          cap = measured && !ext ? pack->batcap : -1;
+            int8_t          cap = bat_watch.counts && !bat_watch.ext ? pack->batcap : -1;
 
             if (radio_get_state() == RADIO_TX) hold_until = now_time + 30000;
-            if (now_time < hold_until && held_cap >= 0 && cap >= 0) cap = held_cap;
-            else held_cap = cap;
+            if (now_time < hold_until && held_cap >= 0 && cap >= 0) {
+                cap = held_cap;
+            } else {
+                if (cap >= 0) cap = bat_watch_cap(&bat_watch, pack->vbat, pack->batcap);   /* on receive only */
+                held_cap = cap;
+            }
             bat_pct = cap;   /* the % on the screen (clock.c) */
             if (cap >= 0 && cap != pack->batcap)
                 clock_update_power(pack->vext * 0.1f, pack->vbat * 0.1f, cap, pack->charging);
 
-            low_reads = measured && !ext && pack->vbat <= LOW_BATTERY_VBAT_LOW ? (low_reads < 3 ? low_reads + 1 : 3) : 0;
-            bool enter_low = low_reads >= 3;
-            bool leave_low = ext || (pack->vbat >= LOW_BATTERY_VBAT_HIGH);
+            /* low_power: what the GUI was told (the note above radio_tick) */
+            if (bat_watch.low != low_power) {
+                bool low = bat_watch.low;
 
-            if ((!low_power && enter_low) || (low_power && leave_low)) {
-                low_power = !low_power;
-                scheduler_put(low_power_ui_cb, &low_power, sizeof(low_power));
+                if (scheduler_put_urgent(low_power_ui_cb, &low, sizeof(low))) {
+                    low_power = low;
+                }
             }
         }
         if (pack->psd) {
@@ -1305,12 +1379,19 @@ static bool radio_tick() {
             dsp_samples((cfloat *)pack->samples, pack->n_samples, pack->tx, pack->lo_freq, pack->vary_freq, pack->fft_dec);
         }
 
-        /* The POWER key where the base reports it (the X6200): to the GUI thread as a key */
+        /* The POWER key where the base reports it (the X6200): to the GUI thread as a key. power_was: what
+         * the GUI was told (the note above radio_tick) */
         static bool power_was;
 
         if (pack->power_key != power_was) {
-            power_was = pack->power_key;
-            scheduler_put(power_key_cb, &power_was, sizeof(power_was));
+            bool down = pack->power_key;
+
+            if (scheduler_put_urgent(power_key_cb, &down, sizeof(down))) {
+                power_was = down;
+            }
+        }
+        if (atu_network_due && scheduler_put_urgent(atu_done_cb, &atu_network, sizeof(atu_network))) {
+            atu_network_due = false;
         }
 
         switch (state) {
@@ -1331,8 +1412,13 @@ static bool radio_tick() {
                     // printf("%d, %d\n", pack->tx_power, pack->alc_level);
                     tx_info_update(pack->tx_power * 0.1f, pack->vswr * 0.1f, pack->alc_level * 0.1f);
                     float swr = pack->vswr * 0.1f;
-                    if (swr_guard_check(&swr_guard, pack->tx_power * 0.1f, swr, param_i_get(cfg_swr_protect) * 0.1f, now_time)) {
-                        scheduler_put(swr_trip_cb, &swr, sizeof(swr));
+                    /* A stop: the urgent reserve. Dropped even so, swr_guard trips again 300 ms on. One in the
+                     * queue at a time: with the GUI thread stalled and TX still on, a trip every ~320 ms took
+                     * the reserve in 25 s from those that do not try again (TCI's unkey, FT8's last post).
+                     * Marked before the put, the job may run before the put returns */
+                    if (swr_guard_check(&swr_guard, pack->tx_power * 0.1f, swr, param_i_get(cfg_swr_protect) * 0.1f, now_time) &&
+                        !atomic_exchange(&swr_trip_queued, true) && !scheduler_put_urgent(swr_trip_cb, &swr, sizeof(swr))) {
+                        atomic_store(&swr_trip_queued, false);
                     }
                 }
                 break;
@@ -1358,9 +1444,10 @@ static bool radio_tick() {
             case RADIO_ATU_RUN:
                 if (pack->atu_status && !pack->tx) {
                     /* The settings on the LVGL thread: their observers run where they are set, and
-                     * the delayed ones (the info bar) schedule LVGL calls, which only that thread may */
-                    uint32_t network = pack->atu_params;
-                    scheduler_put(atu_done_cb, &network, sizeof(network));
+                     * the delayed ones (the info bar) schedule LVGL calls, which only that thread may.
+                     * Not in the queue: the next packets try again (the note above radio_tick) */
+                    atu_network     = pack->atu_params;
+                    atu_network_due = !scheduler_put_urgent(atu_done_cb, &atu_network, sizeof(atu_network));
                     WITH_RADIO_LOCK(hw_set_i(HW_ATU_TUNE, false));
 #ifndef BOARD_X6200
                     /* The X6100's: it keys the modem at 0.1 W; gdyuldin's X6200 GUI dropped it */
@@ -1419,11 +1506,15 @@ static bool radio_tick() {
         }
 
         /* The hand mic key to the LVGL thread: hkey_put makes and deletes LVGL timers, which
-         * only that thread may do. Posted when it changes (held down, the base repeats it) */
+         * only that thread may do. Posted when it changes (held down, the base repeats it);
+         * last_hkey: what the GUI was told (the note above radio_tick) */
         static uint32_t last_hkey;
         if (pack->hkey != last_hkey) {
-            last_hkey = pack->hkey;
-            scheduler_put(hkey_sched_cb, &last_hkey, sizeof(last_hkey));
+            uint32_t hkey = pack->hkey;
+
+            if (scheduler_put_urgent(hkey_sched_cb, &hkey, sizeof(hkey))) {
+                last_hkey = hkey;
+            }
         }
     } else {
         if (d > FLOW_RESTART_TIMEOUT) {

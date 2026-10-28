@@ -95,8 +95,8 @@
 
 <p class="sub" style="margin-top:14px">Keyboard: F1–F5, ← → the main knob, Shift + ← → faster, [ ] volume, PageUp/PageDown the MFK, Enter the MFK push, Space PTT. Knobs: drag around the ring, or the mouse wheel over it. Sound starts on a tap (browsers ask for one). Mic needs an https page: <a id="httpslink" href="#">https://this radio/remote</a> (accept the certificate once).</p>
 
-<script src="/static/js/radio_link.js?v=1"></script>
-<script src="/static/js/radio_session.js?v=2"></script>
+<script src="/static/js/radio_link.js?v=2"></script>
+<script src="/static/js/radio_session.js?v=3"></script>
 <script>
 (function() {
   "use strict";
@@ -144,14 +144,25 @@
 
   /* ---- The connection: one link for control and the picture, one for sound; each comes back by itself ---- */
   function send(s) { return !!link && link.send(s); }
+  /* A key or a knob for the radio: not while it does not answer, it would arrive late, after whatever the operator
+   * did next (audit C02). Releases go with send(): late, they still let go */
+  function act(s) {
+    if (link && link.stalled) { status("The radio does not answer: nothing is sent until it does", true); return false; }
+    return send(s);
+  }
 
   /* The picture asked for: a per-browser choice, kept in this browser only */
   let pic = "sharp";
   try { pic = localStorage.getItem("remote_picture") || "sharp"; } catch (e) {}
-  $("#pic").val(pic).on("change", function() {
+  /* Picked with the mouse or a finger, the list gives the keyboard back to the radio: the arrows and F1-F5
+   * turn the knobs and press the keys again, not the list (audit C09). Reached with Tab, it keeps the keys
+   * until Tab moves on, as a list does */
+  let picPointer = false;
+  $("#pic").val(pic).on("mousedown touchstart", function() { picPointer = true; }).on("keydown", function() { picPointer = false; }).on("change", function() {
     pic = this.value;
     try { localStorage.setItem("remote_picture", pic); } catch (e) {}
     send("picture " + pic);
+    if (picPointer) { picPointer = false; this.blur(); }
   });
   const screenEl = document.getElementById("screen"), panelEl = document.querySelector(".rm-panel");
   link = RadioLink.create({
@@ -177,21 +188,33 @@
     },
     onBinary: showFrame,
     onClose: function(gen, retry, wasUp) { dropped(wasUp); },
-    onStall: function() { view(); },
+    onStall: function(on) { stalled(on); },
   });
   /* Who this browser is to the radio and who controls it (R3); the PTT as the radio confirms it (R4) */
   ses = RadioSession.create({send: send, status: status, el: document.getElementById("ses"), onChange: function() { showHealth(); ptt.render(); }, onTx: function(on) { ptt.radioTx(on); }});
-  ptt = RadioPtt.create({el: document.getElementById("pttbtn"), send: send, status: status, session: ses,
+  ptt = RadioPtt.create({el: document.getElementById("pttbtn"), send: send, status: status, session: ses, link: link,
     mic: {wanted: function() { return micOn; }, ready: function() { return !!micStream && tlink.up; }, start: function() { return txStart(); }, stop: function() { txStop(); }}});
-  /* The link went: nothing of it is sent again. A held key or a transmission is let go here (the
-   * radio drops them too); the operator presses again, on purpose */
-  function dropped(wasUp) {
+  /* What touches the air is let go when the link can no longer carry it in time: a held key, knob turns not sent
+   * yet, a transmission. The link went (nothing of it is sent again, the radio drops them too), or it stalled: the
+   * releases go out behind whatever is stuck, so a late arrival lets go too (audit C02). The operator presses
+   * again, on purpose, once the radio answers */
+  function letGo(why) {
     const hadKeys = Object.keys(held).length > 0 || ptt.state === "tx" || ptt.state === "requesting";
-    Object.keys(held).forEach(function(k) { delete held[k]; const el = document.querySelector('[data-key="' + k + '"]'); if (el) el.classList.remove("down"); });
-    ptt.lost("The link dropped: the transmission is over. Press PTT again when it is back");
+    Object.keys(held).forEach(function(k) { keyUp(k, document.querySelector('[data-key="' + k + '"]')); });
+    Object.keys(knobAcc).forEach(function(k) { knobAcc[k] = 0; });
+    ptt.lost(why);
+    return hadKeys;
+  }
+  function dropped(wasUp) {
+    const hadKeys = letGo("The link dropped: the transmission is over. Press PTT again when it is back");
     screenEl.classList.add("stale"); panelEl.classList.add("stale");
     if (hadKeys) status("Connection lost: keys released, press again when it is back", true);
     else if (wasUp) status("Connection lost", true);
+    view();
+  }
+  function stalled(on) {
+    screenEl.classList.toggle("stale", on); panelEl.classList.toggle("stale", on);
+    if (on && letGo("The radio does not answer: the transmission is ended here. Press PTT again when it answers")) status("The radio does not answer: keys released, press again when it answers", true);
     view();
   }
   function pictureLine() { return lastFrame ? "The picture is from " + RadioLink.age(Date.now() - lastFrame) + " ago. " : "No picture from the radio yet. "; }
@@ -203,6 +226,7 @@
     }
     const $m = $msg.empty().prop("hidden", false);
     if (link.up) { $m.append("The radio does not answer. ", pictureLine()); return; }
+    if (conf && conf.name_refused) { $m.text(conf.name_refused); return; }   /* opened by a name the radio's sockets refuse */
     if (conf && !conf.enabled) {
       $m.html("The browser remote is off on the radio.<br><br>Settings &gt; General &gt; BROWSER REMOTE, or ").append($("<button type='button' class='primary'>Turn it on</button>").on("click", function() {
         $.ajax({url: "/api/remote", type: "POST", data: JSON.stringify({enabled: true}), contentType: "application/json", success: function() { conf.enabled = true; $msg.text("Turning on..."); setTimeout(function() { link.tryNow(); }, 2500); }});
@@ -237,7 +261,7 @@
 
   /* ---- Keys ---- */
   const held = {};
-  function keyDown(name, el) { if (held[name]) return; held[name] = true; send("key " + name + " 1"); if (el) el.classList.add("down"); if (navigator.vibrate) navigator.vibrate(8); }
+  function keyDown(name, el) { if (held[name] || !act("key " + name + " 1")) return; held[name] = true; if (el) el.classList.add("down"); if (navigator.vibrate) navigator.vibrate(8); }
   function keyUp(name, el) { if (!held[name]) return; delete held[name]; send("key " + name + " 0"); if (el) el.classList.remove("down"); }
   function releaseAll() { Object.keys(held).forEach(function(k) { const el = document.querySelector('[data-key="' + k + '"]'); keyUp(k, el); }); ptt.release(); }
   function keysHave(names) { document.querySelectorAll("[data-key]").forEach(function(el) { const no = names.indexOf(el.dataset.key) < 0; el.disabled = no; el.title = no ? "Not on this radio" : el.title; }); }
@@ -259,7 +283,7 @@
     if (ring) { const deg = (parseFloat(ring.dataset.deg || "0") + steps * (name === "main" ? 12 : 18)) % 360; ring.dataset.deg = deg; ring.style.transform = "rotate(" + deg + "deg)"; }
     if (!knobTimer) knobTimer = setTimeout(function() {        /* a turn's detents in one message */
       knobTimer = null;
-      Object.keys(knobAcc).forEach(function(k) { if (knobAcc[k]) { send("knob " + k + " " + knobAcc[k]); knobAcc[k] = 0; } });
+      Object.keys(knobAcc).forEach(function(k) { if (knobAcc[k]) { act("knob " + k + " " + knobAcc[k]); knobAcc[k] = 0; } });
     }, 30);
   }
   document.querySelectorAll("[data-knob]").forEach(function(el) {
@@ -290,10 +314,13 @@
     ring.addEventListener("contextmenu", function(e) { e.preventDefault(); });
   });
 
-  /* ---- Keyboard ---- */
+  /* ---- Keyboard: the radio's only when a key is meant for nothing else (audit C09): not in a field, a
+   * list or the session dialog, and Space or Enter on a focused button press that button, never PTT or
+   * the MFK. Space on the PTT button itself is PTT ---- */
   const keyMap = {F1: "F1", F2: "F2", F3: "F3", F4: "F4", F5: "F5", Enter: "MFK", " ": "PTT"};
+  const pttEl = document.getElementById("pttbtn");
   document.addEventListener("keydown", function(e) {
-    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    if (!RadioSession.forRadio(e, pttEl)) return;
     if (e.key in keyMap) { e.preventDefault(); if (e.repeat) return; const n = keyMap[e.key]; if (n === "PTT") ptt.press(); else keyDown(n, document.querySelector('[data-key="' + n + '"]')); return; }
     const step = e.shiftKey ? 10 : 1;
     if (e.key === "ArrowRight") { e.preventDefault(); knob("main", step); }
@@ -306,24 +333,39 @@
   document.addEventListener("keyup", function(e) {
     if (e.key in keyMap) { const n = keyMap[e.key]; if (n === "PTT") ptt.release(); else keyUp(n, document.querySelector('[data-key="' + n + '"]')); }
   });
+  /* A button of the page clicked or tapped gives the keyboard back to the page, as Safari does anyway: it
+   * takes no focus and clears it from the picture list, a button reached with Tab or the open menu at the
+   * top, so Enter after a click on Sound is the MFK push. Tab still reaches every button, and then Space and
+   * Enter are that button's. Not the menu at the top: a tap opens it by giving it the focus */
+  document.addEventListener("mousedown", function(e) {
+    if (e.button !== 0 || !e.target.closest || !e.target.closest(".rm-bar button, .rm button")) return;
+    e.preventDefault();
+    const a = document.activeElement;
+    if (a && a !== document.body && a.blur) a.blur();
+  });
 
   /* ---- Audio over TCI: RX to the speaker, the microphone to the radio while PTT is held ---- */
   let actx = null, nextTime = 0, sndOn = false, micNode = null, micSrc = null;
   let micState = "off", micReq = 0;   /* off, asking, ready, refused; the request in flight (an older answer is let go, audit A18) */
   const HDR = 64;
+  /* The format this page plays, asked for on every connection (the radio's TCI default is 48 kHz float32 stereo, 8x the bytes) */
+  const AUDIO_START = "audio_samplerate:24000;audio_stream_sample_type:int16;audio_stream_channels:1;audio_stream_samples:512;audio_start:0;";
   tlink = RadioLink.create({
     url: function() { return conf && conf.tci_enabled ? wsUrl("tci") : null; },
     ping: null,
-    onOpen: function() { if (sndOn) tlink.send("audio_start:0;"); },
+    onOpen: function() { if (sndOn) tlink.send(AUDIO_START); },
     onBinary: function(buf) {
       if (!sndOn || !actx) return;
       const dv = new DataView(buf);
       const rate = dv.getUint32(4, true), fmt = dv.getUint32(8, true), n = dv.getUint32(20, true), type = dv.getUint32(24, true), ch = dv.getUint32(28, true) || 1;
-      if (type !== 1 || n === 0 || buf.byteLength < HDR + n * ch * (fmt === 3 ? 4 : 2)) return;
+      /* n counts the samples of every channel (TCI's length): n / ch of each */
+      if (type !== 1 || n === 0 || (fmt !== 0 && fmt !== 3) || buf.byteLength < HDR + n * (fmt === 3 ? 4 : 2)) return;
+      const k = Math.floor(n / ch);
+      if (!k) return;
       lastAudio = Date.now(); abytes += buf.byteLength;
-      const ab = actx.createBuffer(1, n, rate), out = ab.getChannelData(0);
-      if (fmt === 3) { const f = new Float32Array(buf, HDR, n * ch); for (let i = 0; i < n; i++) out[i] = f[i * ch]; }
-      else { const s16 = new Int16Array(buf, HDR, n * ch); for (let i = 0; i < n; i++) out[i] = s16[i * ch] / 32768; }
+      const ab = actx.createBuffer(1, k, rate), out = ab.getChannelData(0);
+      if (fmt === 3) { const f = new Float32Array(buf, HDR, n); for (let i = 0; i < k; i++) out[i] = f[i * ch]; }
+      else { const s16 = new Int16Array(buf, HDR, n); for (let i = 0; i < k; i++) out[i] = s16[i * ch] / 32768; }
       const src = actx.createBufferSource(); src.buffer = ab; src.connect(actx.destination);
       const now = actx.currentTime;
       if (nextTime < now + 0.04 || nextTime > now + 0.6) nextTime = now + 0.08;   /* late, or a backlog: start over */
@@ -336,7 +378,7 @@
     if (sndOn) {
       if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
       actx.resume(); lastAudio = 0;
-      if (!tlink.send("audio_start:0;")) tlink.tryNow();
+      if (!tlink.send(AUDIO_START)) tlink.tryNow();
     } else if (!txOn) tlink.send("audio_stop:0;");
   });
   function micToggle() {

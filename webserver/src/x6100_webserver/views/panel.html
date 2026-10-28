@@ -16,6 +16,7 @@
 .freq { grid-row:1 / span 2; grid-column:3; font:700 clamp(28px, 6vw, 46px)/1 "SF Mono", Menlo, Consolas, monospace; letter-spacing:1px; cursor:pointer; text-align:right; font-variant-numeric:tabular-nums; padding:2px 0; }
 .freq small { font-size:.55em; color:var(--pd); font-weight:500; }
 .freq.locked { color:var(--pd); }
+.freq.pend, .b.lvl.pend > span > span { font-style:italic; opacity:.6; }   /* asked for, not confirmed by the radio yet */
 .smeter { grid-column:1 / span 2; display:flex; align-items:center; gap:8px; font:600 12px/1 system-ui,sans-serif; color:var(--pd); }
 .smeter .bar { flex:1; height:12px; background:var(--pb); border:1px solid var(--pl); border-radius:4px; position:relative; overflow:hidden; }
 .smeter .bar i { position:absolute; left:0; top:0; bottom:0; width:0; background:linear-gradient(90deg,#2a7fff 0 60%,#ffb020 60% 80%,#ff5252 80%); transition:width .08s linear; }
@@ -277,8 +278,8 @@ body.app h2, body.app #intro { display:none; }
 
 <div class="pop" id="pop" hidden><div class="box" id="popbox"></div></div>
 
-<script src="/static/js/radio_link.js?v=1"></script>
-<script src="/static/js/radio_session.js?v=2"></script>
+<script src="/static/js/radio_link.js?v=2"></script>
+<script src="/static/js/radio_session.js?v=3"></script>
 <script>
 (function() {
   "use strict";
@@ -305,7 +306,13 @@ body.app h2, body.app #intro { display:none; }
   }
   $("#httpslink").attr("href", "https://" + location.host.replace(/:\d+$/, "") + "/panel");
   function send(s) { return !!link && link.send(s); }
-  function set(name, v, v2) { send("set " + name + " " + v + (v2 !== undefined ? " " + v2 : "")); }
+  /* A change for the radio: not while it does not answer, it would arrive late, after whatever the operator did
+   * next (audit C02). Releases and stops go with send(): late, they still let go */
+  function act(s) {
+    if (link && link.stalled) { status("The radio does not answer: nothing is sent until it does", true); return false; }
+    return send(s);
+  }
+  function set(name, v, v2) { return act("set " + name + " " + v + (v2 !== undefined ? " " + v2 : "")); }
   function fmtFreq(hz) { const s = String(hz).padStart(7, "0"); return s.slice(0, -6) + "." + s.slice(-6, -3) + "." + s.slice(-3); }
   function fmtK(hz) { return (hz / 1000).toFixed(hz % 1000 ? 1 : 0); }
   function bandOf(hz) { for (const b of bands) if (hz >= b.a && hz <= b.b) return b.n; return "--"; }
@@ -324,10 +331,34 @@ body.app h2, body.app #intro { display:none; }
   $("#full").on("click", function() { if (document.fullscreenElement) document.exitFullscreen(); else if (pn.requestFullscreen) pn.requestFullscreen(); });
 
   /* ---- The state ---- */
+  /* What this page asked for and the radio has not confirmed: the frequency and the levels, shown at once but
+   * marked as asked, never written into the radio's state (audit C13: a refused tune stayed on the readout as if
+   * the radio were there). The radio's state confirms it; a refusal ("err", the radio sends its state again
+   * with it) or WANT_MS without confirmation drops it, and the radio's value shows again */
+  const WANT_MS = 2000;
+  let want = {};
+  function cur(k) { return want[k] ? want[k].v : state[k]; }
+  function wantCheck() {
+    Object.keys(want).forEach(function(k) {
+      const w = want[k], got = k === "pwr" ? Math.abs(state.pwr - w.v) < 0.05 : state[k] === w.v;
+      if (got || Date.now() - w.t > WANT_MS) delete want[k];
+    });
+  }
+  function wantDrop() { if (Object.keys(want).length) { want = {}; showState(); } }
+  /* May the page ask for a change and show it as asked? Not when it knows the radio would refuse: the reason,
+   * and the dialog that changes it */
+  function mayAct() {
+    const no = !link.up ? "No link to the radio: nothing is sent" : link.stalled ? "The radio does not answer: nothing is sent until it does" : ses.can();
+    if (no) { status(no, true); if (link.up && !link.stalled) ses.explain(); }
+    return !no;
+  }
   function showState() {
-    const s = state;
-    if (!s) return;
-    $("#freq").text(fmtFreq(s.freq)).toggleClass("locked", !!s.lock);
+    if (!state) return;
+    wantCheck();
+    const s = Object.assign({}, state);
+    Object.keys(want).forEach(function(k) { s[k] = want[k].v; });
+    $("#freq").text(fmtFreq(s.freq)).toggleClass("locked", !!s.lock).toggleClass("pend", !!want.freq).attr("title", want.freq ? "Asked for, the radio has not confirmed it yet (it is on " + fmtFreq(state.freq) + ")" : "Tap: type a frequency");
+    ["vol", "sql", "rfg", "pwr"].forEach(function(k) { $('[data-lvl="' + k + '"]').toggleClass("pend", !!want[k]); });
     $("#c-band").text(bandOf(s.freq) + " " + MODES[s.mode]).toggleClass("on", true);
     $("#c-vfo").text(s.vfo ? "B" : "A");
     $("#c-bat").text(s.bat + "%").toggle(s.bat >= 0);
@@ -512,18 +543,25 @@ body.app h2, body.app #intro { display:none; }
   const pan = document.getElementById("pan"), ptrs = new Map();
   let drag = null, pinch = null, tuneTimer = null, tuneWant = null;
   function tuneTo(hz) {
-    if (!state || state.lock) return;
+    if (!state) return;
+    if (state.lock) { status("LOCK is on (or an app holds the frequency): the radio stays on " + fmtFreq(state.freq), true); return; }
+    if (!mayAct()) return;
     hz = Math.round(hz);
     tuneWant = hz;
-    if (!tuneTimer) tuneTimer = setTimeout(function() { tuneTimer = null; if (tuneWant !== null) { set("freq", tuneWant); tuneWant = null; } }, 40);
-    state.freq = hz; showState(); requestDraw();     /* shown at once, the radio confirms */
+    want.freq = {v: hz, t: Date.now()};               /* shown at once as asked, the radio confirms */
+    if (!tuneTimer) tuneTimer = setTimeout(function() {
+      tuneTimer = null;
+      if (tuneWant !== null && !set("freq", tuneWant)) { delete want.freq; showState(); }
+      tuneWant = null;
+    }, 40);
+    showState();
   }
   function roundStep(hz) { const st = state ? state.step : 100; return Math.round(hz / st) * st; }
   function zoomTo(z) { z = Math.max(1, Math.min(8, z)); if (state && z !== state.zoom) set("zoom", z); }
   pan.addEventListener("pointerdown", function(e) {
     e.preventDefault(); pan.setPointerCapture(e.pointerId);
     ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
-    if (ptrs.size === 1) drag = {x0: e.clientX, f0: state ? state.freq : 0, moved: false, t: Date.now()};
+    if (ptrs.size === 1) drag = {x0: e.clientX, f0: state ? cur("freq") : 0, moved: false, t: Date.now()};
     else if (ptrs.size === 2) { const p = Array.from(ptrs.values()); pinch = {d0: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y), z0: state ? state.zoom : 1, done: false}; drag = null; }
   });
   pan.addEventListener("pointermove", function(e) {
@@ -555,7 +593,7 @@ body.app h2, body.app #intro { display:none; }
     if (!state) return;
     if (e.ctrlKey) { zoomTo(e.deltaY < 0 ? state.zoom * 2 : state.zoom / 2); return; }
     const n = (e.shiftKey ? 10 : 1) * (e.deltaY < 0 ? 1 : -1);
-    tuneTo(state.freq + n * state.step);
+    tuneTo(cur("freq") + n * state.step);           /* from the frequency asked last: steps add up */
   }, {passive: false});
   pan.addEventListener("contextmenu", function(e) { e.preventDefault(); });
 
@@ -611,18 +649,25 @@ body.app h2, body.app #intro { display:none; }
   /* ---- Controls ---- */
   const LVL = {vol: {min: 0, max: 55, step: 1, fmt: function(v) { return v; }}, sql: {min: 0, max: 100, step: 1, fmt: function(v) { return v; }},
                rfg: {min: 0, max: 100, step: 1, fmt: function(v) { return v; }}, pwr: {min: 0.1, max: 10, step: 0.1, fmt: function(v) { return v.toFixed(1) + " W"; }}};
-  function lvlSend(name, v) { set(name, name === "pwr" ? Math.round(v * 10) : Math.round(v)); if (state) { state[name] = v; showState(); } }
+  /* A level, shown as asked until the radio confirms it (want, above) */
+  function lvlSend(name, v) {
+    if (!state || !mayAct()) return;
+    v = name === "pwr" ? Math.round(v * 10) / 10 : Math.round(v);
+    want[name] = {v: v, t: Date.now()};
+    if (!set(name, name === "pwr" ? Math.round(v * 10) : v)) delete want[name];
+    showState();
+  }
   document.querySelectorAll(".b.lvl").forEach(function(el) {
     const name = el.dataset.lvl, L = LVL[name];
     el.querySelectorAll("i").forEach(function(i) {
       let rep = null;
-      const fire = function() { if (!state) return; lvlSend(name, Math.max(L.min, Math.min(L.max, state[name] + parseInt(i.dataset.d, 10) * L.step))); };
+      const fire = function() { if (!state) return; lvlSend(name, Math.max(L.min, Math.min(L.max, cur(name) + parseInt(i.dataset.d, 10) * L.step))); };
       i.addEventListener("pointerdown", function(e) { e.preventDefault(); e.stopPropagation(); fire(); rep = setInterval(fire, 130); });
       const stop = function() { if (rep) { clearInterval(rep); rep = null; } };
       i.addEventListener("pointerup", stop); i.addEventListener("pointercancel", stop); i.addEventListener("pointerleave", stop);
       i.addEventListener("click", function(e) { e.stopPropagation(); });
     });
-    el.addEventListener("click", function() { if (state) popSlider(el.querySelector("small").textContent, L.min, L.max, L.step, state[name], L.fmt, function(v) { lvlSend(name, v); }); });
+    el.addEventListener("click", function() { if (state) popSlider(el.querySelector("small").textContent, L.min, L.max, L.step, cur(name), L.fmt, function(v) { lvlSend(name, v); }); });
     el.addEventListener("contextmenu", function(e) { e.preventDefault(); });
   });
   document.querySelectorAll(".b.tg").forEach(function(el) { el.addEventListener("click", function() { if (state) set(el.dataset.set, state[el.dataset.set] ? 0 : 1); }); });
@@ -638,7 +683,7 @@ body.app h2, body.app #intro { display:none; }
   $("#b-atune").on("click", function() { keyDown("ATU", null); setTimeout(function() { keyUp("ATU", null); }, 1200); });   /* a long press: tune */
   ["b-tune", "b-tunep"].forEach(function(id, k) {
     const el = document.getElementById(id); let rep = null;
-    const fire = function() { if (state) tuneTo(state.freq + (k ? 1 : -1) * state.step); };
+    const fire = function() { if (state) tuneTo(cur("freq") + (k ? 1 : -1) * state.step); };
     el.addEventListener("pointerdown", function(e) { e.preventDefault(); fire(); rep = setInterval(fire, 100); });
     const stop = function() { if (rep) { clearInterval(rep); rep = null; } };
     el.addEventListener("pointerup", stop); el.addEventListener("pointercancel", stop); el.addEventListener("pointerleave", stop);
@@ -720,21 +765,21 @@ body.app h2, body.app #intro { display:none; }
       li.append($("<span class='i'>").text((r.snr > 0 ? "+" : "") + r.snr + " " + r.f));
       const k = [r.k, r.d ? r.d + " km" : "", r.w === 1 ? "worked" : r.w === 2 ? "worked (mode)" : "", r.p ? "POTA" : ""].filter(Boolean).join(" · ");
       if (k) li.append($("<span class='k'>").text(k));
-      li.on("click", function() { send("ft8 reply " + r.id); });
+      li.on("click", function() { act("ft8 reply " + r.id); });
     }
     $ftrows.append(li);
     if (++ftCount > 200) { $ftrows.children().first().remove(); ftCount--; }
     if (atEnd) ftList.scrollTop = ftList.scrollHeight;
   }
-  $("#ft-open").on("click", function() { send("ft8 " + (ft8 && ft8.open ? "close" : "open")); });
-  $("#ft-mode").on("click", function() { send("ft8 mode"); });
+  $("#ft-open").on("click", function() { act("ft8 " + (ft8 && ft8.open ? "close" : "open")); });
+  $("#ft-mode").on("click", function() { act("ft8 mode"); });
   $("#ft-stop").on("click", function() { if (send("ft8 stop")) { ftStopped = true; showFt8(); } });
-  $("#ft-txcall").on("click", function() { send("ft8 txcall"); });
-  $("#ft-cq").on("click", function() { send("ft8 cq"); });
-  $("#ft-auto").on("click", function() { send("ft8 auto"); });
-  $("#ft-hold").on("click", function() { send("ft8 hold"); });
+  $("#ft-txcall").on("click", function() { act("ft8 txcall"); });
+  $("#ft-cq").on("click", function() { act("ft8 cq"); });
+  $("#ft-auto").on("click", function() { act("ft8 auto"); });
+  $("#ft-hold").on("click", function() { act("ft8 hold"); });
   $("#ft-clear").on("click", function() { $ftrows.empty(); ftCount = 0; });
-  $("#ft-txf").on("click", function() { if (ft8) popSlider("TX frequency, Hz", 200, 2800, 10, ft8.txf, function(v) { return v + " Hz"; }, function(v) { send("ft8 txfreq " + Math.round(v)); }); });
+  $("#ft-txf").on("click", function() { if (ft8) popSlider("TX frequency, Hz", 200, 2800, 10, ft8.txf, function(v) { return v + " Hz"; }, function(v) { act("ft8 txfreq " + Math.round(v)); }); });
   const cwEl = document.getElementById("cwtext");
   function addCw(text) {
     const atEnd = cwEl.scrollHeight - cwEl.scrollTop - cwEl.clientHeight < 40;
@@ -745,14 +790,37 @@ body.app h2, body.app #intro { display:none; }
   }
   $("#cw-clear").on("click", function() { cwEl.textContent = ""; });
   $("#cw-log").on("click", function() { const c = $("#cw-log span").text(); if (c && c !== "last call") { $("#lg-call").val(c); $("#lg-rs, #lg-rr").val(state && (state.mode === 4 || state.mode === 5) ? "599" : "59"); $('.tabs button[data-tab="log"]').trigger("click"); } });
-  /* Every QSO goes with a number of the page's own ("logq ID ..."); the radio answers "logged ID
-   * ok|no", to this browser's session only (another page's QSO 1 is not ours). One without an
-   * answer (the link dropped, the page reloaded) is asked about ("logq? ID") when the link is
-   * back: "ok" or "no" settles it; "unknown" means the radio never saw it, restarted since, or
-   * no longer keeps the answer, and the radio cannot tell which. That is for the operator: the
-   * Logs page tells, the row offers Send again (the radio writes a number it already knows only
-   * once) or Forget. A retry is never automatic when a duplicate is possible (R6, audit B07). */
-  const pend = pref.logPending = pref.logPending || {};
+  /* Every QSO goes with a number no other tab, reload or page of this browser picks ("logq ID ..."): 53 random
+   * bits. The tabs of a browser share its session, and each counting from 1 gave two QSOs one number, the
+   * second answered with the first's "ok" and never written (audit C03). The radio answers "logged ID ok|no"
+   * to this browser's session, and binds the answer to the QSO: a number it holds for another QSO is a
+   * "conflict" (a page from before C03 counting from 1), never that QSO's answer. One without an answer (the
+   * link dropped, the page reloaded) is asked about ("logq? ID QSO") when the link is back: "ok" or "no"
+   * settles it; "unknown" means the radio never saw it, restarted since, or no longer keeps the answer, and
+   * the radio cannot tell which. That is for the operator: the Logs page tells, the row offers Send again
+   * (the radio writes a number it already knows only once; after a conflict, under a new number) or Forget.
+   * A retry is never automatic when a duplicate is possible (R6, audit B07). The unanswered are kept each
+   * under its own key, so tabs do not overwrite each other's list; a page starts with all of them. */
+  const LOGQ = "x6100logq:", pend = {};
+  function logId() {
+    const r = new Uint32Array(2);
+    try { crypto.getRandomValues(r); } catch (e) { r[0] = Math.random() * 4294967296; r[1] = Math.random() * 4294967296; }
+    return String((r[0] & 0x1fffff) * 4294967296 + r[1] || 1);
+  }
+  function pendSave(id) { try { if (pend[id]) localStorage.setItem(LOGQ + id, JSON.stringify(pend[id])); else localStorage.removeItem(LOGQ + id); } catch (e) {} }
+  try {
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf(LOGQ) === 0) pend[k.slice(LOGQ.length)] = JSON.parse(localStorage.getItem(k)); }
+  } catch (e) {}
+  if (pref.logPending) {      /* the one list of a page before C03 */
+    Object.keys(pref.logPending).forEach(function(id) { pend[id] = pref.logPending[id]; pendSave(id); });
+    delete pref.logPending; delete pref.logSeq; savePref();
+  }
+  /* another tab settled or forgot one this page took over at its start: not this page's to ask about */
+  window.addEventListener("storage", function(e) {
+    if (!e.key || e.key.indexOf(LOGQ) !== 0 || e.newValue !== null) return;
+    const id = e.key.slice(LOGQ.length);
+    if (pend[id]) { delete pend[id]; $("#lgrows li[data-id='" + id + "']").remove(); }
+  });
   function logRow(id, label, st) {
     let li = $("#lgrows li[data-id='" + id + "']");
     if (!li.length) { li = $("<li class='t2'>").attr("data-id", id).append($("<span class='x'>").text(label), $("<span class='i'>")); $("#lgrows").prepend(li); }
@@ -760,39 +828,46 @@ body.app h2, body.app #intro { display:none; }
     return li;
   }
   function logSend(id, p) { logRow(id, p.label, send("logq " + id + " " + p.text) ? "sending..." : "waiting for the connection"); }
+  function logAsk(id) { send("logq? " + id + " " + pend[id].text); }
   function logAnswer(id, r, silent) {
     const p = pend[id];
-    const label = p ? p.label : "QSO " + id;
-    if (r === "ok") { logRow(id, label, "logged"); status("QSO logged"); if (p && p.draft) { $("#lg-call, #lg-name").val(""); draftSave(); } }
-    else if (r === "no") { logRow(id, label, "refused (see the radio)"); status("QSO not logged (see the radio)", true); }
+    if (!p) return;           /* another tab's QSO (the radio tells every page of the session), or one forgotten */
+    if (r === "ok") {
+      logRow(id, p.label, "logged"); status("QSO logged");
+      if (p.draft && $("#lg-call").val().trim().toUpperCase() === p.text.split("|")[0]) { $("#lg-call, #lg-name").val(""); draftSave(); }   /* the form still shows it */
+    }
+    else if (r === "no") { logRow(id, p.label, "refused (see the radio)"); status("QSO not logged (see the radio)", true); }
     else {
-      if (!p) return;
-      const li = logRow(id, label, silent ? "no answer: check the Logs page before sending again" : "not confirmed: the radio has no record of it, check the Logs page");
-      li.find(".i").append($("<button type='button' class='b'>Send again</button>").on("click", function() { p.tries = 0; p.asks = 0; p.boot = link.boot; p.t = Date.now(); savePref(); logSend(id, p); }),
-                           $("<button type='button' class='b'>Forget</button>").on("click", function() { delete pend[id]; savePref(); li.remove(); }));
+      const conflict = r === "conflict";
+      const li = logRow(id, p.label, conflict ? "not logged: the radio holds another QSO under this number, check the Logs page" : silent ? "no answer: check the Logs page before sending again" : "not confirmed: the radio has no record of it, check the Logs page");
+      li.find(".i").append($("<button type='button' class='b'>Send again</button>").on("click", function() {
+        let sid = id;
+        if (conflict) { sid = logId(); delete pend[id]; pendSave(id); pend[sid] = p; li.attr("data-id", sid); }
+        p.tries = 0; p.asks = 0; p.boot = link.boot; p.t = Date.now(); pendSave(sid); logSend(sid, p);
+      }), $("<button type='button' class='b'>Forget</button>").on("click", function() { delete pend[id]; pendSave(id); li.remove(); }));
       return;
     }
-    delete pend[id]; savePref();
+    delete pend[id]; pendSave(id);
   }
-  function logReconcile() { Object.keys(pend).forEach(function(id) { pend[id].asked = Date.now(); send("logq? " + id); }); }
+  function logReconcile() { Object.keys(pend).forEach(function(id) { pend[id].asked = Date.now(); logAsk(id); }); }
   function logTick() {
     if (!link.up) return;
     const now = Date.now();
     Object.keys(pend).forEach(function(id) {
       const p = pend[id];
       if (now - Math.max(p.t, p.asked || 0) < 8000) return;
-      p.asks = (p.asks || 0) + 1; p.asked = now; savePref();
-      if (p.asks > 3) logAnswer(id, "unknown", true); else send("logq? " + id);
+      p.asks = (p.asks || 0) + 1; p.asked = now; pendSave(id);
+      if (p.asks > 3) logAnswer(id, "unknown", true); else logAsk(id);
     });
   }
   Object.keys(pend).forEach(function(id) { logRow(id, pend[id].label, "unanswered (" + RadioLink.age(Date.now() - pend[id].t) + " ago)"); });
   $("#lg-log").on("click", function() {
     const call = $("#lg-call").val().trim().toUpperCase();
     if (!call) { status("A call sign first", true); return; }
-    const id = pref.logSeq = ((pref.logSeq || 0) % 2000000000) + 1;
+    const id = logId();
     const rs = $("#lg-rs").val().trim(), rr = $("#lg-rr").val().trim();
     pend[id] = {text: [call, rs, rr, $("#lg-name").val().trim()].join("|").replace(/\n/g, " "), label: new Date().toISOString().slice(11, 16) + " " + call + " " + rs + " " + rr, t: Date.now(), boot: link.boot, tries: 0, asks: 0, draft: true};
-    savePref();
+    pendSave(id);
     logSend(id, pend[id]);
   });
   $("#lg-call").on("keydown", function(e) { if (e.key === "Enter") $("#lg-log").trigger("click"); });
@@ -833,6 +908,7 @@ body.app h2, body.app #intro { display:none; }
     const sp = t.indexOf(" "), head = sp < 0 ? t : t.slice(0, sp), body = sp < 0 ? "" : t.slice(sp + 1);
     try {
       if (ses.onText(head, body)) return;          /* role, ctl, paired, tx, sessions */
+      if (head === "err") wantDrop();                /* a change refused (whichever): the radio's values again */
       if (head === "err" && ptt.err(body)) return;   /* a refused or ended transmission: the PTT button says so */
       if (head === "state") { state = JSON.parse(body); stateAt = Date.now(); showState(); requestDraw(); }
       else if (head === "m") showMeter(parseFloat(body));
@@ -867,22 +943,34 @@ body.app h2, body.app #intro { display:none; }
     onText: onText,
     onBinary: function(buf) { if (buf.byteLength >= 16 && new DataView(buf).getUint16(0, true) === 0xFFFF) spectrumFrame(buf); else screenFrame(buf); },
     onClose: function(gen, retry, wasUp) { dropped(wasUp); },
-    onStall: function() { view(); },
+    onStall: function(on) { stalled(on); },
   });
   /* Who this browser is to the radio and who controls it (R3); the PTT as the radio confirms it (R4) */
   ses = RadioSession.create({send: send, status: status, el: document.getElementById("ses"), onChange: function() { showHealth(); ptt.render(); }, onTx: function(on) { ptt.radioTx(on); }});
-  ptt = RadioPtt.create({el: document.getElementById("pttbtn"), send: send, status: status, session: ses,
+  ptt = RadioPtt.create({el: document.getElementById("pttbtn"), send: send, status: status, session: ses, link: link,
     mic: {wanted: function() { return micOn; }, ready: function() { return !!micStream && tlink.up; }, start: function() { return txStart(); }, stop: function() { txStop(); }}});
-  /* The link went: nothing of it is sent again. A held key, a tune on its way, a transmission are
-   * let go here (the radio drops them too); the operator presses again, on purpose */
-  function dropped(wasUp) {
+  /* What touches the air is let go when the link can no longer carry it in time: a held key, a tune on its way, a
+   * transmission. The link went (nothing of it is sent again, the radio drops them too), or it stalled: the
+   * releases go out behind whatever is stuck, so a late arrival lets go too (audit C02). The operator presses
+   * again, on purpose, once the radio answers */
+  function letGo(why) {
     tuneWant = null; if (tuneTimer) { clearTimeout(tuneTimer); tuneTimer = null; }
+    wantDrop();                                       /* nothing asked can be confirmed now */
     const hadKeys = Object.keys(held).length > 0 || ptt.state === "tx" || ptt.state === "requesting";
-    Object.keys(held).forEach(function(k) { delete held[k]; const el = document.querySelector('[data-key="' + k + '"]'); if (el) el.classList.remove("down"); });
-    ptt.lost("The link dropped: the transmission is over. Press PTT again when it is back");
+    Object.keys(held).forEach(function(k) { keyUp(k, document.querySelector('[data-key="' + k + '"]')); });
+    ptt.lost(why);
+    return hadKeys;
+  }
+  function dropped(wasUp) {
+    const hadKeys = letGo("The link dropped: the transmission is over. Press PTT again when it is back");
     radio.classList.add("stale");
     if (hadKeys) status("Connection lost: keys released, press again when it is back", true);
     else if (wasUp) status("Connection lost", true);
+    view();
+  }
+  function stalled(on) {
+    radio.classList.toggle("stale", on);
+    if (on && letGo("The radio does not answer: the transmission is ended here. Press PTT again when it answers")) status("The radio does not answer: keys released, press again when it answers", true);
     view();
   }
   function stateLine() { return state && stateAt ? "What is shown is from " + RadioLink.age(Date.now() - stateAt) + " ago. " : "Nothing from the radio yet. "; }
@@ -894,6 +982,7 @@ body.app h2, body.app #intro { display:none; }
     }
     const $m = $msg.empty().prop("hidden", false);
     if (link.up) { $m.append("The radio does not answer. ", stateLine()); return; }
+    if (conf && conf.name_refused) { $m.text(conf.name_refused); return; }   /* opened by a name the radio's sockets refuse */
     if (conf && !conf.enabled) {
       $m.html("The browser remote is off on the radio.<br><br>Settings &gt; General &gt; BROWSER REMOTE, or ").append($("<button type='button' class='primary'>Turn it on</button>").on("click", function() {
         $.ajax({url: "/api/remote", type: "POST", data: JSON.stringify({enabled: true}), contentType: "application/json", success: function() { conf.enabled = true; $msg.text("Turning on..."); setTimeout(function() { link.tryNow(); }, 2500); }});
@@ -929,11 +1018,11 @@ body.app h2, body.app #intro { display:none; }
     fpsText = (frames / dt).toFixed(0) + " fps, " + (bytes / dt / 1024).toFixed(0) + " kB/s"; kbsText = (abytes / dt / 1024).toFixed(0) + " kB/s";
     frames = 0; bytes = 0; abytes = 0;
   }, 2000);
-  setInterval(function() { showHealth(); view(); logTick(); }, 1000);
+  setInterval(function() { showHealth(); view(); logTick(); if (state && Object.keys(want).length) showState(); }, 1000);
 
   /* ---- Keys (the Keys tab, PTT) ---- */
   const held = {};
-  function keyDown(name, el) { if (held[name]) return; held[name] = true; send("key " + name + " 1"); if (el) el.classList.add("down"); if (navigator.vibrate) navigator.vibrate(8); }
+  function keyDown(name, el) { if (held[name] || !act("key " + name + " 1")) return; held[name] = true; if (el) el.classList.add("down"); if (navigator.vibrate) navigator.vibrate(8); }
   function keyUp(name, el) { if (!held[name]) return; delete held[name]; send("key " + name + " 0"); if (el) el.classList.remove("down"); }
   function releaseAll() { Object.keys(held).forEach(function(k) { keyUp(k, document.querySelector('[data-key="' + k + '"]')); }); ptt.release(); }
   /* "keys NAME ...": the keys this radio has; the others are greyed (the X6200 has no PRE, V/M, AGC or LOCK key) */
@@ -947,42 +1036,61 @@ body.app h2, body.app #intro { display:none; }
   });
   document.querySelectorAll("[data-knob]").forEach(function(el) {
     let rep = null;
-    const fire = function() { send("knob " + el.dataset.knob + " " + el.dataset.step); };
+    const fire = function() { act("knob " + el.dataset.knob + " " + el.dataset.step); };
     el.addEventListener("pointerdown", function(e) { e.preventDefault(); fire(); rep = setInterval(fire, 120); });
     const stop = function() { if (rep) { clearInterval(rep); rep = null; } };
     el.addEventListener("pointerup", stop); el.addEventListener("pointercancel", stop); el.addEventListener("pointerleave", stop);
     el.addEventListener("contextmenu", function(e) { e.preventDefault(); });
   });
   window.addEventListener("blur", releaseAll);
+  /* The keyboard is the radio's only when a key is meant for nothing else (audit C09): not in a pop-up,
+   * a field or the session dialog, and Space on a focused button presses that button. Space on the
+   * PTT button itself is PTT */
+  const pttEl = document.getElementById("pttbtn");
   document.addEventListener("keydown", function(e) {
-    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || !$pop.prop("hidden")) return;
+    if (!$pop.prop("hidden") || !RadioSession.forRadio(e, pttEl)) return;
     if (e.key === " ") { e.preventDefault(); if (e.repeat) return; ptt.press(); return; }
     if (!state) return;
     const n = e.shiftKey ? 10 : 1;
-    if (e.key === "ArrowRight") { e.preventDefault(); tuneTo(state.freq + n * state.step); }
-    else if (e.key === "ArrowLeft") { e.preventDefault(); tuneTo(state.freq - n * state.step); }
-    else if (e.key === "]") { e.preventDefault(); lvlSend("vol", Math.min(LVL.vol.max, state.vol + 1)); }
-    else if (e.key === "[") { e.preventDefault(); lvlSend("vol", Math.max(0, state.vol - 1)); }
+    if (e.key === "ArrowRight") { e.preventDefault(); tuneTo(cur("freq") + n * state.step); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); tuneTo(cur("freq") - n * state.step); }
+    else if (e.key === "]") { e.preventDefault(); lvlSend("vol", Math.min(LVL.vol.max, cur("vol") + 1)); }
+    else if (e.key === "[") { e.preventDefault(); lvlSend("vol", Math.max(0, cur("vol") - 1)); }
   });
   document.addEventListener("keyup", function(e) { if (e.key === " ") ptt.release(); });
+  /* A panel button clicked or tapped gives the keyboard back to the page, as Safari does anyway: it takes no
+   * focus and clears it from a field, a button reached with Tab or the open menu at the top, so Space after a
+   * click on Sound, PRE or LOG is PTT. Tab still reaches every button, and then Space is that button's.
+   * Not the menu at the top: a tap opens it by giving it the focus */
+  document.addEventListener("mousedown", function(e) {
+    if (e.button !== 0 || !e.target.closest || !e.target.closest(".pn-bar button, .pn button")) return;
+    e.preventDefault();
+    const a = document.activeElement;
+    if (a && a !== document.body && a.blur) a.blur();
+  });
 
   /* ---- Audio over TCI: RX to the speaker, the microphone to the radio while PTT is held ---- */
   let actx = null, nextTime = 0, sndOn = false, micNode = null, micSrc = null;
   let micState = "off", micReq = 0;   /* off, asking, ready, refused; the request in flight (an older answer is let go, audit A18) */
   const HDR = 64;
+  /* The format this page plays, asked for on every connection (the radio's TCI default is 48 kHz float32 stereo, 8x the bytes) */
+  const AUDIO_START = "audio_samplerate:24000;audio_stream_sample_type:int16;audio_stream_channels:1;audio_stream_samples:512;audio_start:0;";
   tlink = RadioLink.create({
     url: function() { return conf && conf.tci_enabled ? wsUrl("tci") : null; },
     ping: null,
-    onOpen: function() { if (sndOn) tlink.send("audio_start:0;"); },
+    onOpen: function() { if (sndOn) tlink.send(AUDIO_START); },
     onBinary: function(buf) {
       if (!sndOn || !actx) return;
       const dv = new DataView(buf);
       const rate = dv.getUint32(4, true), fmt = dv.getUint32(8, true), n = dv.getUint32(20, true), type = dv.getUint32(24, true), ch = dv.getUint32(28, true) || 1;
-      if (type !== 1 || n === 0 || buf.byteLength < HDR + n * ch * (fmt === 3 ? 4 : 2)) return;
+      /* n counts the samples of every channel (TCI's length): n / ch of each */
+      if (type !== 1 || n === 0 || (fmt !== 0 && fmt !== 3) || buf.byteLength < HDR + n * (fmt === 3 ? 4 : 2)) return;
+      const k = Math.floor(n / ch);
+      if (!k) return;
       lastAudio = Date.now(); abytes += buf.byteLength;
-      const ab = actx.createBuffer(1, n, rate), out = ab.getChannelData(0);
-      if (fmt === 3) { const f = new Float32Array(buf, HDR, n * ch); for (let i = 0; i < n; i++) out[i] = f[i * ch]; }
-      else { const s16 = new Int16Array(buf, HDR, n * ch); for (let i = 0; i < n; i++) out[i] = s16[i * ch] / 32768; }
+      const ab = actx.createBuffer(1, k, rate), out = ab.getChannelData(0);
+      if (fmt === 3) { const f = new Float32Array(buf, HDR, n); for (let i = 0; i < k; i++) out[i] = f[i * ch]; }
+      else { const s16 = new Int16Array(buf, HDR, n); for (let i = 0; i < k; i++) out[i] = s16[i * ch] / 32768; }
       const src = actx.createBufferSource(); src.buffer = ab; src.connect(actx.destination);
       const now = actx.currentTime;
       if (nextTime < now + 0.04 || nextTime > now + 0.6) nextTime = now + 0.08;
@@ -995,7 +1103,7 @@ body.app h2, body.app #intro { display:none; }
     if (sndOn) {
       if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
       actx.resume(); lastAudio = 0;
-      if (!tlink.send("audio_start:0;")) tlink.tryNow();
+      if (!tlink.send(AUDIO_START)) tlink.tryNow();
     } else if (!txOn) tlink.send("audio_stop:0;");
   });
   $("#mic").on("click", function() {

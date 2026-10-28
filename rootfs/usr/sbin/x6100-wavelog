@@ -18,14 +18,20 @@
 #                   since=<unix time>: QSOs from then on are sent, the log from before is not.
 #                   station_id=auto: each QSO goes to the station profile with its STATION_CALLSIGN (DF8MH,
 #                   DF8MH/P...), the one Wavelog marks active when several have it
-#   wavelog.state   JSON: the logs as last read (mtime, size), the QSOs sent (key -> QSO time), the last result
-#   wavelog.queue   JSON: the QSOs waiting, in the order they were logged; it survives a restart
-#   wavelog.failed.adi   QSOs Wavelog refused (a bad record): kept for the user, not sent again
+#   wavelog.state   JSON: the logs as last read (mtime, size), the QSOs sent (key -> QSO time, under old_key as
+#                   well), the revisions sent of each (revs: key -> [rev]), the last result
+#   wavelog.queue   JSON: the QSOs waiting, in the order they were logged, with the logs that hold them; it
+#                   survives a restart
+#   wavelog.failed.adi   QSOs Wavelog refused (a bad record): kept for the user, not sent again unless edited
+# A QSO is its other station, date and time to the second, band, mode and own station callsign (qso_key); a QSO
+# edited after it was sent is sent again (qso_rev), and when Wavelog keeps the copy it has, the line says so.
 # stations and test take the URL and key from X6100_WAVELOG_URL / X6100_WAVELOG_KEY / X6100_WAVELOG_VERIFY
-# when set (the web page, before Save), else from wavelog.conf.
+# when set (the web page, before Save), else from wavelog.conf. The saved key goes only to the Wavelog it was
+# saved with: a URL of another server needs its own key in X6100_WAVELOG_KEY.
 
 import calendar
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -34,6 +40,7 @@ import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 FIELD_DIR = os.environ.get("X6100_FIELD_DIR", "/mnt/field")
@@ -122,10 +129,23 @@ def request(url, body, verify):
     return code, parsed, text
 
 
+def origin(url):
+    """Scheme, host and port of a URL: the server a key is sent to"""
+    try:
+        u = urllib.parse.urlsplit(url.strip())
+        scheme = u.scheme.lower()
+        return scheme, (u.hostname or "").lower(), u.port or {"http": 80, "https": 443}.get(scheme)
+    except ValueError:   # a port that is not one: equal only to the same text
+        return url.strip()
+
+
 def target(conf):
-    """URL, key, verify of the environment (the web page's form) or wavelog.conf"""
+    """URL, key, verify of the environment (the web page's form) or wavelog.conf. The saved key only with the
+    saved URL's server: a URL typed on the page and an empty key sent it to whatever server was typed (audit C08)"""
     url = os.environ.get("X6100_WAVELOG_URL") or conf.get("url", "")
     key = os.environ.get("X6100_WAVELOG_KEY") or conf.get("key", "")
+    if key and not os.environ.get("X6100_WAVELOG_KEY") and origin(url) != origin(conf.get("url", "")):
+        raise Fail("the saved API key is for another server: type the key for this one")
     verify = os.environ.get("X6100_WAVELOG_VERIFY", conf.get("verify_tls", "1")) != "0"
     if not url or not key:
         raise Fail("URL and API key needed")
@@ -212,18 +232,62 @@ def qso_time(f):
 
 
 def qso_key(f):
-    """The same QSO in two reads of a log, or in two logs: an edited QSO is a new one"""
+    """The same QSO in two reads of a log, or in two logs: the other station, the date and the time to the second,
+    band, mode, and the own station callsign that also picks the profile with Automatic. Without the seconds and
+    the station, a second QSO in the same minute, as ON6URE/P after one as ON6URE, was taken for the first and
+    never sent (audit C11)"""
+    mode = f.get("submode") or f.get("mode", "")
+    me = f.get("station_callsign") or f.get("operator", "")
+    return "|".join(x.strip().upper() for x in (f.get("call", ""), f.get("qso_date", ""),
+                                                (f.get("time_on", "") + "00")[:6], f.get("band", ""), mode, me))
+
+
+def qso_rev(f):
+    """What the QSO holds, whatever the order and spacing of its fields: a report, name or reference corrected on
+    the Logs page is a new revision of the same QSO, which was not sent again before (audit C11)"""
+    return hashlib.sha1(json.dumps(sorted(f.items())).encode()).hexdigest()[:12]
+
+
+def old_key(f):
+    """The key the helper of v0.3.5 and v0.3.6 kept a QSO sent under, in "sent" as key -> QSO time. What it sent
+    is not sent again here; and as it runs again on this state after Update > Roll back, each QSO sent here is in
+    "sent" under its old key too (old_of), as a QSO time: that helper neither stops at the state (a TypeError at
+    every run, "sent" never saved) nor sends again the QSOs this one sent. The revisions are in "revs", which it
+    leaves as they are"""
     mode = f.get("submode") or f.get("mode", "")
     return "|".join(x.upper() for x in (f.get("call", ""), f.get("qso_date", ""), f.get("time_on", "")[:4],
                                         f.get("band", ""), mode))
 
 
+def old_of(key):
+    """The old_key of the QSO with this qso_key"""
+    p = key.split("|")
+    return "|".join(p[:2] + [p[2][:4]] + p[3:5])
+
+
+def mark_sent(state, q):
+    """q sent (or refused): not sent again as it stands, nor as any log holds it now (two copies of the QSO that
+    differ, in two logs, went as one)"""
+    state["sent"][q["key"]] = state["sent"][old_of(q["key"])] = q["t"]
+    revs = state["revs"].setdefault(q["key"], [])
+    revs.extend(r for r in dict.fromkeys([q["rev"], *q.get("logs", {}).values()]) if r not in revs)
+
+
 def collect(state, queue, since):
-    """The QSOs logged since `since` and not sent or queued yet, into the queue; the logs that
-    did not change since the last run are not read again"""
+    """The QSOs logged since `since` into the queue: a new one, or one changed since it was sent ("fix"). One that
+    waits goes as it stands at the run, and not at all when no log holds it any more (deleted, or its call or time
+    corrected meanwhile) or each log holds it as it was sent (an edit undone). The logs that did not change since
+    the last run are not read again"""
     files = state.setdefault("files", {})
     sent = state.setdefault("sent", {})
-    waiting = {q["key"] for q in queue}
+    revs = state.setdefault("revs", {})
+    ours = {old_of(k) for k in revs}   # the old keys written here: the others are of the helper before
+    for q in queue:   # left waiting by the helper before the update
+        if "rev" not in q:
+            f = adif_fields(q["adif"])
+            q["key"], q["rev"] = qso_key(f), qso_rev(f)
+    waiting = {q["key"]: q for q in queue}
+    now = time.time()
     try:
         names = sorted(n for n in os.listdir(LOGS_DIR) if n.endswith(".adi"))
     except OSError:
@@ -239,18 +303,49 @@ def collect(state, queue, since):
                 data = fh.read()
         except OSError:
             continue
-        found = []
+        found, held = [], set()
         for rec in adif_records(data):
             f = adif_fields(rec)
-            t, key = qso_time(f), qso_key(f)
-            if t >= since and key not in sent and key not in waiting:
-                found.append((t, {"key": key, "call": f.get("call", "").upper(), "t": t, "adif": rec.decode("utf-8", "replace") + "<eor>"}))
-                waiting.add(key)
+            t, key, rev = qso_time(f), qso_key(f), qso_rev(f)
+            held.add(key)
+            if t < since:
+                continue
+            adif = rec.decode("utf-8", "replace") + "<eor>"
+            q = waiting.get(key)
+            if q:   # as this log holds it now; what goes is a copy not sent yet
+                q.setdefault("logs", {})[name] = rev
+                if rev not in revs.get(key, ()):
+                    q.update(adif=adif, rev=rev)
+                continue
+            old = old_key(f)
+            if key not in revs and (key in sent or old in sent and old not in ours):
+                revs[key], sent[key], sent[old_of(key)] = [rev], t, t   # sent by the helper before the update
+                ours.add(old_of(key))                                  # (or after a roll back), as it stands
+            done = revs.get(key)
+            if done and rev in done:
+                continue
+            q = {"key": key, "rev": rev, "call": f.get("call", "").upper(), "t": t, "adif": adif, "logs": {name: rev}}
+            if done:
+                q["fix"] = True
+            found.append((t, q))
+            waiting[key] = q
+        for q in queue:   # waiting, and this log holds it no more: deleted, or its call or time corrected
+            if name in q.get("logs", ()) and q["key"] not in held:
+                del q["logs"][name]
         queue.extend(q for _, q in sorted(found, key=lambda x: x[0]))
-        files[name] = stamp
+        # FAT keeps a file's time in 2 s steps: a log changed again within them to the same size (a report
+        # corrected, 59 to 57) has the same stamp, so one this recent is read again at the next run
+        if now - st.st_mtime >= 2:
+            files[name] = stamp
+        else:
+            files.pop(name, None)
     for name in list(files):   # deleted logs
         if name not in names:
             del files[name]
+    # A QSO waits while a log holds it in a form not sent yet: deleted, its call or time corrected (no log holds it
+    # now), or edited back to what was sent, it does not go. One the helper before queued, in no log read since, goes
+    queue[:] = [q for q in queue if "logs" not in q
+                or any(r not in revs.get(q["key"], ()) for r in q["logs"].values())]
 
 
 def send(conf, rec, station_id):
@@ -290,7 +385,7 @@ def cmd_sync(conf):
         collect(state, queue, since)
         save_json(QUEUE, queue)
         save_json(STATE, state)
-        ok, dupe, bad, last, nobody = 0, 0, [], "", []
+        ok, dupe, bad, last, nobody, kept = 0, 0, [], "", [], []
         auto = conf["station_id"] == "auto"
         profiles = None   # auto: read from Wavelog once a run, when a QSO waits
         try:
@@ -315,7 +410,9 @@ def cmd_sync(conf):
                         fh.write(q["adif"] + "\n")
                 else:
                     ok, dupe, last = ok + (res == "ok"), dupe + (res == "dupe"), q["call"]
-                state["sent"][q["key"]] = q["t"]
+                    if res == "dupe" and q.get("fix"):   # api/qso adds QSOs, it changes none Wavelog has
+                        kept.append(q["call"])
+                mark_sent(state, q)
                 queue.pop(i)
                 save_json(QUEUE, queue)
             n = ok + dupe
@@ -323,6 +420,9 @@ def cmd_sync(conf):
             result = ("ok " + (f"{n} Wavelog: {last} uploaded" if n == 1 and ok
                                else f"{n} Wavelog: {last} was already there" if n == 1
                                else f"{n} Wavelog: {said}") if n else "ok")
+            if kept:
+                result += ", edit it in Wavelog too" if n == 1 else \
+                    f", edit {kept[0]} in Wavelog too" + (f" (+{len(kept) - 1} more)" if len(kept) > 1 else "")
             if bad:
                 result = f"error Wavelog refused {bad[0]}" + (f" (+{len(bad) - 1} more)" if len(bad) > 1 else "")
             elif nobody:
@@ -335,6 +435,7 @@ def cmd_sync(conf):
             result = f"error Wavelog: {e}, {qsos(len(queue))} waiting"
         now = time.time()
         state["sent"] = {k: t for k, t in state["sent"].items() if t > now - KEEP_SENT}
+        state["revs"] = {k: r for k, r in state["revs"].items() if k in state["sent"]}
         state["last"] = {"time": int(now), "result": result, "queue": len(queue)}
         save_json(QUEUE, queue)
         save_json(STATE, state)

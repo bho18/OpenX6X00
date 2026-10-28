@@ -10,14 +10,14 @@ if(ENABLE_FREEDV_DIAGNOSTICS)
 endif()
 
 target_sources(${PROJECT_NAME} PUBLIC
-    gui_main.c screen_main.c walkie.c gui_styles.c wf_palettes.c
+    gui_main.c screen_main.c walkie.c gui_styles.c mono.c wf_palettes.c
     spectrum_view.c radio.c dsp.cpp util.cpp
     waterfall_view.c knob_device.c key_input.c mfk_device.c
     gui_events.c msg_box.c msg_note.c front_keys.c kbd_rollover.c
-    mic_keys.c clock.c bat_est.c info_bar.c smeter.c
+    mic_keys.c clock.c bat_est.c bat_watch.c info_bar.c smeter.c
     band_names.cpp tx_meters.c
     audio.c mfk_control.cpp cw.cpp cw_decoder.c cw_parse.c text_panel.cpp
-    rtty.c screen_shot.c screen_rec.c avi_writer.c screen_light.c gps.c cat.cpp tci_ws.c tci_server.c cfg_socket.cpp
+    rtty.c screen_shot.c screen_rec.c avi_writer.c screen_light.c gps.c cat.cpp tci_ws.c tci_audio.c tci_server.c cfg_socket.cpp
     app_window.c settings_window.cpp swrscan_window.c ft8_window.c
     freq_entry.c gps_window.c cw_messages.c
     voice_messages.c recorder_window.c qth_entry.c station.c dialog_channels.c
@@ -60,7 +60,7 @@ target_sources(${PROJECT_NAME} PUBLIC
     wefax_window.c wefax/decoder.c wefax/encoder.c
     navtex_window.c navtex/sitorb.c navtex/dsc.c
     channel_list.c broadcast_db.c cJSON.c
-    text_popup.c cw_encoder.c image_level.c
+    text_popup.c cw_encoder.c image_level.c start_trace.c
     button_bar.cpp vol_control.cpp recorder.c
     cw_tune_view.c adif.c qso_log.c scheduler.cpp
     wifi_window.c wifi.cpp btaudio.cpp bt_dev.c radio_controls.cpp

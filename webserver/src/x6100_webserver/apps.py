@@ -30,14 +30,38 @@ from . import settings
 
 app = bottle.Bottle()   # the configurator pages and their API
 
+# Reads that hand out what the radio keeps secret, taken only by its own names as the changes are: the Files page
+# serves all of /mnt (the Wavelog, QRZ, HOTA and WWFF keys, backups/backup.tgz with the SSH host keys and the WiFi
+# passwords, the Winlink mail), and the Backup download can hold the WiFi passwords
+HOST_ONLY_READS = ("/files/", "/api/backup/download")
+# Reads sent as a POST (a form with the selection), with no secret in them: by any name, as the GET reads are (the
+# QSOs and the pictures are on the pages by any name). The cross-site check still applies
+POST_READS = ("/logs/export", "/api/gallery/zip")
+
+
+def host_refused():
+    msg = (f"Open this page by the radio's address, {socket.gethostname()}.local or its Tailscale name: by another "
+           "name a page from another site could do the same through your browser")
+    if bottle.request.path.startswith("/api/"):   # the pages show the msg of an API's answer
+        return bottle.HTTPResponse(json.dumps({"status": "error", "msg": msg}), 403,
+                                   {"Content-Type": "application/json"})
+    return bottle.HTTPError(403, msg)
+
 
 @app.hook('before_request')
-def refuse_cross_site_writes():
+def refuse_other_sites():
     """A request that changes something, sent by a page from another site (a form a browser on the
     LAN was made to submit): refused. The radio's own pages send none of these headers, or their own
-    host. Browsers mark the request with Sec-Fetch-Site, older ones only with Origin."""
+    host. Browsers mark the request with Sec-Fetch-Site, older ones only with Origin.
+    A site that points a name of its own at the radio (DNS rebinding) sends that name as Host and Origin
+    alike and passes this: a change, and a read of HOST_ONLY_READS, needs one of the radio's own names
+    (local_host_ok) as well. Before, the Wavelog page sent the key and Files handed it out by any name (audit C08)"""
     req = bottle.request
-    if req.method in ("GET", "HEAD", "OPTIONS"):
+    write = req.method not in ("GET", "HEAD", "OPTIONS")
+    change = write and req.path not in POST_READS
+    if (change or req.path.startswith(HOST_ONLY_READS)) and not local_host_ok():
+        raise host_refused()
+    if not write:
         return
     if req.headers.get("Sec-Fetch-Site", "") == "cross-site":
         bottle.abort(403, "Cross-site request refused")
@@ -368,6 +392,10 @@ def remote_state():
     t = read_tci_conf()
     r.update({"tci_enabled": t["enabled"], "tci_port": t["port"],
               "wss_port": settings.WSS_REMOTE_PORT, "wss_tci_port": settings.WSS_TCI_PORT})
+    if not local_host_ok():   # the radio takes a page's sockets by these names only (src/tci_ws.c): say so
+        r["name_refused"] = (f"Open this page by the radio's address, {socket.gethostname()}.local or its Tailscale "
+                             "name: by another name the radio does not take its connection, as a page from another "
+                             "site could make your browser connect the same way")
     return r
 
 
@@ -568,10 +596,11 @@ def tailscale_page():
 
 def local_host_ok():
     """The page opened by an address or by the radio's own name. A page from another site that points its own
-    name at the radio (DNS rebinding) passes the cross-site guard: Tailscale is switched and its login link
-    shown (which would put the radio on that site's tailnet), Winlink changed, and the SSH keys listed and
-    changed (a key added is a root login), only by these names. Pat's mailbox on port 8080 takes the same names
-    (tools/pat)"""
+    name at the radio (DNS rebinding) passes the cross-site guard: every change (refuse_other_sites), the Files
+    page and the Backup download, Tailscale's login link (which would put the radio on that site's tailnet) and
+    the list of SSH keys only by these names. Pat's mailbox on port 8080 takes the same names (tools/pat).
+    MagicDNS's short name too, which is the tailnet's name for the radio: x6200-1 while the tailnet still has the
+    machine of an earlier card image as x6200"""
     host = (urllib.parse.urlsplit("//" + (bottle.request.get_header("Host") or "")).hostname or "").rstrip(".")
     try:
         ipaddress.ip_address(host)
@@ -579,7 +608,11 @@ def local_host_ok():
     except ValueError:
         pass
     name = socket.gethostname().lower()
-    return host in ("localhost", name, name + ".local") or host.endswith(".ts.net")
+    names = {"localhost", name, name + ".local"}
+    tailnet = tailscale_status().get("name", "").lower()
+    if tailnet:
+        names.add(tailnet.split(".")[0])
+    return host in names or host.endswith(".ts.net")
 
 
 @app.get('/api/tailscale')
@@ -592,8 +625,6 @@ def get_tailscale():
 
 @app.post('/api/tailscale')
 def set_tailscale():
-    if not local_host_ok():
-        return api_error(403, f"Open this page by the radio's address or {socket.gethostname()}.local to change Tailscale")
     action = (bottle.request.json or {}).get("action")
     if action not in ("on", "off", "logout"):
         return api_error(400, "action: on, off or logout")
@@ -684,8 +715,6 @@ def get_winlink():
 def set_winlink():
     """Any of enabled, mycall, locator, bandwidth and password; what is not sent stays. An empty callsign or
     locator is the radio's own, an empty password keeps the one set"""
-    if not local_host_ok():
-        return api_error(403, f"Open this page by the radio's address or {socket.gethostname()}.local to change Winlink")
     try:
         data = bottle.request.json
     except ValueError:
@@ -1265,14 +1294,29 @@ def wavelog_run(cmd, form=None, timeout=330):
         return f"error {e}"
 
 
-def wavelog_form(body):
-    """URL, key and certificate check of the page's form, checked; None and the reason when wrong"""
+def wavelog_origin(url):
+    """Scheme, host and port of a URL: the server a key is sent to (x6100-wavelog's origin)"""
+    try:
+        u = urllib.parse.urlsplit(url.strip())
+        scheme = u.scheme.lower()
+        return scheme, (u.hostname or "").lower(), u.port or {"http": 80, "https": 443}.get(scheme)
+    except ValueError:   # a port that is not one: equal only to the same text
+        return url.strip()
+
+
+def wavelog_form(body, saved=None):
+    """URL, key and certificate check of the page's form, checked; None and the reason when wrong. An empty key
+    is the saved one, for the saved URL's server only: Test or Save with another URL sent it there (audit C08).
+    saved: wavelog.conf as the caller read it, the one its key comes from"""
     url = str(body.get("url", "")).strip()
     key = str(body.get("key", "")).strip()
     if url and not re.fullmatch(WAVELOG_URL, url):
         return None, "The URL starts with http:// or https://, no spaces"
     if key and not re.fullmatch(r"[!-~]{1,128}", key):
         return None, "A key is 1-128 printable characters, no spaces"
+    saved = wavelog_read() if saved is None else saved
+    if url and not key and saved.get("key") and wavelog_origin(url) != wavelog_origin(saved.get("url", "")):
+        return None, "Another server: type its API key too (the saved key goes only to the server it was saved with)"
     return {"url": url, "key": key, "verify_tls": body.get("verify_tls", True) is not False}, None
 
 
@@ -1286,17 +1330,27 @@ def get_wavelog():
     return wavelog_state()
 
 
+wavelog_lock = threading.Lock()
+
+
 @app.post('/api/wavelog')
 def set_wavelog():
     """{"enabled", "url", "key" ("": the one stored stays), "station_id", "station_name", "verify_tls"},
-    or {"remove": true}: the key goes and the upload stops. Switched on, QSOs from now on are sent."""
-    body = bottle.request.json or {}
+    or {"remove": true}: the key goes and the upload stops. Switched on, QSOs from now on are sent.
+    One Save at a time, its URL checked against the wavelog.conf it keeps the key of: with a read for the check
+    and one for the key, a Save of another server with its key between them gave this one's URL the old key"""
+    with wavelog_lock:
+        return wavelog_save(bottle.request.json or {})
+
+
+def wavelog_save(body):
+    """set_wavelog's work, under wavelog_lock"""
     conf = wavelog_read()
     if body.get("remove"):
         conf.pop("key", None)
         conf["enabled"] = "0"
     else:
-        form, why = wavelog_form(body)
+        form, why = wavelog_form(body, conf)
         if not form:
             return api_error(400, why)
         sid = str(body.get("station_id", "")).strip()
@@ -1362,33 +1416,44 @@ def field_active_log():
     return os.path.basename(kv.get("log", "")) if kv.get("active") == "1" else ""
 
 
-def adif_split(text):
+# A log is handled as bytes from the file to the file: an ADIF length counts bytes, as the radio writes them
+# (src/field/flog.c) and x6100-wavelog reads them, "Jürgen" is 7. Decoded first and counted in characters, a
+# name with ü was read with the next tag's "<", an edit wrote 6 for it or took that "<" away, and the bytes of a
+# log that is not UTF-8 were replaced in every record of the file (audit C10). Values are text only in and out.
+
+def adif_split(data):
     """Header (up to <eoh>) and the parts between <eor>s; the last part is what follows the last record."""
-    m = re.search(r'<eoh>', text, re.I)
-    head, body = (text[:m.end()], text[m.end():]) if m else ("", text)
-    return head, re.split(r'(?i)<eor>', body)
+    m = re.search(rb'<eoh>', data, re.I)
+    head, body = (data[:m.end()], data[m.end():]) if m else (b"", data)
+    return head, re.split(rb'(?i)<eor>', body)
+
+
+def adif_tag(rec, name):
+    """The tag <name:n> in rec and the end of its value, n bytes on (a slice there stops at the record's end)"""
+    m = re.search(rb'<%s:(\d+)(?::\w)?>' % name.encode(), rec, re.I)
+    return (m, m.end() + int(m.group(1))) if m else (None, 0)
 
 
 def adif_set(rec, name, value):
     """rec with the field `name` set to value (added before the end when missing)."""
-    m = re.search(r'<%s:(\d+)(?::\w)?>' % name, rec, re.I)
-    new = "<%s:%d>%s" % (name, len(value), value)
+    v = value.encode()
+    new = b"<%s:%d>%s" % (name.encode(), len(v), v)
+    m, end = adif_tag(rec, name)
     if not m:
-        return rec.rstrip() + " " + new + " "
-    return rec[:m.start()] + new + rec[m.end() + int(m.group(1)):]
+        return rec.rstrip() + b" " + new + b" "
+    return rec[:m.start()] + new + rec[end:]
 
 
 def adif_get(rec, name):
-    """One field of rec, found by its own tag. For the ASCII fields: the radio writes lengths in bytes (flog.c), and
-    adif_fields, counting characters, runs over the next tag after a value such as "Łódź" """
-    m = re.search(r'<%s:(\d+)(?::\w)?>' % name, rec, re.I)
-    return rec[m.end():m.end() + int(m.group(1))] if m else ""
+    """One field of rec, found by its own tag, as the radio finds it"""
+    m, end = adif_tag(rec, name)
+    return rec[m.end():end].decode(errors="replace") if m else ""
 
 
 def adif_del(rec, name):
     """rec without the field `name`."""
-    m = re.search(r'<%s:(\d+)(?::\w)?>' % name, rec, re.I)
-    return rec if not m else rec[:m.start()] + rec[m.end() + int(m.group(1)):]
+    m, end = adif_tag(rec, name)
+    return rec if not m else rec[:m.start()] + rec[end:]
 
 
 SOTA_REF = r'[A-Z0-9]{1,4}/[A-Z]{2}-[0-9]{3}'     # I/LO-123 ([0-9]: \d takes any script's digits)
@@ -1464,7 +1529,7 @@ def set_ref(rec, ref):
 def rec_id(rec):
     """A QSO's identity on the pages: a digest of its record as it stands in the file. The row
     number alone named another QSO once one before it was deleted in another tab (audit B09)."""
-    return hashlib.sha1(rec.strip().encode(errors="replace")).hexdigest()[:12]
+    return hashlib.sha1(rec.strip()).hexdigest()[:12]
 
 
 def edit_qso(name, n, fn, rid):
@@ -1491,9 +1556,8 @@ def edit_qso(name, n, fn, rid):
                 raw = f.read()
         except FileNotFoundError:
             return api_error(404, "Not found")
-        text = raw.decode(errors="replace")
-        head, parts = adif_split(text)
-        recs = [i for i, p in enumerate(parts[:-1]) if re.search(r'<call:\d+', p, re.I)]
+        head, parts = adif_split(raw)
+        recs = [i for i, p in enumerate(parts[:-1]) if re.search(rb'<call:\d+', p, re.I)]
         same = [i for i in recs if rec_id(parts[i]) == rid]
         if len(same) == 1:
             at = same[0]
@@ -1507,8 +1571,8 @@ def edit_qso(name, n, fn, rid):
         else:
             parts[at] = new
         tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            f.write(head + "<eor>".join(parts))
+        with open(tmp, "wb") as f:
+            f.write(head + b"<eor>".join(parts))
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -1566,25 +1630,25 @@ def delete_field_log(name):
 # to see, filter, edit, delete and export. QSOs are addressed as (file, n) as edit_qso() counts them.
 
 def adif_fields(rec):
-    """The fields of an ADIF record, names in lower case."""
+    """The fields of an ADIF record, names in lower case, values as text; lengths in bytes (adif_split)."""
     out, i = {}, 0
-    for m in re.finditer(r'<(\w+):(\d+)(?::\w)?>', rec):
+    for m in re.finditer(rb'<(\w+):(\d+)(?::\w)?>', rec):
         if m.start() < i:
             continue
         n = int(m.group(2))
-        out[m.group(1).lower()] = rec[m.end():m.end() + n]
+        out[m.group(1).decode().lower()] = rec[m.end():m.end() + n].decode(errors="replace")
         i = m.end() + n
     return out
 
 
 def log_records(name):
-    """The QSO records of a log (records without CALL do not count, as in edit_qso)."""
+    """The QSO records of a log, bytes (records without CALL do not count, as in edit_qso)."""
     try:
-        with open(field_path("logs", name), errors="replace") as f:
-            text = f.read()
+        with open(field_path("logs", name), "rb") as f:
+            data = f.read()
     except OSError:
         return []
-    return [p for p in adif_split(text)[1][:-1] if re.search(r'<call:\d+', p, re.I)]
+    return [p for p in adif_split(data)[1][:-1] if re.search(rb'<call:\d+', p, re.I)]
 
 
 @app.route('/logs')
@@ -1615,6 +1679,24 @@ LOG_FIELDS = {"call": r'[A-Z0-9/]{3,15}', "qso_date": r'\d{8}', "time_on": r'\d{
 SUBMODE_OF = {"FT4": "MFSK", "JS8": "MFSK", "FT2": "MFSK", "FST4": "MFSK", "FST4W": "MFSK", "Q65": "MFSK", "MSK144": "MFSK"}
 
 
+def log_unchanged(q, k, v):
+    """Whether v, put_log_qso's cleaned value of field k, is what the Logs page showed of the record (its fields q,
+    as get_logs gives them). The page sends every column back: one not edited is left as it is, bytes and all.
+    Written again, a NAME or COMMENT that is not UTF-8 (a log from elsewhere) went back as U+FFFD, and the time
+    lost its seconds (the page shows hh:mm), which made the QSO another one for the Wavelog upload (its qso_key)"""
+    if k == "ref":   # logs.html ref(): SOTA_REF, POTA_REF, or SIG_INFO but a park's
+        sig_info = "" if q.get("sig", "").upper() == "POTA" else q.get("sig_info", "")
+        old = q.get("sota_ref") or q.get("pota_ref") or sig_info
+    elif k == "mode":   # the submode where there is one
+        old = q.get("submode") or q.get("mode", "")
+    else:
+        old = q.get(k, "")
+    old = old.strip() if k in ("name", "qth", "comment") else old.strip().upper()
+    if k == "time_on" and len(v) == 4:   # hh:mm on the page
+        old = old[:4]
+    return v == old
+
+
 @app.put('/api/logs/<name>/<n:int>')
 def put_log_qso(name, n):
     """JSON {field: value} for any of LOG_FIELDS; an empty value removes the field (CALL and the date stay)."""
@@ -1640,7 +1722,10 @@ def put_log_qso(name, n):
     clean.pop("pota_ref", None)
 
     def change(rec):
+        shown = adif_fields(rec)
         for k, v in clean.items():
+            if log_unchanged(shown, k, v):
+                continue
             if k == "ref":
                 rec = set_ref(rec, v)
             elif k == "mode":
@@ -1679,8 +1764,8 @@ def export_logs():
             w.writerow([f.get(c, "") for c in cols])
         body, ext, mime = out.getvalue(), "csv", "text/csv"
     else:
-        body = "OpenX6X00 log export\n<adif_ver:5>3.1.4 <programid:9>OpenX6X00 <eoh>\n" + \
-               "".join(rec.strip() + " <eor>\n" for rec in recs)
+        body = b"OpenX6X00 log export\n<adif_ver:5>3.1.4 <programid:9>OpenX6X00 <eoh>\n" + \
+               b"".join(rec.strip() + b" <eor>\n" for rec in recs)   # the records' bytes: their lengths hold
         ext, mime = "adi", "text/plain"
     bottle.response.content_type = mime + "; charset=utf-8"
     bottle.response.set_header("Content-Disposition", f'attachment; filename="x6100-log-{stamp}.{ext}"')

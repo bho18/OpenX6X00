@@ -30,6 +30,7 @@
 #include "screen_main.h"
 #include "screen_rec.h"
 #include "gui_styles.h"
+#include "mono.h"
 #include "fonts/font_select.h"
 #include "radio.h"
 #include "dsp.h"
@@ -38,6 +39,7 @@
 #include "paddle_keyer.h"
 #include "front_keys.h"
 #include "params/params.h"
+#include "params/db.h"
 #include "cfg/cfg_api.h"
 #include "audio.h"
 #include "cw.h"
@@ -62,6 +64,7 @@
 #include "bt_dev.h"
 #include "usb_devices.h"
 #include "image_level.h"
+#include "start_trace.h"
 #include "dialog_cluster.h"
 #include "app_sstv.h"
 #include "walkie.h"
@@ -108,8 +111,9 @@ static void display_settings_check(void) {
     fix_uint8(&params.spectrum_peak_speed);
 }
 
-#if USE_DRM
-/* SIGUSR1: the screen to /tmp/screen.raw (with DRM /dev/fb0 no longer shows it) */
+#if USE_DRM || USE_SDL
+/* SIGUSR1: the screen to /tmp/screen.raw (with DRM /dev/fb0 no longer shows it; on a PC the
+ * window's last frame, for tools/screenshots/host_shots.py) */
 static volatile sig_atomic_t dump_requested;
 
 static void dump_signal(int sig) {
@@ -139,6 +143,7 @@ static void panel_open(void) {
 #if USE_SDL
     host_panel_open();
     screen_rec_out = host_panel_flush;
+    signal(SIGUSR1, dump_signal);
     return;
 #endif
 #if USE_DRM
@@ -163,6 +168,7 @@ static void display_register(void) {
     lv_disp_drv_init(&disp_drv);
     disp_drv.draw_buf = &draw_buf;
     disp_drv.flush_cb = screen_rec_flush;
+    disp_drv.draw_ctx_init = mono_draw_ctx_init;   /* LVGL's software renderer; 1bit hooks into it */
     disp_drv.hor_res  = BOARD_DISP_W;
     disp_drv.ver_res  = BOARD_DISP_H;
 #if USE_DRM
@@ -231,15 +237,28 @@ static void settings_load(void) {
     styles_load(params.theme_name.x);
 }
 
+/* Settings that did not come from params.db (params/db.c: one the GUI could not use), said once the screen is up */
+static void settings_note_cb(lv_timer_t *t) {
+    const char *note = database_note();
+
+    (void)t;
+    if (note) {
+        msg_schedule_long_text_fmt("%s", note);
+    }
+}
+
 /* Everything that runs beside the GUI, once the radio is up */
 static void services_start(void) {
     cw_init();
     rtty_init();
     radio_set_rx_tx_notify_fn(&main_screen_notify_rx_tx);
     radio_set_low_power_cb(&main_screen_notify_low_power);
-    wifi_power_setup();
+    /* The start trace after each step that talks to another program or the card: a hang shows between two lines */
+    wifi_power_setup();     /* NetworkManager, its calls waited for */
+    start_trace("services: WiFi set up");
     btaudio_init();
     bt_dev_init();
+    start_trace("services: Bluetooth set up");
     backlight_init();
     cat_init();
     cfg_socket_init();
@@ -247,14 +266,17 @@ static void services_start(void) {
     tci_server_init();
     remote_server_init();
     winlink_init();     /* ardopcf's audio and Pat's rigctld: idle until they connect */
+    start_trace("services: CAT, TCI and the browser's servers up");
     birdie_init();
     gps_init();
     if (!qso_log_init()) {
         LV_LOG_ERROR("Can't init QSO log");
     }
     qso_log_import_adif(BOARD_DATA "/incoming_log.adi");
+    start_trace("services: QSO log read");
     dialog_cluster_start_client();
     image_level_notice_init();   /* a newer card image wanted: said once per version */
+    lv_timer_set_repeat_count(lv_timer_create(settings_note_cb, 3000, NULL), 1);
 }
 
 /* LVGL's clock: 5 ms ticks */
@@ -282,6 +304,8 @@ static void update_confirm_cb(lv_timer_t *t) {
 }
 
 static void gui_loop(void) {
+    bool drawn = false;     /* the start trace's last stage */
+
     for (;;) {
         int64_t start = get_time();
 
@@ -297,6 +321,16 @@ static void gui_loop(void) {
             rename("/tmp/screen.raw.tmp", "/tmp/screen.raw");
         }
 #endif
+#if USE_SDL
+        if (dump_requested) {
+            dump_requested = 0;
+            if (host_panel_dump("/tmp/screen.raw.tmp")) rename("/tmp/screen.raw.tmp", "/tmp/screen.raw");
+        }
+#endif
+        if (!drawn) {
+            drawn = true;
+            start_trace("first frame");
+        }
         int64_t wait = next - get_time();
 
         usleep(wait > 0 ? wait * 1000 : 5000);
@@ -305,6 +339,7 @@ static void gui_loop(void) {
 
 int main(void) {
     scheduler_init();   /* this is the GUI thread */
+    start_trace("GUI start, %s", VERSION);
     setenv("X6100_FW", strrchr(VERSION, 'v') + 1, 1);   /* the helpers' User-Agent (x6100-field, spots) */
     clock_tz_init();
     lv_init();
@@ -315,13 +350,20 @@ int main(void) {
     display_register();
     inputs_open();
     settings_load();
+    start_trace("settings read");
 
-    radio_init();
+    if (!radio_init()) {
+        /* Held by another GUI, or not there: without it nothing here works, and going on crashed on it */
+        fprintf(stderr, "base: its pins or its line could not be opened, exiting\n");
+        return 1;
+    }
     audio_mixer_setup(radio_base_ver());
     dsp_init();
     lv_obj_t *screen = main_screen();
+    start_trace("screen built");
     radio_start();
     services_start();
+    start_trace("services started");
     tick_start();
 
     lv_scr_load(screen);
@@ -329,7 +371,10 @@ int main(void) {
     if (!walkie_on() && param_i_get(cfg_field_boot)) {
         main_screen_start_app(ACTION_APP_FIELD);
     }
-    lv_timer_set_repeat_count(lv_timer_create(update_confirm_cb, 60000, NULL), 1);
+    /* Not when this version could not use the settings file (params/db.c): the update is then taken back */
+    if (!database_version_fault()) {
+        lv_timer_set_repeat_count(lv_timer_create(update_confirm_cb, 60000, NULL), 1);
+    }
     dialog_field_wavelog_start();
     gui_loop();
     return 0;

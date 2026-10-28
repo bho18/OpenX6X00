@@ -42,6 +42,35 @@ def main():
             print(script + ":\n" + output.strip())
 
         print("B10 PTT renewal:\n" + command(["node", HERE / "ptt-renewal.js"], env).strip())
+        print("C09 keyboard scope:\n" + command(["node", HERE / "keyboard-scope.js"], env,
+              contains=("keyboard cases as they should be",)).strip())
+        print("C12 edit flow:\n" + command(["node", HERE / "edit-flow.js"], env,
+              contains=("edit-flow cases as they should be",)).strip())
+
+        # 26 October audit: the browser remote's commands, on the page and in the radio
+        print("C02 PTT hold, the page:\n" + command(["node", HERE / "ptt-hold.js"], env).strip())
+        command([sys.executable, HERE / "make-remote-harness.py"], env)
+        remote = work / "remote"
+        binary = remote / "remote"
+        command([*CC, *cflags, "-I" + str(remote), "-I" + str(HERE), remote / "remote-commands.c",
+                 remote / "control_owner.c", "-pthread", "-o", binary], env)
+        print("C02 ping numbers, the radio (fixed):\n" + command([binary, "ping"], env, contains=(
+            "pongs: pong|pong 7|pong 9007199254740991|",)).strip())
+        print("C02 PTT hold, the radio (fixed):\n" + command([binary, "ptt"], env, contains=(
+            "late renewals of the ended hold keyed the radio: 0",
+            "a new press keyed the radio: 1, still keyed at its renewal: 1",
+            "the refused press's renewal keyed the radio: 0",
+            "a page without numbers keyed the radio: 0, told to reload: 1")).strip())
+        print("C03 log receipts, two tabs of one browser (fixed):\n" + command([binary, "log"], env, contains=(
+            "one number, two contacts: writes=1, the second told ok=0, told conflict=1",
+            "two tabs, two more contacts: writes=3, 53-bit numbers answered whole=1")).strip())
+        print("C13 refused settings (fixed):\n" + command([binary, "set"], env, contains=(
+            "view only: queued=0 err=1 state again=1", "control at the radio: queued=0 err=1 state again=1",
+            "frequency locked: queued=0 err=1 state again=1", "out of range: queued=0 err=1 state again=1",
+            "a mode this radio has not: queued=0 err=1 state again=1", "GUI queue full: queued=0 err=1 state again=1",
+            "the queue-full refusal: err vol: the radio is busy, try again",
+            "no such setting: queued=0 err=1 state again=1", "accepted: queued=1 err=0 state again=0")).strip())
+        print("C02/C03/C13 (26 October audit): the remote's checks matched the fixes")
 
         command([sys.executable, HERE / "make-unkey-harness.py"], env)
         binary = work / "unkey"
@@ -74,6 +103,11 @@ def main():
         command([binary], env)
         print("B03 (fixed): the ADIF formatter writes 145.5 MHz within its buffer")
 
+        binary = work / "ws-handshake"
+        command([*CC, *cflags, *san, HERE / "ws-handshake.c", *gc, "-o", binary], env)
+        print("C08 WebSocket names (26 October audit, fixed):\n" + command([binary], env, contains=(
+            "21 of 21 cases as they should be",)).strip())
+
         fixture = work / "truncated.adi"
         fixture.write_bytes(b"<CALL:5")
         binary = work / "adif-input"
@@ -89,7 +123,7 @@ def main():
         command([binary, fixture], env, contains=("records=0",))
         print("B06 (fixed): the Field Ops reader skips a record whose field runs past it")
 
-    print("All 12 reproduced findings and the selected original-fix checks matched the audit.")
+    print("All reproduced findings and the selected original-fix checks matched the audits.")
 
 
 if __name__ == "__main__":

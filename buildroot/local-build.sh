@@ -37,6 +37,72 @@ BOARD=$EXT/board/$M/linux
 KERNEL_DEFCONFIG=$BOARD/sun8i-r16-$MODEL\_defconfig
 mkdir -p "$HOME"
 
+# The buildroot trees are our forks, github.com/Guru-RF/AetherX6100Buildroot and .../AetherX6200Buildroot, of
+# Aether Radio's (the X6100's moved from gdyuldin to OpenX6100). A change upstream reaches an image only once it
+# is merged into the fork: each build says when upstream has commits the tree here has not, at the start and
+# again at the end, and on GitHub as a warning on the run. Work on upstream's other branches (pull requests on
+# their way) newer than the tree and not in it is named too, as a note. It never stops the build
+UPSTREAM=$([ $MODEL = x6100 ] && echo OpenX6100/AetherX6100Buildroot || echo gdyuldin/AetherX6200Buildroot)
+UPSTREAM_NOTE=""
+UPSTREAM_WORK=""
+upstream_check() {
+    local new head
+    # CI checks the tree out with one commit: its own history (small, not buildroot's) for the comparison
+    if [ "$(git -C $BR rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+        git -C $BR fetch -q --unshallow 2>/dev/null || true
+    fi
+    if ! GIT_TERMINAL_PROMPT=0 git -C $BR fetch -q "https://github.com/$UPSTREAM" HEAD 2>/dev/null; then
+        echo "== Upstream $UPSTREAM: not reachable, not checked"
+        return 0
+    fi
+    head=$(git -C $BR rev-parse FETCH_HEAD)
+    upstream_branches "$head"
+    if git -C $BR merge-base --is-ancestor $head HEAD 2>/dev/null; then
+        echo "== Upstream $UPSTREAM: nothing new on its main branch (its head ${head:0:9} is in this tree)"
+        [ -n "$UPSTREAM_WORK" ] && printf '%s\n' "$UPSTREAM_WORK"
+        return 0
+    fi
+    new=$(git -C $BR log --oneline --no-decorate HEAD..$head 2>/dev/null | head -20 || true)
+    UPSTREAM_NOTE=$(printf '%s\n' \
+        "!! UPSTREAM CHANGED: $UPSTREAM has commits $BRDEF here has not:" \
+        "$(printf '%s\n' "${new:-(none listed: see https://github.com/$UPSTREAM/commits)}" | sed 's/^/!!   /')" \
+        "!! This image is built without them. Look at them, then merge them into Guru-RF/$BRDEF, or not.")
+    printf '%s\n' "$UPSTREAM_NOTE"
+    if [ -n "$GITHUB_ACTIONS" ]; then
+        echo "::warning title=Upstream $UPSTREAM changed::$(printf '%s\n' "$new" | grep -c .) commit(s) not in Guru-RF/$BRDEF; this image is built without them (see the job summary)"
+        [ -n "$GITHUB_STEP_SUMMARY" ] && printf '### Upstream %s changed\n\nNot in Guru-RF/%s, not in this image:\n\n```\n%s\n```\n' \
+            "$UPSTREAM" "$BRDEF" "$new" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    [ -n "$UPSTREAM_WORK" ] && printf '%s\n' "$UPSTREAM_WORK"
+    return 0
+}
+# Upstream's other branches ($1: its main branch's head, left out) whose newest commit is newer than this tree's
+# and not in it: UPSTREAM_WORK, and on GitHub a notice and the summary. Older ones (merged or left long ago) are
+# not named, or they would be at every build
+upstream_branches() {
+    local since sha ref work=""
+
+    GIT_TERMINAL_PROMPT=0 git -C $BR fetch -q --prune "https://github.com/$UPSTREAM" '+refs/heads/*:refs/upstream-watch/*' \
+        2>/dev/null || return 0
+    since=$(git -C $BR log -1 --format=%ct HEAD)
+    while read -r sha ref; do
+        [ "$sha" = "$1" ] && continue
+        [ "$(git -C $BR log -1 --format=%ct $sha)" -gt "$since" ] || continue
+        git -C $BR merge-base --is-ancestor $sha HEAD 2>/dev/null && continue
+        work="$work$(git -C $BR log -1 --format="${ref#refs/upstream-watch/}, %cs, %an: %s" $sha)"$'\n'
+    done < <(git -C $BR for-each-ref --format='%(objectname) %(refname)' refs/upstream-watch/)
+    [ -n "$work" ] || return 0
+    UPSTREAM_WORK=$(printf '%s\n' "== Upstream $UPSTREAM: work on other branches, newer than this tree and not in it:" \
+        "$(printf '%s' "$work" | sed 's/^/     /')")
+    if [ -n "$GITHUB_ACTIONS" ]; then
+        echo "::notice title=Upstream $UPSTREAM: work on other branches::$(printf '%s' "$work" | grep -c .) branch(es) newer than Guru-RF/$BRDEF (see the job summary)"
+        [ -n "$GITHUB_STEP_SUMMARY" ] && printf '### Upstream %s: work on other branches\n\nNewer than Guru-RF/%s and not in it (pull requests on their way):\n\n```\n%s```\n' \
+            "$UPSTREAM" "$BRDEF" "$work" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    return 0
+}
+upstream_check
+
 echo "== $M: GUI package $GUI_PKG from $GUI"
 sed -i "s,^${GUI_VAR}_SITE = .*,${GUI_VAR}_SITE = $GUI,g" $GUI_MK
 sed -i "s,^${GUI_VAR}_SITE_METHOD = git,${GUI_VAR}_SITE_METHOD = local,g" $GUI_MK
@@ -135,6 +201,23 @@ rm -f $BOARD/rootfs-overlay/etc/init.d/S02update $BR/build/target/etc/init.d/S02
 if [ $MODEL = x6100 ]; then
     grep -q "rtl8723bu-wifi/Config.in" $EXT/Config.in || echo 'source "$BR2_EXTERNAL_X6100_PATH/package/rtl8723bu-wifi/Config.in"' >> $EXT/Config.in
     grep -q "^BR2_PACKAGE_RTL8723BU_WIFI=y" $DEFCONFIG || echo "BR2_PACKAGE_RTL8723BU_WIFI=y" >> $DEFCONFIG
+    # U-Boot: mainline 2026.07 built from source with the same U-Boot defconfig (issue #21). Up to v0.3.5 the image
+    # had a 2025 binary written over the 2023.01 buildroot built: it switches the DRAM supply on in an order
+    # mainline put back in 2025.04 (1dadb246a3) because it hung boards of this family at the kernel start, and a
+    # radio of #21 stopped there with our card and started with IU1WXY's v0.131, whose U-Boot 2026.07 is the only
+    # real difference (same kernel, same device tree). The dtsi adds U-Boot's own nodes
+    sed -i 's/^BR2_TARGET_UBOOT_CUSTOM_VERSION_VALUE=.*/BR2_TARGET_UBOOT_CUSTOM_VERSION_VALUE="2026.07"/' $DEFCONFIG
+    grep -q "^BR2_TARGET_UBOOT_NEEDS_PYTHON3=y" $DEFCONFIG || echo "BR2_TARGET_UBOOT_NEEDS_PYTHON3=y" >> $DEFCONFIG
+    sed -i 's|^\(BR2_TARGET_UBOOT_CUSTOM_DTS_PATH=".*/sun8i-r16-x6100\.dts\)"$|\1 $(BR2_EXTERNAL_X6100_PATH)/board/X6100/u-boot/sun8i-r16-x6100-u-boot.dtsi"|' $DEFCONFIG
+    cp $GUI/buildroot/br2_external/board/X6100/u-boot/sun8i-r16-x6100-u-boot.dtsi $EXT/board/X6100/u-boot/
+    # buildroot 2023.02 copies COPYING over Licenses/gpl-2.0.txt for U-Boot before 2013.10; in 2026.07 COPYING is a
+    # link to that file and the copy fails the extraction
+    sed -i 's#if \[ -f \$(@D)/COPYING \]; then#if [ -f $(@D)/COPYING ] \&\& [ ! -L $(@D)/COPYING ]; then#' $BR/buildroot/boot/uboot/uboot.mk
+    # and builds mkeficapsule (EFI capsules, which the radio does not use) with the build host's gnutls, which the
+    # container has not: a host tool only, the U-Boot binary is the same without it
+    grep -q "CONFIG_TOOLS_MKEFICAPSULE" $EXT/board/X6100/u-boot/sun8i-r16-x6100_defconfig \
+        || echo "# CONFIG_TOOLS_MKEFICAPSULE is not set" >> $EXT/board/X6100/u-boot/sun8i-r16-x6100_defconfig
+    grep -E "^BR2_TARGET_UBOOT_(CUSTOM_VERSION_VALUE|NEEDS_PYTHON3|CUSTOM_DTS_PATH)" $DEFCONFIG
 fi
 grep -q "^BR2_ROOTFS_DEVICE_TABLE=" $DEFCONFIG || echo "BR2_ROOTFS_DEVICE_TABLE=\"system/device_table.txt \$(BR2_EXTERNAL_${M}_PATH)/board/$M/linux/device_table.txt\"" >> $DEFCONFIG
 for o in CONFIG_USB_NET_RNDIS_HOST=m CONFIG_IP_ADVANCED_ROUTER=y CONFIG_IP_MULTIPLE_TABLES=y; do
@@ -152,6 +235,14 @@ cd $BR && bash ./br_config.sh
 
 echo "== Build"
 cd $BR/build
+if [ $MODEL = x6100 ]; then
+    # A U-Boot configured here before its defconfig turned mkeficapsule off is configured again
+    grep -qs "^CONFIG_TOOLS_MKEFICAPSULE=y" $BR/build/build/uboot-2026.07/.config && make uboot-dirclean
+    # buildroot checks no hash for a U-Boot version of one's own: this one is the release's
+    # (ftp.denx.de, the same file as in IU1WXY's v0.131 sources)
+    make uboot-source
+    echo "78e8bfc382fe388f9b55aa1daf8c563522a037779b5d4c349d1415e381f1243e  $BR/buildroot/dl/uboot/u-boot-2026.07.tar.bz2" | sha256sum -c -
+fi
 make lame mpg123
 make libsndfile-dirclean
 # A package patched after an earlier build here is built again: buildroot applies patches at extraction only
@@ -231,10 +322,8 @@ KEYARG=""; [ -f "$KEY" ] && KEYARG="--key $KEY"
 python3 $GUI/tools/update/mkbundle.py --target $BR/build/target --manifest $(ls -d $BR/build/build/$GUI_PKG-*/install_manifest.txt | head -1) \
     --version $VER --model $MODEL --out $BR/build/images/$OUT-v$VER-update.tar.gz $KEYARG
 
-if [ $MODEL = x6100 ]; then
-    echo "== Our U-Boot over buildroot's, 8 KB into the card"
-    dd if=$GUI/u-boot/u-boot-sunxi-with-spl.bin of=$BR/build/images/sdcard.img seek=8K bs=1 conv=notrunc
-fi
 cp $BR/build/images/sdcard.img $BR/build/images/$OUT-local-sdcard.img
 ls -la $BR/build/images/$OUT-local-sdcard.img
+[ -n "$UPSTREAM_NOTE" ] && printf '%s\n' "$UPSTREAM_NOTE"     # again, after the long log
+[ -n "$UPSTREAM_WORK" ] && printf '%s\n' "$UPSTREAM_WORK"
 echo "== done"
