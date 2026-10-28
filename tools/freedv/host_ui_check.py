@@ -42,6 +42,27 @@ def screen_text(client, image_path, panel=False):
                     options = []
                     button_text = []
                     env = dict(os.environ, OMP_THREAD_LIMIT='1')
+                    if not panel:
+                        # Segment Settings' fixed header, navigation and two
+                        # content columns before OCR. Jammy's Tesseract 4
+                        # otherwise merges highlighted labels with unrelated
+                        # waterfall text and loses visible GENERAL/entry text.
+                        # Check the same literal labels on the actual screen;
+                        # neither input navigation nor expected text changes.
+                        from PIL import Image, ImageOps
+                        texts = []
+                        with Image.open(image_path) as full:
+                            regions = ((0, 60, 180, 116), (0, 118, 158, 416),
+                                       (160, 118, 480, 416), (480, 118, 795, 416))
+                            for i, box in enumerate(regions):
+                                crop = full.crop(box).convert('L')
+                                crop = ImageOps.autocontrast(crop.resize((crop.width * 3, crop.height * 3)))
+                                crop_path = image_path.with_name(image_path.stem + f'.region{i}.png')
+                                crop.save(crop_path)
+                                result = subprocess.run(['tesseract', str(crop_path), 'stdout', '--psm', '6'],
+                                                        capture_output=True, text=True, check=True, env=env, timeout=5)
+                                texts.append(result.stdout)
+                        return '\n'.join(texts).upper()
                     if panel:
                         # The diagnostic panel uses14px text beside the normal
                         # waterfall. Isolate and enlarge it; no label substitutions.
