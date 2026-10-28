@@ -8,6 +8,8 @@ No speaker, microphone, routing or physical PTT qualification is claimed here.
 See [short validation implementation status](short-validation-development.md)
 for the completed runner/playback work and development checks. The firmware's
 real session backend and integrated audio test controls remain outstanding.
+The [short codec radio guide](short-validation-radio-test.md) runs the five
+remaining file-only cases with the existing SDK package and one result export.
 
 The user's direction is to finish the remaining validation promptly and show
 usable native voice, while shortening audio runs. Keep the remaining codec,
