@@ -6,8 +6,23 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include <string.h>
 static void pause10(void) { struct timespec t={0,10000000}; nanosleep(&t,NULL); }
-int main(void) {
+static uint64_t monotonic_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000; }
+static void drain_correctness(fd_rade_stream *s,uint64_t generation,int16_t *output,uint64_t *delivered) {
+    uint64_t deadline=monotonic_ms()+60000;
+    for (;;) {
+        *delivered+=fd_stream_receive(s,generation,output,4410);
+        fd_stream_stats stats=fd_stream_observe(s);
+        assert(!stats.failures);
+        if(!stats.input_depth && stats.rendered_blocks==stats.blocks) return;
+        assert(monotonic_ms()<deadline);
+        struct timespec t={0,1000000}; nanosleep(&t,NULL);
+    }
+}
+int main(int argc,char **argv) {
+    bool unpaced=argc==2 && !strcmp(argv[1],"--unpaced");
+    assert(argc==1 || unpaced);
     int16_t input[441],output[4410];
     for (int i=0;i<441;++i) input[i]=(short)(8000*sin(i*0.13));
     for (unsigned turn=1;turn<=4;++turn) {
@@ -22,10 +37,16 @@ int main(void) {
             else for(int j=0;j<441;++j) input[j]=(short)(8000*sin((i*441+j)*0.13));
             assert(fd_stream_submit(s,turn,input,441)==441);
             delivered+=fd_stream_receive(s,turn,output,4410);
-            pause10();
+            if(unpaced)drain_correctness(s,turn,output,&delivered);else pause10();
             assert(!fd_stream_observe(s).failures);
         }
-        for(int i=0;i<30;++i) { delivered+=fd_stream_receive(s,turn,output,4410); pause10(); }
+        if(direction==FD_STREAM_TX)assert(fd_stream_finish_tx(s));
+        for(int i=0;i<(unpaced?5:30);++i) { delivered+=fd_stream_receive(s,turn,output,4410); pause10(); }
+        if(direction==FD_STREAM_TX) {
+            uint64_t deadline=monotonic_ms()+60000;
+            while(!fd_stream_tx_finished(s)){delivered+=fd_stream_receive(s,turn,output,4410);assert(!fd_stream_observe(s).failures);assert(monotonic_ms()<deadline);pause10();}
+            delivered+=fd_stream_receive(s,turn,output,4410);
+        }
         fd_stream_stats stats=fd_stream_observe(s);
         assert(stats.blocks>10 && !stats.failures && stats.feature_max_depth<=2);
         if(direction==FD_STREAM_TX) assert(delivered>44100);

@@ -39,6 +39,7 @@ int main(void) {
 #endif
     }
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
+    registers[x6200_voxg_voxag_voxdly_voxe] = (1u << 26) | 0x12345u;
     registers[x6200_micsel_pttmode_chge_spmode_auxiqgen_sqlthr] = (1u << 5) | 2u | (0x55u << 8);
     registers[x6200_ling_loutg_imicg_hmicg] = 0x44332211u;
     registers[x6200_rxvol] = 79;
@@ -53,6 +54,8 @@ int main(void) {
     hw_freedv_cached_snapshot_t s;
     assert(!hw_get_freedv_cached_snapshot(NULL));
     assert(hw_get_freedv_cached_snapshot(&s));
+    assert(s.vox_enabled);
+    assert(s.protected_route_bits == (s.shared_route_bits & ~(x6200_voice_rec | x6200_modem_trx | x6200_iptt)));
     assert(s.microphone == 2 && s.speaker_mode == 1 && s.hand_mic_gain == 0x44 && s.internal_mic_gain == 0x33);
     assert(s.line_in == 0x11 && s.line_out == 0x22 && s.speaker_level == 79 && s.monitor_level == 75);
     assert(s.requested_power_tenths_watt == 10 && s.active_vfo == 1);

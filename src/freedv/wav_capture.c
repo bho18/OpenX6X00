@@ -17,13 +17,13 @@ static void put32(unsigned char *p, uint32_t value) {
     p[2] = (unsigned char)(value >> 16);
     p[3] = (unsigned char)(value >> 24);
 }
-static bool wav_header(FILE *file, uint32_t data_bytes) {
+static bool wav_header(FILE *file, uint32_t data_bytes, unsigned channels) {
     unsigned char header[44] = {0};
     memcpy(header, "RIFF", 4); put32(header + 4, 36u + data_bytes);
     memcpy(header + 8, "WAVEfmt ", 8); put32(header + 16, 16);
-    put16(header + 20, 1); put16(header + 22, 1); /* signed PCM mono */
-    put32(header + 24, AUDIO_CAPTURE_RATE); put32(header + 28, AUDIO_CAPTURE_RATE * 2);
-    put16(header + 32, 2); put16(header + 34, 16);
+    put16(header + 20, 1); put16(header + 22, channels); /* signed PCM mono */
+    put32(header + 24, AUDIO_CAPTURE_RATE); put32(header + 28, AUDIO_CAPTURE_RATE * 2 * channels);
+    put16(header + 32, 2 * channels); put16(header + 34, 16);
     memcpy(header + 36, "data", 4); put32(header + 40, data_bytes);
     return fwrite(header, 1, sizeof(header), file) == sizeof(header);
 }
@@ -57,13 +57,17 @@ static void *wav_worker(void *arg) {
         }
         size_t count = capture->source.read(capture->source.context, samples, 4096);
         if (count) {
+            size_t written = count;
+            if (capture->max_samples && capture->samples + written > capture->max_samples)
+                written = (size_t)(capture->max_samples - capture->samples);
+            capture->discarded_samples += count - written;
             /* RIFF's 32-bit size includes 36 bytes beyond the sample payload. */
-            if (capture->samples + count > (UINT32_MAX - 36u) / 2u ||
-                !write_samples(capture->file, samples, count)) {
+            if (capture->samples + written > (UINT32_MAX - 36u) / 2u ||
+                (written && !write_samples(capture->file, samples, written))) {
                 fail(capture, FREEDV_WAV_IO_ERROR);
                 break;
             }
-            capture->samples += count;
+            capture->samples += written;
         } else if (atomic_load_explicit(&capture->stop_requested, memory_order_acquire)) {
             /* The producer was stopped before stop_requested was published;
              * take a final snapshot so a last callback error is not missed. */
@@ -75,7 +79,7 @@ static void *wav_worker(void *arg) {
         }
     }
     /* Capture failures retain the safely written prefix for inspection. */
-    if (fseek(capture->file, 0, SEEK_SET) || !wav_header(capture->file, (uint32_t)(capture->samples * 2)) ||
+    if (fseek(capture->file, 0, SEEK_SET) || !wav_header(capture->file, (uint32_t)(capture->samples * 2), capture->source.channels ? capture->source.channels : 1) ||
         fflush(capture->file)) fail(capture, FREEDV_WAV_IO_ERROR);
     if (fclose(capture->file)) fail(capture, FREEDV_WAV_IO_ERROR);
     capture->file = NULL;
@@ -95,6 +99,7 @@ static bool start(freedv_wav_capture *capture, const char *path,
     if (source) capture->source = *source;
     capture->error = FREEDV_WAV_OK;
     capture->samples = 0;
+    capture->discarded_samples = 0;
     capture->capture_stats = (audio_freedv_capture_stats_t){0};
     atomic_store_explicit(&capture->stop_requested, false, memory_order_relaxed);
     capture->failure = failure;
@@ -103,7 +108,7 @@ static bool start(freedv_wav_capture *capture, const char *path,
     if (fd < 0) return false;
     capture->file = fdopen(fd, "wb");
     if (!capture->file) { close(fd); return false; }
-    if (!wav_header(capture->file, 0)) { fclose(capture->file); capture->file = NULL; return false; }
+    if (!wav_header(capture->file, 0, capture->source.channels ? capture->source.channels : 1)) { fclose(capture->file); capture->file = NULL; return false; }
     if (capture->owns_capture && !audio_freedv_capture_begin()) { fclose(capture->file); capture->file = NULL; return false; }
     if (pthread_create(&capture->worker, NULL, wav_worker, capture)) {
         if (capture->owns_capture) audio_freedv_capture_end();
@@ -139,6 +144,6 @@ bool freedv_wav_capture_start(freedv_wav_capture *capture, const char *path,
 bool freedv_wav_capture_start_source(freedv_wav_capture *capture, const char *path,
                                      freedv_wav_failure_fn failure, void *context,
                                      const freedv_wav_source *source) {
-    if (!source || !source->read || !source->stats) return false;
+    if (!source || !source->read || !source->stats || source->channels > 2) return false;
     return start(capture, path, failure, context, source);
 }

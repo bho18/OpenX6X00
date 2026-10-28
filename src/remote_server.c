@@ -539,8 +539,13 @@ static void emit(int fd, uint16_t type, uint16_t code, int32_t value) {
     if (write(fd, ev, sizeof(ev)) < 0) {}
 }
 
+typedef struct { bool down; unsigned generation; } remote_power_event;
 static void power_cb(void *arg) {
-    keypad_power_set(*(bool *)arg);
+    remote_power_event *event = arg;
+    unsigned generation;
+    if (!ctl_remote_input_begin(&generation)) return;
+    if (generation == event->generation) keypad_power_set(event->down);
+    ctl_remote_input_end();
 }
 
 /* The POWER key where there is no device for it (the X6200), as radio.c posts the base's: told until its job is
@@ -548,24 +553,40 @@ static void power_cb(void *arg) {
  * powered the radio off: a click became a power-off. power_told: what the GUI was told; the server loop tries
  * again. A press that cannot go in and is let go before there is room is not told at all. Socket thread */
 static bool power_down, power_told;
-
-static void power_post(void) {
-    if (power_down != power_told) {
-        bool down = power_down;
-
-        if (scheduler_put_urgent(power_cb, &down, sizeof(down)))
-            power_told = down;
+static unsigned power_generation;
+/* Called only under the remote-input admission lock. A fence invalidates both
+ * queued GUI power jobs and server-side retries of pre-fence power requests. */
+static void power_generation_sync(unsigned generation) {
+    if (power_generation != generation) {
+        power_generation = generation;
+        power_down = power_told = false;
     }
 }
-
+static void power_post_locked(unsigned generation) {
+    power_generation_sync(generation);
+    if (power_down != power_told) {
+        remote_power_event event = {.down=power_down, .generation=generation};
+        if (scheduler_put_urgent(power_cb, &event, sizeof(event))) power_told = power_down;
+    }
+}
+static void power_post(void) {
+    unsigned generation;
+    if (!ctl_remote_input_begin(&generation)) return;
+    power_post_locked(generation);
+    ctl_remote_input_end();
+}
 static void key_emit(uint16_t code, bool down) {
+    unsigned generation;
+    if (!ctl_remote_input_begin(&generation)) return;
+    power_generation_sync(generation);
     ctl_injected();
     if (code == KEY_POWER && dev_power < 0) {
         power_down = down;
-        power_post();
-        return;
+        power_post_locked(generation);
+    } else {
+        emit(code == KEY_POWER ? dev_power : dev_keypad, EV_KEY, code, down ? 1 : 0);
     }
-    emit(code == KEY_POWER ? dev_power : dev_keypad, EV_KEY, code, down ? 1 : 0);
+    ctl_remote_input_end();
 }
 
 static int key_code(const char *name) {
@@ -591,9 +612,13 @@ static bool knob_emit(const char *name, int n) {
         return false;
     if (n > 50) n = 50;
     if (n < -50) n = -50;
+    unsigned generation;
+    if (!ctl_remote_input_begin(&generation)) return false;
+    (void)generation;
     ctl_injected();
     for (int i = 0; i < abs(n); i++)
         emit(fd, EV_REL, axis, n > 0 ? dir : -dir);
+    ctl_remote_input_end();
     return true;
 }
 

@@ -6,7 +6,17 @@ if(ENABLE_FREEDV_DIAGNOSTICS)
     target_sources(${PROJECT_NAME} PRIVATE freedv/capture_ring.c freedv/capture_dispatch.c)
     target_sources(${PROJECT_NAME} PRIVATE freedv/packet_tx.c)
     target_sources(${PROJECT_NAME} PRIVATE freedv/watchdog.c)
-    target_sources(${PROJECT_NAME} PRIVATE freedv/wav_capture.c)
+    target_sources(${PROJECT_NAME} PRIVATE freedv/wav_capture.c freedv/native_audio.c freedv/diagnostics.c
+        ../tools/freedv/session_controller.c)
+    target_link_libraries(${PROJECT_NAME} PRIVATE freedv_diagnostic_state)
+endif()
+if(ENABLE_FREEDV_NATIVE_CODEC)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_FREEDV_NATIVE_CODEC=1)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${FREEDV_SAMPLERATE_INCLUDE_DIR})
+    target_link_libraries(${PROJECT_NAME} PRIVATE freedv_native_codec)
+    get_filename_component(FREEDV_RADE_LIBRARY_DIR ${FREEDV_RADE_LIBRARY} DIRECTORY)
+    set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY BUILD_RPATH ${FREEDV_RADE_LIBRARY_DIR} /opt/freedv-benchmark/lib)
+    set_property(TARGET ${PROJECT_NAME} PROPERTY INSTALL_RPATH /opt/freedv-benchmark/lib)
 endif()
 
 target_sources(${PROJECT_NAME} PUBLIC

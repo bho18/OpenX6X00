@@ -16,6 +16,9 @@
 /* The MFK knob */
 typedef struct {
     int            fd;
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    unsigned       diagnostic_generation;
+#endif
     bool           pressed;         /* set by the buttons' device */
     lv_indev_drv_t indev_drv;
     lv_indev_t    *indev;
@@ -23,3 +26,8 @@ typedef struct {
 
 /* Open the MFK's /dev/input/eventN; NULL if it cannot */
 encoder_t *encoder_init(char *dev_name);
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool encoder_diagnostic_reset(void);
+bool encoder_diagnostic_local_event(lv_indev_t *input, unsigned generation);
+#endif

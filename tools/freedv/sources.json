@@ -90,6 +90,11 @@
     "patch_sha256": {
       "tools/freedv/patches/rade-acq-neon.patch": "767652147fdb8c59e8ca124075ec6e4f05ed5a5cd7e456d925eae2d0379c5c6b",
       "tools/freedv/patches/rade-acq-parallel.patch": "4343c892e60199677fe363940f144566229c14dd77c79bab14f1e9a1c1fe4ef3"
-    }
+    },
+    "implementation": "guarded in-process radio/audio diagnostics; automated image gates required",
+    "sdk_archive_sha256": "bc253744032e1acfbb219fb22d07d3ec8024269da84dc02404048fc365a0b528",
+    "baseline_image_sha256": "a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab",
+    "baseline_artifact_id": 12701486870,
+    "baseline_artifact_sha256": "0fdfdd2bc9f67cda6137a8adb8e60e829b2055db2506f1184cf8c3b924311b01"
   }
 }

@@ -10,6 +10,7 @@
  * found at start and again whenever a USB device comes or goes. */
 
 #include "key_input.h"
+#include "freedv/input_drain.h"
 
 #include "cw_encoder.h"
 #include "cw_field.h"
@@ -201,3 +202,10 @@ void keyboard_init() {
 bool keyboard_ready() {
     return ready;
 }
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool keyboard_diagnostic_reset(void) {
+    kbd_keys = (kbd_keys_t){0};
+    return !ready || fd_diagnostic_drain_input(evdev_fd);
+}
+#endif

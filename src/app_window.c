@@ -7,6 +7,7 @@
  */
 
 #include "app_window.h"
+#include "freedv/writer_gate.h"
 #include "board.h"
 #include "theme.h"
 #include "gui_styles.h"
@@ -21,6 +22,12 @@
 
 #include <stdio.h>
 #include <string.h>
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include <stdatomic.h>
+#include "settings_window.h"
+static atomic_bool diagnostic_busy;
+bool dialog_diagnostic_busy(void) { return atomic_load_explicit(&diagnostic_busy,memory_order_acquire); }
+#endif
 
 #define APP_FREQS BOARD_DATA "/app_freqs"   /* "<app> <freq> <mode>" a line */
 
@@ -77,6 +84,7 @@ void app_mem_save(const char *name) {
 }
 
 void dialog_app_memory(const char *name) {
+    FD_WRITE_GUARD(return);
     snprintf(app_name, sizeof(app_name), "%s", name);
 }
 
@@ -116,10 +124,14 @@ static void open_window(dialog_t *d, lv_obj_t *parent) {
 }
 
 void dialog_construct(dialog_t *dialog, lv_obj_t *parent) {
+    FD_WRITE_GUARD(return);
     if (dialog && !dialog->run) {
         open_window(dialog, parent);
     }
     shown = dialog;
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    atomic_store_explicit(&diagnostic_busy,dialog && dialog->run && dialog!=dialog_settings,memory_order_release);
+#endif
 }
 
 static void close_window(dialog_t *d) {
@@ -163,6 +175,7 @@ static void close_window(dialog_t *d) {
 }
 
 void dialog_destruct() {
+    FD_WRITE_GUARD(return);
     freq_strip_set_app(NULL);
     if (dialog_is_run()) {
         close_window(shown);
@@ -174,6 +187,9 @@ void dialog_destruct() {
         }
         mode_back = -1;
     }
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    atomic_store_explicit(&diagnostic_busy,false,memory_order_release);
+#endif
 }
 
 void dialog_send(lv_event_code_t event_code, void *param) {

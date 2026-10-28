@@ -16,6 +16,7 @@
  */
 
 #include "cfg_socket.h"
+#include "freedv/writer_gate.h"
 
 #include "cfg/settings_manager.h"
 #include "cfg/settings_manager_api.h"
@@ -118,6 +119,7 @@ static bool get_int(cJSON *req, int32_t min, int32_t max, int32_t *out) {
 
 /* LVGL thread */
 static void disp_apply(void *arg) {
+    FD_WRITE_GUARD(return);
     disp_set_t *d = (disp_set_t *)arg;
 
     for (auto &o : disp_ints)
@@ -273,6 +275,7 @@ static const char *eth_set(cJSON *req, eth_cfg_t *cfg) {
 }
 
 static void eth_apply_cb(void *arg) {
+    FD_WRITE_GUARD(return);
     eth_apply((eth_cfg_t *)arg);
 }
 

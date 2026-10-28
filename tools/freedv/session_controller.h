@@ -18,7 +18,7 @@ typedef struct {
      * states. An incomplete snapshot or stale packet must fail acquisition.
      * A failed acquire must leave no ownership or route changes behind. */
     bool (*acquire_snapshot)(void *ctx, bool *commands_quiescent, fd_observation *observation);
-    void (*release)(void *ctx);
+    bool (*release)(void *ctx); /* failure retains ownership/state for retry */
     bool (*observe)(void *ctx, fd_observation *observation);
     bool (*tx_permitted)(void *ctx);
     /* Case kind is explicit: passive never changes routing or plays audio;
@@ -35,6 +35,8 @@ typedef struct {
      * server has acknowledged cancellation. False must retain session ownership. */
     bool (*audio_quiescent)(void *ctx);
     bool (*restore_if_safe)(void *ctx, uint64_t clear_sequence);
+    /* Optional, bounded cached source of the just-failed observe callback. */
+    fd_stop_reason (*abort_reason)(void *ctx);
 } fd_controller_backend;
 
 typedef struct {
@@ -78,3 +80,8 @@ bool fd_controller_select_rx_playback(fd_controller *c, fd_matrix_case route);
 bool fd_controller_select_mic_tx(fd_controller *c, fd_matrix_case route);
 /* Thread-safe status copy for GUI/export. */
 bool fd_controller_status(fd_controller *c, fd_session *status);
+
+bool fd_controller_begin_prepare(fd_controller *);
+bool fd_controller_finish_prepare(fd_controller *);
+
+bool fd_controller_stop_with_reason(fd_controller *, fd_stop_reason);

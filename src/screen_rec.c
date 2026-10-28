@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include "freedv/writer_gate.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
@@ -86,7 +87,7 @@ static size_t           ring_r, ring_w;
 
 /* LVGL thread only */
 static uint8_t          *shadow;
-static bool             active;
+static atomic_bool      active;
 static lv_timer_t       *timer;
 static lv_obj_t         *label;
 static int              shown = -1;

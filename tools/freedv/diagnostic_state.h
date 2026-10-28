@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef enum { FD_IDLE, FD_READY, FD_ARMED, FD_RUNNING, FD_WAIT_RX, FD_RESTORE } fd_state;
+typedef enum { FD_IDLE, FD_READY, FD_ARMED, FD_RUNNING, FD_WAIT_RX, FD_RESTORE, FD_PREPARING } fd_state;
 /* Bits are RECORD, MODEM, software PTT, in that order. Every combination is
  * potentially keyed and therefore needs local arming before execution. */
 typedef enum {
@@ -21,12 +21,19 @@ typedef struct {
     fd_case_kind kind;
     int matrix_case; /* -1 only for passive; otherwise 0..7 */
 } fd_case;
+typedef enum {
+    FD_STOP_NONE, FD_STOP_OPERATOR, FD_STOP_CLOSE, FD_STOP_TIMEOUT, FD_STOP_TIMER_ERROR,
+    FD_STOP_OBSERVATION, FD_STOP_UNEXPECTED_TX, FD_STOP_AUDIO, FD_STOP_NATURAL, FD_STOP_START_FAILED,
+    FD_STOP_PREPARATION_FAILED, FD_STOP_EVIDENCE
+} fd_stop_reason;
 typedef struct {
     fd_state state;
+    fd_stop_reason stop_reason; /* first cause, retained through restoration */
     bool tx_case;
     fd_case selected_case;
     uint8_t qualified_rx_routes; /* session-only, cleared on acquire/release */
     bool selected;
+    bool resources_prepared;
     bool software_cleared;
     int matrix_case; /* -1 for passive receive only */
     uint64_t deadline_ms;
@@ -62,3 +69,6 @@ bool fd_release(fd_session *s);
  * completed probe and explicit local operator confirmation before qualification. */
 bool fd_select_rx_playback(fd_session *s, fd_matrix_case route);
 bool fd_select_mic_tx(fd_session *s, fd_matrix_case route);
+
+bool fd_begin_prepare(fd_session *);
+bool fd_finish_prepare(fd_session *, fd_observation);

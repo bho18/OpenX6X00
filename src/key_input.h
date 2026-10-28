@@ -40,3 +40,7 @@ void keyboard_init();
 
 /* A keyboard is plugged in and open */
 bool keyboard_ready();
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool keyboard_diagnostic_reset(void);
+#endif

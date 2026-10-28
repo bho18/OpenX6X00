@@ -9,8 +9,10 @@ bool fd_acquire(fd_session *s, bool busy, bool commands_quiescent, fd_observatio
     if (!s || s->state != FD_IDLE || busy || !commands_quiescent || !observed_rx(observed)) return false;
     s->state = FD_READY;
     s->qualified_rx_routes = 0;
+    s->stop_reason = FD_STOP_NONE;
     s->tx_case = false;
     s->selected = false;
+    s->resources_prepared = false;
     s->software_cleared = false;
     s->matrix_case = -1;
     s->deadline_ms = 0;
@@ -18,7 +20,7 @@ bool fd_acquire(fd_session *s, bool busy, bool commands_quiescent, fd_observatio
     return true;
 }
 bool fd_select_passive_rx(fd_session *s) {
-    if (!s || s->state != FD_READY) return false;
+    if (!s || s->state != FD_READY || s->resources_prepared) return false;
     s->tx_case = false;
     s->selected = true;
     s->matrix_case = -1;
@@ -26,7 +28,7 @@ bool fd_select_passive_rx(fd_session *s) {
     return true;
 }
 bool fd_select_matrix(fd_session *s, fd_matrix_case selected) {
-    if (!s || s->state != FD_READY || (int)selected < 0 || selected > FD_R1_M1_P1) return false;
+    if (!s || s->state != FD_READY || s->resources_prepared || (int)selected < 0 || selected > FD_R1_M1_P1) return false;
     s->tx_case = true;
     s->selected = true;
     s->matrix_case = (int)selected;
@@ -49,12 +51,13 @@ bool fd_run(fd_session *s, uint64_t now_ms, bool tx_permitted, fd_observation ob
     if (!s || !s->selected || (s->tx_case ? s->state != FD_ARMED : s->state != FD_READY) ||
         !observed_rx(observed) || (s->tx_case && !tx_permitted)) return false;
     if (s->tx_case && now_ms > UINT64_MAX - 10000) return false;
+    s->stop_reason = FD_STOP_NONE;
     s->deadline_ms = s->tx_case ? now_ms + 10000 : 0;
     s->state = FD_RUNNING;
     return true;
 }
 bool fd_stop(fd_session *s) {
-    if (!s || (s->state != FD_RUNNING && s->state != FD_ARMED)) return false;
+    if (!s || (s->state != FD_RUNNING && s->state != FD_ARMED && s->state != FD_PREPARING && !(s->state == FD_READY && s->resources_prepared))) return false;
     s->state = FD_WAIT_RX;
     s->deadline_ms = 0;
     s->software_cleared = false;
@@ -81,19 +84,20 @@ bool fd_restored(fd_session *s) {
     s->state = FD_READY;
     s->tx_case = false;
     s->selected = false;
+    s->resources_prepared = false;
     s->matrix_case = -1;
     s->software_cleared = false;
     return true;
 }
 bool fd_release(fd_session *s) {
-    if (!s || s->state != FD_READY) return false;
+    if (!s || s->state != FD_READY || s->resources_prepared) return false;
     s->state = FD_IDLE;
     s->qualified_rx_routes = 0;
     return true;
 }
 
 bool fd_select_rx_playback(fd_session *s, fd_matrix_case route) {
-    if (!s || s->state != FD_READY || (unsigned)route > 7 ||
+    if (!s || s->state != FD_READY || s->resources_prepared || (unsigned)route > 7 ||
         !(s->qualified_rx_routes & (1u << route))) return false;
     s->selected_case = (fd_case){FD_CASE_RX_PLAYBACK, (int)route};
     s->matrix_case = route;
@@ -104,5 +108,18 @@ bool fd_select_rx_playback(fd_session *s, fd_matrix_case route) {
 bool fd_select_mic_tx(fd_session *s, fd_matrix_case route) {
     if (!fd_select_matrix(s, route)) return false;
     s->selected_case.kind = FD_CASE_MIC_TX;
+    return true;
+}
+
+bool fd_begin_prepare(fd_session *s) {
+    if (!s || s->state != FD_READY || !s->selected || s->resources_prepared) return false;
+    s->resources_prepared = true;
+    s->stop_reason = FD_STOP_NONE;
+    s->state = FD_PREPARING;
+    return true;
+}
+bool fd_finish_prepare(fd_session *s, fd_observation observed) {
+    if (!s || s->state != FD_PREPARING || !observed_rx(observed)) return false;
+    s->state = FD_READY;
     return true;
 }

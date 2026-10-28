@@ -13,6 +13,7 @@
 
 #include "screen_light.h"
 #include "key_input.h"
+#include "freedv/input_drain.h"
 
 #include <fcntl.h>
 #include <linux/input.h>
@@ -20,6 +21,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static encoder_t *diagnostic_encoder;
+#endif
 static void mfk_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     encoder_t         *knob = drv->user_data;
     struct input_event in;
@@ -58,6 +62,9 @@ encoder_t *encoder_init(char *dev_name) {
 
     encoder_t *knob = calloc(1, sizeof(*knob));
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    diagnostic_encoder = knob;
+#endif
     knob->fd = fd;
     lv_indev_drv_init(&knob->indev_drv);
     knob->indev_drv.type      = LV_INDEV_TYPE_ENCODER;
@@ -67,3 +74,16 @@ encoder_t *encoder_init(char *dev_name) {
     lv_indev_set_group(knob->indev, keyboard_group);
     return knob;
 }
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool encoder_diagnostic_reset(void) {
+    if (!diagnostic_encoder) return true;
+    diagnostic_encoder->pressed = false;
+    diagnostic_encoder->diagnostic_generation = 0;
+    return fd_diagnostic_drain_input(diagnostic_encoder->fd);
+}
+bool encoder_diagnostic_local_event(lv_indev_t *input, unsigned generation) {
+    return diagnostic_encoder && diagnostic_encoder->indev == input &&
+        diagnostic_encoder->diagnostic_generation == generation;
+}
+#endif

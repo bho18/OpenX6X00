@@ -229,7 +229,9 @@ bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *s) {
     *s = (hw_freedv_cached_snapshot_t){
         .route = {(route & x6200_voice_rec) != 0, (route & x6200_modem_trx) != 0, (route & x6200_iptt) != 0},
         .raw_route_bits_available = true,
+        .vox_enabled = (x6200_control_get(x6200_voxg_voxag_voxdly_voxe) & (1u << 26)) != 0,
         .shared_route_bits = route,
+        .protected_route_bits = route & ~(x6200_voice_rec | x6200_modem_trx | x6200_iptt),
         .microphone = (uint8_t)(mic & 3u),
         .hand_mic_gain = (uint8_t)(gains >> 24),
         .internal_mic_gain = (uint8_t)(gains >> 16),

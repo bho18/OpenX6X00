@@ -16,11 +16,15 @@ static bool clear_locked(fd_controller *c) {
     if (!c->backend.quiesce(c->context, &sequence)) return false;
     return fd_commands_cleared(&c->state, sequence);
 }
+static bool stop_locked(fd_controller *c, fd_stop_reason reason) {
+    if (!fd_stop(&c->state)) return false;
+    if (c->state.stop_reason == FD_STOP_NONE) c->state.stop_reason = reason;
+    return true;
+}
 static void timeout_callback(void *context, freedv_watchdog_reason reason) {
-    (void)reason; /* both timeout and timer failure request the same safe stop */
     fd_controller *c = context;
     pthread_mutex_lock(&c->mutex);
-    if (fd_stop(&c->state)) (void)clear_locked(c);
+    if (stop_locked(c, reason == FREEDV_WATCHDOG_TIMEOUT ? FD_STOP_TIMEOUT : FD_STOP_TIMER_ERROR)) (void)clear_locked(c);
     pthread_mutex_unlock(&c->mutex);
 }
 static bool backend_valid(const fd_controller_backend *b) {
@@ -31,6 +35,7 @@ static bool backend_valid(const fd_controller_backend *b) {
  * and quiesce operations; no joins or file I/O are permitted under this lock. */
 static void *monitor_session(void *arg) {
     fd_controller *c = arg;
+    uint64_t retry_at_ms = 0;
     for (;;) {
         struct timespec delay = {0, 20000000};
         nanosleep(&delay, NULL);
@@ -44,11 +49,25 @@ static void *monitor_session(void *arg) {
                 if (!valid || o.tx) c->probe_unkeyed = false;
                 if (valid && o.sequence > c->probe_start_sequence) c->probe_observed = true;
             }
-            if ((!valid || (!c->state.tx_case && o.tx)) && fd_stop(&c->state)) {
+            fd_stop_reason reason = !valid ? FD_STOP_OBSERVATION : FD_STOP_UNEXPECTED_TX;
+            if (!valid && c->backend.abort_reason) {
+                fd_stop_reason cached = c->backend.abort_reason(c->context);
+                if (cached != FD_STOP_NONE) reason = cached;
+            }
+            if ((!valid || (!c->state.tx_case && o.tx)) && stop_locked(c, reason)) {
                 c->probe_unkeyed = false;
                 (void)clear_locked(c);
                 c->cancelling = cancel_timer = true;
             }
+        }
+        /* A failed bus clear must keep retrying even if the coordinator is
+         * blocked joining an audio/file worker. Do not restore or release here. */
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t now_ms = (uint64_t)now.tv_sec * 1000u + now.tv_nsec / 1000000u;
+        if (c->state.state == FD_WAIT_RX && !c->state.software_cleared && now_ms >= retry_at_ms) {
+            (void)clear_locked(c);
+            retry_at_ms = now_ms + 100;
         }
         pthread_mutex_unlock(&c->mutex);
         if (cancel_timer) {
@@ -90,7 +109,13 @@ bool fd_controller_acquire(fd_controller *c) {
             ok = fd_acquire(&c->state, false, quiescent, observed);
             c->completed_probe = -1;
         }
-        if (acquired && !ok) c->backend.release(c->context);
+        if (acquired && !ok && !c->backend.release(c->context)) {
+            /* A physical key can arrive during acquisition rollback. Keep the
+             * owner reachable until commands clear and a later RX restores it. */
+            c->state.state = FD_WAIT_RX;
+            c->state.software_cleared = false;
+            (void)clear_locked(c);
+        }
     }
     pthread_mutex_unlock(&c->mutex);
     return ok;
@@ -134,7 +159,7 @@ bool fd_controller_run(fd_controller *c, uint64_t now_ms, unsigned timeout_ms) {
          * have the unconditional ten-second upper bound above. */
         timer = freedv_watchdog_arm(&c->watchdog, timeout_ms);
         if (timer) ok = c->backend.start(c->context, &c->state.selected_case);
-        if (!ok && fd_stop(&c->state)) {
+        if (!ok && stop_locked(c, FD_STOP_START_FAILED)) {
             c->probe_unkeyed = false;
             (void)clear_locked(c);
             cancel_timer = timer;
@@ -152,14 +177,15 @@ bool fd_controller_run(fd_controller *c, uint64_t now_ms, unsigned timeout_ms) {
     }
     return ok;
 }
-bool fd_controller_stop(fd_controller *c) {
+bool fd_controller_stop_with_reason(fd_controller *c, fd_stop_reason reason) {
+    if (reason != FD_STOP_OPERATOR && reason != FD_STOP_CLOSE) return false;
     if (!c || !c->initialized) return false;
     pthread_mutex_lock(&c->mutex);
-    if (c->cancelling || (c->state.state != FD_RUNNING && c->state.state != FD_ARMED && c->state.state != FD_WAIT_RX)) {
+    if (c->cancelling || (c->state.state != FD_RUNNING && c->state.state != FD_ARMED && c->state.state != FD_PREPARING && c->state.state != FD_WAIT_RX && !(c->state.state == FD_READY && c->state.resources_prepared))) {
         pthread_mutex_unlock(&c->mutex);
         return false;
     }
-    if (c->state.state != FD_WAIT_RX) (void)fd_stop(&c->state);
+    if (c->state.state != FD_WAIT_RX) (void)stop_locked(c, reason);
     c->cancelling = true;
     pthread_mutex_unlock(&c->mutex);
     freedv_watchdog_cancel(&c->watchdog);
@@ -195,8 +221,16 @@ bool fd_controller_poll_restore(fd_controller *c) {
 bool fd_controller_release(fd_controller *c) {
     if (!c || !c->initialized) return false;
     pthread_mutex_lock(&c->mutex);
-    bool ok = !c->cancelling && fd_release(&c->state);
-    if (ok) c->backend.release(c->context);
+    bool ok = !c->cancelling && c->state.state == FD_READY && !c->state.resources_prepared;
+    if (ok) {
+        ok = c->backend.release(c->context);
+        if (!ok) {
+            c->state.state = FD_WAIT_RX;
+            c->state.software_cleared = false;
+            (void)clear_locked(c);
+        }
+    }
+    if (ok) ok = fd_release(&c->state);
     pthread_mutex_unlock(&c->mutex);
     return ok;
 }
@@ -245,3 +279,23 @@ bool fd_controller_status(fd_controller *c, fd_session *status) {
     pthread_mutex_unlock(&c->mutex);
     return true;
 }
+
+bool fd_controller_begin_prepare(fd_controller *c) {
+    if (!c || !c->initialized) return false;
+    pthread_mutex_lock(&c->mutex);
+    fd_observation o = {0};
+    bool ok = !c->cancelling && c->backend.observe(c->context, &o) && o.known && o.fresh && !o.tx && fd_begin_prepare(&c->state);
+    pthread_mutex_unlock(&c->mutex);
+    return ok;
+}
+bool fd_controller_finish_prepare(fd_controller *c) {
+    if (!c || !c->initialized) return false;
+    pthread_mutex_lock(&c->mutex);
+    fd_observation o = {0};
+    bool ok = c->backend.observe(c->context, &o) && fd_finish_prepare(&c->state, o);
+    if (!ok && stop_locked(c, FD_STOP_PREPARATION_FAILED)) (void)clear_locked(c);
+    pthread_mutex_unlock(&c->mutex);
+    return ok;
+}
+
+bool fd_controller_stop(fd_controller *c) { return fd_controller_stop_with_reason(c, FD_STOP_OPERATOR); }

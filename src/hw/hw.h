@@ -176,7 +176,9 @@ typedef struct {
     hw_commanded_audio_route_t route;
     bool raw_route_bits_available;
     uint32_t shared_route_bits;
+    uint32_t protected_route_bits; /* same word, excluding only RECORD/MODEM/software PTT */
     uint8_t microphone, hand_mic_gain, internal_mic_gain;
+    bool vox_enabled;
     uint8_t line_in, line_out, speaker_mode, speaker_level, monitor_level;
     uint8_t requested_power_tenths_watt, active_vfo;
     uint32_t vfo_a_hz, vfo_b_hz, backend_mode_a, backend_mode_b;
@@ -184,6 +186,46 @@ typedef struct {
 } hw_freedv_cached_snapshot_t;
 /* Caller holds the radio control lock. False means this backend is unsupported. */
 bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *snapshot);
+/* Exact cached comparison of unchanged tuning and unowned register bits. */
+static inline bool hw_freedv_tuning_matches(const hw_freedv_cached_snapshot_t *a,
+                                            const hw_freedv_cached_snapshot_t *b) {
+    return a && b && a->active_vfo == b->active_vfo && a->vfo_a_hz == b->vfo_a_hz &&
+        a->vfo_b_hz == b->vfo_b_hz && a->backend_mode_a == b->backend_mode_a &&
+        a->backend_mode_b == b->backend_mode_b && a->rx_filter_low_hz == b->rx_filter_low_hz &&
+        a->rx_filter_high_hz == b->rx_filter_high_hz &&
+        a->raw_route_bits_available == b->raw_route_bits_available &&
+        a->protected_route_bits == b->protected_route_bits;
+}
+static inline bool hw_freedv_snapshot_matches(const hw_freedv_cached_snapshot_t *a,
+                                              const hw_freedv_cached_snapshot_t *b) {
+    return hw_freedv_tuning_matches(a, b) && a->route.record == b->route.record &&
+        a->route.modem == b->route.modem && a->route.ptt == b->route.ptt &&
+        a->microphone == b->microphone && a->hand_mic_gain == b->hand_mic_gain &&
+        a->internal_mic_gain == b->internal_mic_gain && a->vox_enabled == b->vox_enabled &&
+        a->line_in == b->line_in && a->line_out == b->line_out &&
+        a->speaker_mode == b->speaker_mode && a->speaker_level == b->speaker_level &&
+        a->monitor_level == b->monitor_level &&
+        a->requested_power_tenths_watt == b->requested_power_tenths_watt;
+}
+/* Restore only fields the diagnostic owns. Caller has independently confirmed
+ * fresh post-clear RX and must separately check transport and cached readback.
+ * No full packed register is ever written back. */
+static inline void hw_freedv_restore_owned(const hw_freedv_cached_snapshot_t *s) {
+    hw_set_i(HW_MODEM, s->route.modem);
+    hw_set_i(HW_PTT, s->route.ptt);
+    hw_set_i(HW_MIC, s->microphone);
+    hw_set_i(HW_HMIC, s->hand_mic_gain);
+    hw_set_i(HW_IMIC, s->internal_mic_gain);
+    hw_set_i(HW_RECORD, s->route.record);
+    hw_set_i(HW_LINE_IN, s->line_in);
+    hw_set_i(HW_LINE_OUT, s->line_out);
+    hw_set_i(HW_SPMODE, s->speaker_mode);
+    hw_set_i(HW_RXVOL, s->speaker_level);
+    hw_set_i(HW_MONI, s->monitor_level);
+    hw_set_f(HW_TXPWR_F, s->requested_power_tenths_watt / 10.0f);
+    hw_set_i(HW_VOX, s->vox_enabled);
+}
+
 #endif
 
 /* The two VFOs. True when the value changed */

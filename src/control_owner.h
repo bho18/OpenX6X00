@@ -64,6 +64,23 @@ bool ctl_diagnostic_acquire(void);
 bool ctl_diagnostic_release(bool restoration_complete_and_rx_confirmed);
 #endif
 
+/* The remote key/knob writer holds this short critical section through the
+ * device write or enqueue. Diagnostic input fencing waits for all admitted
+ * writes, then drains their queues before local consent can be accepted. */
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool ctl_remote_input_begin(unsigned *generation);
+void ctl_remote_input_end(void);
+unsigned ctl_remote_input_generation(void);
+bool ctl_diagnostic_input_block(void);
+void ctl_diagnostic_input_unblock(void);
+bool ctl_diagnostic_input_blocked(void);
+#else
+static inline bool ctl_remote_input_begin(unsigned *generation) { if (generation) *generation = 0; return true; }
+static inline void ctl_remote_input_end(void) {}
+static inline unsigned ctl_remote_input_generation(void) { return 0; }
+static inline bool ctl_diagnostic_input_blocked(void) { return false; }
+#endif
+
 #ifdef __cplusplus
 }
 #endif

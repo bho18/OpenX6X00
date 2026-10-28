@@ -17,6 +17,9 @@
 #include "control_owner.h"
 #include "key_input.h"
 #include "main.h"
+#include "knob_device.h"
+#include "mfk_device.h"
+#include "freedv/input_drain.h"
 
 #include <fcntl.h>
 #include <linux/input.h>
@@ -61,6 +64,10 @@ static const struct {
 #define VOL_PRESS BTN_TRIGGER_HAPPY21
 #define MFK_PRESS BTN_TRIGGER_HAPPY27
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static keypad_t *diagnostic_pads[4];
+static unsigned diagnostic_pad_count;
+#endif
 static event_keypad_t cur;          /* sent by address: the receivers read it at once */
 static lv_timer_t    *hold_timer;
 static uint32_t       hold_ms = HOLD_MS;
@@ -117,6 +124,10 @@ static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
         data->continue_reading = true;
 
         if (in.type == EV_KEY) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+            if (in.value == 1 && ctl_diagnostic_input_blocked())
+                pad->diagnostic_generation = ctl_remote_input_generation();
+#endif
             if (in.value)
                 ctl_local_input();   /* a key at the radio: control is the operator's (unless injected) */
             if (backlight_tick() && in.value) {
@@ -127,7 +138,18 @@ static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
                     pad->evdev_state = LV_INDEV_STATE_PRESSED;
                 }
             } else if (in.code == MFK_PRESS) {
-                mfk->pressed = in.value != 0;
+                if (mfk) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+                    if (ctl_diagnostic_input_blocked()) {
+                        unsigned generation = ctl_remote_input_generation();
+                        if (in.value == 1) mfk->diagnostic_generation = generation;
+                        /* A repeat of a pre-fence held button is not a new
+                         * local consent press. A fresh press/release is needed. */
+                        mfk->pressed = in.value != 0 && mfk->diagnostic_generation == generation;
+                    } else
+#endif
+                        mfk->pressed = in.value != 0;
+                }
                 /* The encoder samples it at its next read: a quick press and release
                  * in the same pass would be lost */
                 data->continue_reading = false;
@@ -172,6 +194,12 @@ keypad_t *keypad_init(char *dev_name) {
 
     keypad_t *pad = calloc(1, sizeof(*pad));
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (diagnostic_pad_count == sizeof(diagnostic_pads)/sizeof(diagnostic_pads[0])) {
+        close(fd); free(pad); return NULL;
+    }
+    diagnostic_pads[diagnostic_pad_count++] = pad;
+#endif
     pad->fd          = fd;
     pad->evdev_state = LV_INDEV_STATE_RELEASED;
     lv_indev_drv_init(&pad->indev_drv);
@@ -183,3 +211,52 @@ keypad_t *keypad_init(char *dev_name) {
     lv_indev_set_group(pad->indev, keyboard_group);
     return pad;
 }
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static bool diagnostic_inputs_reset(void) {
+    bool ok = true;
+    if (hold_timer) { lv_timer_del(hold_timer); hold_timer = NULL; }
+    cur = (event_keypad_t){.key=KEYPAD_UNKNOWN, .state=KEYPAD_RELEASE};
+    for (unsigned i = 0; i < diagnostic_pad_count; ++i) {
+        keypad_t *pad = diagnostic_pads[i];
+        if (!fd_diagnostic_drain_input(pad->fd)) ok = false;
+        pad->evdev_key = 0;
+        pad->evdev_state = LV_INDEV_STATE_RELEASED;
+        pad->diagnostic_generation = 0;
+    }
+    if (!rotary_diagnostic_reset()) ok = false;
+    if (!encoder_diagnostic_reset()) ok = false;
+    if (!keyboard_diagnostic_reset()) ok = false;
+    for (lv_indev_t *input = lv_indev_get_next(NULL); input; input = lv_indev_get_next(input)) {
+        lv_indev_reset(input, NULL);
+        lv_indev_wait_release(input);
+    }
+    return ok;
+}
+bool front_keys_diagnostic_input_acquire(void) {
+    if (!ctl_diagnostic_input_block()) return false;
+    if (diagnostic_inputs_reset()) return true;
+    ctl_diagnostic_input_unblock();
+    return false;
+}
+void front_keys_diagnostic_input_release(void) {
+    if (!ctl_diagnostic_input_blocked()) return;
+    /* Drop any local half-press as well before ordinary controls resume. */
+    (void)diagnostic_inputs_reset();
+    ctl_diagnostic_input_unblock();
+}
+bool front_keys_diagnostic_local_event(void) {
+    if (!ctl_diagnostic_input_blocked()) return false;
+    lv_indev_t *input = lv_indev_get_act();
+    if (!input) return false;
+#ifdef HOST_BUILD
+    /* SDL mouse is local to the simulator; no real baseband is present. */
+    if (lv_indev_get_type(input) == LV_INDEV_TYPE_POINTER) return true;
+#endif
+    unsigned generation = ctl_remote_input_generation();
+    if (encoder_diagnostic_local_event(input, generation) || rotary_diagnostic_local_event(input, generation)) return true;
+    for (unsigned i = 0; i < diagnostic_pad_count; ++i)
+        if (diagnostic_pads[i]->indev == input && diagnostic_pads[i]->diagnostic_generation == generation) return true;
+    return false;
+}
+#endif

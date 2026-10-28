@@ -102,7 +102,14 @@ void ctl_injected(void) {
 }
 
 void ctl_local_input(void) {
-    if (now_ms() - atomic_load(&injected_ms) < INJECT_MS)
+    /* The diagnostic barrier already drained every admitted remote event and
+     * blocks all new ones. Fresh front input no longer needs the approximate
+     * legacy time heuristic to reclaim local ownership. */
+    if (
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        !ctl_diagnostic_input_blocked() &&
+#endif
+        now_ms() - atomic_load(&injected_ms) < INJECT_MS)
         return;
     pthread_mutex_lock(&mux);
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
@@ -138,5 +145,48 @@ bool ctl_diagnostic_release(bool restoration_complete_and_rx_confirmed) {
     }
     pthread_mutex_unlock(&mux);
     return ok;
+}
+#endif
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include <limits.h>
+static pthread_mutex_t remote_input_mux = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool diagnostic_input_blocked;
+static atomic_uint remote_input_generation;
+bool ctl_remote_input_begin(unsigned *generation) {
+    pthread_mutex_lock(&remote_input_mux);
+    if (atomic_load_explicit(&diagnostic_input_blocked, memory_order_acquire)) {
+        pthread_mutex_unlock(&remote_input_mux);
+        return false;
+    }
+    if (generation) *generation = atomic_load_explicit(&remote_input_generation, memory_order_relaxed);
+    return true;
+}
+void ctl_remote_input_end(void) { pthread_mutex_unlock(&remote_input_mux); }
+unsigned ctl_remote_input_generation(void) {
+    return atomic_load_explicit(&remote_input_generation, memory_order_acquire);
+}
+bool ctl_diagnostic_input_blocked(void) {
+    return atomic_load_explicit(&diagnostic_input_blocked, memory_order_acquire);
+}
+bool ctl_diagnostic_input_block(void) {
+    pthread_mutex_lock(&remote_input_mux);
+    unsigned generation = atomic_load_explicit(&remote_input_generation, memory_order_relaxed);
+    bool ok = !atomic_load_explicit(&diagnostic_input_blocked, memory_order_relaxed) && generation != UINT_MAX;
+    if (ok) {
+        atomic_store_explicit(&remote_input_generation, generation + 1, memory_order_release);
+        atomic_store_explicit(&diagnostic_input_blocked, true, memory_order_release);
+    }
+    pthread_mutex_unlock(&remote_input_mux);
+    return ok;
+}
+void ctl_diagnostic_input_unblock(void) {
+    pthread_mutex_lock(&remote_input_mux);
+    if (atomic_load_explicit(&diagnostic_input_blocked, memory_order_relaxed)) {
+        unsigned generation = atomic_load_explicit(&remote_input_generation, memory_order_relaxed);
+        if (generation != UINT_MAX) atomic_store_explicit(&remote_input_generation, generation + 1, memory_order_release);
+        atomic_store_explicit(&diagnostic_input_blocked, false, memory_order_release);
+    }
+    pthread_mutex_unlock(&remote_input_mux);
 }
 #endif

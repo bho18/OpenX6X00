@@ -8,6 +8,9 @@
 
 #include "image_level.h"
 #include "settings_window.h"
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include "freedv/diagnostics.h"
+#endif
 #include "board.h"
 
 #include "dsp.h"
@@ -4698,29 +4701,15 @@ static void make_info_page() {
     card_end(row);
 
 #if defined(ENABLE_FREEDV_DIAGNOSTICS) && (defined(BOARD_X6200) || defined(HOST_BUILD))
-    /* Read-only first step: this does not acquire the route or run an experiment.
-     * A fresh snapshot is taken when the Info page opens. */
-    radio_commanded_audio_route_t route;
-    char route_text[64];
     row = card_begin("FREEDV DIAGNOSTICS");
-    row = info_row(row, "Scope", "Read-only snapshot");
-    if (radio_get_commanded_audio_route(&route)) {
-        snprintf(route_text, sizeof(route_text), "REC %d  MODEM %d  PTT %d",
-                 route.commanded_record, route.commanded_modem, route.commanded_ptt);
-        row = info_row(row, "Cached commands", route_text);
-        const char *state = route.observed_state == RADIO_RX ? "RX" :
-                            route.observed_state == RADIO_TX ? "TX" : "Busy";
-        row = info_row(row, "Last radio state", state);
-        if (route.packet_tx_known) {
-            snprintf(route_text, sizeof(route_text), "%s (%llu ms ago)", route.packet_tx ? "TX" : "RX",
-                     (unsigned long long)route.packet_age_ms);
-            row = info_row(row, "Last packet TX", route_text);
-        } else {
-            row = info_row(row, "Last packet TX", "Unknown");
-        }
-    } else {
-        row = info_row(row, "Cached commands", "Unavailable");
-    }
+    row = info_row(row, "Scope", "Local routing and short voice tests");
+    wl_row_label(row, "Radio test panel");
+    lv_obj_t *freedv_button = lv_btn_create(grid);
+    lv_obj_set_grid_cell(freedv_button, LV_GRID_ALIGN_STRETCH, 1, 6, LV_GRID_ALIGN_CENTER, row++, 1);
+    lv_obj_t *freedv_label = lv_label_create(freedv_button);
+    lv_label_set_text(freedv_label, "Open FreeDV Diagnostics");
+    lv_obj_center(freedv_label);
+    lv_obj_add_event_cb(freedv_button, [](lv_event_t *) { freedv_diagnostics_open(); }, LV_EVENT_CLICKED, NULL);
     card_end(row);
 #endif
 

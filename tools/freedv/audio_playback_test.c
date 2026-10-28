@@ -63,6 +63,7 @@ static void *cancel_worker(void *arg) {
 int main(void) {
     int16_t pcm[] = {1,2,3,4,5};
     assert(!audio_freedv_playback_open());
+    assert(!audio_freedv_playback_quiescent(NULL));
     mloop = (pa_threaded_mainloop *)&token_loop;
     audio_freedv_playback_t *p = audio_freedv_playback_open();
     assert(fd_writer_reserve());
@@ -99,6 +100,7 @@ int main(void) {
     assert(audio_freedv_playback_observe(p).underflows == 1);
     pa_threaded_mainloop_lock(mloop);
     audio_freedv_playback_request_cancel(p); /* must work even while PA lock is held */
+    assert(!audio_freedv_playback_quiescent(p));
     pa_threaded_mainloop_unlock(mloop);
     assert(audio_freedv_playback_observe(p).cancelled);
     assert(!audio_freedv_playback_observe(p).flush_acknowledged);
@@ -113,6 +115,7 @@ int main(void) {
     assert(audio_freedv_playback_submit(p, pcm, 1) == -1); /* late worker output fenced */
     pa_threaded_mainloop_lock(mloop);
     flush_callback(p->stream, 1, flush_userdata);
+    assert(audio_freedv_playback_quiescent(p)); /* no attempt to lock the held PA mutex */
     pa_threaded_mainloop_unlock(mloop);
     assert(audio_freedv_playback_observe(p).flush_acknowledged);
     assert(audio_freedv_playback_observe(p).flushes == 1);

@@ -10,7 +10,7 @@ typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t changed;
     bool owned, busy, quiescent, allowed, start_ok, clear_ok, restore_ok;
-    bool software_tx, route_changed, audio_pending;
+    bool software_tx, route_changed, audio_pending, refuse_release;
     fd_observation observed;
     unsigned starts, clears, restores, releases, observations;
     int last_case;
@@ -21,11 +21,12 @@ static bool acquire(void *arg, bool *quiet, fd_observation *observed) {
     if (ok) { f->owned = true; *quiet = f->quiescent; *observed = f->observed; }
     pthread_mutex_unlock(&f->mutex); return ok;
 }
-static void release(void *arg) {
+static bool release(void *arg) {
     fake *f = arg; pthread_mutex_lock(&f->mutex);
+    if(f->refuse_release) { pthread_mutex_unlock(&f->mutex); return false; }
     assert(f->owned && !f->software_tx && !f->route_changed);
     f->owned = false; ++f->releases;
-    pthread_mutex_unlock(&f->mutex);
+    pthread_mutex_unlock(&f->mutex); return true;
 }
 static bool observe(void *arg, fd_observation *observed) {
     fake *f = arg; pthread_mutex_lock(&f->mutex); *observed = f->observed;
@@ -89,7 +90,7 @@ int main(void) {
     fake f = {.mutex=PTHREAD_MUTEX_INITIALIZER, .changed=PTHREAD_COND_INITIALIZER,
               .quiescent=true, .allowed=true, .start_ok=true, .clear_ok=true, .restore_ok=true,
               .observed={true, true, false, 1}};
-    fd_controller_backend backend = {acquire, release, observe, permitted, start, quiesce, audio_quiet, restore};
+    fd_controller_backend backend = {acquire, release, observe, permitted, start, quiesce, audio_quiet, restore, NULL};
     fd_controller c;
     assert(!fd_controller_init(&c, NULL, &f));
     assert(fd_controller_init(&c, &backend, &f));
@@ -113,10 +114,10 @@ int main(void) {
     assert(fd_controller_run(&c, 10, 10000));
     assert(f.starts == 1 && f.software_tx && f.last_case == FD_R1_M0_P1);
     set_observed(&f, true, true, true, 5); /* hardware PTT remains held */
-    f.clear_ok = false;
+    pthread_mutex_lock(&f.mutex); f.clear_ok = false; pthread_mutex_unlock(&f.mutex);
     assert(!fd_controller_stop(&c));
     assert(!fd_controller_release(&c));
-    f.clear_ok = true;
+    pthread_mutex_lock(&f.mutex); f.clear_ok = true; pthread_mutex_unlock(&f.mutex);
     assert(!fd_controller_poll_restore(&c));
     assert(!f.software_tx && f.route_changed && f.restores == 0);
     set_observed(&f, true, false, false, 6); assert(!fd_controller_poll_restore(&c));
@@ -147,6 +148,7 @@ int main(void) {
     unsigned clear_before = f.clears;
     assert(fd_controller_run(&c, 30, 25));
     wait_for_clear(&f, clear_before + 1);
+    fd_session stopped;assert(fd_controller_status(&c,&stopped)&&stopped.stop_reason==FD_STOP_TIMEOUT);
     assert(!fd_controller_poll_restore(&c));
     set_observed(&f, true, true, false, 9);
     assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
@@ -177,6 +179,8 @@ int main(void) {
     wait_for_clear(&f, clear_before + 1); /* unexpected TX aborts without GUI polling */
     assert(!fd_controller_release(&c));
     assert(!fd_controller_poll_restore(&c));
+    assert(fd_controller_stop(&c)); /* late manual press cannot overwrite the first cause */
+    assert(fd_controller_status(&c,&stopped)&&stopped.stop_reason==FD_STOP_UNEXPECTED_TX);
     set_observed(&f, true, true, false, 13);
     assert(wait_restore(&c) && fd_controller_release(&c));
     assert(fd_controller_acquire(&c));
@@ -192,6 +196,46 @@ int main(void) {
     assert(fd_controller_stop(&c));
     set_observed(&f, true, true, false, 15);
     assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
+    /* Preparation is cancellable before Arm/Run, and physical PTT changing
+     * during it must retain ownership until a later RX packet. */
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_passive_rx(&c));
+    assert(fd_controller_begin_prepare(&c));
+    fd_session preparing;
+    assert(fd_controller_status(&c,&preparing) && preparing.state==FD_PREPARING);
+    assert(!fd_controller_select_matrix(&c,FD_R0_M0_P0));
+    assert(!fd_controller_release(&c));
+    set_observed(&f,true,true,true,16);
+    assert(!fd_controller_finish_prepare(&c));
+    assert(!fd_controller_release(&c));
+    set_observed(&f,true,true,false,17);
+    assert(fd_controller_poll_restore(&c));
+    f.refuse_release=true;
+    assert(!fd_controller_release(&c));
+    assert(fd_controller_status(&c,&preparing) && preparing.state==FD_WAIT_RX && f.owned);
+    f.refuse_release=false;
+    set_observed(&f,true,true,false,18);
+    assert(fd_controller_poll_restore(&c));
+    assert(fd_controller_release(&c));
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_passive_rx(&c));
+    assert(fd_controller_begin_prepare(&c) && fd_controller_finish_prepare(&c));
+    assert(!fd_controller_release(&c)); /* prepared resources require Stop even before Run */
+    assert(fd_controller_stop(&c));
+    set_observed(&f,true,true,false,19);
+    assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
+    /* Clearing retries belong to the independent monitor, not the disk/GUI
+     * coordinator. Simulate a failed first clear and make no restore polls. */
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_matrix(&c,FD_R1_M1_P1)&&fd_controller_arm(&c,true));
+    pthread_mutex_lock(&f.mutex);f.clear_ok=false;clear_before=f.clears;pthread_mutex_unlock(&f.mutex);
+    assert(fd_controller_run(&c,100,25));
+    wait_for_clear(&f,clear_before+1);
+    pthread_mutex_lock(&f.mutex);f.clear_ok=true;clear_before=f.clears;pthread_mutex_unlock(&f.mutex);
+    wait_for_clear(&f,clear_before+1);
+    assert(fd_controller_status(&c,&stopped)&&stopped.software_cleared&&stopped.stop_reason==FD_STOP_TIMEOUT);
+    set_observed(&f,true,true,false,20);
+    assert(fd_controller_poll_restore(&c)&&fd_controller_release(&c));
     assert(fd_controller_close(&c));
     pthread_cond_destroy(&f.changed); pthread_mutex_destroy(&f.mutex);
     puts("PASS: mocked session acquisition, arm, stop, timeout and post-clear restore");

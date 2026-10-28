@@ -16,6 +16,7 @@ typedef struct {
     size_t (*read)(void *context, int16_t *samples, size_t count);
     audio_freedv_capture_stats_t (*stats)(void *context);
     void *context;
+    unsigned channels; /*0/1 mono,2 stereo; returned counts are samples */
 } freedv_wav_source;
 typedef struct {
     freedv_wav_source source;
@@ -27,6 +28,8 @@ typedef struct {
     void *context;
     bool started;          /* controlled by the session owner */
     freedv_wav_error error; /* read after join only */
+    uint64_t max_samples; /*0 unlimited; keep draining after excerpt is full */
+    uint64_t discarded_samples;
     uint64_t samples;      /* read after join only */
     audio_freedv_capture_stats_t capture_stats; /* read after join only */
 } freedv_wav_capture;

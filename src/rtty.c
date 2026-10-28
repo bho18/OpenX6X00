@@ -1,3 +1,4 @@
+#include "freedv/writer_gate.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
@@ -66,7 +67,7 @@ static uint8_t        rx_data       = 0;
 static bool           rx_letter     = true;
 
 static bool         ready = false;
-static rtty_state_t state = RTTY_OFF;
+static _Atomic rtty_state_t state = RTTY_OFF;
 
 static radio_mode_t cur_mode;
 
@@ -388,6 +389,7 @@ bool rtty_scope_get(float *x, float *y, float *offset) {
 }
 
 void rtty_set_state(rtty_state_t x) {
+    FD_WRITE_GUARD(return);
     state = x;
 }
 

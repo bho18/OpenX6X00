@@ -107,6 +107,8 @@ bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *s) {
     *s = (hw_freedv_cached_snapshot_t){
         .route = {reg_i[HW_RECORD] != 0, reg_i[HW_MODEM] != 0, reg_i[HW_PTT] != 0},
         .raw_route_bits_available = false,
+        .protected_route_bits = (reg_i[HW_SPLIT] ? 2u : 0u) | (reg_i[HW_ATU_TUNE] ? 0x2000u : 0u),
+        .vox_enabled = reg_i[HW_VOX] != 0,
         .microphone = reg_i[HW_MIC], .hand_mic_gain = reg_i[HW_HMIC], .internal_mic_gain = reg_i[HW_IMIC],
         .line_in = reg_i[HW_LINE_IN], .line_out = reg_i[HW_LINE_OUT], .speaker_mode = reg_i[HW_SPMODE],
         .speaker_level = reg_i[HW_RXVOL], .monitor_level = reg_i[HW_MONI],
