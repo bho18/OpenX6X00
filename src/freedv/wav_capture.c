@@ -138,7 +138,9 @@ static audio_freedv_capture_stats_t physical_stats(void *ctx) {
 bool freedv_wav_capture_start(freedv_wav_capture *capture, const char *path,
                               freedv_wav_failure_fn failure, void *context) {
     if (!capture || capture->started) return false;
-    capture->source = (freedv_wav_source){physical_read, physical_stats, NULL};
+    capture->source = (freedv_wav_source){
+        .read = physical_read, .stats = physical_stats, .context = NULL, .channels = 1
+    };
     return start(capture, path, failure, context, NULL);
 }
 bool freedv_wav_capture_start_source(freedv_wav_capture *capture, const char *path,

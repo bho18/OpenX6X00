@@ -123,7 +123,9 @@ int main(void) {
     atomic_store(&fail_after, 0);
     char queue_path[160]; snprintf(queue_path, sizeof(queue_path), "%s/queue.wav", directory);
     size_t queue_cursor = 0;
-    freedv_wav_source queued = {queue_read, queue_stats, &queue_cursor};
+    freedv_wav_source queued = {
+        .read = queue_read, .stats = queue_stats, .context = &queue_cursor, .channels = 1
+    };
     assert(!active);
     assert(freedv_wav_capture_start_source(&capture, queue_path, failed, NULL, &queued));
     assert(!active); /* external source never starts physical capture */
