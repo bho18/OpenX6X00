@@ -7,6 +7,11 @@ participants. Allow about 11-15 minutes including preparation. Independent case
 failures are preserved and the remaining cases continue; a failed integrity or
 resource preflight stops launch. Read the console even if SSH exits nonzero.
 
+To start over after an aborted attempt, run the complete PowerShell block below.
+It downloads the corrected helper, restores execute permissions on all three
+benchmarks and creates fresh timestamped helper/results paths. No old result
+folder is reused or deleted. The default runs all five cases.
+
 This uses the unchanged `b9fcea82` matching-SDK package already on the radio.
 No active channel, microphone, speaker playback, RF transmission or new card is
 involved. It completes the remaining short file-only codec cases; the subsequent

@@ -107,6 +107,22 @@ class ShortValidationTest(unittest.TestCase):
             self.assertNotIn('rade-noise', out['selected_cases'])
             self.assertEqual(len(out['cases']), 4)
 
+    def test_main_missing_permissions_exits_before_inventory_or_output_creation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)/'package'; (root/'bin').mkdir(parents=True)
+            for name in ['rade-frame-bench', 'codec2-frame-bench', 'rade-pipeline-bench']:
+                p = root/'bin'/name; p.write_bytes(b'test'); p.chmod(0o600)
+            output = Path(d)/'results'
+            with patch.object(suite.platform, 'machine', return_value='armv7l'), \
+                 patch.object(suite, 'load_package', return_value=('{}', '', None)), \
+                 patch.object(suite.sys, 'argv', ['runner', '--package', str(root), '--output', str(output)]), \
+                 patch.object(suite.subprocess, 'run') as run:
+                with self.assertRaises(SystemExit) as exc:
+                    suite.main()
+                self.assertEqual(exc.exception.code, 2)
+                run.assert_not_called()
+                self.assertFalse(output.exists())
+
     def test_failure_preserved_and_remaining_cases_execute(self):
         with tempfile.TemporaryDirectory() as d:
             out = self.exercise(Path(d), fail_first=True)
