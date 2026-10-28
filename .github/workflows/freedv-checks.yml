@@ -246,6 +246,12 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: true
+      - name: Check out pinned X6200 control headers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gdyuldin/X6200Control
+          ref: 0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8
+          path: host-control-reference
       - name: Install host dependencies
         run: |
           set -eu
@@ -329,8 +335,8 @@ jobs:
           stop_process "$gui_pid"
           gui_pid=
           echo "::notice title=Host UI phase::Configure and build diagnostics-enabled GUI"
-          timeout --kill-after=10s 2m cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          timeout --kill-after=10s 12m cmake --build build-host --target x6100_gui freedv_diagnostic_state_test freedv_capture_ring_test freedv_audio_capture_test freedv_audio_playback_test freedv_packet_tx_test freedv_stub_snapshot_test freedv_watchdog_test freedv_wav_capture_test freedv_control_lease_test freedv_session_controller_test
+          timeout --kill-after=10s 2m cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DX6200_CONTROL_INCLUDE_DIR="$GITHUB_WORKSPACE/host-control-reference/include"
+          timeout --kill-after=10s 12m cmake --build build-host --parallel 2
           echo "::notice title=Host UI phase::Run diagnostic CTests"
           timeout --kill-after=10s 5m ctest --test-dir build-host -R '^freedv_' --timeout 60 --output-on-failure
           echo "::notice title=Host UI phase::Exercise diagnostics-enabled GUI"

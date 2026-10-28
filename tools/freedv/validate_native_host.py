@@ -75,7 +75,7 @@ def _activate_host_deps():
     # Scoped to this host-validation process and its children. SDK builders use
     # their own toolchain/sysroot and clear these development environment paths.
     prefix=ROOT/'build-host/deps'
-    for name,path in [('PKG_CONFIG_PATH',prefix/'lib/pkgconfig'),
+    for name,path in [('PATH',prefix/'bin'),('PKG_CONFIG_PATH',prefix/'lib/pkgconfig'),
                       ('CMAKE_PREFIX_PATH',prefix),('LD_LIBRARY_PATH',prefix/'lib')]:
         old=os.environ.get(name,'')
         values=[str(path)]+[item for item in old.split(os.pathsep) if item and item!=str(path)]
@@ -206,6 +206,145 @@ def prepare_host_sndfile(jobs=2,force=False):
     print('Private host libsndfile1.2.2 ready; MP3 write/read probe passed',flush=True)
     return record
 
+
+def _host_sqlite_cmake_args():
+    directory=subprocess.check_output(['pkg-config','--variable=libdir','sqlite3'],text=True).strip()
+    library=Path(directory)/'libsqlite3.so'
+    if not library.is_file(): raise RuntimeError('Selected host SQLite shared library is missing: '+str(library))
+    return ['-Dpkgcfg_lib_deps_sqlite3:FILEPATH='+str(library),
+            '-Dpkgcfg_lib_SQLITE3_sqlite3:FILEPATH='+str(library)]
+
+
+def _probe_host_sqlite(prefix):
+    """Exercise both outer-join directions through the C API and selected CLI."""
+    checks=prefix/'checks'; checks.mkdir(parents=True,exist_ok=True)
+    query=("WITH l(k,v) AS (VALUES(1,'left'),(2,'both-left')), "
+           "r(k,v) AS (VALUES(2,'both-right'),(3,'right')) "
+           "SELECT coalesce(l.k,r.k),coalesce(l.v,'-'),coalesce(r.v,'-') "
+           "FROM l FULL OUTER JOIN r USING(k) ORDER BY 1;")
+    with tempfile.TemporaryDirectory(prefix='sqlite-',dir=checks) as temporary:
+        work=Path(temporary); source=work/'probe.c'; executable=work/'probe'
+        source.write_text(r'''#include <sqlite3.h>
+#include <stdio.h>
+#include <string.h>
+int main(int argc,char **argv) {
+    if(argc!=2)return 2;
+    if(SQLITE_VERSION_NUMBER<3039000||sqlite3_libversion_number()!=SQLITE_VERSION_NUMBER){
+        fputs("SQLite header/runtime mismatch or version below3.39\n",stderr);return 3;
+    }
+    sqlite3 *db=NULL; sqlite3_stmt *stmt=NULL;
+    if(sqlite3_open(":memory:",&db)!=SQLITE_OK)return 4;
+    if(sqlite3_prepare_v2(db,argv[1],-1,&stmt,NULL)!=SQLITE_OK){
+        fprintf(stderr,"FULL OUTER JOIN prepare: %s\n",sqlite3_errmsg(db));return 5;
+    }
+    const char *left[]={"left","both-left","-"};
+    const char *right[]={"-","both-right","right"};
+    int rows=0,rc;
+    while((rc=sqlite3_step(stmt))==SQLITE_ROW){
+        const unsigned char *lv=sqlite3_column_text(stmt,1),*rv=sqlite3_column_text(stmt,2);
+        if(rows>=3||sqlite3_column_int(stmt,0)!=rows+1||!lv||!rv||
+           strcmp((const char *)lv,left[rows])||strcmp((const char *)rv,right[rows]))return 6;
+        rows++;
+    }
+    if(rc!=SQLITE_DONE||rows!=3)return 7;
+    if(sqlite3_finalize(stmt)!=SQLITE_OK||sqlite3_close(db)!=SQLITE_OK)return 8;
+    printf("{\"header_version\":\"%s\",\"runtime_version\":\"%s\","
+           "\"runtime_version_number\":%d,\"full_outer_join_rows\":3}\n",
+           SQLITE_VERSION,sqlite3_libversion(),sqlite3_libversion_number());
+    return 0;
+}
+''')
+        flags=subprocess.run(['pkg-config','--cflags','--libs','sqlite3'],capture_output=True,text=True)
+        if flags.returncode: return None,'pkg-config cannot resolve sqlite3'
+        compiled=subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',
+            '-I'+str(prefix/'include'),str(source),*shlex.split(flags.stdout),'-o',str(executable)],
+            capture_output=True,text=True)
+        if compiled.returncode: return None,compiled.stderr[-4000:]
+        result=subprocess.run([str(executable),query],capture_output=True,text=True)
+        if result.returncode: return None,result.stderr[-4000:] or 'SQLite C API probe failed: '+str(result.returncode)
+        observed=json.loads(result.stdout)
+        cli=shutil.which('sqlite3')
+        if not cli: return None,'sqlite3 CLI is unavailable'
+        cli_result=subprocess.run([cli,'-batch',':memory:',query],capture_output=True,text=True)
+        if cli_result.returncode or cli_result.stdout.strip()!='1|left|-\n2|both-left|both-right\n3|-|right':
+            return None,'SQLite CLI FULL OUTER JOIN failed: '+cli_result.stderr[-4000:]
+        cli_version=subprocess.check_output([cli,'--version'],text=True).split()[0]
+        if cli_version!=observed['runtime_version']: return None,'SQLite CLI/C library versions differ'
+        observed.update(cli=str(cli),cli_version=cli_version,full_outer_join='PASS')
+        return observed,None
+
+
+def prepare_host_sqlite(jobs=2,force=False):
+    """Supply v0.3.6's FULL OUTER JOIN support without touching the radio SDK.
+
+    Ubuntu22's3.37 predates that SQL syntax. The private fallback matches the
+    recovered X6200 SDK's3.40.1. Official HTTPS source digest is independently
+    pinned by Buildroot cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f/package/sqlite/sqlite.hash.
+    """
+    prefix=_activate_host_deps()
+    version_result=subprocess.run(['pkg-config','--modversion','sqlite3'],capture_output=True,text=True)
+    minimum=subprocess.run(['pkg-config','--atleast-version=3.39.0','sqlite3'],capture_output=True)
+    version=version_result.stdout.strip() if version_result.returncode==0 else 'unavailable'
+    observed,reason=_probe_host_sqlite(prefix) if minimum.returncode==0 else (None,'FULL OUTER JOIN requires SQLite>=3.39.0')
+    if not force and observed:
+        print('Host SQLite ready: '+version+'; C API and CLI FULL OUTER JOIN passed',flush=True)
+        return {'provider':'available-host-library','version':version,'probe':observed,
+                'cmake_args':_host_sqlite_cmake_args()}
+    print('Preparing private host SQLite3.40.1; found '+version+'; '+(reason or 'explicit source-build validation'),flush=True)
+    source_parent=prefix/'src'; source_parent.mkdir(parents=True,exist_ok=True)
+    archive=source_parent/'sqlite-autoconf-3400100.tar.gz'
+    expected='2c5dea207fa508d765af1ef620b637dcb06572afa6f01f0815bd5bbf864b33d9'
+    url='https://www.sqlite.org/2022/sqlite-autoconf-3400100.tar.gz'
+    if not archive.exists():
+        temporary=archive.with_suffix('.download')
+        try:
+            with urllib.request.urlopen(url,timeout=60) as response,temporary.open('wb') as output:
+                shutil.copyfileobj(response,output)
+            temporary.rename(archive)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError('Cannot download official SQLite3.40.1 release over verified HTTPS') from None
+    actual=hashlib.sha256(archive.read_bytes()).hexdigest()
+    if actual!=expected: raise ValueError('SQLite3.40.1 archive SHA256 mismatch: '+actual)
+    source=source_parent/'sqlite-autoconf-3400100'
+    with tarfile.open(archive,'r:gz') as tar:
+        for member in tar.getmembers():
+            parts=Path(member.name).parts
+            if not parts or parts[0]!=source.name or '..' in parts or Path(member.name).is_absolute() or not (member.isdir() or member.isfile()):
+                raise ValueError('Unexpected SQLite source archive entry')
+            target=source_parent/member.name
+            if not target.resolve().is_relative_to(source_parent.resolve()):
+                raise ValueError('SQLite source extraction escapes private host prefix')
+            if member.isdir(): target.mkdir(parents=True,exist_ok=True)
+            else:
+                with tar.extractfile(member) as original:
+                    if target.exists():
+                        if target.is_symlink() or target.read_bytes()!=original.read():
+                            raise ValueError('Existing private SQLite source differs: '+str(target))
+                    else:
+                        target.parent.mkdir(parents=True,exist_ok=True)
+                        with target.open('xb') as output: shutil.copyfileobj(original,output)
+                        target.chmod(member.mode&0o777)
+                # Preserve release ordering so make uses the shipped Autotools
+                # files instead of requiring the publisher's automake version.
+                os.utime(target,(member.mtime,member.mtime))
+    build=source_parent/'sqlite-autoconf-3400100-build'; build.mkdir(exist_ok=True)
+    run(source/'configure','--prefix='+str(prefix),'--enable-shared','--disable-static',
+        '--disable-readline','--disable-editline',cwd=build)
+    run('make','-j',jobs,cwd=build)
+    run('make','install',cwd=build)
+    observed,reason=_probe_host_sqlite(prefix)
+    if not observed: raise RuntimeError('Private host SQLite C API/CLI validation failed: '+str(reason))
+    version=subprocess.check_output(['pkg-config','--modversion','sqlite3'],text=True).strip()
+    if version!='3.40.1': raise RuntimeError('Private host SQLite pkg-config resolution drifted: '+version)
+    record={'provider':'private-host-source-build','version':version,'source_url':url,
+            'source_sha256':expected,'prefix':str(prefix),'probe':observed,
+            'cmake_args':_host_sqlite_cmake_args()}
+    (prefix/'sqlite-provenance.json').write_text(json.dumps(record,indent=2)+'\n')
+    print('Private host SQLite3.40.1 ready; C API and CLI FULL OUTER JOIN passed',flush=True)
+    return record
+
+
 def smoke_gui(gui, output):
     runtime = output/'runtime'; runtime.mkdir(); runtime.chmod(0o700)
     pulse = runtime/'pulse'; pulse.mkdir(); pulse.chmod(0o700)
@@ -295,9 +434,16 @@ def main():
     # Boost headers avoid an unrelated archive download.
     prepare_host_boost()
     sndfile=prepare_host_sndfile(a.jobs)
+    sqlite=prepare_host_sqlite(a.jobs)
     run('bash','host/build.sh','build',cwd=ROOT)
     on=ROOT/'build-host'
-    run('cmake','-S',ROOT,'-B',on,'-U','__pkg_config_checked_deps','-U','pkgcfg_lib_deps_sndfile',*sndfile['cmake_args'],'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=ON',
+    gui_data=work/'fresh-gui-data'; gui_data.mkdir()
+    with (ROOT/'sql/params.sql').open('r') as defaults:
+        run('sqlite3',gui_data/'params.db',stdin=defaults)
+    run('cmake','-S',ROOT,'-B',on,'-U','__pkg_config_checked_deps','-U','__pkg_config_checked_SQLITE3',
+        '-U','pkgcfg_lib_deps_sndfile','-U','pkgcfg_lib_deps_sqlite3','-U','pkgcfg_lib_SQLITE3_sqlite3',
+        *sndfile['cmake_args'],*sqlite['cmake_args'],'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=ON',
+        '-DHOST_DATA_DIR='+str(gui_data),
         '-DENABLE_FREEDV_NATIVE_CODEC=OFF','-DX6200_CONTROL_INCLUDE_DIR='+str(a.x6200_control.resolve()/'include'))
     run('cmake','--build',on,'-j',a.jobs)
     tests=json.loads(subprocess.check_output(['ctest','--test-dir',str(on),'-N','--show-only=json-v1'],text=True))
@@ -307,7 +453,7 @@ def main():
     smoke=smoke_gui(on/'src/x6100_gui',work)
     off=work/'host-off'
     run('cmake','-S',ROOT,'-B',off,'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=OFF',
-        '-DENABLE_FREEDV_NATIVE_CODEC=OFF','-DCMAKE_BUILD_TYPE=RelWithDebInfo',*sndfile['cmake_args'])
+        '-DENABLE_FREEDV_NATIVE_CODEC=OFF','-DCMAKE_BUILD_TYPE=RelWithDebInfo',*sndfile['cmake_args'],*sqlite['cmake_args'])
     run('cmake','--build',off,'--target','x6100_gui','-j',a.jobs)
     control=work/'x6100-control'
     run('cmake','-S',a.x6100_control.resolve(),'-B',control,'-DAETHER_X6100CTRL_USE_LTO=OFF')
@@ -316,7 +462,8 @@ def main():
         '-c',ROOT/'src/hw/x6100/hw_x6100.c','-o',work/'x6100-backend.o')
     record={'schema_version':1,'firmware_commit':revision,'status':'PASS','hardware_qualified':False,
             'host_diagnostics_on':'PASS','host_diagnostics_off':'PASS','x6100_backend_compile':'PASS',
-            'host_sndfile':sndfile,'required_tests':sorted(REQUIRED_TESTS),'executed_diagnostic_tests':sorted(selected),'gui_smoke':smoke}
+            'host_sndfile':sndfile,'host_sqlite':sqlite,'fresh_gui_database':str(gui_data/'params.db'),
+            'required_tests':sorted(REQUIRED_TESTS),'executed_diagnostic_tests':sorted(selected),'gui_smoke':smoke}
     (work/'summary.json').write_text(json.dumps(record,indent=2)+'\n')
     print('PASS: host builds, mandatory integration tests, live GUI and X6100 compile')
 
