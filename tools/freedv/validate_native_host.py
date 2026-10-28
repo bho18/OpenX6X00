@@ -345,7 +345,7 @@ def prepare_host_sqlite(jobs=2,force=False):
     return record
 
 
-def smoke_gui(gui, output):
+def smoke_gui(gui, output, check_diagnostic_entry=False):
     runtime = output/'runtime'; runtime.mkdir(); runtime.chmod(0o700)
     pulse = runtime/'pulse'; pulse.mkdir(); pulse.chmod(0o700)
     config = runtime/'config'; config.mkdir()
@@ -408,7 +408,18 @@ def smoke_gui(gui, output):
             ws.s.close()
         if seen!={'greeting','geometry','ping','state','screen'}:
             raise RuntimeError('incomplete live GUI checks: '+str(seen))
-        return {'status':'PASS','observations':sorted(seen),'state':state}
+        diagnostic_panel={'status':'not requested'}
+        if check_diagnostic_entry:
+            ui_check=subprocess.run(['python3',str(ROOT/'tools/freedv/host_ui_check.py'),'--build',str(gui.parent.parent),
+                '--snapshot','--output',str(output/'ui-check')],env=env,capture_output=True,text=True,timeout=75)
+            (output/'ui-check.log').write_text(ui_check.stdout+ui_check.stderr)
+            print(ui_check.stdout+ui_check.stderr,flush=True)
+            ui_check.check_returncode()
+            diagnostic_panel=json.loads((output/'ui-check/summary.json').read_text())
+            if diagnostic_panel.get('status')!='PASS' or not diagnostic_panel.get('diagnostic_panel'):
+                raise RuntimeError('local MFK diagnostic panel checks did not execute')
+        return {'status':'PASS','observations':sorted(seen),'state':state,
+                'diagnostic_panel':diagnostic_panel}
     finally:
         for process in reversed(processes):
             if process.poll() is None:
@@ -450,7 +461,7 @@ def main():
     selected={test['name'] for test in tests['tests'] if re.search('freedv',test['name'])}
     if REQUIRED_TESTS-selected: raise ValueError('missing mandatory integration tests: '+str(sorted(REQUIRED_TESTS-selected)))
     run('ctest','--test-dir',on,'-R','freedv','--output-on-failure','--output-junit',work/'diagnostic-tests.xml')
-    smoke=smoke_gui(on/'src/x6100_gui',work)
+    smoke=smoke_gui(on/'src/x6100_gui',work,check_diagnostic_entry=True)
     off=work/'host-off'
     run('cmake','-S',ROOT,'-B',off,'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=OFF',
         '-DENABLE_FREEDV_NATIVE_CODEC=OFF','-DCMAKE_BUILD_TYPE=RelWithDebInfo',*sndfile['cmake_args'],*sqlite['cmake_args'])

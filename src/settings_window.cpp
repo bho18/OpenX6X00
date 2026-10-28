@@ -4704,12 +4704,10 @@ static void make_info_page() {
     row = card_begin("FREEDV DIAGNOSTICS");
     row = info_row(row, "Scope", "Local routing and short voice tests");
     wl_row_label(row, "Radio test panel");
-    lv_obj_t *freedv_button = lv_btn_create(grid);
+    lv_obj_t *freedv_button = wl_button(row, "Open FreeDV Diagnostics",
+                                      [](lv_event_t *) { freedv_diagnostics_open(); });
+    lv_obj_set_width(freedv_button, SMALL_6);
     lv_obj_set_grid_cell(freedv_button, LV_GRID_ALIGN_STRETCH, 1, 6, LV_GRID_ALIGN_CENTER, row++, 1);
-    lv_obj_t *freedv_label = lv_label_create(freedv_button);
-    lv_label_set_text(freedv_label, "Open FreeDV Diagnostics");
-    lv_obj_center(freedv_label);
-    lv_obj_add_event_cb(freedv_button, [](lv_event_t *) { freedv_diagnostics_open(); }, LV_EVENT_CLICKED, NULL);
     card_end(row);
 #endif
 

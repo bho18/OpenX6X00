@@ -72,7 +72,7 @@ fixtures, and codec output accepted by mocked playback. These are development
 checks; they do not qualify radio throughput, acoustics or RF.
 
 The image workflow requires fresh source-matching reports for diagnostics ON/OFF,
-actual simulator protocol/screen checks, X6100 backend compilation, native codec
+actual simulator protocol/screen and local MFK panel entry/Close checks, X6100 backend compilation, native codec
 reference checks, matching-SDK/QEMU correctness and actual-image ELF closure.
 It builds paired normal/diagnostic images with current runtime assets, symbols,
 checksums and manifests in disposable verified image copies. Baseband and updater

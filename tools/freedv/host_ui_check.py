@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Exercise Settings in a freshly started host simulator using its local FIFOs.
 
-Requires tesseract and the simulator's local screen WebSocket on port 50002.
+Requires tesseract, Pillow and the simulator's local screen WebSocket on port 50002.
 This is a host-only test; it must not be run against a physical radio.
 """
 import argparse
 import errno
 import importlib.util
+import json
 import os
 from pathlib import Path
 import struct
@@ -24,7 +25,7 @@ def load(name, path):
     return module
 
 
-def screen_text(client, image_path):
+def screen_text(client, image_path, panel=False):
     ws = client.WS()
     ws.s.settimeout(3)
     try:
@@ -37,24 +38,67 @@ def screen_text(client, image_path):
                 width, height, _ = struct.unpack('<HHI', payload[:8])
                 if (width, height) == (800, 480) and payload[8:10] == b'\xff\xd8':
                     image_path.write_bytes(payload[8:])
+                    ocr_path = image_path
+                    options = []
+                    button_text = []
                     env = dict(os.environ, OMP_THREAD_LIMIT='1')
-                    result = subprocess.run(['tesseract', str(image_path), 'stdout'],
+                    if panel:
+                        # The diagnostic panel uses14px text beside the normal
+                        # waterfall. Isolate and enlarge it; no label substitutions.
+                        from PIL import Image, ImageOps
+                        with Image.open(image_path) as full:
+                            crop = full.crop((405, 20, 795, 460))
+                            crop = crop.resize((crop.width * 3, crop.height * 3))
+                            ocr_path = image_path.with_suffix('.ocr.png')
+                            crop.save(ocr_path)
+                            # White button text needs separate segmentation
+                            # from the black-on-white status. Single-word OCR
+                            # resolves Sony14's q correctly without fuzzy labels.
+                            for i in range(6):
+                                x, y = 415 + (i % 3) * 125, 305 + (i // 3) * 38
+                                button = full.crop((x + 8, y + 3, x + 112, y + 30)).convert('L')
+                                button = ImageOps.autocontrast(ImageOps.invert(button.resize((624, 162))))
+                                button_path = image_path.with_name(image_path.stem + f'.button{i}.png')
+                                button.save(button_path)
+                                word = subprocess.run(['tesseract', str(button_path), 'stdout', '--psm', '8'],
+                                                      capture_output=True, text=True, check=True, env=env, timeout=5)
+                                button_text.append(word.stdout)
+                        options = ['--psm', '6']
+                    result = subprocess.run(['tesseract', str(ocr_path), 'stdout', *options],
                                             capture_output=True, text=True, check=True, env=env, timeout=5)
-                    return result.stdout.upper()
+                    return (result.stdout + '\n' + '\n'.join(button_text)).upper()
         raise RuntimeError('no simulator screen frame')
     finally:
         ws.s.close()
 
 
-def wait_for(client, image_path, expected):
+def wait_for(client, image_path, expected, absent=(), panel=False):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        text = screen_text(client, image_path)
+        text = screen_text(client, image_path, panel=panel)
         print(f'Looking for {expected}: {text!r}', flush=True)
-        if all(value in text for value in expected):
-            return
+        if all(value in text for value in expected) and not any(value in text for value in absent):
+            return text
         time.sleep(0.4)
     raise RuntimeError(f'simulator screen did not show {expected}: {text}')
+
+
+def idle_state(client):
+    ws = client.WS()
+    ws.s.settimeout(3)
+    try:
+        ws.text('panel 1')
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            opcode, payload = ws.frame()
+            if opcode == 1 and payload.startswith(b'state '):
+                state = json.loads(payload[6:])
+                if state['tx']:
+                    raise RuntimeError('host UI navigation unexpectedly entered TX')
+                return state
+        raise RuntimeError('host simulator did not report its idle radio state')
+    finally:
+        ws.s.close()
 
 
 def emit_fifo(path, events):
@@ -81,9 +125,17 @@ def emit_fifo(path, events):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build', type=Path, default=ROOT / 'build-host')
-    parser.add_argument('--snapshot', action='store_true', help='also check the opt-in diagnostic snapshot')
+    parser.add_argument('--data', type=Path, help='host data directory (default: HOST_DATA_DIR in CMakeCache.txt)')
+    parser.add_argument('--output', type=Path, help='retain screenshots and check summary in this directory')
+    parser.add_argument('--snapshot', action='store_true', help='open and check the opt-in diagnostic panel using local MFK input')
     args = parser.parse_args()
-    run = args.build.resolve() / 'data/run'
+    cache = args.build.resolve() / 'CMakeCache.txt'
+    values = dict(line.split('=', 1) for line in cache.read_text().splitlines()
+                  if '=' in line and not line.startswith(('#', '//')))
+    if values.get('HOST_BUILD:BOOL') != 'ON':
+        parser.error('UI checks require a host simulator build, never a physical radio')
+    data = args.data.resolve() if args.data else Path(values.get('HOST_DATA_DIR:PATH', str(args.build.resolve() / 'data')))
+    run = data / 'run'
     if not (run / 'keypad').is_fifo() or not (run / 'mfk').is_fifo():
         parser.error('expected host-simulator FIFOs; start a fresh host build first')
     drive = load('host_test_drive', ROOT / 'tools/screenshots/x6drive.py')
@@ -93,7 +145,12 @@ def main():
     client = load('host_test_ws', ROOT / 'tools/tci/tci_client_test.py')
     client.PORT = 50002
     with tempfile.TemporaryDirectory(prefix='freedv-ui-check-') as temporary:
-        image_path = Path(temporary) / 'screen.jpg'
+        output = args.output.resolve() if args.output else Path(temporary)
+        if args.output:
+            output.mkdir(parents=True, exist_ok=False)
+        image_path = output / 'settings.jpg'
+        states = [idle_state(client)]
+        observations = ['settings opened by local front keys']
         for key in ('APP', 'F1', 'F2'):
             drive.key(key, 100)
             time.sleep(0.7)
@@ -104,18 +161,39 @@ def main():
                 drive.key(key, 100)
                 time.sleep(0.7)
             wait_for(client, image_path, ('FIRMWARE', 'BASEBAND'))
-            # Focus can wrap when there are more or fewer Info rows. Advance in
-            # small steps and inspect each screen rather than assuming a fixed
-            # number of detents lands on the diagnostic card.
-            for _ in range(12):
-                drive.turn('mfk', 2)
-                time.sleep(0.3)
-                text = screen_text(client, image_path)
-                if 'CACHED' in text and 'LAST RADIO STATE' in text:
-                    break
-            else:
-                raise RuntimeError(f'diagnostic snapshot not visible: {text}')
-            print('PASS: diagnostic snapshot displayed cached commands and last radio state')
+            # Info's focusable controls are Check, Update, Reset, diagnostics.
+            # Clamp to its first item (wrap is disabled), then reach the entry
+            # through the SAME encoder group used by the radio's physical MFK.
+            # The only click here is the diagnostic entry; no other Info action.
+            drive.turn('mfk', -20)
+            drive.turn('mfk', 3)
+            image_path = output / 'diagnostic-entry.jpg'
+            wait_for(client, image_path, ('OPEN FREEDV DIAGNOSTICS',))
+            drive.key('MFK', 100)
+            image_path = output / 'diagnostic-panel.jpg'
+            panel_text = wait_for(client, image_path,
+                                  ('FREEDV DIAGNOSTICS', 'IDLE', 'ACQUIRE', 'ARM', 'RUN', 'STOP'), panel=True)
+            if not ('PACKET UNKNOWN' in panel_text or
+                    ('CMD R' in panel_text and 'RX #' in panel_text and 'AGE' in panel_text)):
+                raise RuntimeError('diagnostic panel did not distinguish packet status: ' + panel_text)
+            states.append(idle_state(client))
+            observations += ['diagnostic entry focused and clicked by local MFK',
+                             'Acquire Arm Run Stop controls visible', 'idle packet status visible']
+            print('PASS: local MFK opened diagnostics with idle packet status and Acquire/Arm/Run/Stop controls')
+            # The initial focus is the case selector. One reverse detent wraps
+            # to Close; never focus/click Acquire, Arm or Run during this check.
+            drive.turn('mfk', -1)
+            drive.key('MFK', 100)
+            wait_for(client, output / 'diagnostic-closed.jpg', (),
+                     ('FREEDV DIAGNOSTICS', 'CAPTURE 10S', 'ACQUIRE'), panel=True)
+            states.append(idle_state(client))
+            observations.append('local MFK Close returned to ordinary screen')
+            print('PASS: local MFK closed diagnostics safely without acquiring, arming or running a case')
+        (output / 'summary.json').write_text(json.dumps({
+            'status': 'PASS', 'host_simulator_only': True, 'diagnostic_panel': args.snapshot,
+            'input_transport': 'local evdev-format FIFOs', 'data_directory': str(data),
+            'acquire_arm_run_actions': 0, 'idle_radio_states': states, 'observations': observations,
+        }, indent=2) + '\n')
 
 
 if __name__ == '__main__':

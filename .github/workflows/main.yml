@@ -58,7 +58,7 @@ jobs:
             sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
             libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev \
             libmpg123-dev libmp3lame-dev libflac-dev libvorbis-dev libopus-dev \
-            libpulse-dev libasound2-dev libfftw3-dev libboost-dev pulseaudio libgpiod-dev libgps-dev
+            libpulse-dev libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr python3-pil libgpiod-dev libgps-dev
           python3 -m venv "$RUNNER_TEMP/rade-validation-venv"
           "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install numpy==2.1.3 matplotlib==3.9.2
           "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu

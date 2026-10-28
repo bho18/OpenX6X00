@@ -261,7 +261,7 @@ jobs:
             -o Dpkg::Use-Pty=0 install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
             libtool pkg-config sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
             libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev libpulse-dev \
-            libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr
+            libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr python3-pil
       - name: Prepare pinned host dependencies
         run: |
           set -eu
@@ -330,7 +330,7 @@ jobs:
           }
           echo "::notice title=Host UI phase::Exercise diagnostics-disabled GUI"
           start_gui
-          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py --output "$RUNNER_TEMP/freedv-ui-off"
           echo "::notice title=Host UI phase::Stop first GUI"
           stop_process "$gui_pid"
           gui_pid=
@@ -341,4 +341,16 @@ jobs:
           timeout --kill-after=10s 5m ctest --test-dir build-host -R '^freedv_' --timeout 60 --output-on-failure
           echo "::notice title=Host UI phase::Exercise diagnostics-enabled GUI"
           start_gui
-          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py --snapshot
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py --snapshot --output "$RUNNER_TEMP/freedv-ui-on"
+      - name: Preserve actual simulator UI evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: freedv-host-ui-evidence
+          path: |
+            ${{ runner.temp }}/freedv-ui-off/
+            ${{ runner.temp }}/freedv-ui-on/
+            ${{ runner.temp }}/freedv-gui.log
+            ${{ runner.temp }}/freedv-pulse.log
+          if-no-files-found: warn
+          retention-days: 14

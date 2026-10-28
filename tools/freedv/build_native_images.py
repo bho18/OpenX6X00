@@ -97,6 +97,8 @@ def main():
         raise ValueError('source-matching real codec-enabled native adapter checks required')
     if host.get('status')!='PASS' or host.get('firmware_commit')!=revision or codec.get('status')!='PASS':
         raise ValueError('completed source-matching host and codec gates required')
+    if host.get('gui_smoke',{}).get('diagnostic_panel',{}).get('status')!='PASS':
+        raise ValueError('executed local-key/encoder diagnostic entry and panel checks required')
     required={'freedv_native_radio_backend','freedv_native_audio_adapter','freedv_session_controller',
               'freedv_capture_dispatch','freedv_audio_playback','freedv_writer_preferences',
               'freedv_input_fence','freedv_front_input','freedv_remote_input_fence','freedv_native_coordinator'}
