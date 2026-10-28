@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import math
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -116,9 +117,21 @@ def assess(result, mode, direction, fixture):
             'deadline_misses': misses, 'full_qualification': False}
 
 
+def executable_name(mode, fixture):
+    return 'rade-pipeline-bench' if fixture == 'receiver-noise' else ('rade-frame-bench' if mode == 'RADE-V1' else 'codec2-frame-bench')
+
+
+def verify_executables(root, cases):
+    missing = sorted({executable_name(mode, fixture) for _, mode, _, fixture in cases
+                      if not os.access(root / 'bin' / executable_name(mode, fixture), os.X_OK)})
+    if missing:
+        raise ValueError('Benchmark execute permission missing: ' + ', '.join(missing) +
+                         '. Run chmod +x on these verified package binaries before retrying.')
+
+
 def command(root, output, mode, direction, fixture):
     noise = fixture == 'receiver-noise'
-    exe = 'rade-pipeline-bench' if noise else ('rade-frame-bench' if mode == 'RADE-V1' else 'codec2-frame-bench')
+    exe = executable_name(mode, fixture)
     path = output / 'receiver-noise.raw' if noise else root / 'fixtures' / (fixture + '.raw')
     cmd = [sys.executable, str(root / 'tools/freedv/collect_benchmark.py'), '--mode', mode,
            '--direction', direction, '--benchmark', str(root / 'bin' / exe), '--fixture', str(path),
@@ -135,15 +148,18 @@ def save(output, summary):
     temporary.replace(output / 'summary.json')
 
 
-def run_suite(root, output, validate):
+def run_suite(root, output, validate, cases=None):
+    cases = CASES if cases is None else cases
     summary = {'schema_version': 1, 'experiment': 'short-remaining-codec-validation',
                'seconds_per_case': SECONDS, 'warmup_seconds': WARMUP, 'cases': [],
                'runner_sha256': digest(Path(__file__)), 'radio_io': False,
                'hardware_qualification': 'INCONCLUSIVE', 'automatic_upload': False,
                'complete': False, 'coverage_complete': False,
+               'selected_cases': [case[0] for case in cases],
+               'selected_coverage_complete': False,
                'operator_context': 'Confirm normal GUI/waterfall responsive and no other digital application.'}
     try:
-        for name, mode, direction, fixture in CASES:
+        for name, mode, direction, fixture in cases:
             preflight(output)
             entry = {'case': name, 'execution_validated': False, 'return_code': None}
             summary['cases'].append(entry)
@@ -174,8 +190,9 @@ def run_suite(root, output, validate):
                 entry['error'] = str(exc)
                 print(name, 'FAILED:', exc, flush=True)
             save(output, summary)
-        summary['coverage_complete'] = len(summary['cases']) == len(CASES)
-        summary['complete'] = summary['coverage_complete'] and all(c['execution_validated'] for c in summary['cases'])
+        summary['selected_coverage_complete'] = len(summary['cases']) == len(cases)
+        summary['coverage_complete'] = {c['case'] for c in summary['cases']} == {c[0] for c in CASES}
+        summary['complete'] = summary['selected_coverage_complete'] and all(c['execution_validated'] for c in summary['cases'])
     except BaseException as exc:
         summary['aborted'] = type(exc).__name__ + ': ' + str(exc)
         raise
@@ -188,6 +205,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--package', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--cases', nargs='+', choices=[case[0] for case in CASES],
+                        help='retry selected cases into a new folder; default is all five')
     args = parser.parse_args()
     root, output = args.package.resolve(), args.output.resolve()
     if not platform.machine().startswith('arm'):
@@ -195,6 +214,11 @@ def main():
     if output == root or root in output.parents:
         parser.error('results must be outside the verified package')
     text, checksums, validate = load_package(root)
+    selected = [case for case in CASES if args.cases is None or case[0] in args.cases]
+    try:
+        verify_executables(root, selected)
+    except ValueError as exc:
+        parser.error(str(exc))
     output.mkdir(parents=True, exist_ok=False)
     (output / 'package-manifest.json').write_text(text)
     (output / 'package-SHA256SUMS').write_text(checksums)
@@ -205,8 +229,9 @@ def main():
         'sample_rate_hz': 8000, 'channels': 1, 'format': 's16le', 'bytes': len(payload),
         'sha256': hashlib.sha256(payload).hexdigest(), 'rf_calibrated': False}, indent=2)+'\n')
     subprocess.run([sys.executable, str(root / 'tools/freedv/inventory.py'), '--output', str(output / 'inventory.json')], check=True)
-    summary = run_suite(root, output, validate)
-    print('Saved', output, '; execution complete:', summary['complete'], '; physical audio remains untested.')
+    summary = run_suite(root, output, validate, selected)
+    print('Saved', output, '; selected cases complete:', summary['complete'],
+          '; all five attempted:', summary['coverage_complete'], '; physical audio remains untested.')
     return 0 if summary['complete'] else 1
 
 

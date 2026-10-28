@@ -71,7 +71,7 @@ class ShortValidationTest(unittest.TestCase):
         for text in ['{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}']:
             with self.assertRaises(ValueError): suite.strict_json(text)
 
-    def exercise(self, output, fail_first=False, interrupt=False):
+    def exercise(self, output, fail_first=False, interrupt=False, cases=None):
         def collector(cmd):
             if interrupt: raise KeyboardInterrupt
             name = Path(cmd[-1]).name
@@ -86,7 +86,26 @@ class ShortValidationTest(unittest.TestCase):
             (dest/'result.json').write_text(json.dumps(value))
             return SimpleNamespace(returncode=0)
         with patch.object(suite, 'preflight'), patch.object(suite.subprocess, 'run', side_effect=collector):
-            return suite.run_suite(Path('/verified-package'), output, lambda *a, **k: None)
+            return suite.run_suite(Path('/verified-package'), output, lambda *a, **k: None, cases)
+
+    def test_missing_execute_bits_caught_before_running_cases(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); (root/'bin').mkdir()
+            for name in ['rade-frame-bench', 'codec2-frame-bench', 'rade-pipeline-bench']:
+                p = root/'bin'/name; p.write_bytes(b'test'); p.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, 'execute permission missing'):
+                suite.verify_executables(root, suite.CASES)
+            for p in (root/'bin').iterdir(): p.chmod(0o700)
+            suite.verify_executables(root, suite.CASES)
+
+    def test_retry_four_cases_does_not_repeat_noise_or_claim_full_coverage(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = self.exercise(Path(d), cases=suite.CASES[:4])
+            self.assertTrue(out['complete'])
+            self.assertTrue(out['selected_coverage_complete'])
+            self.assertFalse(out['coverage_complete'])
+            self.assertNotIn('rade-noise', out['selected_cases'])
+            self.assertEqual(len(out['cases']), 4)
 
     def test_failure_preserved_and_remaining_cases_execute(self):
         with tempfile.TemporaryDirectory() as d:
