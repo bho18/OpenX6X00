@@ -14,6 +14,16 @@ from native_image import run, sha
 ROOT=Path(__file__).resolve().parents[2]
 
 
+def execute_check(command, output, label, timeout=900):
+    result=subprocess.run(command,capture_output=True,text=True,timeout=timeout)
+    (output/(label+'stdout.txt')).write_text(result.stdout)
+    (output/(label+'stderr.txt')).write_text(result.stderr)
+    if result.returncode:
+        raise RuntimeError('SDK streaming check failed with exit '+str(result.returncode)+
+                           '; saved evidence in '+str(output)+'\n'+result.stderr[-4000:])
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('sdk','benchmark-work','output'): parser.add_argument('--'+name,type=Path,required=True)
@@ -39,22 +49,22 @@ def main():
     executable=out/'rade-stream-test'
     subprocess.run(list(map(str,command+sources+libraries+['-lm','-o',executable])),check=True)
     environment='LD_LIBRARY_PATH='+':'.join(map(str,(work/'rade_c/src',sysroot/'usr/lib',sysroot/'lib')))
-    result=subprocess.run(['qemu-arm','-cpu','cortex-a7','-L',str(sysroot),'-E',environment,str(executable),'--unpaced'],
-                          check=True,capture_output=True,text=True,timeout=900)
-    (out/'stdout.txt').write_text(result.stdout); (out/'stderr.txt').write_text(result.stderr)
+    result=execute_check(['qemu-arm','-cpu','cortex-a7','-L',str(sysroot),'-E',environment,str(executable),'--unpaced'],out,'')
     if 'PASS:' not in result.stdout or 'bounded' not in result.stdout:
         raise ValueError('streaming correctness test did not report its completed checks')
     fixture_source=ROOT/'tools/freedv/rade_stream_fixture_test.c'
     fixture_executable=out/'rade-stream-fixture-test'
     fixture_sources=[ROOT/'tools/freedv/rade_stream.c',fixture_source,ROOT/'src/freedv/capture_ring.c']
     subprocess.run(list(map(str,command+fixture_sources+libraries+['-lm','-o',fixture_executable])),check=True)
-    fixture_result=subprocess.run(['qemu-arm','-cpu','cortex-a7','-L',str(sysroot),'-E',environment,
-        str(fixture_executable),str(work/'package/fixtures/rade-modem.raw')],check=True,capture_output=True,text=True,timeout=900)
-    (out/'fixture-stdout.txt').write_text(fixture_result.stdout); (out/'fixture-stderr.txt').write_text(fixture_result.stderr)
+    fixture_result=execute_check(['qemu-arm','-cpu','cortex-a7','-L',str(sysroot),'-E',environment,
+        str(fixture_executable),str(work/'package/fixtures/rade-modem.raw')],out,'fixture-')
     if 'PASS:' not in fixture_result.stdout:
         raise ValueError('synchronized streaming test did not complete its assertions')
     record={'schema_version':1,'status':'PASS','execution_environment':'QEMU cortex-a7 unpaced correctness',
             'hardware_qualified':False,'timing_qualifies_radio':False,
+            'firmware_commit':run('git','rev-parse','HEAD',cwd=ROOT).strip(),
+            'dependency_package_firmware_commit':metadata['firmware_commit'],
+            'dependency_package_manifest_sha256':sha(work/'package/package-manifest.json'),
             'compiler_version':run(cc,'--version').splitlines()[0],
             'source_sha256':{str(p.relative_to(ROOT)):sha(p) for p in sources+[fixture_source,ROOT/'tools/freedv/rade_stream.h',ROOT/'tools/freedv/rade_speech.h',ROOT/'src/freedv/capture_ring.h']},
             'executable_sha256':sha(executable),'stdout':result.stdout,
