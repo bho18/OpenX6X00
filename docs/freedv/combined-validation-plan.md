@@ -1,6 +1,8 @@
 # Complete remaining validation with short native voice tests
 
-Status: implementation and test plan, not a released test procedure. The
+Status: implementation and test plan, not a released test procedure.
+See [native integration development status](native-audio-integration-status.md)
+for the v0.3.6 port, completed foundations, checks and remaining release gates. The
 [sustained synchronized RADE result](rade-long-sync-radio-2026-10-27.md) confirms
 real-time offline speech throughput; the original 70% margin remains unmet.
 No speaker, microphone, routing or physical PTT qualification is claimed here.

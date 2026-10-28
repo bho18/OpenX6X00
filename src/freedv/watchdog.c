@@ -48,7 +48,7 @@ bool freedv_watchdog_open(freedv_watchdog *w, freedv_watchdog_expired_fn expired
 }
 
 bool freedv_watchdog_arm(freedv_watchdog *w, unsigned duration_ms) {
-    if (!w || !duration_ms || duration_ms > 10000) return false;
+    if (!w || !duration_ms || duration_ms > 120000) return false;
     struct timespec deadline;
     if (clock_gettime(CLOCK_MONOTONIC, &deadline)) return false;
     deadline.tv_sec += (time_t)(duration_ms / 1000);

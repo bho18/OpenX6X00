@@ -1,3 +1,4 @@
+#include "freedv/writer_gate.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
@@ -526,6 +527,7 @@ bool screen_rec_is_on() {
 }
 
 void screen_rec_toggle() {
+    FD_WRITE_GUARD(return);
     if (active) {
         active = false;
         radio_set_rec_moni(false);

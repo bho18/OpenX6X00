@@ -13,6 +13,13 @@ typedef enum {
 } freedv_wav_error;
 typedef void (*freedv_wav_failure_fn)(void *context, freedv_wav_error error);
 typedef struct {
+    size_t (*read)(void *context, int16_t *samples, size_t count);
+    audio_freedv_capture_stats_t (*stats)(void *context);
+    void *context;
+} freedv_wav_source;
+typedef struct {
+    freedv_wav_source source;
+    bool owns_capture;
     pthread_t worker;
     FILE *file;
     atomic_bool stop_requested;
@@ -38,3 +45,9 @@ bool freedv_wav_capture_start(freedv_wav_capture *capture, const char *path,
  * Stop returns NOT_RUNNING if no start succeeded. A failed join leaves the
  * object started; the caller must not reuse it while the worker may run. */
 freedv_wav_error freedv_wav_capture_stop(freedv_wav_capture *capture);
+
+/* Use a dispatcher recording queue; caller owns producer start/cancellation and
+ * stops that producer before calling capture_stop. Never reads physical audio. */
+bool freedv_wav_capture_start_source(freedv_wav_capture *, const char *path,
+                                     freedv_wav_failure_fn, void *context,
+                                     const freedv_wav_source *);

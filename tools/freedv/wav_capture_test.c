@@ -71,6 +71,17 @@ static void read_exact(const char *path, unsigned char *data, size_t bytes) {
     assert(fread(data, 1, bytes, file) == bytes && fgetc(file) == EOF);
     fclose(file);
 }
+static size_t queue_read(void *arg, int16_t *out, size_t capacity) {
+    size_t *offset = arg;
+    size_t n = 5 - *offset;
+    if (n > capacity) n = capacity;
+    memcpy(out, samples + *offset, n * sizeof(*out));
+    *offset += n;
+    return n;
+}
+static audio_freedv_capture_stats_t queue_stats(void *arg) {
+    (void)arg; return (audio_freedv_capture_stats_t){0};
+}
 int main(void) {
     char directory[] = "/tmp/freedv-wav-test-XXXXXX";
     assert(mkdtemp(directory));
@@ -110,6 +121,17 @@ int main(void) {
     assert(freedv_wav_capture_stop(&capture) == FREEDV_WAV_IO_ERROR);
     assert(failure_count == 1 && failure_reason == FREEDV_WAV_IO_ERROR);
     atomic_store(&fail_after, 0);
+    char queue_path[160]; snprintf(queue_path, sizeof(queue_path), "%s/queue.wav", directory);
+    size_t queue_cursor = 0;
+    freedv_wav_source queued = {queue_read, queue_stats, &queue_cursor};
+    assert(!active);
+    assert(freedv_wav_capture_start_source(&capture, queue_path, failed, NULL, &queued));
+    assert(!active); /* external source never starts physical capture */
+    assert(freedv_wav_capture_stop(&capture) == FREEDV_WAV_OK && capture.samples == 5);
+    assert(!active && queue_cursor == 5);
+    read_exact(queue_path, file, sizeof(file));
+    assert(!memcmp(file + 44, expected, sizeof(expected)));
+    unlink(queue_path);
     unlink(path); unlink(hole_path); unlink(fail_path); rmdir(directory);
     pthread_cond_destroy(&mock_condition); pthread_mutex_destroy(&mock_mutex);
     puts("PASS: WAV header, PCM, exclusive creation, capture failure and write failure");

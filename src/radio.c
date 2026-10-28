@@ -10,6 +10,7 @@
  *      INCLUDES
  *********************/
 #include "radio.h"
+#include "freedv/writer_gate.h"
 #include "board.h"
 
 #include "hw/hw.h"
@@ -432,6 +433,7 @@ bool radio_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *snapshot) {
 #endif
 
 void radio_set_freq(int32_t freq) {
+    FD_WRITE_GUARD(return);
     if (!radio_check_freq(freq)) {
         LV_LOG_ERROR("Freq %i incorrect", freq);
         return;
@@ -470,6 +472,7 @@ static atomic_bool split_held;
  * active VFO without split is the path both bases take. radio_set_freq moved the active one in split, so FT8 and the
  * other apps sent their tone at B + 1325 Hz, and never restored the IF shift (the X6100's VFO stayed off by it) */
 void radio_set_tx_freq(int32_t freq) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = param_i_get(cfg_band_current_vfo);
 
     if (freq == 0) {
@@ -513,6 +516,7 @@ uint16_t radio_change_vol(int16_t df) {
 }
 
 void radio_change_mute() {
+    FD_WRITE_GUARD(return);
     mute = !mute;
     radio_vol_refresh();
 }
@@ -521,6 +525,7 @@ void radio_change_mute() {
  * silences the speaker (headphones connected) or while a TCI client transmits; the monitor 0 at AF 0 too, which otherwise still played FT8's
  * tones (issue #1). A screen recording keeps the monitor at 30 at least on the X6100, but not under a TCI client's PTT */
 void radio_vol_refresh() {
+    FD_WRITE_GUARD(return);
     bool    muted = mute || tci_mute || btaudio_speaker_muted() || param_i_get(cfg_speaker_off);
     int32_t vol   = param_i_get(cfg_volume);
     int32_t moni  = param_i_get(cfg_moni);
@@ -543,16 +548,19 @@ void radio_vol_refresh() {
 /* A TCI client keyed the radio: the operator is at the other end, so the speaker and the TX
  * monitor stay quiet here until it unkeys; then both come back as they were */
 void radio_set_tci_mute(bool on) {
+    FD_WRITE_GUARD(return);
     if (tci_mute == on) return;
     tci_mute = on;
     radio_vol_refresh();
 }
 
 static void on_volume_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vol_refresh();
 }
 
 bool radio_change_spmode(int16_t df) {
+    FD_WRITE_GUARD(return false);
     if (df == 0) {
         return params.spmode.x;
     }
@@ -565,6 +573,7 @@ bool radio_change_spmode(int16_t df) {
 }
 
 void radio_start_atu() {
+    FD_WRITE_GUARD(return);
     if (tx_refused()) {
         return;
     }
@@ -573,6 +582,7 @@ void radio_start_atu() {
 
 /* Nothing moves before the scan is known to start: the VFO that transmits goes to `from` only then */
 bool radio_start_swrscan(int32_t from) {
+    FD_WRITE_GUARD(return false);
     if (tx_refused() || !state_move(RADIO_RX, RADIO_SWRSCAN)) {
         return false;
     }
@@ -599,19 +609,23 @@ void radio_stop_swrscan() {
 }
 
 void radio_set_pwr(float d) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(set_txpwr(d));
 }
 
 void radio_set_digi_cap(bool on) {
+    FD_WRITE_GUARD(return);
     digi_cap = on;
     radio_set_pwr(param_f_get(cfg_pwr));
 }
 
 void radio_set_tx_filter(uint16_t from_hz, uint16_t to_hz) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(hw_set_i(HW_TX_FILTER_LOW, from_hz); hw_set_i(HW_TX_FILTER_HIGH, to_hz));
 }
 
 void radio_set_rx_dsp_off(bool all_off) {
+    FD_WRITE_GUARD(return);
     bool nr = param_i_get(cfg_nr), nb = param_i_get(cfg_nb);
     bool dnf = param_i_get(cfg_dnf), dnf_auto = param_i_get(cfg_dnf_auto);
 
@@ -694,6 +708,7 @@ static bool tx_refused(void) {
 }
 
 void radio_set_ptt(bool tx) {
+    FD_WRITE_GUARD(return);
     if (tx && tx_refused()) {
         return;
     }
@@ -703,6 +718,7 @@ void radio_set_ptt(bool tx) {
 static int mic_override = -1;      /* the walkie screen's mic, cfg_mic stays as saved */
 
 void radio_set_mic_override(int mic) {
+    FD_WRITE_GUARD(return);
     mic_override = mic;
     WITH_RADIO_LOCK(hw_set_i(HW_MIC, mic < 0 ? param_i_get(cfg_mic) : mic));
 }
@@ -717,6 +733,7 @@ static atomic_bool modem_on;    /* read on other threads (Winlink's on_air) whil
  * the voice messages): the active VFO moved before keying and back after; an app that moved it for its tone keeps
  * its own */
 void radio_set_modem(bool tx) {
+    FD_WRITE_GUARD(return);
     static bool moved;
 
     if (tx && tx_refused()) {
@@ -762,6 +779,7 @@ static void play_mode_apply(audio_play_mode_t mode) {
 }
 
 void radio_set_play_mode(audio_play_mode_t mode) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(play_mode_apply(mode));
 }
 
@@ -790,27 +808,33 @@ void radio_usb_to_cat(void) {
 }
 
 void radio_speaker_play(bool speaker) {
+    FD_WRITE_GUARD(return);
     radio_set_play_mode(speaker ? AUDIO_PLAY_ON : AUDIO_PLAY_OFF);
 }
 
 void radio_set_line_in(uint8_t d) {
+    FD_WRITE_GUARD(return);
     CHANGE_PARAM(d, params.line_in, params.dirty.line_in, HW_LINE_IN);
 }
 
 void radio_set_line_out(uint8_t d) {
+    FD_WRITE_GUARD(return);
     CHANGE_PARAM(d, params.line_out, params.dirty.line_out, HW_LINE_OUT);
 }
 
 void radio_set_qsk_time(uint16_t ms) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(hw_set_i(HW_QSK_TIME, ms));
 }
 
 void radio_set_rec_moni(bool on) {
+    FD_WRITE_GUARD(return);
     rec_moni = on;
     radio_vol_refresh();
 }
 
 void radio_set_morse_key(bool on) {
+    FD_WRITE_GUARD(return);
     if (on && tx_refused()) {
         return;
     }
@@ -834,20 +858,24 @@ static void radio_unlock() {
 
 /* A setting straight to the base: user_data is the hw_param_t */
 static void on_change_i(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     int32_t v = subject_i_get((SubjectInt*)subj);
     WITH_RADIO_LOCK(hw_set_i((hw_param_t)(intptr_t)user_data, v));
 }
 
 static void on_change_f(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     float v = subject_f_get((SubjectFloat*)subj);
     WITH_RADIO_LOCK(hw_set_f((hw_param_t)(intptr_t)user_data, v));
 }
 
 static void on_pwr_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(set_txpwr(subject_f_get((SubjectFloat*)subj)));
 }
 
 static void on_vfo_freq_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val;
     if (vfo == RADIO_VFO_A) {
@@ -869,11 +897,13 @@ static void on_vfo_freq_change(Subject *subj, void *user_data) {
  * now applies. A shift set to 0 (off) left the base on the IF until the next retune, and the hand mic's PTT, which
  * the base keys by itself, went out there: 29.500 MHz on 10 m for a 2 m 145.500 */
 static void on_transverter_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     on_vfo_freq_change(NULL, (void *)RADIO_VFO_A);
     on_vfo_freq_change(NULL, (void *)RADIO_VFO_B);
 }
 
 static void on_vfo_mode_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
     radio_lock();
@@ -899,11 +929,13 @@ static void apply_vfo_agc(radio_vfo_t vfo) {
 }
 
 static void on_vfo_agc_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     (void)subj;
     apply_vfo_agc((radio_vfo_t)user_data);
 }
 
 static void on_cw_agc_cond_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     (void)subj;
     (void)user_data;
     apply_vfo_agc(RADIO_VFO_A);
@@ -960,6 +992,7 @@ static void update_agc_time(Subject *subj, void *user_data) {
 }
 
 static void on_vfo_att_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
     WITH_RADIO_LOCK(hw_vfo_set_att(vfo, new_val));
@@ -967,6 +1000,7 @@ static void on_vfo_att_change(Subject *subj, void *user_data) {
 }
 
 static void on_vfo_pre_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
     WITH_RADIO_LOCK(hw_vfo_set_pre(vfo, new_val));
@@ -974,6 +1008,7 @@ static void on_vfo_pre_change(Subject *subj, void *user_data) {
 }
 
 static void on_atu_network_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     (void)subj;
     (void)user_data;
     uint32_t new_val = cfg_atu_get_network();
@@ -982,6 +1017,7 @@ static void on_atu_network_change(Subject *subj, void *user_data) {
 }
 
 static void on_low_filter_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_mode_t mode = cparam_i_get(cfg_cur_mode);
     if (mode == radio_mode_am || mode == radio_mode_nfm || mode == radio_mode_sam || mode == radio_mode_wfm) {
         // No update low on AM/FM, low should be -high
@@ -997,6 +1033,7 @@ static void on_low_filter_change(Subject *subj, void *user_data) {
 }
 
 static void on_high_filter_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     int32_t high = cparam_i_get(cfg_cur_filter_high);
     int32_t high2 = high + FILTER_2_OFFSET_OUT;
     switch (cparam_i_get(cfg_cur_mode)) {
@@ -1022,6 +1059,7 @@ static void on_high_filter_change(Subject *subj, void *user_data) {
 }
 
 static void on_change_comp_ratio(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     uint8_t ratio = subject_i_get((SubjectInt*)subj);
     if (ratio < 1) {
         ratio = 1;
@@ -1038,6 +1076,7 @@ static void on_change_comp_ratio(Subject *subj, void *user_data) {
 }
 
 static void on_fw_zoom_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     uint8_t zoom = subject_i_get((SubjectInt*)subj);
     uint8_t val = 0;
     while (zoom > 1) {
@@ -1048,6 +1087,7 @@ static void on_fw_zoom_change(Subject *subj, void *user_data) {
 }
 
 static void on_if_shift_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     int32_t shift = subject_i_get((SubjectInt*)subj);
     int32_t cur_freq = cparam_i_get(cfg_fg_freq);
 
@@ -1065,6 +1105,7 @@ static void on_if_shift_change(Subject *subj, void *user_data) {
 }
 
 static void on_band_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     // Workaround for bug with ignored IQ offset on band change from BASE
     int32_t i_val = param_i_get(cfg_band_tx_i_offset);
     int32_t q_val = param_i_get(cfg_band_tx_q_offset);
@@ -1269,9 +1310,26 @@ static void swr_trip_cb(void *arg) {
     cw_encoder_stop();
     paddle_keyer_stop();
     dialog_msg_voice_ptt_pressed();
-    radio_set_morse_key(false);
-    radio_set_modem(false);     /* the digital apps see it and stop (tx_player.c) */
-    radio_set_ptt(false);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (!fd_writer_enter()) {
+        /* Protection bypass: an exclusive diagnostic lease must never suppress
+         * SWR unkeying. Do not restore ordinary analog routing while TX holds. */
+        atomic_store(&modem_on, false);
+        morse_on = false;
+        radio_lock();
+        hw_pin_set(HW_PIN_MORSE_KEY, false);
+        hw_set_i(HW_MODEM, false);
+        hw_set_i(HW_PTT, false);
+        radio_unlock();
+    } else {
+#endif
+        radio_set_morse_key(false);
+        radio_set_modem(false);
+        radio_set_ptt(false);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        fd_writer_exit();
+    }
+#endif
     msg_schedule_text_fmt("TX stopped: SWR %.1f", *(float *)arg);
 }
 

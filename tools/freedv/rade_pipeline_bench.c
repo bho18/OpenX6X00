@@ -25,6 +25,7 @@
 #include "fargan.h"
 #include "lpcnet.h"
 #include "cpu_support.h"
+#include "rade_speech.h"
 
 static void die(const char *message) { fprintf(stderr, "%s\n", message); exit(1); }
 static uint64_t now_ns(void) {
@@ -154,13 +155,10 @@ struct context {
     int feature_n, eoo_n;
     struct rade *rade;
     SRC_STATE *input_src, *output_src;
-    FARGANState fargan;
+    fd_rade_speech_decoder speech;
     float *fixture, *input, *eoo, *native_out, *converted;
     short *pcm_out;
     RADE_COMP *iq;
-    float cont[5 * NB_TOTAL_FEATURES];
-    int cont_frames;
-    bool fargan_ready;
     struct queue q;
     struct counters full, measured;
     struct record *stats;
@@ -265,23 +263,9 @@ static void run_b(struct context *c, struct record *r) {
     uint64_t cpu = cpu_ns(), t = now_ns();
     size_t produced = 0;
     if (r->nfeatures) {
-        for (int j = 0; j < r->nfeatures / NB_TOTAL_FEATURES; ++j) {
-            const float *feat = r->features + j * NB_TOTAL_FEATURES;
-            if (!c->fargan_ready) {
-                memcpy(c->cont + c->cont_frames * NB_TOTAL_FEATURES, feat, NB_TOTAL_FEATURES * sizeof(float));
-                if (++c->cont_frames == 5) {
-                    float packed[5 * NB_FEATURES], zero[FARGAN_CONT_SAMPLES] = {0};
-                    for (int k = 0; k < 5; ++k)
-                        memcpy(packed + k * NB_FEATURES, c->cont + k * NB_TOTAL_FEATURES, NB_FEATURES * sizeof(float));
-                    fargan_cont(&c->fargan, zero, packed);
-                    c->fargan_ready = true;
-                }
-                continue;
-            }
-            if (produced + LPCNET_FRAME_SIZE > c->max_n) die("speech output buffer too small");
-            fargan_synthesize(&c->fargan, c->native_out + produced, feat);
-            produced += LPCNET_FRAME_SIZE;
-        }
+        int rendered = fd_rade_speech_render(&c->speech, r->features, r->nfeatures, c->native_out, c->max_n);
+        if (rendered < 0) die("speech output buffer too small or invalid features");
+        produced = (size_t)rendered;
         r->speech_ns = now_ns() - t;
     }
     r->native_count = produced;
@@ -461,7 +445,7 @@ int main(int argc, char **argv) {
     if (rade_get_acquisition_workers(c.rade) != c.acquisition_workers)
         die("requested acquisition worker count was not configured");
 #endif
-    fargan_init(&c.fargan);
+    fd_rade_speech_init(&c.speech);
     uint64_t initialization_ns = now_ns() - t;
     c.feature_n = rade_n_features_in_out(c.rade);
     c.eoo_n = rade_n_eoo_bits(c.rade);

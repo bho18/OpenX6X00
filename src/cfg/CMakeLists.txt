@@ -4,6 +4,10 @@ file(GLOB APP_CFG_SOURCES
 )
 
 add_library(cfg STATIC ${APP_CFG_SOURCES})
+if(ENABLE_FREEDV_DIAGNOSTICS)
+    target_compile_definitions(cfg PUBLIC ENABLE_FREEDV_DIAGNOSTICS=1)
+    target_link_libraries(cfg PUBLIC freedv_writer_gate)
+endif()
 
 target_include_directories(cfg PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}

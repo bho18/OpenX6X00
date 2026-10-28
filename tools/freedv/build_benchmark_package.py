@@ -152,6 +152,7 @@ def main():
     manifest['rade_benchmark_timing'] = {
         'stage_schema_version': 1,
         'source_sha256': sha(code / 'tools/freedv/rade_frame_bench.c'),
+        'shared_speech_sha256': sha(code / 'tools/freedv/rade_speech.h'),
         'full_block_timer_includes_stage_instrumentation': True,
         'instrumentation_overhead_subtracted': False,
         'warmup_in_stage_statistics': False,
@@ -298,6 +299,7 @@ endif()'''))
             '-o', package / 'bin/rade-pipeline-bench')
         manifest['rade_pipeline_experiment'] = {
             'enabled': True, 'production_qualified': False, 'radio_io': False,
+            'shared_speech_sha256': sha(code / 'tools/freedv/rade_speech.h'),
             'source_sha256': sha(pipeline_source), 'additional_link_option': '-pthread',
             'opus_config_sha256': sha(opus / 'config.h'),
             'validation_harness_sha256': sha(code / 'tools/freedv/validate_rade_pipeline_sdk.py'),

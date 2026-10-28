@@ -21,6 +21,7 @@
 #include "fargan.h"
 #include "lpcnet.h"
 #include "cpu_support.h"
+#include "rade_speech.h"
 
 static void die(const char *message) { fprintf(stderr, "%s\n", message); exit(1); }
 static uint64_t now_ns(void) {
@@ -142,10 +143,10 @@ int main(int argc, char **argv) {
     char unused[] = "built-in";
     struct rade *r = rade_open(unused, RADE_VERBOSE_0);
     LPCNetEncState *encoder = tx ? lpcnet_encoder_create() : NULL;
-    FARGANState *fargan = tx ? NULL : calloc(1, sizeof(*fargan));
+    fd_rade_speech_decoder *fargan = tx ? NULL : calloc(1, sizeof(*fargan));
     if (!r || (tx && !encoder) || (!tx && !fargan)) die("RADE or speech initialization failed");
     int arch = opus_select_arch();
-    if (fargan) fargan_init(fargan);
+    if (fargan) fd_rade_speech_init(fargan);
     uint64_t init_ns = now_ns() - init_start;
     int feature_n = rade_n_features_in_out(r), nin_max = rade_nin_max(r), tx_n = rade_n_tx_out(r);
     int eoo_n = rade_n_eoo_bits(r);
@@ -169,9 +170,6 @@ int main(int argc, char **argv) {
     struct stage_totals stages[ST_COUNT] = {0};
     if (!input || !features || !eoo || !native_out || !converted || !pcm_in || !pcm_out || !iq || !ratios || !milliseconds || !stage_blocks)
         die("buffer allocation failed");
-    float cont[5 * NB_TOTAL_FEATURES] = {0};
-    int cont_frames = 0;
-    bool fargan_ready = false;
     uint64_t warm_ns = 0, audio_ns = 0, compute_ns = 0, deadline = now_ns();
     uint64_t misses = 0, out_native = 0, out_converted = 0, sync_blocks = 0, feature_blocks = 0, nonzero = 0, muted = 0;
     uint64_t sync_after_interrupt = 0;
@@ -201,10 +199,7 @@ int main(int argc, char **argv) {
         if (tx) {
             stage_start = now_ns();
             src_float_to_short_array(input, pcm_in, n);
-            int feature_frames = feature_n / RADE_NB_TOTAL_FEATURES;
-            for (int j = 0; j < feature_frames; ++j)
-                lpcnet_compute_single_frame_features(encoder, pcm_in + j * LPCNET_FRAME_SIZE,
-                    features + j * RADE_NB_TOTAL_FEATURES, arch);
+            if (!fd_rade_speech_encode(encoder, pcm_in, features, feature_n, arch)) die("invalid speech features");
             block_ns[ST_TX_SPEECH] = now_ns() - stage_start;
             block_calls[ST_TX_SPEECH] = 1;
             stage_start = now_ns();
@@ -231,23 +226,8 @@ int main(int argc, char **argv) {
             valid = n_features > 0;
             if (n_features > 0) {
                 stage_start = now_ns();
-                for (int j = 0; j < n_features / RADE_NB_TOTAL_FEATURES; ++j) {
-                    const float *feat = features + j * RADE_NB_TOTAL_FEATURES;
-                    if (!fargan_ready) {
-                        memcpy(cont + cont_frames * NB_TOTAL_FEATURES, feat, NB_TOTAL_FEATURES * sizeof(float));
-                        if (++cont_frames == 5) {
-                            float packed[5 * NB_FEATURES], zero[FARGAN_CONT_SAMPLES] = {0};
-                            for (int k = 0; k < 5; ++k)
-                                memcpy(packed + k * NB_FEATURES, cont + k * NB_TOTAL_FEATURES, NB_FEATURES * sizeof(float));
-                            fargan_cont(fargan, zero, packed);
-                            fargan_ready = true;
-                        }
-                        continue;
-                    }
-                    if ((size_t)produced + LPCNET_FRAME_SIZE > max_n) die("speech output buffer too small");
-                    fargan_synthesize(fargan, native_out + produced, feat);
-                    produced += LPCNET_FRAME_SIZE;
-                }
+                produced = fd_rade_speech_render(fargan, features, n_features, native_out, max_n);
+                if (produced < 0) die("speech output buffer too small or invalid features");
                 block_ns[ST_RX_SPEECH] = now_ns() - stage_start;
                 block_calls[ST_RX_SPEECH] = 1;
             }

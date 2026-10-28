@@ -29,71 +29,102 @@ const char *pa_strerror(int err) { (void)err; return "test failure"; }
 void _lv_log_add(lv_log_level_t level, const char *file, int line, const char *func, const char *format, ...) {
     (void)level; (void)file; (void)line; (void)func; (void)format;
 }
-size_t pa_stream_writable_size(const pa_stream *s) { assert(s == bt_stm && locks == 1); return writable; }
+size_t pa_stream_writable_size(const pa_stream *s) { assert(s == (pa_stream *)&token_stream && locks == 1); return writable; }
 int pa_stream_write(pa_stream *s, const void *data, size_t bytes, pa_free_cb_t cb, int64_t offset, pa_seek_mode_t seek) {
-    assert(s == bt_stm && locks == 1 && data && !cb && !offset && seek == PA_SEEK_RELATIVE);
+    assert(s == (pa_stream *)&token_stream && locks == 1 && data && !cb && !offset && seek == PA_SEEK_RELATIVE);
     ++writes; if (write_error) return -1; written += bytes; return 0;
 }
 int pa_stream_get_latency(pa_stream *s, pa_usec_t *latency, int *negative) {
-    assert(s == bt_stm && locks == 1); *latency = 42000; *negative = latency_negative; return latency_error;
+    assert(s == (pa_stream *)&token_stream && locks == 1); *latency = 42000; *negative = latency_negative; return latency_error;
 }
 void pa_stream_set_underflow_callback(pa_stream *s, pa_stream_notify_cb_t cb, void *userdata) {
-    assert(s == bt_stm && locks == 1);
-    assert((cb == diagnostic_playback_underflow && userdata == &diagnostic_playback_stats) || (!cb && !userdata));
+    assert(s == (pa_stream *)&token_stream && locks == 1);
+    assert((cb == diagnostic_playback_underflow && userdata) || (!cb && !userdata));
 }
+static pa_stream_success_cb_t flush_callback;
+static void *flush_userdata;
+static pa_buffer_attr actual_attr = {.maxlength=17640, .tlength=8820, .prebuf=5292, .minreq=882};
+const pa_buffer_attr *pa_stream_get_buffer_attr(pa_stream *s) { (void)s; assert(locks == 1); return &actual_attr; }
+void pa_operation_cancel(pa_operation *op) { assert(op == (pa_operation *)&token_operation && locks == 1); flush_callback = NULL; flush_userdata = NULL; }
 pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *userdata) {
-    assert(s == bt_stm && locks == 1 && !cb && !userdata);
+    assert(s == (pa_stream *)&token_stream && locks == 1 && cb && userdata);
+    flush_callback = cb; flush_userdata = userdata;
     return flush_ok ? (pa_operation *)&token_operation : NULL;
 }
 void pa_operation_unref(pa_operation *op) { assert(op == (pa_operation *)&token_operation); ++flush_unrefs; }
-int pa_stream_disconnect(pa_stream *s) { assert(s == bt_stm && locks == 1); ++disconnects; return 0; }
-void pa_stream_unref(pa_stream *s) { assert(s == bt_stm && locks == 1); }
+int pa_stream_disconnect(pa_stream *s) { assert(s == (pa_stream *)&token_stream && locks == 1); ++disconnects; return 0; }
+void pa_stream_unref(pa_stream *s) { assert(s == (pa_stream *)&token_stream && locks == 1); }
 
+
+static void *cancel_worker(void *arg) {
+    assert(audio_freedv_playback_cancel(arg));
+    return NULL;
+}
 int main(void) {
     int16_t pcm[] = {1,2,3,4,5};
-    assert(audio_freedv_playback_write(pcm, 5) == -1);
-    assert(!audio_freedv_playback_begin()); /* audio subsystem unavailable */
+    assert(!audio_freedv_playback_open());
     mloop = (pa_threaded_mainloop *)&token_loop;
-    assert(audio_freedv_playback_begin());
-    assert(!audio_freedv_playback_begin()); /* cannot replace active stream */
-    writable = 5; /* odd byte room: only two complete samples fit */
-    assert(audio_freedv_playback_write(pcm, 5) == 2);
+    audio_freedv_playback_t *p = audio_freedv_playback_open();
+    assert(fd_writer_reserve());
+    assert(audio_play(pcm, 5) == -1);
+    assert(!audio_play_if_room(pcm, 5));
+    assert(!audio_play_lowlat_begin());
+    fd_writer_release();
+    assert(p && !bt_stm); /* independent of the worker's network/Bluetooth TLS */
+    assert(audio_freedv_playback_observe(p).maxlength_bytes == 17640);
+    writable = 5;
+    assert(audio_freedv_playback_submit(p, pcm, 5) == 2);
     writable = 0;
-    assert(audio_freedv_playback_write(pcm + 2, 3) == 0);
+    assert(audio_freedv_playback_submit(p, pcm + 2, 3) == 0);
     writable = 6;
-    assert(audio_freedv_playback_write(pcm + 2, 3) == 3);
+    assert(audio_freedv_playback_submit(p, pcm + 2, 3) == 3);
     assert(written == sizeof(pcm) && writes == 2);
-    assert(audio_freedv_playback_stats().accepted_samples == 5);
-    assert(audio_freedv_playback_write(NULL, 0) == 0);
-    assert(audio_freedv_playback_write(NULL, 1) == -1);
-    assert(audio_freedv_playback_write(pcm, SIZE_MAX) == -1);
+    assert(audio_freedv_playback_observe(p).accepted_samples == 5);
+    assert(audio_freedv_playback_submit(p, NULL, 0) == 0);
+    assert(audio_freedv_playback_submit(p, NULL, 1) == -1);
+    assert(audio_freedv_playback_submit(p, pcm, SIZE_MAX) == -1);
     writable = (size_t)-1;
-    assert(audio_freedv_playback_write(pcm, 1) == -1);
+    assert(audio_freedv_playback_submit(p, pcm, 1) == -1);
     writable = 2; write_error = 1;
-    assert(audio_freedv_playback_write(pcm, 1) == -1);
+    assert(audio_freedv_playback_submit(p, pcm, 1) == -1);
     test_state = PA_STREAM_FAILED;
-    assert(audio_freedv_playback_write(pcm, 1) == -1);
-    assert(audio_freedv_playback_stats().write_errors == 5);
-    assert(audio_freedv_playback_stats().accepted_samples == 5);
-    assert(audio_freedv_playback_stats().queued_latency_us == 42000);
+    assert(audio_freedv_playback_submit(p, pcm, 1) == -1);
+    assert(audio_freedv_playback_observe(p).write_errors == 5);
+    assert(audio_freedv_playback_observe(p).queued_latency_us == 42000);
     latency_negative = 1;
-    assert(!audio_freedv_playback_stats().latency_known);
+    assert(!audio_freedv_playback_observe(p).latency_known);
     latency_negative = 0; latency_error = -1;
-    assert(!audio_freedv_playback_stats().latency_known);
-    diagnostic_playback_underflow(bt_stm, &diagnostic_playback_stats);
-    assert(audio_freedv_playback_stats().underflows == 1);
-    audio_freedv_playback_end();
-    assert(disconnects == 1 && !bt_stm && !diagnostic_playback_active);
-    assert(audio_freedv_playback_stats().write_errors == 6); /* flush failure */
-    assert(!audio_freedv_playback_stats().latency_known);
-    audio_freedv_playback_end();
-    assert(disconnects == 1 && !locks);
+    assert(!audio_freedv_playback_observe(p).latency_known);
+    diagnostic_playback_underflow(p->stream, p);
+    assert(audio_freedv_playback_observe(p).underflows == 1);
+    pa_threaded_mainloop_lock(mloop);
+    audio_freedv_playback_request_cancel(p); /* must work even while PA lock is held */
+    pa_threaded_mainloop_unlock(mloop);
+    assert(audio_freedv_playback_observe(p).cancelled);
+    assert(!audio_freedv_playback_observe(p).flush_acknowledged);
+    assert(!audio_freedv_playback_cancel(p)); /* failed request is not acknowledgement */
+    assert(audio_freedv_playback_observe(p).cancelled);
+    assert(!audio_freedv_playback_observe(p).flush_acknowledged);
+    flush_ok = 1;
+    pthread_t worker;
+    assert(!pthread_create(&worker, NULL, cancel_worker, p));
+    assert(!pthread_join(worker, NULL)); /* watchdog can reach the owner's stream */
+    assert(!audio_freedv_playback_observe(p).flush_acknowledged);
+    assert(audio_freedv_playback_submit(p, pcm, 1) == -1); /* late worker output fenced */
+    pa_threaded_mainloop_lock(mloop);
+    flush_callback(p->stream, 1, flush_userdata);
+    pa_threaded_mainloop_unlock(mloop);
+    assert(audio_freedv_playback_observe(p).flush_acknowledged);
+    assert(audio_freedv_playback_observe(p).flushes == 1);
+    audio_freedv_playback_close(p);
+    assert(disconnects == 1 && flush_unrefs == 1 && !locks && !flush_callback);
     test_state = PA_STREAM_READY;
     assert(audio_freedv_playback_begin());
-    assert(!audio_freedv_playback_stats().write_errors && !audio_freedv_playback_stats().accepted_samples);
-    flush_ok = 1;
+    assert(!audio_freedv_playback_begin());
+    assert(!audio_freedv_playback_stats().accepted_samples);
     audio_freedv_playback_end();
-    assert(disconnects == 2 && flush_unrefs == 1 && audio_freedv_playback_stats().flushes == 1);
-    puts("PASS: partial playback, no room, error accounting, latency, underflow and stop");
+    audio_freedv_playback_end();
+    assert(disconnects == 2);
+    puts("PASS: cross-thread cancellation, acknowledged flush, partial writes and finite buffer attributes");
     return 0;
 }

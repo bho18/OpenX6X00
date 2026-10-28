@@ -10,9 +10,9 @@ typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t changed;
     bool owned, busy, quiescent, allowed, start_ok, clear_ok, restore_ok;
-    bool software_tx, route_changed;
+    bool software_tx, route_changed, audio_pending;
     fd_observation observed;
-    unsigned starts, clears, restores, releases;
+    unsigned starts, clears, restores, releases, observations;
     int last_case;
 } fake;
 static bool acquire(void *arg, bool *quiet, fd_observation *observed) {
@@ -29,16 +29,18 @@ static void release(void *arg) {
 }
 static bool observe(void *arg, fd_observation *observed) {
     fake *f = arg; pthread_mutex_lock(&f->mutex); *observed = f->observed;
+    ++f->observations; pthread_cond_broadcast(&f->changed);
     pthread_mutex_unlock(&f->mutex); return true;
 }
 static bool permitted(void *arg) {
     fake *f = arg; pthread_mutex_lock(&f->mutex); bool ok = f->allowed;
     pthread_mutex_unlock(&f->mutex); return ok;
 }
-static bool start(void *arg, int which) {
+static bool start(void *arg, const fd_case *selected) {
+    int which = selected->matrix_case;
     fake *f = arg; pthread_mutex_lock(&f->mutex);
     assert(f->owned); ++f->starts; f->last_case = which;
-    if (which >= 0) { f->software_tx = true; f->route_changed = true; }
+    if (which >= 0) { f->software_tx = selected->kind != FD_CASE_RX_PLAYBACK; f->route_changed = true; }
     bool ok = f->start_ok;
     pthread_mutex_unlock(&f->mutex); return ok;
 }
@@ -66,11 +68,28 @@ static void wait_for_clear(fake *f, unsigned count) {
     while (f->clears < count) assert(!pthread_cond_timedwait(&f->changed, &f->mutex, &limit));
     pthread_mutex_unlock(&f->mutex);
 }
+static bool audio_quiet(void *arg) {
+    fake *f = arg; pthread_mutex_lock(&f->mutex); bool ok = !f->audio_pending;
+    pthread_mutex_unlock(&f->mutex); return ok;
+}
+static void wait_for_observation(fake *f, unsigned count) {
+    struct timespec limit; assert(!clock_gettime(CLOCK_REALTIME, &limit)); limit.tv_sec += 5;
+    pthread_mutex_lock(&f->mutex);
+    while (f->observations < count) assert(!pthread_cond_timedwait(&f->changed, &f->mutex, &limit));
+    pthread_mutex_unlock(&f->mutex);
+}
+static bool wait_restore(fd_controller *c) {
+    for (unsigned i = 0; i < 2500; ++i) {
+        if (fd_controller_poll_restore(c)) return true;
+        struct timespec delay = {0, 2000000}; nanosleep(&delay, NULL);
+    }
+    return false;
+}
 int main(void) {
     fake f = {.mutex=PTHREAD_MUTEX_INITIALIZER, .changed=PTHREAD_COND_INITIALIZER,
               .quiescent=true, .allowed=true, .start_ok=true, .clear_ok=true, .restore_ok=true,
               .observed={true, true, false, 1}};
-    fd_controller_backend backend = {acquire, release, observe, permitted, start, quiesce, restore};
+    fd_controller_backend backend = {acquire, release, observe, permitted, start, quiesce, audio_quiet, restore};
     fd_controller c;
     assert(!fd_controller_init(&c, NULL, &f));
     assert(fd_controller_init(&c, &backend, &f));
@@ -130,6 +149,48 @@ int main(void) {
     wait_for_clear(&f, clear_before + 1);
     assert(!fd_controller_poll_restore(&c));
     set_observed(&f, true, true, false, 9);
+    assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
+    /* A receive route needs a completed monitored probe and local confirmation. */
+    assert(fd_controller_acquire(&c));
+    assert(!fd_controller_select_rx_playback(&c, FD_R1_M0_P0));
+    assert(!fd_controller_confirm_rx_route(&c, FD_R1_M0_P0, true));
+    assert(fd_controller_select_matrix(&c, FD_R1_M0_P0));
+    assert(fd_controller_arm(&c, true));
+    assert(fd_controller_run(&c, 40, 10000));
+    set_observed(&f, true, true, false, 10);
+    pthread_mutex_lock(&f.mutex); unsigned observations = f.observations; pthread_mutex_unlock(&f.mutex);
+    wait_for_observation(&f, observations + 1);
+    assert(fd_controller_stop(&c));
+    set_observed(&f, true, true, false, 11);
+    f.audio_pending = true;
+    assert(!fd_controller_poll_restore(&c)); /* command clear and RX do not imply a flushed sink */
+    f.audio_pending = false;
+    assert(fd_controller_poll_restore(&c));
+    assert(!fd_controller_confirm_rx_route(&c, FD_R1_M0_P0, false));
+    assert(!fd_controller_confirm_rx_route(&c, FD_R0_M0_P0, true));
+    assert(fd_controller_confirm_rx_route(&c, FD_R1_M0_P0, true));
+    assert(fd_controller_select_rx_playback(&c, FD_R1_M0_P0));
+    assert(!fd_controller_arm(&c, true));
+    assert(fd_controller_run(&c, 50, 120000)); /* no relaxation of RF case limit */
+    pthread_mutex_lock(&f.mutex); clear_before = f.clears; pthread_mutex_unlock(&f.mutex);
+    set_observed(&f, true, true, true, 12);
+    wait_for_clear(&f, clear_before + 1); /* unexpected TX aborts without GUI polling */
+    assert(!fd_controller_release(&c));
+    assert(!fd_controller_poll_restore(&c));
+    set_observed(&f, true, true, false, 13);
+    assert(wait_restore(&c) && fd_controller_release(&c));
+    assert(fd_controller_acquire(&c));
+    assert(!fd_controller_select_rx_playback(&c, FD_R1_M0_P0)); /* qualification never persists */
+    assert(fd_controller_select_passive_rx(&c));
+    assert(fd_controller_run(&c, 55, 120000)); /* monitor abort cancelled the prior timer */
+    assert(fd_controller_stop(&c));
+    set_observed(&f, true, true, false, 14);
+    assert(fd_controller_poll_restore(&c));
+    assert(fd_controller_select_mic_tx(&c, FD_R1_M1_P1));
+    assert(fd_controller_arm(&c, true));
+    assert(!fd_controller_run(&c, 60, 10001));
+    assert(fd_controller_stop(&c));
+    set_observed(&f, true, true, false, 15);
     assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
     assert(fd_controller_close(&c));
     pthread_cond_destroy(&f.changed); pthread_mutex_destroy(&f.mutex);

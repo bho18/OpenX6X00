@@ -55,7 +55,7 @@ int main(void) {
     assert(!freedv_watchdog_open(&w, NULL, &f));
     assert(freedv_watchdog_open(&w, fired, &f));
     assert(!freedv_watchdog_arm(&w, 0));
-    assert(!freedv_watchdog_arm(&w, 10001));
+    assert(!freedv_watchdog_arm(&w, 120001));
     assert(freedv_watchdog_arm(&w, 50));
     assert(!freedv_watchdog_arm(&w, 50));
     freedv_watchdog_cancel(&w);

@@ -8,6 +8,7 @@ static bool observed_rx(fd_observation observed) {
 bool fd_acquire(fd_session *s, bool busy, bool commands_quiescent, fd_observation observed) {
     if (!s || s->state != FD_IDLE || busy || !commands_quiescent || !observed_rx(observed)) return false;
     s->state = FD_READY;
+    s->qualified_rx_routes = 0;
     s->tx_case = false;
     s->selected = false;
     s->software_cleared = false;
@@ -21,6 +22,7 @@ bool fd_select_passive_rx(fd_session *s) {
     s->tx_case = false;
     s->selected = true;
     s->matrix_case = -1;
+    s->selected_case = (fd_case){FD_CASE_PASSIVE, -1};
     return true;
 }
 bool fd_select_matrix(fd_session *s, fd_matrix_case selected) {
@@ -28,6 +30,7 @@ bool fd_select_matrix(fd_session *s, fd_matrix_case selected) {
     s->tx_case = true;
     s->selected = true;
     s->matrix_case = (int)selected;
+    s->selected_case = (fd_case){FD_CASE_ROUTE, (int)selected};
     return true;
 }
 bool fd_matrix_bits(fd_matrix_case selected, bool *record, bool *modem, bool *ptt) {
@@ -85,5 +88,21 @@ bool fd_restored(fd_session *s) {
 bool fd_release(fd_session *s) {
     if (!s || s->state != FD_READY) return false;
     s->state = FD_IDLE;
+    s->qualified_rx_routes = 0;
+    return true;
+}
+
+bool fd_select_rx_playback(fd_session *s, fd_matrix_case route) {
+    if (!s || s->state != FD_READY || (unsigned)route > 7 ||
+        !(s->qualified_rx_routes & (1u << route))) return false;
+    s->selected_case = (fd_case){FD_CASE_RX_PLAYBACK, (int)route};
+    s->matrix_case = route;
+    s->tx_case = false;
+    s->selected = true;
+    return true;
+}
+bool fd_select_mic_tx(fd_session *s, fd_matrix_case route) {
+    if (!fd_select_matrix(s, route)) return false;
+    s->selected_case.kind = FD_CASE_MIC_TX;
     return true;
 }

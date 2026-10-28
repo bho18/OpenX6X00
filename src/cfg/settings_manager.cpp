@@ -1,3 +1,4 @@
+#include "../freedv/writer_gate.h"
 #include "settings_manager.h"
 
 #include <algorithm>
@@ -255,6 +256,7 @@ void SettingsManager::zoom_step_scope_cb(Subject * /*subj*/, void *user_data) {
 }
 
 void SettingsManager::switch_band(int new_band_id, bool implicit) {
+    FD_WRITE_GUARD(return);
     // Re-entrancy guard: an explicit switch triggered by setting p_band_id calls
     // switch_band(implicit=false). If that happens from inside this call (the
     // implicit path sets p_band_id below, firing the observer), return early so
@@ -300,6 +302,7 @@ void SettingsManager::switch_band(int new_band_id, bool implicit) {
 }
 
 void SettingsManager::vfo_toggle() {
+    FD_WRITE_GUARD(return);
     const bool    on_a  = p_band_current_vfo.get() == RADIO_VFO_A;
     const int32_t other = (on_a ? p_vfob_band : p_vfoa_band).get();
 
@@ -351,11 +354,13 @@ void SettingsManager::tx_shift_cb(Subject * /*subj*/, void *user_data) {
 }
 
 void SettingsManager::tx_shift_set(int32_t hz) {
+    FD_WRITE_GUARD(return);
     p_band_tx_shift.set(hz);
     p_band_split.set(hz != 0);
 }
 
 void SettingsManager::switch_mode(ModeGroup new_group_id) {
+    FD_WRITE_GUARD(return);
     // Batch the mode switch into a single notification round: the mode-param
     // loads (set_quiet) and the freq/filter recomputes below are coalesced so
     // every changed subject fires exactly one callback.
@@ -394,6 +399,7 @@ void SettingsManager::flush_storage(StorageType type, int context_id) {
 }
 
 void SettingsManager::cfg_band_vfo_copy() {
+    FD_WRITE_GUARD(return);
     // The other VFO comes to this band too (independent VFOs)
     (p_band_current_vfo.get() == RADIO_VFO_A ? p_vfob_band : p_vfoa_band).set(band_id_);
     if (p_band_current_vfo.get() == RADIO_VFO_A) {
@@ -449,6 +455,7 @@ int32_t SettingsManager::fg_freq_get() {
 }
 
 void SettingsManager::fg_freq_set(int32_t freq) {
+    FD_WRITE_GUARD(return);
     // Clamp to the nearest hardware-usable frequency before writing back, so
     // invalid frequencies never reach the VFO params.
     freq = clamp_to_valid_hw_freq(freq);
@@ -466,6 +473,7 @@ int32_t SettingsManager::cur_mode_get() {
 }
 
 void SettingsManager::cur_mode_set(int32_t mode) {
+    FD_WRITE_GUARD(return);
     // Write back into the active VFO's mode param.
     if (p_band_current_vfo.get() == 0) {
         p_band_vfoa_mode.set(mode);
@@ -479,6 +487,7 @@ int32_t SettingsManager::cur_att_get() {
 }
 
 void SettingsManager::cur_att_set(int32_t att) {
+    FD_WRITE_GUARD(return);
     if (p_band_current_vfo.get() == RADIO_VFO_A) {
         p_band_vfoa_att.set(att);
     } else {
@@ -491,6 +500,7 @@ int32_t SettingsManager::cur_pre_get() {
 }
 
 void SettingsManager::cur_pre_set(int32_t pre) {
+    FD_WRITE_GUARD(return);
     if (p_band_current_vfo.get() == RADIO_VFO_A) {
         p_band_vfoa_pre.set(pre);
     } else {
@@ -503,6 +513,7 @@ int32_t SettingsManager::cur_agc_get() {
 }
 
 void SettingsManager::cur_agc_set(int32_t agc) {
+    FD_WRITE_GUARD(return);
     if (p_band_current_vfo.get() == RADIO_VFO_A) {
         p_band_vfoa_agc.set(agc);
     } else {
@@ -515,6 +526,7 @@ int32_t SettingsManager::bg_freq_get() {
 }
 
 void SettingsManager::bg_freq_set(int32_t freq) {
+    FD_WRITE_GUARD(return);
     if (p_band_current_vfo.get() == RADIO_VFO_A) {
         p_band_vfob_freq.set(freq);
     } else {
@@ -860,6 +872,7 @@ void SettingsManager::set_mode_context(int mode_id) {
 }
 
 void SettingsManager::load_band_all(int band_id) {
+    FD_WRITE_GUARD(return);
     for (ParamBase *p : band_params_) {
         p->load(band_id);
     }
@@ -870,6 +883,7 @@ void SettingsManager::load_band_all(int band_id) {
 }
 
 void SettingsManager::load_mode_all() {
+    FD_WRITE_GUARD(return);
     // Not the zoom and step of every mode: a mode change keeps them, and their row may lag a change still queued
     for (ParamBase *p : mode_params_) {
         if (p->context_id() != MODE_ALL) {
@@ -879,6 +893,7 @@ void SettingsManager::load_mode_all() {
 }
 
 void SettingsManager::load_band_switch(int new_band_id, bool implicit) {
+    FD_WRITE_GUARD(return);
     // A switch never reloads current_vfo (the active VFO reference stays). The
     // generic registry holds current_vfo + if_shift + dac_offset; this loop
     // loads if_shift and dac_offset, skipping current_vfo. The VFO params
@@ -893,6 +908,7 @@ void SettingsManager::load_band_switch(int new_band_id, bool implicit) {
 }
 
 void SettingsManager::load_band_vfo(int band_id, bool implicit) {
+    FD_WRITE_GUARD(return);
     const int active_vfo = p_band_current_vfo.get();
 
     // BandInfo drives the clamp/restore rules. A missing or undefined band

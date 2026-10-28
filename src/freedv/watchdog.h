@@ -21,7 +21,7 @@ typedef struct {
 /* Each session creates a new, initially disarmed watchdog. The callback must
  * request audio flush and software TX clearing and must not call cancel/close. */
 bool freedv_watchdog_open(freedv_watchdog *watchdog, freedv_watchdog_expired_fn expired, void *context);
-/* 1..10000 ms, no implicit restart or second arm while active. */
+/* 1..120000 ms; the controller separately limits all RF cases to 10000 ms, no implicit restart or second arm while active. */
 bool freedv_watchdog_arm(freedv_watchdog *watchdog, unsigned duration_ms);
 /* Waits for an already-started callback. Do not hold the radio lock. */
 void freedv_watchdog_cancel(freedv_watchdog *watchdog);

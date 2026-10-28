@@ -8,6 +8,7 @@
 
 #include "control_owner.h"
 #include "radio.h"
+#include "freedv/writer_gate.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -119,6 +120,7 @@ void ctl_local_input(void) {
 bool ctl_diagnostic_acquire(void) {
     pthread_mutex_lock(&mux);
     bool ok = (owner.kind == CTL_NONE || owner.kind == CTL_LOCAL) && !ctl_transmitting();
+    if (ok) ok = fd_writer_reserve();
     if (ok) {
         before_diagnostic = owner;
         set_owner(CTL_DIAGNOSTIC, 0, "FreeDV diagnostics");
@@ -130,8 +132,10 @@ bool ctl_diagnostic_acquire(void) {
 bool ctl_diagnostic_release(bool restoration_complete_and_rx_confirmed) {
     pthread_mutex_lock(&mux);
     bool ok = owner.kind == CTL_DIAGNOSTIC && restoration_complete_and_rx_confirmed && !ctl_transmitting();
-    if (ok)
+    if (ok) {
         set_owner(before_diagnostic.kind, before_diagnostic.id, before_diagnostic.name);
+        fd_writer_release();
+    }
     pthread_mutex_unlock(&mux);
     return ok;
 }

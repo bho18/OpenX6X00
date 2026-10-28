@@ -55,7 +55,7 @@ float audio_get_peak_db();
 #include <sys/types.h>
 #include <stdint.h>
 /* The diagnostic session must own routing and competing audio writers before
- * opening this stream. All calls come from its single playback worker. Samples
+ * opening this stream. Samples
  * not accepted remain the caller's responsibility; -1 is a stream/write error.
  * This API never selects a radio route or keys RF. */
 typedef struct {
@@ -63,9 +63,26 @@ typedef struct {
     uint64_t write_errors;
     uint64_t underflows; /* includes startup; compare snapshots after warm-up */
     uint64_t flushes;
+    bool cancelled;
+    bool flush_acknowledged;
+    uint32_t maxlength_bytes, target_bytes, prebuffer_bytes, min_request_bytes;
     bool latency_known;
     uint64_t queued_latency_us; /* PulseAudio observation, not acoustic latency */
 } audio_freedv_playback_stats_t;
+typedef struct audio_freedv_playback audio_freedv_playback_t;
+/* The session owns the handle. Any thread may cancel/write/read statistics;
+ * close requires all callers joined and is never part of the RF stop path. */
+audio_freedv_playback_t *audio_freedv_playback_open(void);
+ssize_t audio_freedv_playback_submit(audio_freedv_playback_t *, const int16_t *, size_t);
+/* Lock-free write fence for the RF watchdog: request, clear RF commands, then
+ * let the audio worker issue the server flush. Never wait for PulseAudio before
+ * clearing software PTT/MODEM. cancel() itself acquires the PA mainloop lock. */
+void audio_freedv_playback_request_cancel(audio_freedv_playback_t *);
+bool audio_freedv_playback_cancel(audio_freedv_playback_t *);
+audio_freedv_playback_stats_t audio_freedv_playback_observe(audio_freedv_playback_t *);
+void audio_freedv_playback_close(audio_freedv_playback_t *);
+/* Compatibility wrappers for the previous single-worker tests. New diagnostic
+ * sessions use the explicit handle so their watchdog can cancel playback. */
 bool audio_freedv_playback_begin(void);
 ssize_t audio_freedv_playback_write(const int16_t *samples, size_t count);
 audio_freedv_playback_stats_t audio_freedv_playback_stats(void);

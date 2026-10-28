@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "openx6x00": {
-    "repository": "https://github.com/Guru-RF/OpenX6X00",
-    "commit": "d833e288026ad4a22575b897829c1c82d8437f92"
+    "repository": "https://github.com/bho18/OpenX6X00",
+    "commit": "91f3b5e03f8cf7bffc58a1c44eaef6221be21631"
   },
   "x6200_buildroot": {
     "repository": "https://github.com/gdyuldin/AetherX6200Buildroot",
@@ -77,5 +77,19 @@
     "version": "0.2.2",
     "source_sha256": "3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893",
     "provider": "pinned X6200 Buildroot SDK"
+  },
+  "native_diagnostics": {
+    "integration_branch": "experiment/x6200-native-diagnostics",
+    "integration_identity": "record actual git commit and dirty status in generated build manifest",
+    "hardware_ready": false,
+    "measured_package_commit": "b9fcea82e0858d9d34694dc0ae8d46057a398104",
+    "measured_package_sha256sums_sha256": "60e19c4ebe5843d4961b32fa4ef8839025242a91baced823101ad19f34410610",
+    "sdk_policy": "matching pinned Buildroot SDK required; no Debian ARM deployment",
+    "measured_sdk_manifest_sha256": "26ca3b08069bf554529cde06a4229ba20c40278297ecb159f73fe96b566c1977",
+    "measured_compiler_version": "arm-buildroot-linux-gnueabihf-gcc.br_real (Buildroot -gcc34b5b2) 12.3.0",
+    "patch_sha256": {
+      "tools/freedv/patches/rade-acq-neon.patch": "767652147fdb8c59e8ca124075ec6e4f05ed5a5cd7e456d925eae2d0379c5c6b",
+      "tools/freedv/patches/rade-acq-parallel.patch": "4343c892e60199677fe363940f144566229c14dd77c79bab14f1e9a1c1fe4ef3"
+    }
   }
 }

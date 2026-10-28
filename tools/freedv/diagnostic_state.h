@@ -16,9 +16,16 @@ typedef struct {
     bool tx;          /* baseband packet observation, not the software command */
     uint64_t sequence; /* changes for every received packet */
 } fd_observation;
+typedef enum { FD_CASE_PASSIVE, FD_CASE_ROUTE, FD_CASE_RX_PLAYBACK, FD_CASE_MIC_TX } fd_case_kind;
+typedef struct {
+    fd_case_kind kind;
+    int matrix_case; /* -1 only for passive; otherwise 0..7 */
+} fd_case;
 typedef struct {
     fd_state state;
     bool tx_case;
+    fd_case selected_case;
+    uint8_t qualified_rx_routes; /* session-only, cleared on acquire/release */
     bool selected;
     bool software_cleared;
     int matrix_case; /* -1 for passive receive only */
@@ -50,3 +57,8 @@ bool fd_rx_observed(fd_session *s, fd_observation observed);
 /* Call only after successful restoration; otherwise the session stays blocked. */
 bool fd_restored(fd_session *s);
 bool fd_release(fd_session *s);
+
+/* Receive playback never authorizes a route itself. The controller records a
+ * completed probe and explicit local operator confirmation before qualification. */
+bool fd_select_rx_playback(fd_session *s, fd_matrix_case route);
+bool fd_select_mic_tx(fd_session *s, fd_matrix_case route);

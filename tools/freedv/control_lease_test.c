@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "src/control_owner.h"
 #include "src/radio.h"
+#include "src/freedv/writer_gate.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -30,7 +31,14 @@ int main(void) {
     assert(!ctl_diagnostic_acquire());
     test_radio_state = RADIO_RX;
     assert(ctl_claim(CTL_LOCAL, 0, "", false));
+    assert(fd_writer_enter());
+    assert(fd_writer_enter()); /* nested setters must retain the outer admission */
+    assert(!ctl_diagnostic_acquire());
+    fd_writer_exit();
+    assert(!ctl_diagnostic_acquire());
+    fd_writer_exit();
     assert(ctl_diagnostic_acquire());
+    assert(!fd_writer_enter());
     assert(!ctl_diagnostic_acquire());
     assert(!ctl_claim(CTL_DIAGNOSTIC, 0, "bypass", true));
     assert(!ctl_claim(CTL_LOCAL, 0, "local", true));

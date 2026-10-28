@@ -1,3 +1,4 @@
+#include "freedv/writer_gate.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
@@ -45,10 +46,13 @@ static char                 *play_device = BOARD_PA_SINK;
  * thread: the TX players never see it, so TX audio always goes to the codec. */
 static __thread pa_stream   *bt_stm = NULL;
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
-static __thread bool diagnostic_playback_active;
-/* Accessed under mloop, including by the PulseAudio underflow callback. The
- * owning worker must disconnect before exiting so callback userdata stays live. */
-static __thread audio_freedv_playback_stats_t diagnostic_playback_stats;
+struct audio_freedv_playback {
+    atomic_bool cancellation_requested;
+    pa_stream *stream;
+    pa_operation *flush;
+    audio_freedv_playback_stats_t stats;
+};
+static __thread audio_freedv_playback_t *compat_playback;
 #endif
 
 static pa_stream            *capture_stm;
@@ -280,6 +284,7 @@ static pa_stream *cur_stm(void) {
 }
 
 int audio_play(int16_t *samples_buf, size_t samples) {
+    FD_WRITE_GUARD(return -1);
     pa_stream *stm = cur_stm();
 
     while (true) {
@@ -406,6 +411,7 @@ static pa_stream *stream_open(const char *name, const char *sink, const pa_buffe
 /* Audio from a network client (the TCI server) into the codec, from the playing thread as audio_play_bt_begin:
  * 100 ms queued at most and playing from 60 ms, where play_stm queues 800 ms */
 bool audio_play_lowlat_begin(void) {
+    FD_WRITE_GUARD(return false);
     pa_sample_spec spec = { .format = PA_SAMPLE_S16NE, .rate = AUDIO_PLAY_RATE, .channels = 1 };
     pa_buffer_attr attr;
 
@@ -438,6 +444,7 @@ void audio_play_lowlat_end(void) {
  * Not all or nothing: the server may cut the buffer to the prebuf size, and a stream that never
  * has room for a whole block never reaches its prebuf and never starts */
 bool audio_play_if_room(int16_t *samples_buf, size_t samples) {
+    FD_WRITE_GUARD(return false);
     pa_threaded_mainloop_lock(mloop);
     size_t bytes = LV_MIN(pa_stream_writable_size(cur_stm()), samples * 2) & ~(size_t)1;
     if (bytes) {
@@ -450,53 +457,75 @@ bool audio_play_if_room(int16_t *samples_buf, size_t samples) {
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
 static void diagnostic_playback_underflow(pa_stream *stream, void *userdata) {
     (void)stream;
-    audio_freedv_playback_stats_t *stats = userdata;
-    ++stats->underflows;
+    audio_freedv_playback_t *p = userdata;
+    ++p->stats.underflows;
 }
-
-bool audio_freedv_playback_begin(void) {
-    if (!mloop || diagnostic_playback_active || !audio_play_lowlat_begin()) return false;
+static void diagnostic_flush_done(pa_stream *stream, int success, void *userdata) {
+    (void)stream;
+    audio_freedv_playback_t *p = userdata;
+    p->stats.flush_acknowledged = success != 0;
+    if (!success) ++p->stats.write_errors;
+}
+audio_freedv_playback_t *audio_freedv_playback_open(void) {
+    if (!mloop) return NULL;
+    audio_freedv_playback_t *p = calloc(1, sizeof(*p));
+    if (!p) return NULL;
+    atomic_init(&p->cancellation_requested, false);
+    pa_sample_spec spec = {.format=PA_SAMPLE_S16NE, .rate=AUDIO_PLAY_RATE, .channels=1};
+    pa_buffer_attr attr;
+    memset(&attr, 0xff, sizeof(attr));
+    attr.maxlength = pa_usec_to_bytes(200 * PA_USEC_PER_MSEC, &spec);
+    attr.tlength = pa_usec_to_bytes(100 * PA_USEC_PER_MSEC, &spec);
+    attr.prebuf = pa_usec_to_bytes(60 * PA_USEC_PER_MSEC, &spec);
+    attr.minreq = pa_usec_to_bytes(10 * PA_USEC_PER_MSEC, &spec);
     pa_threaded_mainloop_lock(mloop);
-    memset(&diagnostic_playback_stats, 0, sizeof(diagnostic_playback_stats));
-    diagnostic_playback_active = true;
-    pa_stream_set_underflow_callback(bt_stm, diagnostic_playback_underflow, &diagnostic_playback_stats);
+    p->stream = stream_open("FreeDV diagnostic", play_device, &attr);
+    if (p->stream) {
+        const pa_buffer_attr *actual = pa_stream_get_buffer_attr(p->stream);
+        if (actual) {
+            p->stats.maxlength_bytes = actual->maxlength;
+            p->stats.target_bytes = actual->tlength;
+            p->stats.prebuffer_bytes = actual->prebuf;
+            p->stats.min_request_bytes = actual->minreq;
+        }
+        pa_stream_set_underflow_callback(p->stream, diagnostic_playback_underflow, p);
+    }
     pa_threaded_mainloop_unlock(mloop);
-    return true;
+    if (!p->stream) { free(p); return NULL; }
+    return p;
 }
-
-ssize_t audio_freedv_playback_write(const int16_t *samples, size_t count) {
-    if (!mloop || !diagnostic_playback_active || !bt_stm) return -1;
+ssize_t audio_freedv_playback_submit(audio_freedv_playback_t *p, const int16_t *samples, size_t count) {
+    if (!mloop || !p) return -1;
     pa_threaded_mainloop_lock(mloop);
     ssize_t accepted = -1;
-    if ((count && !samples) || count > SIZE_MAX / sizeof(*samples) || count > SSIZE_MAX ||
-        pa_stream_get_state(bt_stm) != PA_STREAM_READY) goto error;
+    if (atomic_load_explicit(&p->cancellation_requested, memory_order_acquire) || p->stats.cancelled || !p->stream || (count && !samples) || count > SIZE_MAX / sizeof(*samples) ||
+        count > SSIZE_MAX || pa_stream_get_state(p->stream) != PA_STREAM_READY) goto error;
     if (!count) { accepted = 0; goto done; }
-    size_t bytes = pa_stream_writable_size(bt_stm);
+    size_t bytes = pa_stream_writable_size(p->stream);
     if (bytes == (size_t)-1) goto error;
     size_t available = bytes / sizeof(*samples);
     size_t n = count < available ? count : available;
     if (!n) { accepted = 0; goto done; }
-    if (pa_stream_write(bt_stm, samples, n * sizeof(*samples), NULL, 0, PA_SEEK_RELATIVE) < 0)
-        goto error;
-    diagnostic_playback_stats.accepted_samples += n;
+    if (pa_stream_write(p->stream, samples, n * sizeof(*samples), NULL, 0, PA_SEEK_RELATIVE) < 0) goto error;
+    p->stats.accepted_samples += n;
     accepted = (ssize_t)n;
     goto done;
 error:
-    ++diagnostic_playback_stats.write_errors;
+    ++p->stats.write_errors;
 done:
     pa_threaded_mainloop_unlock(mloop);
     return accepted;
 }
-
-audio_freedv_playback_stats_t audio_freedv_playback_stats(void) {
-    if (!mloop) return (audio_freedv_playback_stats_t){0};
+audio_freedv_playback_stats_t audio_freedv_playback_observe(audio_freedv_playback_t *p) {
+    if (!mloop || !p) return (audio_freedv_playback_stats_t){0};
     pa_threaded_mainloop_lock(mloop);
-    audio_freedv_playback_stats_t out = diagnostic_playback_stats;
+    audio_freedv_playback_stats_t out = p->stats;
+    out.cancelled |= atomic_load_explicit(&p->cancellation_requested, memory_order_acquire);
     out.latency_known = false;
-    if (diagnostic_playback_active && bt_stm) {
+    if (p->stream && !p->stats.cancelled) {
         pa_usec_t latency;
         int negative;
-        if (pa_stream_get_latency(bt_stm, &latency, &negative) == 0 && !negative) {
+        if (pa_stream_get_latency(p->stream, &latency, &negative) == 0 && !negative) {
             out.latency_known = true;
             out.queued_latency_us = latency;
         }
@@ -504,25 +533,57 @@ audio_freedv_playback_stats_t audio_freedv_playback_stats(void) {
     pa_threaded_mainloop_unlock(mloop);
     return out;
 }
-
-void audio_freedv_playback_end(void) {
-    if (!mloop || !diagnostic_playback_active || !bt_stm) return;
-    pa_threaded_mainloop_lock(mloop);
-    pa_stream_set_underflow_callback(bt_stm, NULL, NULL);
-    pa_operation *op = pa_stream_flush(bt_stm, NULL, NULL);
-    if (op) {
-        ++diagnostic_playback_stats.flushes;
-        pa_operation_unref(op);
-    } else ++diagnostic_playback_stats.write_errors;
-    pa_stream_disconnect(bt_stm);
-    pa_stream_unref(bt_stm);
-    bt_stm = NULL;
-    diagnostic_playback_active = false;
-    pa_threaded_mainloop_unlock(mloop);
+void audio_freedv_playback_request_cancel(audio_freedv_playback_t *p) {
+    _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "RF stop needs a lock-free audio fence");
+    if (p) atomic_store_explicit(&p->cancellation_requested, true, memory_order_release);
 }
+bool audio_freedv_playback_cancel(audio_freedv_playback_t *p) {
+    audio_freedv_playback_request_cancel(p);
+    if (!mloop || !p) return false;
+    pa_threaded_mainloop_lock(mloop);
+    p->stats.cancelled = true; /* fence all subsequent writes before requesting flush */
+    if (!p->flush && p->stream) {
+        p->flush = pa_stream_flush(p->stream, diagnostic_flush_done, p);
+        if (p->flush) ++p->stats.flushes;
+        else ++p->stats.write_errors;
+    }
+    bool requested = p->flush != NULL;
+    pa_threaded_mainloop_unlock(mloop);
+    return requested;
+}
+void audio_freedv_playback_close(audio_freedv_playback_t *p) {
+    if (!mloop || !p) return;
+    (void)audio_freedv_playback_cancel(p);
+    pa_threaded_mainloop_lock(mloop);
+    if (p->flush) { pa_operation_cancel(p->flush); pa_operation_unref(p->flush); }
+    if (p->stream) {
+        pa_stream_set_underflow_callback(p->stream, NULL, NULL);
+        pa_stream_disconnect(p->stream);
+        pa_stream_unref(p->stream);
+    }
+    pa_threaded_mainloop_unlock(mloop);
+    free(p);
+}
+bool audio_freedv_playback_begin(void) {
+    if (compat_playback) return false;
+    compat_playback = audio_freedv_playback_open();
+    return compat_playback != NULL;
+}
+ssize_t audio_freedv_playback_write(const int16_t *samples, size_t count) {
+    return audio_freedv_playback_submit(compat_playback, samples, count);
+}
+audio_freedv_playback_stats_t audio_freedv_playback_stats(void) {
+    return audio_freedv_playback_observe(compat_playback);
+}
+void audio_freedv_playback_end(void) {
+    audio_freedv_playback_close(compat_playback);
+    compat_playback = NULL;
+}
+
 #endif
 
 bool audio_play_bt_begin(void) {
+    FD_WRITE_GUARD(return false);
     char              sink[128];
     pa_sample_spec    spec = { .format = PA_SAMPLE_S16NE, .rate = AUDIO_PLAY_RATE, .channels = 1 };
     pa_buffer_attr    attr;

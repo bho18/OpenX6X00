@@ -1,3 +1,4 @@
+#include "freedv/writer_gate.h"
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Xiegu X6100 LVGL GUI - digital-mode TX player (tx_player.h)
@@ -91,6 +92,7 @@ bool tx_player_play(int16_t *samples, uint32_t count, int32_t offset_hz, float b
 }
 
 void tx_player_set_pwr(float w) {
+    FD_WRITE_GUARD(return);
     own_w = w;
 }
 
@@ -101,6 +103,7 @@ static float tx_pwr(void) {
 
 bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, float base_gain,
                       tx_abort_fn_t abort, void *abort_ctx) {
+    FD_WRITE_GUARD(return false);
     float   pwr_w = tx_pwr();
     bool    own = own_w > 0.0f;
     /* The cap (RTTY and WeFax over 7 W) or an app's own power (WSPR's 0.2 W): the radio there for this transmission,

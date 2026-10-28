@@ -1,4 +1,5 @@
 #pragma once
+#include "../freedv/writer_gate.h"
 
 #include <atomic>
 #include <functional>
@@ -45,6 +46,7 @@ template <typename T> class ComputedParameter : public SubjectT<T> {
     // Access ComposedParameter via its concrete type, never through a
     // SubjectT<T>& reference, so that this set() is used.
     void set(const T &value) {
+        FD_WRITE_GUARD(return);
         if (updating_.exchange(true)) {
             return; // re-entrant call, already inside a recompute/set
         }

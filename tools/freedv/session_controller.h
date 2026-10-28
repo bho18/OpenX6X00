@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <pthread.h>
 
-/* Mock-backed contract for the future in-process radio implementation. None of
+/* Backend contract; host tests use a mock. Hardware integration must implement all callbacks. None of
  * these operations is implemented against real hardware yet. Implementations
  * must be bounded, must serialize radio changes with the radio control lock,
  * and must never call back into the controller synchronously. In particular,
@@ -21,15 +21,19 @@ typedef struct {
     void (*release)(void *ctx);
     bool (*observe)(void *ctx, fd_observation *observation);
     bool (*tx_permitted)(void *ctx);
-    /* -1 is passive receive only, without routing changes or playback. All
-     * numbered cases are potentially keyed and require local arming. Recheck
+    /* Case kind is explicit: passive never changes routing or plays audio;
+     * RX playback requires session-local route qualification; route and mic TX
+     * cases require local arming. Recheck
      * frequency, protection guards and packet TX state under the radio lock
      * immediately before applying any change; refuse when uncertain. */
-    bool (*start)(void *ctx, int matrix_case);
+    bool (*start)(void *ctx, const fd_case *selected);
     /* On success, sequence is sampled after audio flush and command clearing. */
     bool (*quiesce)(void *ctx, uint64_t *sequence);
     /* Recheck a fresh post-clear RX packet while holding the radio lock before
      * applying transient restoration. Never restore while hardware TX is held. */
+    /* Nonblocking: true only once generated audio is fenced and the playback
+     * server has acknowledged cancellation. False must retain session ownership. */
+    bool (*audio_quiescent)(void *ctx);
     bool (*restore_if_safe)(void *ctx, uint64_t clear_sequence);
 } fd_controller_backend;
 
@@ -40,6 +44,12 @@ typedef struct {
     fd_controller_backend backend;
     void *context;
     bool initialized;
+    pthread_t monitor;
+    bool monitor_shutdown;
+    int completed_probe;
+    bool probe_unkeyed;
+    bool probe_observed;
+    uint64_t probe_start_sequence;
     bool cancelling; /* blocks restoration/new runs while a watchdog is joined */
 } fd_controller;
 
@@ -48,7 +58,7 @@ bool fd_controller_acquire(fd_controller *controller);
 bool fd_controller_select_matrix(fd_controller *controller, fd_matrix_case selected);
 bool fd_controller_select_passive_rx(fd_controller *controller);
 bool fd_controller_arm(fd_controller *controller, bool local);
-/* timeout_ms must be 1..10000. Backend start must return promptly; the timer
+/* TX timeout_ms must be 1..10000; RX cases allow up to 120000. Backend start must return promptly; the timer
  * cannot interrupt a backend operation that blocks while holding the lock. */
 bool fd_controller_run(fd_controller *controller, uint64_t now_ms, unsigned timeout_ms);
 /* Stops and clears, or reports failure while retaining ownership for retry. */
@@ -59,3 +69,12 @@ bool fd_controller_poll_restore(fd_controller *controller);
 bool fd_controller_release(fd_controller *controller);
 /* Only succeeds after release. Caller must serialize destruction with other APIs. */
 bool fd_controller_close(fd_controller *controller);
+
+/* Confirmation is local, after a completed/restored unkeyed matrix probe.
+ * Operator must also verify speaker/capture behavior; packet RX alone is not
+ * audio routing qualification. This qualification expires when ownership ends. */
+bool fd_controller_confirm_rx_route(fd_controller *c, fd_matrix_case route, bool local);
+bool fd_controller_select_rx_playback(fd_controller *c, fd_matrix_case route);
+bool fd_controller_select_mic_tx(fd_controller *c, fd_matrix_case route);
+/* Thread-safe status copy for GUI/export. */
+bool fd_controller_status(fd_controller *c, fd_session *status);
