@@ -5,6 +5,11 @@ microphone while feeding a generated signal to RF, and capture received audio
 while playing decoded speech on its speaker. It also requires measuring 700E
 and RADE V1 on the actual radio with the GUI and waterfall active.
 
+The [combined validation plan](combined-validation-plan.md) specifies the next
+delivery: one diagnostic-card release, an unattended remaining-codec suite and
+a guided routing, recovery and decoded-speaker session. It records remaining
+implementation work and does not authorize tests on the current read-only page.
+
 When the diagnostic option is enabled, Settings → Info contains a read-only
 snapshot of cached RECORD/MODEM/PTT commands, the last radio state, and a
 separate timestamped TX flag from the latest baseband packet. The cached
