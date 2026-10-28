@@ -16,8 +16,12 @@ from fetch_native_baseline import REPOSITORY, safe_path, sha, verify_checksums
 
 ARTIFACT = 12782732680
 ZIP_SHA = '47ee4e99cd6b057ad6f8d52c862a8b38383cf61027be305ea84bba9f93a34e71'
-SOURCE_SHA = '1b0497a4e6b70701fd769202d2dedb439798ab35fe1b54dad48a0b5523a32585'
-PREFIX_SHA = 'aaf341b481e7b8d81130483edf8352b13c11459887ed8cba8570d5503c2d6d5d'
+# These are the uploaded CI waveform used in the recorded radio qualification
+# (docs/freedv/rade-long-sync-radio-2026-10-27.md), not a local regeneration.
+# Opus host dispatch can change waveform bytes across hosts; the artifact ZIP,
+# full waveform and extracted prefix are independently pinned here.
+SOURCE_SHA = 'c58f6ba9ed88c785712f4591e42b042ff71e81e376653c277ca8d9d6c7c95e37'
+PREFIX_SHA = '0a5b202f2637ecd4ca78f2c2d2c4e17aff7d6ba12a07f9c612d8df9cbd26e034'
 
 
 def main():
@@ -46,8 +50,12 @@ def main():
                     with z.open(m) as src,target.open('xb') as dst: shutil.copyfileobj(src,dst)
     verify_checksums(source)
     manifest=json.loads((source/'fixture-manifest.json').read_text())
-    if (sha(source/'fixture.raw')!=SOURCE_SHA or manifest['fixture']['sha256']!=SOURCE_SHA or
-        manifest['fixture']['first_eoo_sample']<=132*8000): raise ValueError('canonical continuous fixture differs')
+    if sha(source/'fixture.raw')!=SOURCE_SHA:
+        raise ValueError('canonical continuous waveform differs from the pinned radio fixture')
+    if manifest['fixture']['sha256']!=SOURCE_SHA:
+        raise ValueError('canonical continuous fixture manifest differs from the pinned waveform')
+    if manifest['fixture']['first_eoo_sample']<=132*8000:
+        raise ValueError('canonical continuous fixture reaches end-of-over inside the 132-second prefix')
     package=a.package_work.resolve()/'package'
     metadata_path=package/'package-manifest.json'; metadata=json.loads(metadata_path.read_text())
     if metadata['target']!='x6200-buildroot': raise ValueError('matching-SDK package required')

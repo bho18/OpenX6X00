@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from zipfile import ZipFile
 from fetch_native_baseline import BUILDROOT, BUILDROOT_SUBMODULE, ARTIFACT_SHA256
+from fetch_native_fixture import PREFIX_SHA as CONTINUOUS_FIXTURE_SHA256
 from native_image import sha
 from prepare_native_image import prepare
 
@@ -113,7 +114,7 @@ def main():
     for key in ('rade_acquisition_experiment','rade_pipeline_experiment','rade_acquisition_parallel_experiment'):
         if not metadata.get(key,{}).get('enabled') or not metadata[key].get('sdk_validation'):
             raise ValueError('mandatory matching-SDK correctness gates absent: '+key)
-    if metadata.get('native_diagnostic_fixture',{}).get('sha256')!='aaf341b481e7b8d81130483edf8352b13c11459887ed8cba8570d5503c2d6d5d':
+    if metadata.get('native_diagnostic_fixture',{}).get('sha256')!=CONTINUOUS_FIXTURE_SHA256:
         raise ValueError('pinned continuous diagnostic fixture required')
     work=a.work.resolve(); work.mkdir(parents=True,exist_ok=False)
     output=a.output.resolve(); output.mkdir(parents=True,exist_ok=False)
