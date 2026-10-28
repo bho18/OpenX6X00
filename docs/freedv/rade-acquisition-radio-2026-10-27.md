@@ -1,5 +1,8 @@
 # X6200 acquisition worker sweep — October 27, 2026
 
+The subsequent [30-minute follow-up report](rade-acquisition-endurance-2026-10-27.md)
+records the completed endurance and steady-speech control results.
+
 Parallel acquisition removes the demonstrated short zero-input throughput
 deficit. Three acquisition participants are the provisional choice for the next
 endurance test. This is a positive scaling result, not completion of the FreeDV
