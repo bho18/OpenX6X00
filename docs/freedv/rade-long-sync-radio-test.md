@@ -57,7 +57,7 @@ foreach ($Name in $Names) {
     if ($Actual -ne $Expected) { throw "Checksum mismatch for $Name." }
 }
 $LocalHelper = Join-Path $Unpack "run_long_sync_benchmark.py"
-$HelperUrl = "https://raw.githubusercontent.com/bho18/OpenX6X00/topic/rade-sustained-speech/tools/freedv/run_long_sync_benchmark.py"
+$HelperUrl = "https://raw.githubusercontent.com/bho18/OpenX6X00/1bfe59baa321e9b2906502225db643049422dbe8/tools/freedv/run_long_sync_benchmark.py"
 $ExpectedHelperSha = "79872e8098007830c33aa425a3bd275adf0abd93dd5049092f1ab0cd2ea11923"
 Invoke-WebRequest -UseBasicParsing -Uri $HelperUrl -OutFile $LocalHelper -ErrorAction Stop
 if ((Get-FileHash -LiteralPath $LocalHelper -Algorithm SHA256).Hash -ne $ExpectedHelperSha) { throw "Helper checksum differs; use the current guide and helper together." }
