@@ -15,6 +15,13 @@ case-specific results. Functional Stop recovery passed; exact external 500 ms
 RF timing remains separate. The operator selected the short TX proof before
 that precision measurement, without relabeling the timing gate PASS.
 
+Normal PTT-driven FreeDV operation has its own acceptance gate. See the
+[PTT evaluation](ptt-evaluation.md): the side key has a software dispatch point,
+but hand-mic PTT directly keys the baseband. Independent button press/release
+and a proven no-analog-bypass route are required; microphone/Arm-Run success
+does not establish them. Held-button fault and restart behavior remain separate
+from software-owned Stop results.
+
 Record the radio and baseband versions, firmware and benchmark source hashes,
 SDK, audio endpoints and channel mapping, mixer settings, CPU configuration,
 available memory, operator, date and test setup with each result bundle. Save
