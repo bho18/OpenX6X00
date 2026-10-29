@@ -24,8 +24,10 @@ observations; it does not assert a measured RF time.
 
    Put short SDR USB WAVs and optional timing video in `evidence`. Enter device,
    application and observations in `evidence\session.json` and `notes.txt`.
-   Associate each WAV with its displayed radio case number in `recordings.json`;
-   use relative paths such as `turn-01.wav`, not the example text or a PC path.
+   Write each WAV filename and displayed radio case number in notes.txt. The
+   recordings.json template is optional bookkeeping; the engineer can fill it
+   from your notes after return. If you edit it, use relative WAV paths such as
+   `turn-01.wav`, not example text or a PC path.
 4. Set the SDR to the same RF frequency in USB. Disable squelch, audio noise
    reduction and notch filters. Choose a passband that contains the full modem
    signal; do not trim it to the tone used in routing tests. Check for overload.
@@ -134,7 +136,7 @@ scp -O "root@${RadioIp}:/tmp/freedv-topology-session1.json" .\evidence\
 If inventory reports an existing output file, copy the existing result or choose
 a new filename. Do not overwrite or delete radio evidence. No gzip module is needed.
 
-Complete `recordings.json` associations. Unknown fields may stay null. WAV files
+Complete the case/WAV associations in notes.txt or recordings.json. Unknown fields may stay null. WAV files
 go in `evidence`; large IQ stays on the PC with its path/hash/format and case times.
 Then run:
 

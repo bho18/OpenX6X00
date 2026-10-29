@@ -6,6 +6,8 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
+import subprocess
 import zipfile
 
 import native_session as session
@@ -110,6 +112,24 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'provenance'):
             session.decode(records, binary, binary, self.root / 'decode', reference)
         self.assertFalse((self.root / 'decode').exists())
+
+    def test_failed_decode_preserves_later_recording_results(self):
+        binary = self.root / 'decoder'; binary.write_bytes(b'not executed')
+        for name in ['one.wav', 'two.wav']: (self.root / name).write_bytes(b'synthetic input')
+        records = self.root / 'recordings.json'
+        session.write_json(records, {'recordings': [{'wav': 'one.wav'}, {'wav': 'two.wav'}]})
+        reference = self.root / 'reference.json'
+        session.write_json(reference, {'rade_source_commit': session.RADE_COMMIT,
+            'model_sha256': session.MODEL_SHA, 'decoder_sha256': session.sha(binary),
+            'fixture_check_passed': True, 'runtime_library': str(binary), 'runtime_library_sha256': session.sha(binary)})
+        executions = [subprocess.CompletedProcess([], code, b'', b'') for code in [1, 0, 0]]
+        pcm = {'frames': 16000, 'channel_statistics': [{'nonzero_samples': 15000}]}
+        with patch.object(session.subprocess, 'run', side_effect=executions), patch.object(session, 'pcm_summary', return_value=pcm):
+            self.assertFalse(session.decode(records, binary, binary, self.root / 'decode', reference))
+        results = session.load(self.root / 'decode/decode-results.json')['recordings']
+        self.assertIn('error', results[0])
+        self.assertNotIn('error', results[1])
+        self.assertTrue(results[1]['transmitted_speech_gate'].startswith('INCONCLUSIVE'))
 
 
 if __name__ == '__main__':

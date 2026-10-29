@@ -263,17 +263,20 @@ def decode(recordings, decoder, converter, output, reference):
                'input': str(source.relative_to(root)), 'input_sha256': sha(source),
                'expected_phrase': entry.get('expected_phrase'), 'commands': commands,
                'transmitted_speech_gate': 'INCONCLUSIVE: listen to decoded speech and identify the phrase'}
-        for number, cmd in enumerate(commands, 1):
-            result = subprocess.run(cmd, capture_output=True, timeout=180, check=False)
-            (folder / f'step-{number}.log').write_bytes(result.stdout + result.stderr)
-            if result.returncode:
-                row['error'] = f'step {number} exited {result.returncode}'
-                break
-        else:
-            row['modem'] = pcm_summary(modem)
-            row['decoded'] = pcm_summary(speech)
-            if not row['decoded']['frames'] or not any(c['nonzero_samples'] for c in row['decoded']['channel_statistics']):
-                row['error'] = 'decoder produced empty/silent speech'
+        try:
+            for number, cmd in enumerate(commands, 1):
+                result = subprocess.run(cmd, capture_output=True, timeout=180, check=False)
+                (folder / f'step-{number}.log').write_bytes(result.stdout + result.stderr)
+                if result.returncode:
+                    row['error'] = f'step {number} exited {result.returncode}'
+                    break
+            else:
+                row['modem'] = pcm_summary(modem)
+                row['decoded'] = pcm_summary(speech)
+                if not row['decoded']['frames'] or not any(c['nonzero_samples'] for c in row['decoded']['channel_statistics']):
+                    row['error'] = 'decoder produced empty/silent speech'
+        except (OSError, ValueError, wave.Error, subprocess.TimeoutExpired) as error:
+            row['error'] = str(error)
         results.append(row)
     write_json(output / 'decode-results.json', {
         'schema_version': 1, 'decoder_sha256': sha(decoder), 'converter_sha256': sha(converter),
@@ -331,7 +334,7 @@ def main():
             validate_reference(args.source, args.build, args.sources, args.fixture, args.output)
         else:
             timing(args.interval_ms, args.uncertainty_ms, args.evidence, args.output)
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile, wave.Error, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile, wave.Error, subprocess.SubprocessError) as error:
         parser.exit(1, str(error) + '\n')
 
 
