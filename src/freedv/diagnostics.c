@@ -512,3 +512,4 @@ static void open_panel(void *unused) {
     ui.note=lv_label_create(ui.panel);lv_obj_set_pos(ui.note,0,356);lv_obj_set_width(ui.note,370);lv_label_set_long_mode(ui.note,LV_LABEL_LONG_WRAP);lv_obj_add_event_cb(ui.panel,deleted,LV_EVENT_DELETE,NULL);ui.timer=lv_timer_create(refresh,250,NULL);refresh(NULL);
 }
 void freedv_diagnostics_open(void) {lv_async_call(open_panel,NULL);}
+bool freedv_diagnostics_is_open(void) {return ui.panel!=NULL;}
