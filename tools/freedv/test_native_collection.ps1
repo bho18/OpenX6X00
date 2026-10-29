@@ -26,6 +26,9 @@ try {
     try { & $Script -RadioIp '192.0.2.1' -EvidenceDir $Evidence -OutputDir $Failed } catch { $Rejected = $true }
     if (-not $Rejected -or (Test-Path -LiteralPath "$Failed.zip")) { throw 'Failed copy was packaged as successful.' }
     if (-not (Test-Path -LiteralPath (Join-Path $Failed 'radio\synthetic-radio-evidence.txt'))) { throw 'Partial evidence was deleted.' }
+    # GitHub's PowerShell runner forwards LASTEXITCODE; clear the deliberately
+    # injected scp failure after asserting it was handled and evidence survived.
+    $global:LASTEXITCODE = 0
     Write-Host 'PASS: Windows parsing, consolidated collection, failed-copy preservation; no radio contacted.'
 } finally {
     Remove-Item Function:\scp -ErrorAction SilentlyContinue

@@ -99,6 +99,18 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(len(session.load(target / 'recordings.json')['recordings']), 10)
         with self.assertRaises(FileExistsError): session.prepare(target)
 
+    def test_decode_refuses_changed_provenance_before_running_commands(self):
+        source = self.root / 'capture.wav'; source.write_bytes(b'not opened before provenance validation')
+        binary = self.root / 'decoder'; binary.write_bytes(b'not executed')
+        records = self.root / 'recordings.json'
+        session.write_json(records, {'recordings': [{'wav': 'capture.wav'}]})
+        reference = self.root / 'reference.json'
+        session.write_json(reference, {'rade_source_commit': session.RADE_COMMIT,
+            'model_sha256': session.MODEL_SHA, 'decoder_sha256': 'wrong', 'fixture_check_passed': True})
+        with self.assertRaisesRegex(ValueError, 'provenance'):
+            session.decode(records, binary, binary, self.root / 'decode', reference)
+        self.assertFalse((self.root / 'decode').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

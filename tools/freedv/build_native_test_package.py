@@ -20,6 +20,7 @@ FILES = {
 def build(output):
     revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     payloads = {name: (ROOT / source).read_bytes() for name, source in FILES.items()}
+    payloads['ENGINEER-TOOLS.md'] = payloads['ENGINEER-TOOLS.md'].replace(b'native-session-1.md', b'START-HERE.md').replace(b'native-session-2.md', b'SESSION-2.md')
     payloads['SOURCE.txt'] = ('Repository: bho18/OpenX6X00\nHelper checkout commit: ' + revision +
         '\nUse per-file hashes to identify any uncommitted helper edits.\nInstalled radio image remains 2083e3e7.\n').encode()
     payloads['SHA256SUMS'] = ''.join(hashlib.sha256(data).hexdigest() + '  ' + name + '\n'
