@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FILES = {
     'START-HERE.md': 'docs/freedv/native-session-1.md',
     'SESSION-2.md': 'docs/freedv/native-session-2.md',
+    'SDRPP-RECORDING.md': 'docs/freedv/sdrpp-recording.md',
     'ENGINEER-TOOLS.md': 'docs/freedv/native-evidence-tools.md',
     'native_session.py': 'tools/freedv/native_session.py',
     'inventory.py': 'tools/freedv/inventory.py',
@@ -20,6 +21,7 @@ FILES = {
 def build(output):
     revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     payloads = {name: (ROOT / source).read_bytes() for name, source in FILES.items()}
+    payloads['START-HERE.md'] = payloads['START-HERE.md'].replace(b'sdrpp-recording.md', b'SDRPP-RECORDING.md')
     payloads['ENGINEER-TOOLS.md'] = payloads['ENGINEER-TOOLS.md'].replace(b'native-session-1.md', b'START-HERE.md').replace(b'native-session-2.md', b'SESSION-2.md')
     payloads['SOURCE.txt'] = ('Repository: bho18/OpenX6X00\nHelper checkout commit: ' + revision +
         '\nUse per-file hashes to identify any uncommitted helper edits.\nInstalled radio image remains 2083e3e7.\n').encode()
