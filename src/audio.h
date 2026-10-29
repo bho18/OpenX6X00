@@ -58,10 +58,20 @@ float audio_get_peak_db();
  * opening this stream. Samples
  * not accepted remain the caller's responsibility; -1 is a stream/write error.
  * This API never selects a radio route or keys RF. */
+#define AUDIO_FREEDV_UNDERFLOW_EVENTS 16
+typedef struct {
+    uint64_t monotonic_ns;
+    uint64_t accepted_samples;
+    bool cancellation_requested;
+} audio_freedv_underflow_event_t;
 typedef struct {
     uint64_t accepted_samples;
     uint64_t write_errors;
     uint64_t underflows; /* includes startup; compare snapshots after warm-up */
+    uint64_t first_write_monotonic_ns;
+    uint64_t underflows_before_first_write, underflows_after_first_write;
+    unsigned underflow_events_stored, underflow_events_discarded;
+    audio_freedv_underflow_event_t underflow_events[AUDIO_FREEDV_UNDERFLOW_EVENTS];
     uint64_t flushes;
     bool cancelled;
     bool flush_acknowledged;
