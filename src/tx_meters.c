@@ -27,6 +27,9 @@
 #include "dialog_jtty.h"
 #include "dialog_wspr.h"
 #include "app_sstv.h"
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include "freedv/diagnostics.h"
+#endif
 
 /* The bar scales: PWR 0-10 W, SWR 1-5 (more shows 5), ALC 0-10 */
 #define PWR_MAX     10.0f
@@ -184,6 +187,9 @@ void tx_info_set_length(float seconds) {
 
 /* The digital apps keep their screen while transmitting: the strip, not the panel */
 static bool digital_app_open(void) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (freedv_diagnostics_is_open()) return true;
+#endif
     static dialog_t **const apps[] = {&dialog_ft8, &dialog_js8, &dialog_wspr, &dialog_sstv,
                                       &dialog_psk, &dialog_olivia, &dialog_jtty};
 
