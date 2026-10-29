@@ -97,6 +97,28 @@ static bool output_pcm(fd_rade_stream *s, const float *native, size_t produced, 
         src_float_to_short_array(s->converted, s->pcm, (int)d.output_frames_gen);
         unsigned depth = freedv_capture_ring_stats(&s->output_queue).queued_samples;
         unsigned limit=s->output_limit;
+        if ((unsigned long)d.output_frames_gen > limit) { failure(s); return false; }
+        /* TX encodes a full modem block at a time. A slow first call can leave
+         * input queued, after which the encoder catches up faster than playback.
+         * Keep the one-block queue bound and wait for its consumer, rather than
+         * treating ordinary backpressure as a codec failure. No radio/device or
+         * file lock is held; abort remains an independent atomic fence. RX keeps
+         * its existing overflow-fails-measurement contract. */
+        uint64_t waiting=0;
+        if(s->direction==FD_STREAM_TX) {
+            while(!atomic_load(&s->stop) && (depth==UINT_MAX || depth+(unsigned)d.output_frames_gen>limit)) {
+                if(!waiting) {
+                    waiting=nanos();
+                    pthread_mutex_lock(&s->mutex);++s->stats.output_wait_events;pthread_mutex_unlock(&s->mutex);
+                }
+                pause_input();
+                depth=freedv_capture_ring_stats(&s->output_queue).queued_samples;
+            }
+            if(waiting) {
+                pthread_mutex_lock(&s->mutex);s->stats.output_wait_ns+=nanos()-waiting;pthread_mutex_unlock(&s->mutex);
+            }
+            if(atomic_load(&s->stop))return false;
+        }
         if (depth == UINT_MAX || depth + d.output_frames_gen > limit ||
             freedv_capture_ring_push(&s->output_queue, s->pcm, (size_t)d.output_frames_gen) != (size_t)d.output_frames_gen) {
             failure(s); return false;
