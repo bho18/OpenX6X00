@@ -23,6 +23,7 @@ struct fd_native_audio {
     char saved_mixer[256], restored_mixer[256];
     atomic_bool stop, running, input_done;
     bool tx_finishing;
+    double input_level_sum, input_level_square_sum;
     atomic_uint failures;
     uint64_t epoch_ms;
     pthread_t input_thread, playback_thread;
@@ -49,7 +50,7 @@ static uint64_t now_ms(void) {
 static void pause_ms(unsigned ms) {
     struct timespec t={(time_t)(ms/1000),(long)(ms%1000)*1000000L}; nanosleep(&t,NULL);
 }
-static bool codec_case(fd_native_kind kind) { return kind>=FD_NATIVE_RADE_FIXTURE; }
+static bool codec_case(fd_native_kind kind) { return kind>=FD_NATIVE_RADE_FIXTURE&&kind<=FD_NATIVE_RADE_LIVE_RX; }
 bool fd_native_audio_codec_available(void) {
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
     return true;
@@ -189,7 +190,23 @@ static void *input_worker(void *context) {
         if(a->capture && a->config.kind==FD_NATIVE_RADE_FIXTURE)
             (void)fd_capture_dispatch_read(&a->dispatcher,FD_CAPTURE_CODEC,samples,441);
         submitted+=n;
-        pthread_mutex_lock(&a->mutex); a->stats.input_samples+=n;a->stats.interrupted_input_samples+=interrupted; pthread_mutex_unlock(&a->mutex);
+        /* Input activity, not microphone identity. Exclude initial switching
+         * transients and remove DC in the reported AC level. No gain changes. */
+        double sum=0,squares=0;unsigned peak=0;
+        bool level=n&&a->capture&&a->config.kind!=FD_NATIVE_RADE_FIXTURE&&now_ms()-a->epoch_ms>=200;
+        if(level)for(size_t i=0;i<n;++i) {
+            int v=samples[i];unsigned magnitude=(unsigned)(v<0?-v:v);
+            sum+=v;squares+=(double)v*v;if(magnitude>peak)peak=magnitude;
+        }
+        pthread_mutex_lock(&a->mutex); a->stats.input_samples+=n;a->stats.interrupted_input_samples+=interrupted;
+        if(level) {
+            a->input_level_sum+=sum;a->input_level_square_sum+=squares;a->stats.input_level_samples+=n;
+            double mean=a->input_level_sum/a->stats.input_level_samples;
+            double variance=a->input_level_square_sum/a->stats.input_level_samples-mean*mean;
+            a->stats.input_ac_rms=sqrt(fmax(0,variance));
+            if(peak>a->stats.input_peak)a->stats.input_peak=peak;
+        }
+        pthread_mutex_unlock(&a->mutex);
         if(!n)pause_ms(2);
     }
     if(a->capture)fd_capture_dispatch_cancel(&a->dispatcher);
@@ -202,6 +219,7 @@ static void *playback_worker(void *context) {
     uint64_t generated=0,last_stats=0;
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
     uint64_t tx_drained_at=0;
+    bool tx_prefill=a->config.kind==FD_NATIVE_RADE_MIC_TX;
 #endif
     bool prebuffer=a->config.kind==FD_NATIVE_RADE_FIXTURE || a->config.kind==FD_NATIVE_RADE_LIVE_RX;
     while(!fd_native_audio_stop_requested(a)) {
@@ -219,7 +237,18 @@ static void *playback_worker(void *context) {
                 generated+=have;
             }
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
+            else if(a->config.kind==FD_NATIVE_MODEM_TX) {
+                uint64_t release=a->epoch_ms+generated*1000u/AUDIO_PLAY_RATE;
+                if(now_ms()<release){pause_ms(1);continue;}
+                have=fixture_read(a,pending,441);generated+=have;
+                if(!have){fd_native_audio_request_stop(a);break;}
+            }
             else if(a->codec) {
+                if(tx_prefill) {
+                    if(!fd_stream_tx_prefill_ready(a->codec)){pause_ms(2);continue;}
+                    tx_prefill=false;
+                    pthread_mutex_lock(&a->mutex);a->stats.tx_prefill_wait_ms=now_ms()-a->epoch_ms;pthread_mutex_unlock(&a->mutex);
+                }
                 if(prebuffer) {
                     if(fd_stream_output_pending(a->codec)<10584){pause_ms(2);continue;}
                     prebuffer=false;
@@ -263,11 +292,11 @@ fd_native_audio *fd_native_audio_prepare(const fd_native_config *config,char *er
     if(!config || !config->generation || !config->duration_ms || config->duration_ms>120000 ||
        config->capture_channel>3 || config->inject_failure_ms>config->duration_ms || !config->output_directory ||
        config->excerpt_ms>20000 || config->excerpt_ms>config->duration_ms ||
-       config->kind<FD_NATIVE_CAPTURE || config->kind>FD_NATIVE_RADE_LIVE_RX ||
+       config->kind<FD_NATIVE_CAPTURE || config->kind>FD_NATIVE_MODEM_TX ||
        (config->interrupt_fixture && config->kind!=FD_NATIVE_RADE_FIXTURE)) {
         error_text(error,size,"Invalid diagnostic audio case");return NULL;
     }
-    if(codec_case(config->kind)&&!fd_native_audio_codec_available()) {
+    if((codec_case(config->kind)||config->kind==FD_NATIVE_MODEM_TX)&&!fd_native_audio_codec_available()) {
         error_text(error,size,"This build has no native RADE engine");return NULL;
     }
     fd_native_audio *a=calloc(1,sizeof(*a));if(!a){error_text(error,size,"Audio allocation failed");return NULL;}
@@ -289,7 +318,7 @@ fd_native_audio *fd_native_audio_prepare(const fd_native_config *config,char *er
         a->codec=fd_stream_prepare(config->kind==FD_NATIVE_RADE_MIC_TX?FD_STREAM_TX:FD_STREAM_RX,config->generation);
         if(!a->codec){error_text(error,size,"Cannot prepare RADE engine");failed(a);return a;}
     }
-    if(config->kind==FD_NATIVE_RADE_FIXTURE) {
+    if(config->kind==FD_NATIVE_RADE_FIXTURE||config->kind==FD_NATIVE_MODEM_TX) {
         int err;
         a->fixture=config->fixture_path?fopen(config->fixture_path,"rb"):NULL;
         a->fixture_src=src_new(SRC_SINC_FASTEST,1,&err);

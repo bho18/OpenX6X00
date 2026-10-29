@@ -14,6 +14,7 @@ static uint64_t monotonic_ms(void) { struct timespec t; clock_gettime(CLOCK_MONO
 static void tx_backpressure(bool abort_wait) {
     const uint64_t generation=abort_wait?91:92;
     fd_rade_stream *s=fd_stream_prepare(FD_STREAM_TX,generation);assert(s);
+    assert(!fd_stream_tx_prefill_ready(s));
     short input[13230]={0},output[4410];
     assert(fd_stream_submit(s,generation,input,13230)==13230 && fd_stream_start(s));
     uint64_t deadline=monotonic_ms()+60000;
@@ -23,8 +24,10 @@ static void tx_backpressure(bool abort_wait) {
     }
     fd_stream_stats st=fd_stream_observe(s);
     assert(!st.failures && st.input_max_depth<=22050 && st.output_max_depth<=6862);
+    assert(st.tx_prepared_blocks>=2 && fd_stream_tx_prefill_ready(s));
     if(abort_wait) {
         fd_stream_abort(s);assert(fd_stream_join(s));
+        assert(!fd_stream_tx_prefill_ready(s));
         assert(!fd_stream_observe(s).failures); /* no drain required to cancel */
     } else {
         assert(fd_stream_finish_tx(s));

@@ -166,6 +166,8 @@ def main():
     # Build documentation is separate from the operator's short guided session.
     shutil.copy2(ROOT/'docs/freedv/native-image-build.md',output/'BUILD.md')
     shutil.copy2(ROOT/'docs/freedv/native-radio-test.md',output/'RADIO-TEST.md')
+    shutil.copy2(ROOT/'docs/freedv/tx-delivery-radio-test.md',output/'TX-DELIVERY-TEST.md')
+    shutil.copy2(ROOT/'docs/freedv/sdrpp-recording.md',output/'SDRPP-RECORDING.md')
     sums=[sha(path)+'  '+path.name for path in sorted(output.iterdir()) if path.is_file()]
     (output/'SHA256SUMS').write_text('\n'.join(sums)+'\n')
     print('PASS: paired normal/diagnostic images passed build, filesystem and runtime ABI gates:',output)

@@ -461,6 +461,8 @@ def main():
     selected={test['name'] for test in tests['tests'] if re.search('freedv',test['name'])}
     if REQUIRED_TESTS-selected: raise ValueError('missing mandatory integration tests: '+str(sorted(REQUIRED_TESTS-selected)))
     run('ctest','--test-dir',on,'-R','freedv','--output-on-failure','--output-junit',work/'diagnostic-tests.xml')
+    run('python3',ROOT/'tools/freedv/validate_playback_cadence.py','--probe',on/'freedv_playback_frame_probe',
+        '--output',work/'playback-cadence')
     smoke=smoke_gui(on/'src/x6100_gui',work,check_diagnostic_entry=True)
     off=work/'host-off'
     run('cmake','-S',ROOT,'-B',off,'-DHOST_BUILD=ON','-DENABLE_FREEDV_DIAGNOSTICS=OFF',
@@ -474,7 +476,8 @@ def main():
     record={'schema_version':1,'firmware_commit':revision,'status':'PASS','hardware_qualified':False,
             'host_diagnostics_on':'PASS','host_diagnostics_off':'PASS','x6100_backend_compile':'PASS',
             'host_sndfile':sndfile,'host_sqlite':sqlite,'fresh_gui_database':str(gui_data/'params.db'),
-            'required_tests':sorted(REQUIRED_TESTS),'executed_diagnostic_tests':sorted(selected),'gui_smoke':smoke}
+            'required_tests':sorted(REQUIRED_TESTS),'executed_diagnostic_tests':sorted(selected),'gui_smoke':smoke,
+            'playback_cadence_summary_sha256':hashlib.sha256((work/'playback-cadence/summary.json').read_bytes()).hexdigest()}
     (work/'summary.json').write_text(json.dumps(record,indent=2)+'\n')
     print('PASS: host builds, mandatory integration tests, live GUI and X6100 compile')
 

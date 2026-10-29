@@ -78,10 +78,32 @@ content/levels require listening and comparison before assigning a physical-sour
 or gain failure. Do not infer the operator's full speech timing from the excerpts.
 
 The local modem WAVs from before playback/RF independently decode to 3.55 seconds
-for each completed case; listening comparison against the SDR decodes is pending.
-This separates codec/input defects from playback/RF impairments without another
-radio test. Originals are preserved; a separately labeled microphone listening
-aid removes DC and applies gain only for playback, never as codec evidence.
+for each completed case. The operator hears nothing in local TX13, good speech in
+local TX14, and decent but low-level speech in the TX14 microphone capture when
+amplified for listening. Thus TX14's microphone-to-encoder path produced intelligible
+speech before playback; its badly distorted SDR decode is a post-encoding delivery
+result. TX13 remains a separate missing-input observation. The complete seven-second
+input is not available in the first-four-second excerpts. A separately labeled
+listening aid removes DC/applies gain only for listening; originals and codec input
+are unchanged.
+
+After accounting for approximately 39 Hz of receive frequency offset, local TX14
+waveform windows correlate around 0.89-0.91 with the SDR waveform. Strong matching
+regions move from about 2.952 s offset to 2.95675 s and then 2.9615 s: steps of
+roughly 4.75 ms. This supports timing discontinuities after encoding. Audio-only
+evidence cannot completely distinguish radio playback from SDR capture faults;
+the radio's 56 playback underflows are independent supporting evidence. These
+waveform alignments do not synchronize the operator's Stop action or qualify the
+500 ms RF cutoff gate.
+
+A private PulseAudio null-sink experiment uses the production playback adapter
+with twenty synthetic 120 ms frames and 6 ms arrival jitter. With the same granted
+60 ms target, 50 ms prebuffer and 200 ms maximum, immediate delivery recorded three
+underflows; a one-frame startup lead recorded none, with all 105,840 samples accepted
+in both runs. This is a host observation, not radio performance qualification.
+The candidate retains the existing one-block queue and producer's active block,
+starting TX playback once the second block is prepared; short graceful streams
+can start on finish. RX buffering and codec arithmetic are unchanged.
 
 The topology confirms a hardware ALSA capture source rather than the PulseAudio
 monitor source. No PulseAudio loopback module is listed. Those facts narrow the
@@ -91,8 +113,8 @@ cannot be assigned to the live TX cases.
 
 ## Next evaluation
 
-Do not repeat the unchanged radio batch. First compare local and RF-decoded
-speech, microphone excerpts and waveform continuity. Retain the current native
-receive/built-in-microphone uncertainties. Profile TX stages before adding cores:
-average encode capacity passed these runs, while startup backpressure, weak/missing
-captured speech and playback underflows are concrete problems to resolve.
+Do not repeat the unchanged image's radio batch. Validate the combined delivery
+fix with the short fixed-waveform/live-microphone procedure on a verified updated
+image. Retain native receive/built-in uncertainties and investigate TX13 input
+with full short captures and the new capture AC/peak observations. Profile TX
+stages before adding cores; these runs already meet the sustained TX time budget.
