@@ -22,6 +22,12 @@ and a proven no-analog-bypass route are required; microphone/Arm-Run success
 does not establish them. Held-button fault and restart behavior remain separate
 from software-owned Stop results.
 
+The [October 29 RF follow-up](native-tx-delivery-results-2026-10-29.md) demonstrates
+the known-waveform path but recovers only noise from the two identified mic
+recordings, despite sustained modem lock. Local capture/output and counters are
+missing after a failed transfer and reboot; do not infer a successful mic path,
+zero underflows or a verified current build from the SDR files alone.
+
 Record the radio and baseband versions, firmware and benchmark source hashes,
 SDK, audio endpoints and channel mapping, mixer settings, CPU configuration,
 available memory, operator, date and test setup with each result bundle. Save
