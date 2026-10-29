@@ -284,6 +284,7 @@ static void audio_json(FILE *f,const fd_native_stats *a) {
     fprintf(f,",\"receiver_p99_frame_ratio\":%.9f,\"speech_p99_frame_ratio\":%.9f",c->receiver_p99_frame_ratio,c->speech_p99_frame_ratio);
     number(f,"input_depth",c->input_depth);number(f,"output_depth",c->output_depth);number(f,"input_max_depth",c->input_max_depth);number(f,"output_max_depth",c->output_max_depth);
     number(f,"feature_max_depth",c->feature_max_depth);number(f,"failures",c->failures);number(f,"padded_native_samples",c->padded_native_samples);number(f,"tx_finished",c->tx_finished);
+    number(f,"output_wait_events",c->output_wait_events);number(f,"output_wait_ns",c->output_wait_ns);
     fputs("}}",f);
 }
 static void save_case(void) {

@@ -17,6 +17,7 @@ typedef struct {
     uint64_t initialization_ns, represented_audio_ns;
     uint64_t receiver_service_ns, speech_service_ns;
     uint64_t receiver_deadline_misses, speech_deadline_misses, padded_native_samples;
+    uint64_t output_wait_events, output_wait_ns; /* bounded TX queue backpressure, not extra buffering */
     uint64_t receiver_p99_ns, receiver_max_ns, speech_p99_ns, speech_max_ns;
     double receiver_p99_frame_ratio, speech_p99_frame_ratio;
     unsigned input_depth, output_depth, feature_depth, feature_max_depth, input_max_depth, output_max_depth;
