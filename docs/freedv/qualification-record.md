@@ -7,11 +7,13 @@ encoding early, then finish the remaining routing/recovery checks. This replaces
 the original 30-minute duration requirement at the user's direction; it does
 not claim endurance or thermal qualification from the shorter measurements.
 
-This is the planned evidence record, not a procedure for the current read-only
-diagnostic page. Do not perform these cases until guarded route experiments and
-the diagnostic image have been implemented and tested. Physical routing and
-PTT observations remain uncollected; the codec evidence below is file-based
-processing on the radio and does not qualify the physical audio path.
+The diagnostic release is implemented and has returned physical evidence. See
+[the native radio results](native-radio-results-2026-10-28.md) and the current
+[Session 1 procedure](native-session-1.md). The tables below retain the original
+evidence requirements; pending entries are not a replacement for the newer
+case-specific results. Functional Stop recovery passed; exact external 500 ms
+RF timing remains separate. The operator selected the short TX proof before
+that precision measurement, without relabeling the timing gate PASS.
 
 Record the radio and baseband versions, firmware and benchmark source hashes,
 SDK, audio endpoints and channel mapping, mixer settings, CPU configuration,

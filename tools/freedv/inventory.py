@@ -66,6 +66,14 @@ def collect():
                             for card in card_ids],
             'pulse_sources': command(['pactl', 'list', 'short', 'sources']),
             'pulse_sinks': command(['pactl', 'list', 'short', 'sinks']),
+            # Read-only topology, including monitor sources and loopback modules.
+            # Never open a second PCM stream or change mixer/register values.
+            'pulse_source_details': command(['pactl', 'list', 'sources']),
+            'pulse_sink_details': command(['pactl', 'list', 'sinks']),
+            'pulse_source_outputs': command(['pactl', 'list', 'source-outputs']),
+            'pulse_sink_inputs': command(['pactl', 'list', 'sink-inputs']),
+            'pulse_modules': command(['pactl', 'list', 'short', 'modules']),
+            'pulse_cards': command(['pactl', 'list', 'cards']),
         },
         'radio_hardware_tested': False,
     }

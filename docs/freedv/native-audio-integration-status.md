@@ -6,6 +6,15 @@ routing/PTT/audio/RF gates remain **INCONCLUSIVE** until the operator returns a
 result bundle. Follow [the short radio procedure](native-radio-test.md) only with
 a diagnostic candidate image that has passed those automated gates.
 
+**Hardware continuation:** the published image at `2083e3e7` has now returned
+audible fixture, hand-mic, routing and recovery evidence. See the
+[case-specific results](native-radio-results-2026-10-28.md). Use
+[Session 1](native-session-1.md) for the next RF proof and short turns, with
+[Session 2](native-session-2.md) for unresolved native routing/recovery. The
+operator selected functional Stop qualification before the short TX proof;
+precisely measured external RF cutoff remains a separate gate. Do not repeat
+the completed unchanged codec or two-minute fixture cases.
+
 ## Fixed baseline
 
 The integration branch is `experiment/x6200-native-diagnostics` in

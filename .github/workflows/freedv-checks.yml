@@ -9,12 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  native-windows-evidence:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify Windows collection without radio access
+        shell: powershell
+        run: tools/freedv/test_native_collection.ps1
   benchmark-timing:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Distinguish workload execution from timing assessment
         run: python3 tools/freedv/test_run_benchmarks.py
+      - name: Verify native evidence integrity and separate hardware gates
+        run: python3 tools/freedv/test_native_session.py
       - name: Check short remaining-work suite integrity and failure collection
         run: python3 tools/freedv/test_short_validation.py
       - name: Validate limited-format offline profile decoding

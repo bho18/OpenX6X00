@@ -5,6 +5,13 @@ build and correctness gates pass. It is **not** a production FreeDV mode.
 A candidate image being ready for this procedure does not mean physical routing,
 RF interoperability, PTT recovery or radio performance has passed.
 
+**Current continuation:** use [Session 1](native-session-1.md) for hand-mic RADE
+RF proof on the installed image, followed by [Session 2](native-session-2.md).
+The operator selected proof of concept first after functional recovery passed.
+Functional Stop confirmation permits that short demonstration; numerical external
+RF cutoff remains a separate INCONCLUSIVE gate until measured. The historical
+sequence below does not require that precision measurement before the proof.
+
 ## Prepare the spare card
 
 1. Download the completed **FreeDV native diagnostic images** workflow artifact
@@ -77,7 +84,7 @@ so audible decoding can be demonstrated before finishing all remaining coverage.
 | First audible decode | `RADE fixture to speaker 120s`, Run on the confirmed unkeyed route | Intelligible speech, waveform capture, counters, bounded queues and playback continuity; GUI/waterfall responsive |
 | Receive independence | `Local tone during receive 20s` on a confirmed unkeyed route; use a stable off-air signal observed simultaneously by SDR | Whether receive capture continues and local playback contaminates it. If an antenna is needed, attach only for these unkeyed receive cases and reconnect the dummy load before any RF Arm |
 | Stop and recovery | On the chosen RF route: `Manual Stop test` (press Stop before expiry), `Watchdog timeout test` (let expire), `Audio failure test` (let fail) | RF stop and fresh post-clear RX; exact restoration; expected first stop cause. Each case needs Arm/Run |
-| Qualify stop path | After all three stop tests, select `Confirm Stop/timeout/failure observations`, Run | Use the same mic/channel/mixer/route as the already confirmed TX probe. Confirm software-owned RF cessation within 500 ms with timing uncertainty documented; wrong stop causes or audio/storage failures do not qualify |
+| Qualify functional stop path | After all three stop tests, select `Confirm Stop/timeout/failure observations`, Run | Use the same mic/channel/mixer/route as the already confirmed TX probe. Confirm functional RF stopping/restoration; wrong stop causes or unexpected audio/storage failures do not qualify. Measure the separate 500 ms RF bound with correlated external evidence. |
 | Live microphone TX | `Hand/built-in mic RADE TX 8s`, Arm/Run, speak into the hand mic | SDR record and reference-decode on the PC. Listen for beginning/end analog leakage; verify recognizable recovered speech |
 | Short mixed turns | About ten cycles of ~20s `Interrupted RADE fixture 20s` or known-fixture/live RX, one locally armed short TX, ~5s idle/acquisition | Turnaround, no prior-turn audio, interruptions/reacquisition, queue and resource behavior. Allow 5–10 minutes; stop receive early for short turns |
 | Complete native coverage | Finish all eight routing combinations, relevant built-in-mic keyed cases, physical PTT behavior and supported channel/mixer alternatives | Do not conclude built-in-mic failure from receive-only absence. Preserve unsupported/unrun cases as INCONCLUSIVE |
