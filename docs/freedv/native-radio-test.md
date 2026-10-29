@@ -12,6 +12,12 @@ Functional Stop confirmation permits that short demonstration; numerical externa
 RF cutoff remains a separate INCONCLUSIVE gate until measured. The historical
 sequence below does not require that precision measurement before the proof.
 
+**After the first live TX results:** the original image produced a valid modem
+signal but badly distorted RF-recovered speech. The verified updated image uses
+the shorter `TX-DELIVERY-TEST.md` procedure included in its image artifact, with
+a known-waveform TX comparison before live mic tests. Do not repeat the original
+image's ten-turn batch while voice delivery remains unresolved.
+
 ## Prepare the spare card
 
 1. Download the completed **FreeDV native diagnostic images** workflow artifact

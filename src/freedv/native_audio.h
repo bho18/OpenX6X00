@@ -12,7 +12,7 @@ extern "C" {
  * owned. None of these functions selects a radio route or keys RF. */
 typedef enum {
     FD_NATIVE_CAPTURE, FD_NATIVE_TONE, FD_NATIVE_RADE_FIXTURE,
-    FD_NATIVE_RADE_MIC_TX, FD_NATIVE_RADE_LIVE_RX
+    FD_NATIVE_RADE_MIC_TX, FD_NATIVE_RADE_LIVE_RX, FD_NATIVE_MODEM_TX
 } fd_native_kind;
 typedef struct {
     fd_native_kind kind;
@@ -34,6 +34,10 @@ typedef struct {
     bool native_codec_available;
     unsigned failures;
     unsigned recording_excerpt_limit_ms;
+    uint64_t tx_prefill_wait_ms;
+    uint64_t input_level_samples;
+    double input_ac_rms;
+    unsigned input_peak;
     uint64_t generation, elapsed_ms, input_samples, output_samples, interrupted_input_samples;
     uint64_t recorder_samples, recorder_discarded_samples;
     uint64_t aborted_codec_output_samples, aborted_playback_samples;

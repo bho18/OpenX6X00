@@ -31,7 +31,7 @@ struct fd_rade_stream {
     freedv_capture_ring input_queue, output_queue;
     pthread_t receiver, renderer;
     bool receiver_started, renderer_started;
-    atomic_bool stop, finish_tx, tx_finished;
+    atomic_bool stop, finish_tx, tx_finished, tx_prefill_ready;
     atomic_uint failures;
     pthread_mutex_t mutex;
     pthread_cond_t changed;
@@ -167,6 +167,7 @@ static void *receive_or_encode(void *arg) {
     const bool tx = s->direction == FD_STREAM_TX;
     const int rate = tx ? RADE_SPEECH_SAMPLE_RATE : RADE_MODEM_SAMPLE_RATE;
     const int feature_n = rade_n_features_in_out(s->rade);
+    unsigned tx_prepared=0;
     while (!atomic_load(&s->stop)) {
         s->input_service_ns = 0;
         int wanted = tx ? feature_n/NB_TOTAL_FEATURES*LPCNET_FRAME_SIZE : rade_nin(s->rade);
@@ -179,6 +180,9 @@ static void *receive_or_encode(void *arg) {
             if (n < 0 || n > NATIVE) { failure(s); break; }
             for (int i = 0; i < n; ++i)
                 s->native[i] = fmaxf(-1.f, fminf(32767.f/32768.f, s->iq[i].real * (RADE_INT16_SCALE/32768.f)));
+            ++tx_prepared;
+            pthread_mutex_lock(&s->mutex);s->stats.tx_prepared_blocks=tx_prepared;pthread_mutex_unlock(&s->mutex);
+            if(tx_prepared>=2)atomic_store_explicit(&s->tx_prefill_ready,true,memory_order_release);
             if (!output_pcm(s, s->native, (size_t)n, RADE_MODEM_SAMPLE_RATE, false)) break;
         } else {
             for (int i = 0; i < wanted; ++i) {
@@ -228,6 +232,7 @@ fd_rade_stream *fd_stream_prepare(fd_stream_direction direction, uint64_t genera
     fd_rade_stream *s = calloc(1, sizeof(*s)); if (!s) return NULL;
     s->direction = direction; s->generation = generation;
     atomic_init(&s->stop, false); atomic_init(&s->finish_tx,false); atomic_init(&s->tx_finished,false); atomic_init(&s->failures, 0);
+    atomic_init(&s->tx_prefill_ready,false);
     freedv_capture_ring_init(&s->input_queue); freedv_capture_ring_init(&s->output_queue);
     if (pthread_mutex_init(&s->mutex, NULL)) { free(s); return NULL; }
     pthread_condattr_t attr;
@@ -288,6 +293,10 @@ bool fd_stream_finish_tx(fd_rade_stream *s) {
     atomic_store(&s->finish_tx,true);return true;
 }
 bool fd_stream_tx_finished(fd_rade_stream *s) {return s && atomic_load(&s->tx_finished);}
+bool fd_stream_tx_prefill_ready(fd_rade_stream *s) {
+    return s && s->direction==FD_STREAM_TX && !atomic_load(&s->stop) &&
+        (atomic_load_explicit(&s->tx_prefill_ready,memory_order_acquire)||atomic_load(&s->finish_tx));
+}
 unsigned fd_stream_output_pending(fd_rade_stream *s) {if(!s)return 0;unsigned n=freedv_capture_ring_stats(&s->output_queue).queued_samples;return n==UINT_MAX?0:n;}
 static int compare_u64(const void *a, const void *b) { uint64_t x=*(const uint64_t *)a,y=*(const uint64_t *)b; return (x>y)-(x<y); }
 static int compare_double(const void *a,const void *b){double x=*(const double *)a,y=*(const double *)b;return(x>y)-(x<y);}

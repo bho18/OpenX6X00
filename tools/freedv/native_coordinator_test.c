@@ -219,7 +219,24 @@ int main(void) {
     complete_scenario(FD_STOP_OPERATOR,false,false,false,false);
     complete_scenario(FD_STOP_NATURAL,true,false,false,false);
     complete_scenario(FD_STOP_NATURAL,true,true,true,false);
-    assert(fd_controller_close(&d.controller));assert(fake.key_edges==0);
+    assert(fake.key_edges==0);
+    command_execute((command){.command=CMD_ACQUIRE});assert(status().state==FD_READY);
+    command fixed={CMD_ARM,CASE_MODEM_TX,FD_R1_M1_P0,radio_mic_handle,0,0};
+    unsigned applies=fake.apply_calls;
+    command_execute(fixed);assert(status().state==FD_READY&&!d.audio&&fake.apply_calls==applies);
+    /* A known-file delivery probe must remain usable when microphone capture
+     * is unresolved, but never without the exact-profile Stop qualification. */
+    d.tx_qualified[radio_mic_handle][0][0]=0;
+    d.stop_confirmed[radio_mic_handle][0][0][FD_R1_M1_P0]=true;
+    fixed.command=CMD_RUN;command_execute(fixed);assert(status().state==FD_READY&&fake.apply_calls==applies);
+    fixed.command=CMD_ARM;command_execute(fixed);
+    assert(status().state==FD_ARMED&&fake.apply_calls==applies&&d.audio->config.kind==FD_NATIVE_MODEM_TX);
+    assert(d.audio->config.duration_ms==8000&&d.audio->config.excerpt_ms==8000);
+    fixed.command=CMD_RUN;command_execute(fixed);assert(status().state==FD_RUNNING&&fake.key_edges==1);
+    packet(true,true,true,true);d.seen_tx=true;
+    assert(fd_controller_stop(&d.controller));finish_actual_case();
+    assert(fd_controller_release(&d.controller));
+    assert(fd_controller_close(&d.controller));assert(fake.key_edges==1);
     assert(fake.starts==fake.destroyed && fake.finishes==fake.destroyed && fake.mixer_restores==fake.destroyed);
     if(d.events)assert(!fclose(d.events));assert(d.directory[0]);remove_tree(d.directory);
     pthread_mutex_destroy(&fake.mutex);

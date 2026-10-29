@@ -7,12 +7,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <unistd.h>
 struct audio_freedv_mixer_snapshot {int saved;};
 struct audio_freedv_playback {atomic_bool cancelled,requested;atomic_ullong samples;};
 static atomic_bool active, allow_ack;
 static atomic_uint restored;
 static audio_freedv_playback_t *current;
+static bool synthetic_microphone;
+static uint64_t capture_epoch, capture_read_samples;
 static uint64_t millis(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return(uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;}
 static void pause_ms(unsigned ms){struct timespec t={0,(long)ms*1000000};nanosleep(&t,NULL);}
 audio_freedv_mixer_snapshot_t *audio_freedv_mixer_snapshot(void){return calloc(1,sizeof(audio_freedv_mixer_snapshot_t));}
@@ -20,9 +23,16 @@ bool audio_freedv_mixer_snapshot_describe(const audio_freedv_mixer_snapshot_t *s
 bool audio_freedv_mixer_restore(audio_freedv_mixer_snapshot_t *s){assert(s);atomic_fetch_add(&restored,1);return true;}
 void audio_freedv_mixer_snapshot_free(audio_freedv_mixer_snapshot_t *s){free(s);}
 bool audio_freedv_capture_configure(unsigned channel,const char *item){return !channel&&!item;}
-bool audio_freedv_capture_begin(void){return !atomic_exchange(&active,true);}
+bool audio_freedv_capture_begin(void){capture_epoch=millis();capture_read_samples=0;return !atomic_exchange(&active,true);}
 void audio_freedv_capture_end(void){atomic_store(&active,false);}
-size_t audio_freedv_capture_read(int16_t *out,size_t capacity){(void)out;(void)capacity;return 0;}
+size_t audio_freedv_capture_read(int16_t *out,size_t capacity){
+    if(!synthetic_microphone)return 0;
+    uint64_t due=(millis()-capture_epoch)*44100u/1000u;
+    size_t n=due>capture_read_samples?(size_t)(due-capture_read_samples):0;
+    if(n>capacity)n=capacity;
+    for(size_t i=0;i<n;++i)out[i]=(short)(149+2000*sin((capture_read_samples+i)*0.13));
+    capture_read_samples+=n;return n;
+}
 size_t audio_freedv_capture_read_stereo(int16_t *out,size_t frames){(void)out;(void)frames;return 0;}
 audio_freedv_capture_stats_t audio_freedv_capture_stats(void){return(audio_freedv_capture_stats_t){0};}
 audio_freedv_playback_t *audio_freedv_playback_open(void){assert(!current);current=calloc(1,sizeof(*current));return current;}
@@ -78,6 +88,29 @@ int main(int argc,char **argv){
         (unsigned long long)stats.codec.synchronized_blocks,(unsigned long long)stats.codec.feature_blocks,
         (unsigned long long)stats.playback.accepted_samples,(unsigned long long)stats.output_samples);
     assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);cleanup(codec_dir);
+    /* Real TX engine with paced synthetic capture and the existing short-write
+     * playback mock. No device, RF, extra capture reader or extra output queue. */
+    char tx_dir[]="/tmp/freedv-native-mic-tx-XXXXXX";assert(mkdtemp(tx_dir));
+    synthetic_microphone=true;
+    config=(fd_native_config){.kind=FD_NATIVE_RADE_MIC_TX,.output_directory=tx_dir,
+        .generation=4,.duration_ms=1800};
+    a=fd_native_audio_prepare(&config,error,sizeof(error));assert(a&&fd_native_audio_start(a));
+    uint64_t tx_deadline=millis()+4000;
+    while(!fd_native_audio_stop_requested(a)){assert(millis()<tx_deadline);pause_ms(2);}
+    assert(fd_native_audio_finish(a));stats=fd_native_audio_observe(a);
+    assert(!stats.failures&&stats.codec.tx_finished&&stats.codec.tx_prepared_blocks>=2);
+    assert(stats.tx_prefill_wait_ms>0&&stats.output_samples==stats.playback.accepted_samples);
+    assert(stats.input_level_samples>0&&stats.input_ac_rms>1000&&stats.input_peak>1500);
+    assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);cleanup(tx_dir);synthetic_microphone=false;
+    char modem_dir[]="/tmp/freedv-native-modem-tx-XXXXXX";assert(mkdtemp(modem_dir));
+    synthetic_microphone=true;
+    config=(fd_native_config){.kind=FD_NATIVE_MODEM_TX,.fixture_path=argv[1],.output_directory=modem_dir,
+        .generation=5,.duration_ms=600};
+    a=fd_native_audio_prepare(&config,error,sizeof(error));assert(a&&fd_native_audio_start(a));
+    wait_stopped(a);assert(fd_native_audio_finish(a));stats=fd_native_audio_observe(a);
+    assert(!stats.failures&&stats.output_samples>10000&&!stats.codec.blocks);
+    assert(stats.output_samples==stats.playback.accepted_samples);
+    assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);cleanup(modem_dir);synthetic_microphone=false;
 #else
     config.kind=FD_NATIVE_RADE_FIXTURE;assert(!fd_native_audio_codec_available());
     assert(!fd_native_audio_prepare(&config,error,sizeof(error)));

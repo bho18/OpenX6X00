@@ -46,7 +46,8 @@
 #define CASE_CONFIRM_TX 17
 #define CASE_CONFIRM_STOP 18
 #define CASE_INTERRUPTED_FIXTURE 19
-static const char *case_names[] = {"Capture 10s", "Route R0 M0 P0", "Route R0 M0 P1", "Route R0 M1 P0", "Route R0 M1 P1", "Route R1 M0 P0", "Route R1 M0 P1", "Route R1 M1 P0", "Route R1 M1 P1", "RADE fixture to speaker 120s", "Hand/built-in mic RADE TX 8s", "Live receive RADE 120s", "Local tone during receive 20s", "Manual Stop test", "Watchdog timeout test", "Audio failure test", "Confirm unkeyed RX route", "Confirm independent mic/TX route", "Confirm Stop/timeout/failure observations", "Interrupted RADE fixture 20s"};
+#define CASE_MODEM_TX 20
+static const char *case_names[] = {"Capture 10s", "Route R0 M0 P0", "Route R0 M0 P1", "Route R0 M1 P0", "Route R0 M1 P1", "Route R1 M0 P0", "Route R1 M0 P1", "Route R1 M1 P0", "Route R1 M1 P1", "RADE fixture to speaker 120s", "Hand/built-in mic RADE TX 8s", "Live receive RADE 120s", "Local tone during receive 20s", "Manual Stop test", "Watchdog timeout test", "Audio failure test", "Confirm unkeyed RX route", "Confirm independent mic/TX route", "Confirm Stop/timeout/failure observations", "Interrupted RADE fixture 20s", "Known RADE waveform TX 8s"};
 typedef enum { CMD_ACQUIRE, CMD_ARM, CMD_RUN, CMD_EXPORT } command_kind;
 typedef struct { command_kind command; unsigned selected, route, mic, channel, mixer; } command;
 typedef struct {
@@ -226,7 +227,7 @@ static bool clear_case(void *arg,uint64_t *sequence) {
 }
 static bool audio_quiet(void *arg) {(void)arg;return !d.audio||(d.audio_joined&&d.audio_restored&&fd_native_audio_quiescent(d.audio));}
 static bool restore_radio(void *arg,uint64_t sequence) {(void)arg;return radio_freedv_session_restore(&d.radio,sequence);}
-static bool case_is_tx(unsigned selected) {return (selected>=CASE_ROUTE_FIRST&&selected<=CASE_ROUTE_LAST)||selected==CASE_MIC_TX||(selected>=CASE_STOP&&selected<=CASE_FAILURE);}
+static bool case_is_tx(unsigned selected) {return (selected>=CASE_ROUTE_FIRST&&selected<=CASE_ROUTE_LAST)||selected==CASE_MIC_TX||selected==CASE_MODEM_TX||(selected>=CASE_STOP&&selected<=CASE_FAILURE);}
 static const char *state_name(fd_state s) {switch(s){case FD_IDLE:return "Idle";case FD_READY:return "Ready";case FD_ARMED:return "Armed";case FD_RUNNING:return "Running";case FD_WAIT_RX:return "Waiting for RX / restoration";case FD_RESTORE:return "Restoring";case FD_PREPARING:return "Preparing while unkeyed";}return "Unknown";}
 static void export_summary(void) {
     if(!d.directory[0])return;
@@ -255,6 +256,8 @@ static void audio_json(FILE *f,const fd_native_stats *a) {
     fputs("{\"timing_scope\":\"all_active_blocks_including_acquisition_and_startup\"",f);
     number(f,"kind",a->kind);number(f,"generation",a->generation);number(f,"input_samples",a->input_samples);number(f,"output_samples",a->output_samples);
     number(f,"recording_excerpt_limit_ms",a->recording_excerpt_limit_ms);
+    number(f,"tx_prefill_wait_ms",a->tx_prefill_wait_ms);number(f,"input_level_samples",a->input_level_samples);number(f,"input_peak",a->input_peak);
+    fprintf(f,",\"input_ac_rms\":%.6f",a->input_ac_rms);
     number(f,"interrupted_input_samples",a->interrupted_input_samples);number(f,"recorder_samples",a->recorder_samples);number(f,"recorder_discarded_samples",a->recorder_discarded_samples);
     number(f,"aborted_codec_output_samples",a->aborted_codec_output_samples);number(f,"aborted_playback_samples",a->aborted_playback_samples);
     number(f,"capture_dropped_samples",a->capture.dropped_samples);number(f,"capture_hole_samples",a->capture.hole_samples);number(f,"capture_errors",a->capture.capture_errors);
@@ -285,6 +288,7 @@ static void audio_json(FILE *f,const fd_native_stats *a) {
     number(f,"input_depth",c->input_depth);number(f,"output_depth",c->output_depth);number(f,"input_max_depth",c->input_max_depth);number(f,"output_max_depth",c->output_max_depth);
     number(f,"feature_max_depth",c->feature_max_depth);number(f,"failures",c->failures);number(f,"padded_native_samples",c->padded_native_samples);number(f,"tx_finished",c->tx_finished);
     number(f,"output_wait_events",c->output_wait_events);number(f,"output_wait_ns",c->output_wait_ns);
+    number(f,"tx_prepared_blocks",c->tx_prepared_blocks);
     fputs("}}",f);
 }
 static void save_case(void) {
@@ -307,7 +311,7 @@ static void save_case(void) {
 static bool select_case(command cmd) {
     if(cmd.selected==CASE_CAPTURE)return fd_controller_select_passive_rx(&d.controller);
     if(cmd.selected>=CASE_ROUTE_FIRST&&cmd.selected<=CASE_ROUTE_LAST)return fd_controller_select_matrix(&d.controller,(fd_matrix_case)(cmd.selected-CASE_ROUTE_FIRST));
-    if(cmd.selected==CASE_MIC_TX)return fd_controller_select_mic_tx(&d.controller,(fd_matrix_case)cmd.route);
+    if(cmd.selected==CASE_MIC_TX||cmd.selected==CASE_MODEM_TX)return fd_controller_select_mic_tx(&d.controller,(fd_matrix_case)cmd.route);
     if(cmd.selected>=CASE_STOP&&cmd.selected<=CASE_FAILURE)return fd_controller_select_matrix(&d.controller,(fd_matrix_case)cmd.route);
     return fd_controller_select_rx_playback(&d.controller,(fd_matrix_case)cmd.route);
 }
@@ -321,7 +325,8 @@ static bool prepare_case(command cmd) {
     uint64_t reserve=(uint64_t)excerpt_ms*44100u*2u*channels/1000u+1024u*1024u;
     if(!storage_ok(reserve)){message("Storage reserve/capture budget reached. Export and close this session.");return false;}
     if(cmd.selected==CASE_MIC_TX&&(!(d.tx_qualified[cmd.mic][cmd.channel][cmd.mixer]&(1u<<cmd.route))||!d.stop_confirmed[cmd.mic][cmd.channel][cmd.mixer][cmd.route])){message("First confirm independent mic/TX routing and all three Stop checks");return false;}
-    if((cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE||cmd.selected==CASE_MIC_TX||cmd.selected==CASE_LIVE_RX)&&!fd_native_audio_codec_available()){message("This build has no native codec; diagnostic image build must enable it");return false;}
+    if(cmd.selected==CASE_MODEM_TX&&!d.stop_confirmed[cmd.mic][cmd.channel][cmd.mixer][cmd.route]){message("First complete and confirm all three functional Stop checks");return false;}
+    if((cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE||cmd.selected==CASE_MIC_TX||cmd.selected==CASE_LIVE_RX||cmd.selected==CASE_MODEM_TX)&&!fd_native_audio_codec_available()){message("This build has no native codec; diagnostic image build must enable it");return false;}
     if((cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE||cmd.selected==CASE_LIVE_RX||cmd.selected==CASE_RX_TONE)&&!(d.rx_qualified[cmd.mic][cmd.channel][cmd.mixer]&(1u<<cmd.route))){message("Confirm an unkeyed route for this exact microphone/channel/mixer first");return false;}
     if(!select_case(cmd)){message("Case selection refused; restore the previous case or confirm its unkeyed RX route");return false;}
     if(!fd_controller_begin_prepare(&d.controller)){message("Preparation refused: need fresh RX and an exclusive ready session");return false;}
@@ -331,7 +336,7 @@ static bool prepare_case(command cmd) {
     snprintf(d.case_directory,sizeof(d.case_directory),"%s/case-%03u",d.directory,d.case_number);
     event("case_preparation_requested");
     if(mkdir(d.case_directory,0700)){d.preparation_failed=true;message("Cannot create case output directory");fd_controller_stop(&d.controller);return false;}
-    fd_native_kind kind=cmd.selected==CASE_CAPTURE?FD_NATIVE_CAPTURE:(cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?FD_NATIVE_RADE_FIXTURE:cmd.selected==CASE_MIC_TX?FD_NATIVE_RADE_MIC_TX:cmd.selected==CASE_LIVE_RX?FD_NATIVE_RADE_LIVE_RX:FD_NATIVE_TONE;
+    fd_native_kind kind=cmd.selected==CASE_CAPTURE?FD_NATIVE_CAPTURE:(cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?FD_NATIVE_RADE_FIXTURE:cmd.selected==CASE_MIC_TX?FD_NATIVE_RADE_MIC_TX:cmd.selected==CASE_MODEM_TX?FD_NATIVE_MODEM_TX:cmd.selected==CASE_LIVE_RX?FD_NATIVE_RADE_LIVE_RX:FD_NATIVE_TONE;
     static const char *mixers[]={NULL,"Stereo","Reverse Stereo","Sum Mono","Mix Mono"};
     fd_native_config config={.kind=kind,.fixture_path=FREEDV_DATA_DIR "/fixtures/rade-continuous.raw",.output_directory=d.case_directory,.generation=d.generation,.duration_ms=cmd.selected==CASE_FIXTURE||cmd.selected==CASE_LIVE_RX?120000:(cmd.selected==CASE_RX_TONE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?20000:cmd.selected==CASE_CAPTURE?10000:8000,.capture_channel=cmd.channel,.mixer_item=mixers[cmd.mixer],.capture_input=true,.inject_failure_ms=cmd.selected==CASE_FAILURE?1500:0,.interrupt_fixture=cmd.selected==CASE_INTERRUPTED_FIXTURE};
     config.excerpt_ms=excerpt_ms>config.duration_ms?config.duration_ms:excerpt_ms;
@@ -453,10 +458,14 @@ static void refresh(lv_timer_t *timer) {
     if(progress.audio_known) {
         fd_native_stats *a=&progress.audio;fd_stream_stats *c=&a->codec;
         const char *restoration=!progress.radio_owned?"released":progress.radio_restored&&progress.radio_readback_match&&a->mixer_restored?"verified":"pending";
+        char capture_level[80];
+        if(a->input_level_samples)snprintf(capture_level,sizeof(capture_level),"Capture AC %.1f / peak %u",a->input_ac_rms,a->input_peak);
+        else snprintf(capture_level,sizeof(capture_level),"Capture AC not sampled");
         uint64_t now=milliseconds(),age=now>=progress.sampled_ms?now-progress.sampled_ms:0;
-        snprintf(counters,sizeof(counters),"Input %llu / play %llu | audio faults %u\nCodec %llu blocks / sync %llu | uf(all) %llu\nQ in/out/f %u/%u/%u cap %u | D/H %u/%u\nRestore %s | bus errors %u | c%u cache %llu ms",
+        snprintf(counters,sizeof(counters),"Input %llu / play %llu | audio faults %u\nCodec %llu blocks / sync %llu | uf(all) %llu\n%s\nQ in/out/f %u/%u/%u cap %u | D/H %u/%u\nRestore %s | bus errors %u | c%u cache %llu ms",
             (unsigned long long)a->input_samples,(unsigned long long)a->output_samples,a->failures,
             (unsigned long long)c->blocks,(unsigned long long)c->synchronized_blocks,(unsigned long long)a->playback.underflows,
+            capture_level,
             c->input_depth,c->output_depth,c->feature_depth,a->capture.queued_samples,a->capture.dropped_samples,a->capture.hole_samples,
             restoration,progress.transport_failures,progress.case_number,(unsigned long long)age);
     } else snprintf(counters,sizeof(counters),"Audio counters: preparing / not sampled");
