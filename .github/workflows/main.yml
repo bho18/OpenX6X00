@@ -1,167 +1,40 @@
-name: X6200 native FreeDV diagnostic images
+name: Deliver verified X6200 diagnostic release assets
 
-# Experiment-branch workflow: manual only, read permissions, no releases or
-# upstream actions. The fork's main branch retains the upstream image workflow.
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
+concurrency:
+  group: x6200-native-diagnostic-release-2
+  cancel-in-progress: false
+
 jobs:
-  native-images:
-    if: github.repository == 'bho18/OpenX6X00' && github.ref == 'refs/heads/experiment/x6200-native-diagnostics'
+  deliver:
+    if: github.repository == 'bho18/OpenX6X00' && github.ref == 'refs/heads/delivery/x6200-native-tx-release'
     runs-on: ubuntu-22.04
-    timeout-minutes: 360
+    timeout-minutes: 45
     steps:
-      - name: Free space on the disposable runner
-        uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: true
-      - name: Check out the exact integration source and history
+      - name: Check out delivery tooling only
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          submodules: true
-          fetch-depth: 0
-      - name: Check out pinned X6200 control headers
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gdyuldin/X6200Control
-          ref: 0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8
-          path: control-x6200-reference
-      - name: Check out pinned X6100 compatibility headers
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gdyuldin/X6100Control
-          ref: 1426f56ef6759dc1c90cb76478c6e524e08c5c94
-          path: control-x6100-reference
-      - name: Check out pinned RADE V1 loss reference
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: drowe67/radae
-          ref: 89220e28fcc25138c0e038849e653dba30ec2dd6
-          path: radae-reference
-      - name: Install build and test prerequisites
-        run: |
-          set -euo pipefail
-          sudo apt-get -o Acquire::Retries=1 update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 install -y --no-install-recommends \
-            build-essential cmake ninja-build autoconf automake libtool pkg-config \
-            libsamplerate0-dev python3 python3-venv python3-pip e2fsprogs qemu-user \
-            sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
-            libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev \
-            libmpg123-dev libmp3lame-dev libflac-dev libvorbis-dev libopus-dev \
-            libpulse-dev libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr python3-pil libgpiod-dev libgps-dev
-          python3 -m venv "$RUNNER_TEMP/rade-validation-venv"
-          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install numpy==2.1.3 matplotlib==3.9.2
-          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-          "$RUNNER_TEMP/rade-validation-venv/bin/python" -m pip freeze > "$RUNNER_TEMP/validation-requirements.txt"
-      - name: Verify offline image editing behavior
-        run: python3 tools/freedv/test_native_image.py
-      - name: Build normal/diagnostic hosts and execute real integration fault tests
-        run: |
-          set -euo pipefail
-          python3 tools/freedv/validate_native_host.py --work "$RUNNER_TEMP/native-host-gates" \
-            --x6200-control control-x6200-reference --x6100-control control-x6100-reference --jobs 2 \
-            > "$RUNNER_TEMP/native-host-build.log" 2>&1 || { status=$?; grep -n -A6 -B2 -E 'error:|FAILED:|fatal error|Killed' "$RUNNER_TEMP/native-host-build.log" || true; tail -80 "$RUNNER_TEMP/native-host-build.log"; exit "$status"; }
-      - name: Exercise real codec-enabled adapter and shared reference equality on the host
-        run: |
-          set -euo pipefail
-          python3 tools/freedv/validate_native_host_codec.py --work "$RUNNER_TEMP/native-host-codec-gates" --jobs 2 \
-            > "$RUNNER_TEMP/native-host-codec.log" 2>&1 || { status=$?; grep -n -A6 -B2 -E 'error:|FAILED:|fatal error|Killed' "$RUNNER_TEMP/native-host-codec.log" || true; tail -80 "$RUNNER_TEMP/native-host-codec.log"; exit "$status"; }
-      - name: Recover checksummed baseline image and exact matching SDK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 tools/freedv/fetch_native_baseline.py --output "$RUNNER_TEMP/native-baseline"
-      - name: Build codec package and execute required SDK correctness checks
-        run: |
-          set -euo pipefail
-          sdk=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/native-baseline/recovery.json"))["sdk"])')
-          python3 tools/freedv/build_benchmark_package.py --work "$RUNNER_TEMP/native-benchmarks" \
-            --sdk "$sdk" --sdk-manifest "$RUNNER_TEMP/native-baseline/baseline/buildroot-commit.txt" \
-            --rade-acq-neon --rade-pipeline --rade-acq-parallel --radae-reference "$GITHUB_WORKSPACE/radae-reference" \
-            --validation-python "$RUNNER_TEMP/rade-validation-venv/bin/python" --jobs 2 \
-            > "$RUNNER_TEMP/native-codec-build.log" 2>&1 || { status=$?; tail -80 "$RUNNER_TEMP/native-codec-build.log"; exit "$status"; }
-      - name: Execute traditional FreeDV and RADE reference TX/RX under QEMU
-        run: |
-          set -euo pipefail
-          sdk=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/native-baseline/recovery.json"))["sdk"])')
-          compiler=$(find "$sdk/bin" -maxdepth 1 -name 'arm*-gcc' | head -1)
-          python3 tools/freedv/qemu_smoke.py --package "$RUNNER_TEMP/native-benchmarks/package" \
-            --sysroot "$("$compiler" -print-sysroot)" --output "$RUNNER_TEMP/native-qemu-smoke"
-      - name: Add pinned continuous fixture without looping end-of-over frames
+          persist-credentials: false
+      - name: Validate immutable artifacts and upload to the existing draft only
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 tools/freedv/fetch_native_fixture.py --package-work "$RUNNER_TEMP/native-benchmarks" \
-            --work "$RUNNER_TEMP/native-fixture"
-      - name: Validate the new streaming engine with the matching SDK
-        run: |
-          set -euo pipefail
-          sdk=$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/native-baseline/recovery.json"))["sdk"])')
-          python3 tools/freedv/validate_native_codec_sdk.py --sdk "$sdk" \
-            --benchmark-work "$RUNNER_TEMP/native-benchmarks" --output "$RUNNER_TEMP/native-stream-sdk-gates"
-      - name: Build and verify both spare-card images
-        run: |
-          set -euo pipefail
-          python3 tools/freedv/build_native_images.py --recovery "$RUNNER_TEMP/native-baseline/recovery.json" \
-            --benchmark-work "$RUNNER_TEMP/native-benchmarks" --host-gates "$RUNNER_TEMP/native-host-gates/summary.json" \
-            --codec-gates "$RUNNER_TEMP/native-stream-sdk-gates/summary.json" \
-            --host-codec-gates "$RUNNER_TEMP/native-host-codec-gates/summary.json" \
-            --work "$RUNNER_TEMP/native-image-build" --output "$RUNNER_TEMP/native-images" --jobs 2 \
-            > "$RUNNER_TEMP/native-image-build.log" 2>&1 || { status=$?; tail -80 "$RUNNER_TEMP/native-image-build.log"; exit "$status"; }
-      - name: Publish test artifacts only after all required gates pass
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: x6200-native-diagnostic-images
-          path: ${{ runner.temp }}/native-images/
-          if-no-files-found: error
-          retention-days: 14
-      - name: Keep corresponding codec sources and benchmark package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: x6200-native-codec-package-and-sources
-          path: |
-            ${{ runner.temp }}/native-benchmarks/freedv-benchmark-package.tar.gz
-            ${{ runner.temp }}/native-benchmarks/freedv-benchmark-sources.tar.gz
-          if-no-files-found: error
-          retention-days: 14
-      - name: Keep the verified matching SDK for reproducible rebuilds
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: x6200-native-matching-sdk
-          path: |
-            ${{ runner.temp }}/native-baseline/baseline/*sdk*.tar.gz
-            ${{ runner.temp }}/native-baseline/baseline/SHA256SUMS
-            ${{ runner.temp }}/native-baseline/baseline/buildroot-commit.txt
-            ${{ runner.temp }}/native-baseline/baseline/sources.json
-            ${{ runner.temp }}/native-baseline/recovery.json
-          if-no-files-found: error
-          retention-days: 90
-      - name: Preserve build/test evidence, including failures
+          python3 tools/freedv/test_upload_native_release.py
+          python3 tools/freedv/upload_native_release.py --work "$RUNNER_TEMP/native-release-delivery"
+      - name: Preserve delivery verification records
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: x6200-native-build-record-not-for-flashing
+          name: x6200-native-release-delivery-record
           path: |
-            ${{ runner.temp }}/native-*.log
-            ${{ runner.temp }}/native-host-gates/
-            ${{ runner.temp }}/native-host-codec-gates/summary.json
-            ${{ runner.temp }}/native-host-codec-gates/*.stdout
-            ${{ runner.temp }}/native-host-codec-gates/*.stderr
-            ${{ runner.temp }}/native-host-codec-gates/shared-speech-checks/
-            ${{ runner.temp }}/native-stream-sdk-gates/
-            ${{ runner.temp }}/native-qemu-smoke/
-            ${{ runner.temp }}/native-benchmarks/sdk-validation/
-            ${{ runner.temp }}/native-benchmarks/pipeline-sdk-validation/
-            ${{ runner.temp }}/native-benchmarks/parallel-sdk-validation/
-            ${{ runner.temp }}/validation-requirements.txt
+            ${{ runner.temp }}/native-release-delivery/delivery-manifest.json
+            ${{ runner.temp }}/native-release-delivery/DOWNLOAD-SHA256SUMS
+            ${{ runner.temp }}/native-release-delivery/verification.json
           if-no-files-found: warn
           retention-days: 14
