@@ -1,3 +1,4 @@
+#include "freedv/writer_gate.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
@@ -6,6 +7,7 @@
  *  Copyright (c) 2022-2023 Belousov Oleg aka R1CBU
  */
 #include "cw_encoder.h"
+#include <stdatomic.h>
 
 #include "cw_decoder.h"
 #include "params/params.h"
@@ -23,7 +25,7 @@
 #include <sched.h>
 
 
-static cw_encoder_state_t   state = CW_ENCODER_IDLE;
+static _Atomic cw_encoder_state_t state = CW_ENCODER_IDLE;
 static pthread_t            thread;
 static bool                 thread_started;
 
@@ -200,6 +202,7 @@ const char *cw_encoder_expand(const char *text) {
 }
 
 void cw_encoder_send(const char *text, bool beacon) {
+    FD_WRITE_GUARD(return);
     cw_encoder_stop();
 
     if (!text || !*text) {

@@ -1,0 +1,569 @@
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -20,6 +20,7 @@
+     rade_ofdm.c
+     rade_bpf.c
+     rade_acq.c
++    rade_acq_parallel.c
+     rade_tx.c
+     rade_rx.c
+ )
+@@ -129,3 +130,19 @@
+     COMPILE_DEFINITIONS RADE_ACQ_NEON=1
+     COMPILE_OPTIONS "-marm;-mfpu=neon-vfpv4;-ffp-contract=fast")
+ endif()
++
++option(RADE_ACQ_PARALLEL "Experimental persistent V1 acquisition workers" OFF)
++if(RADE_ACQ_PARALLEL)
++  find_package(Threads REQUIRED)
++  target_compile_definitions(rade PUBLIC RADE_ACQ_PARALLEL=1)
++  target_link_libraries(rade PUBLIC Threads::Threads)
++  # Keep the guarded full-search translation unit unchanged. The wrapper is
++  # active only inside a public V1 RX call or explicit diagnostic pool call.
++  set_property(SOURCE rade_acq.c APPEND PROPERTY COMPILE_DEFINITIONS
++    rade_acq_detect_pilots=rade_acq_detect_pilots_serial)
++  if(RADE_ACQ_NEON)
++    set_source_files_properties(rade_acq_parallel.c PROPERTIES
++      COMPILE_DEFINITIONS RADE_ACQ_NEON=1
++      COMPILE_OPTIONS "-marm;-mfpu=neon-vfpv4;-ffp-contract=fast")
++  endif()
++endif()
+--- a/src/rade_api.c
++++ b/src/rade_api.c
+@@ -44,6 +44,7 @@
+ #include "rade_api.h"
+ #include "rade_tx_v2.h"
+ #include "rade_rx_v2.h"
++#include <errno.h>
+ 
+ /*---------------------------------------------------------------------------*\
+                         INITIALIZATION
+@@ -128,6 +129,9 @@
+ }
+ 
+ void rade_close(struct rade *r) {
++#if RADE_ACQ_PARALLEL
++    if (r) rade_acq_pool_destroy(r->acquisition_pool);
++#endif
+     if (r != NULL) {
+         free(r);
+     }
+@@ -224,7 +228,14 @@
+         return (ret & 0x1) ? rade_rx_v2_n_features_out() : 0;
+     }
+ 
++#if RADE_ACQ_PARALLEL
++    r->acquisition_started = 1;
++    struct rade_acq_pool *previous = rade_acq_pool_scope(r->acquisition_pool);
++#endif
+     int ret = rade_rx_process(&r->rx, features_out, eoo_out, rx_in);
++#if RADE_ACQ_PARALLEL
++    rade_acq_pool_scope(previous);
++#endif
+     *has_eoo_out = (ret & 0x2) ? 1 : 0;
+     return (ret & 0x1) ? rade_rx_n_features_out(&r->rx) : 0;
+ }
+@@ -282,3 +293,36 @@
+     if (r->flags & RADE_MODE_V2) return rade_rx_v2_get_data_symbol(&r->rx_v2);
+     return 0.0f;
+ }
++
++int rade_set_acquisition_workers(struct rade *r, unsigned workers) {
++    if (!r || (r->flags & RADE_MODE_V2) || workers < 1 || workers > 4) return EINVAL;
++#if RADE_ACQ_PARALLEL
++    if (r->acquisition_started) return EBUSY;
++    struct rade_acq_pool *replacement = NULL;
++    int error = rade_acq_pool_create(workers, &replacement);
++    if (error) return error;
++    struct rade_acq_pool *previous = r->acquisition_pool;
++    r->acquisition_pool = replacement;
++    rade_acq_pool_destroy(previous);
++    return 0;
++#else
++    return workers == 1 ? 0 : ENOTSUP;
++#endif
++}
++unsigned rade_get_acquisition_workers(const struct rade *r) {
++    if (!r || (r->flags & RADE_MODE_V2)) return 0;
++#if RADE_ACQ_PARALLEL
++    return rade_acq_pool_workers(r->acquisition_pool);
++#else
++    return 1;
++#endif
++}
++int rade_get_acquisition_stats(const struct rade *r, struct rade_acquisition_stats *out) {
++    if (!r || !out || (r->flags & RADE_MODE_V2)) return EINVAL;
++#if RADE_ACQ_PARALLEL
++    rade_acq_pool_stats(r->acquisition_pool, out);
++#else
++    memset(out, 0, sizeof(*out)); out->workers = 1;
++#endif
++    return 0;
++}
+--- a/src/rade_api.h
++++ b/src/rade_api.h
+@@ -111,6 +111,8 @@
+ // Should be called when done with RADE.
+ RADE_EXPORT void rade_finalize(void);
+ 
++#include "rade_acq_parallel.h"
++
+ struct rade {
+     int flags;
+     int auxdata;
+@@ -123,11 +125,26 @@
+     /* V2 state */
+     rade_tx_v2_state tx_v2;
+     rade_rx_v2_state rx_v2;
++#if RADE_ACQ_PARALLEL
++    /* Experimental pool is owned by the API handle, never copied with rx/acq. */
++    struct rade_acq_pool *acquisition_pool;
++    int acquisition_started;
++#endif
+ };
+ 
+ // note single context only in this version, one context has one Tx, and one Rx
+ RADE_EXPORT struct rade *rade_open(char model_file[], int flags);
+ RADE_EXPORT void rade_close(struct rade *r);
++
++/* Experimental V1 acquisition workers, total including caller (1..4).
++   Configure after open and before the first RX call. A handle must be used by
++   one caller at a time; setter/getter/close must not race RX. Creation failure
++   leaves the previous configuration usable. V2 is unsupported. Return errno
++   values (0 success); OFF builds accept only the default one-worker setting. */
++RADE_EXPORT int rade_set_acquisition_workers(struct rade *r, unsigned workers);
++RADE_EXPORT unsigned rade_get_acquisition_workers(const struct rade *r);
++RADE_EXPORT int rade_get_acquisition_stats(const struct rade *r, struct rade_acquisition_stats *out);
++
+ 
+ // Returns major version — incremented on breaking API changes
+ RADE_EXPORT int rade_version(void);
+--- /dev/null
++++ b/src/rade_acq_parallel.c
+@@ -0,0 +1,387 @@
++/* Experimental acquisition workers. The copied numerical kernel/reduction
++ * follows rade_acq.c, Copyright (C) 2024 David Rowe, BSD-2-Clause; retain the
++ * original source and license distributed alongside this file. */
++#define _POSIX_C_SOURCE 200809L
++#include "rade_acq_parallel.h"
++#if RADE_ACQ_PARALLEL
++#include <assert.h>
++#include <stddef.h>
++#include <errno.h>
++#include <fenv.h>
++#include <float.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++#ifndef RADE_ACQ_NEON
++#define RADE_ACQ_NEON 0
++#endif
++#if RADE_ACQ_NEON
++#include <arm_neon.h>
++#if !defined(__ARM_NEON) || !defined(__ARM_FEATURE_FMA)
++#error "Parallel acquisition NEON requires NEON and FMA"
++#endif
++#if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ > 0)
++#error "Parallel acquisition requires ordinary floating-point semantics"
++#endif
++_Static_assert(sizeof(float) == sizeof(uint32_t) && FLT_RADIX == 2 &&
++               FLT_MANT_DIG == 24 && FLT_MIN_EXP == -125 && FLT_MAX_EXP == 128,
++               "IEEE binary32 is required");
++_Static_assert(sizeof(RADE_COMP) == 2 * sizeof(float), "complex layout");
++_Static_assert(offsetof(RADE_COMP, imag) == sizeof(float), "complex layout");
++#endif
++struct helper {
++    struct rade_acq_pool *pool;
++    unsigned index;
++};
++struct rade_acq_pool {
++    unsigned workers, created;
++    pthread_t threads[3];
++    struct helper helpers[3];
++    pthread_mutex_t mutex;
++    pthread_cond_t changed;
++    int stopping;
++    uint64_t generation;
++    unsigned complete;
++    rade_acq *acq;
++    float packed_rx[2 * (2 * RADE_NMF + RADE_M - 1)];
++    struct rade_acquisition_stats stats;
++};
++static _Thread_local struct rade_acq_pool *scoped_pool;
++extern int rade_acq_detect_pilots_serial(rade_acq *, const RADE_COMP *, int *, float *);
++static void checked(int error) {
++    if (error) { fprintf(stderr, "acquisition worker synchronization error: %d\n", error); abort(); }
++}
++static uint64_t clock_ns(clockid_t clock) {
++    struct timespec t;
++    if (clock_gettime(clock, &t)) { perror("acquisition clock_gettime"); abort(); }
++    return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
++}
++#ifdef RADE_ACQ_TEST_HOOKS
++#include <stdatomic.h>
++static atomic_int fail_create_after = ATOMIC_VAR_INIT(-1);
++static atomic_uint live_threads = ATOMIC_VAR_INIT(0);
++int rade_acq_pool_test_fail_create_after(int successful_creates) {
++    return atomic_exchange_explicit(&fail_create_after, successful_creates, memory_order_relaxed);
++}
++unsigned rade_acq_pool_test_live_threads(void) {
++    return atomic_load_explicit(&live_threads, memory_order_relaxed);
++}
++#endif
++
++#if RADE_ACQ_NEON
++/* Each lane is one independent time offset, not a partial reduction. The
++   sample reduction still runs n=0..M-1. Products match the original GCC 12
++   Cortex-A7 scalar VFP fusion pattern; accumulation remains a separate add.
++   ARMv7 NEON has fixed round-to-nearest and flush-to-zero semantics. Select
++   it only in a conservative finite domain whose exact product lattice is
++   2^-118 or coarser, so nonzero products/FMA cancellation/ordered sums stay
++   normal. Out-of-domain data retains the original scalar implementation. */
++static int rade_acq_component_in_range(float value, uint32_t minimum) {
++    uint32_t bits;
++    memcpy(&bits, &value, sizeof(bits));
++    bits &= 0x7fffffffu;
++    /* 0x47800000 is 2^16. NaN/Inf and subnormal values fail this check. */
++    return bits == 0 || (bits >= minimum && bits <= 0x47800000u);
++}
++
++static int rade_acq_can_use_neon(const rade_acq *acq, const RADE_COMP *rx) {
++    if (acq->nmf < 4 || acq->nmf > RADE_NMF ||
++        acq->m <= 0 || acq->m > RADE_M ||
++        acq->n_fcoarse <= 0 || acq->n_fcoarse > RADE_ACQ_NFREQ ||
++        fegetround() != FE_TONEAREST)
++        return 0;
++    size_t count = 2 * acq->nmf + acq->m - 1;
++    for (size_t i = 0; i < count; i++) {
++        /* RX lower bound 2^-40: float lattice spacing at least 2^-63. */
++        if (!rade_acq_component_in_range(rx[i].real, 0x2b800000u) ||
++            !rade_acq_component_in_range(rx[i].imag, 0x2b800000u))
++            return 0;
++    }
++    for (int f = 0; f < acq->n_fcoarse; f++) {
++        for (int n = 0; n < acq->m; n++) {
++            /* Pilot lower bound 2^-32: spacing at least 2^-55. */
++            if (!rade_acq_component_in_range(acq->p_w[f][n].real, 0x2f800000u) ||
++                !rade_acq_component_in_range(acq->p_w[f][n].imag, 0x2f800000u))
++                return 0;
++        }
++    }
++    return 1;
++}
++
++/* An explicit sign-bit flip avoids compiler scalarization of vnegq_f32
++   under strict floating-point options, without enabling unsafe math. */
++static inline float32x4_t rade_acq_negate4(float32x4_t value) {
++    return vreinterpretq_f32_u32(veorq_u32(vreinterpretq_u32_f32(value),
++                                        vdupq_n_u32(0x80000000u)));
++}
++
++static void rade_acq_correlate4(rade_acq *acq, const float *rx,
++                              int t, int f_idx) {
++    float32x4_t ar1 = vdupq_n_f32(0.0f);
++    float32x4_t ai1 = vdupq_n_f32(0.0f);
++    float32x4_t ar2 = vdupq_n_f32(0.0f);
++    float32x4_t ai2 = vdupq_n_f32(0.0f);
++    for (int n = 0; n < acq->m; n++) {
++        float32x4x2_t x1 = vld2q_f32(&rx[2 * (t + n)]);
++        float32x4x2_t x2 = vld2q_f32(&rx[2 * (t + acq->nmf + n)]);
++        float32x4_t pr = vdupq_n_f32(acq->p_w[f_idx][n].real);
++        float32x4_t pi = vdupq_n_f32(acq->p_w[f_idx][n].imag);
++        float32x4_t r1 = vfmaq_f32(vmulq_f32(x1.val[1], pi), x1.val[0], pr);
++        float32x4_t i1 = vfmaq_f32(rade_acq_negate4(vmulq_f32(x1.val[1], pr)), x1.val[0], pi);
++        float32x4_t r2 = vfmaq_f32(vmulq_f32(x2.val[1], pi), x2.val[0], pr);
++        float32x4_t i2 = vfmaq_f32(rade_acq_negate4(vmulq_f32(x2.val[1], pr)), x2.val[0], pi);
++        ar1 = vaddq_f32(ar1, r1);
++        ai1 = vaddq_f32(ai1, i1);
++        ar2 = vaddq_f32(ar2, r2);
++        ai2 = vaddq_f32(ai2, i2);
++    }
++    float rr1[4], ii1[4], rr2[4], ii2[4];
++    vst1q_f32(rr1, ar1); vst1q_f32(ii1, ai1);
++    vst1q_f32(rr2, ar2); vst1q_f32(ii2, ai2);
++    for (int lane = 0; lane < 4; lane++) {
++        acq->Dt1[t + lane][f_idx].real = rr1[lane];
++        acq->Dt1[t + lane][f_idx].imag = ii1[lane];
++        acq->Dt2[t + lane][f_idx].real = rr2[lane];
++        acq->Dt2[t + lane][f_idx].imag = ii2[lane];
++    }
++}
++
++
++#endif
++static void compute_partition(struct rade_acq_pool *pool, unsigned index) {
++#if RADE_ACQ_NEON
++    rade_acq *acq = pool->acq;
++    unsigned groups = (unsigned)acq->nmf / 4;
++    unsigned first = groups * index / pool->workers;
++    unsigned end = groups * (index + 1) / pool->workers;
++    for (unsigned group = first; group < end; ++group)
++        for (int f = 0; f < acq->n_fcoarse; ++f)
++            rade_acq_correlate4(acq, pool->packed_rx, (int)(4 * group), f);
++#else
++    (void)pool; (void)index;
++    /* Host scalar and disabled-NEON builds never publish parallel jobs. */
++    abort();
++#endif
++}
++static void *helper_main(void *argument) {
++    struct helper *helper = argument;
++    struct rade_acq_pool *pool = helper->pool;
++    uint64_t generation = 0;
++    checked(pthread_mutex_lock(&pool->mutex));
++    for (;;) {
++        while (!pool->stopping && pool->generation == generation)
++            checked(pthread_cond_wait(&pool->changed, &pool->mutex));
++        if (pool->stopping) break;
++        generation = pool->generation;
++        checked(pthread_mutex_unlock(&pool->mutex));
++        uint64_t before = clock_ns(CLOCK_THREAD_CPUTIME_ID);
++        compute_partition(pool, helper->index);
++        uint64_t elapsed = clock_ns(CLOCK_THREAD_CPUTIME_ID) - before;
++        checked(pthread_mutex_lock(&pool->mutex));
++        ++pool->stats.helper_jobs[helper->index - 1];
++        pool->stats.helper_cpu_ns[helper->index - 1] += elapsed;
++        ++pool->complete;
++        checked(pthread_cond_broadcast(&pool->changed));
++    }
++    checked(pthread_mutex_unlock(&pool->mutex));
++    return NULL;
++}
++void rade_acq_pool_destroy(struct rade_acq_pool *pool) {
++    if (!pool) return;
++    /* Caller owns the idle handle. Never cancel/detach helpers that might still
++       access shared state; accepted finite jobs finish before this API returns. */
++    checked(pthread_mutex_lock(&pool->mutex));
++    pool->stopping = 1;
++    checked(pthread_cond_broadcast(&pool->changed));
++    checked(pthread_mutex_unlock(&pool->mutex));
++    for (unsigned i = 0; i < pool->created; ++i) {
++        checked(pthread_join(pool->threads[i], NULL));
++#ifdef RADE_ACQ_TEST_HOOKS
++        atomic_fetch_sub_explicit(&live_threads, 1, memory_order_relaxed);
++#endif
++    }
++    checked(pthread_cond_destroy(&pool->changed));
++    checked(pthread_mutex_destroy(&pool->mutex));
++    free(pool);
++}
++int rade_acq_pool_create(unsigned workers, struct rade_acq_pool **out) {
++    if (!out) return EINVAL;
++    *out = NULL;
++    if (workers < 1 || workers > 4) return EINVAL;
++    struct rade_acq_pool *pool = calloc(1, sizeof(*pool));
++    if (!pool) return ENOMEM;
++    pool->workers = pool->stats.workers = workers;
++    int error = pthread_mutex_init(&pool->mutex, NULL);
++    if (error) { free(pool); return error; }
++    error = pthread_cond_init(&pool->changed, NULL);
++    if (error) { pthread_mutex_destroy(&pool->mutex); free(pool); return error; }
++    for (unsigned i = 0; i + 1 < workers; ++i) {
++        pool->helpers[i].pool = pool;
++        pool->helpers[i].index = i + 1;
++#ifdef RADE_ACQ_TEST_HOOKS
++        int failure_after = atomic_load_explicit(&fail_create_after, memory_order_relaxed);
++        error = failure_after >= 0 && i >= (unsigned)failure_after ? EAGAIN :
++            pthread_create(&pool->threads[i], NULL, helper_main, &pool->helpers[i]);
++#else
++        error = pthread_create(&pool->threads[i], NULL, helper_main, &pool->helpers[i]);
++#endif
++        if (error) { rade_acq_pool_destroy(pool); return error; }
++        ++pool->created;
++#ifdef RADE_ACQ_TEST_HOOKS
++        atomic_fetch_add_explicit(&live_threads, 1, memory_order_relaxed);
++#endif
++    }
++    *out = pool;
++    return 0;
++}
++unsigned rade_acq_pool_workers(const struct rade_acq_pool *pool) {
++    return pool ? pool->workers : 1;
++}
++void rade_acq_pool_stats(const struct rade_acq_pool *pool, struct rade_acquisition_stats *out) {
++    if (pool) *out = pool->stats;
++    else { memset(out, 0, sizeof(*out)); out->workers = 1; }
++}
++struct rade_acq_pool *rade_acq_pool_scope(struct rade_acq_pool *pool) {
++    struct rade_acq_pool *previous = scoped_pool;
++    scoped_pool = pool;
++    return previous;
++}
++#if RADE_ACQ_NEON
++static void rade_acq_grid_neon(rade_acq *acq, const RADE_COMP *rx) {
++    struct rade_acq_pool *pool = scoped_pool;
++    assert(pool && pool->workers > 1 && acq->nmf % 4 == 0);
++    size_t count = 2 * acq->nmf + acq->m - 1;
++    /* One preallocated float representation shared read-only by all workers. */
++    memcpy(pool->packed_rx, rx, count * sizeof(RADE_COMP));
++    checked(pthread_mutex_lock(&pool->mutex));
++    pool->acq = acq;
++    pool->complete = 0;
++    ++pool->generation;
++    checked(pthread_cond_broadcast(&pool->changed));
++    checked(pthread_mutex_unlock(&pool->mutex));
++    compute_partition(pool, 0);
++    uint64_t waiting = clock_ns(CLOCK_MONOTONIC);
++    checked(pthread_mutex_lock(&pool->mutex));
++    while (pool->complete < pool->created)
++        checked(pthread_cond_wait(&pool->changed, &pool->mutex));
++    pool->stats.dispatch_wait_ns += clock_ns(CLOCK_MONOTONIC) - waiting;
++    checked(pthread_mutex_unlock(&pool->mutex));
++}
++static int rade_acq_detect_parallel(rade_acq *acq, const RADE_COMP *rx, int *tmax, float *fmax) {
++    int M = acq->m;
++    int Nmf = acq->nmf;
++    int n_fcoarse = acq->n_fcoarse;
++
++    /* We need buffer of 2*Nmf + M + Ncp samples */
++    /* Search over one modem frame for maxima */
++
++    float Dtmax12 = 0.0f;
++    int f_ind_max = 0;
++    int t_max = 0;
++    float f_max = 0.0f;
++
++    /* Clear correlation grids */
++    memset(acq->Dt1, 0, sizeof(acq->Dt1));
++    memset(acq->Dt2, 0, sizeof(acq->Dt2));
++
++#if RADE_ACQ_NEON
++    int use_neon = rade_acq_can_use_neon(acq, rx);
++    if (use_neon)
++        rade_acq_grid_neon(acq, rx);
++#endif
++
++    /* Keep maxima and threshold traversal in the original time/frequency order. */
++    for (int t = 0; t < Nmf; t++) {
++        for (int f_idx = 0; f_idx < n_fcoarse; f_idx++) {
++            /* Correlate with frequency-shifted pilot at time t
++               Dt1 = sum(conj(rx[t:t+M]) * p_w[:][f_idx]) */
++            RADE_COMP Dt1, Dt2;
++#if RADE_ACQ_NEON
++            if (use_neon) {
++                Dt1 = acq->Dt1[t][f_idx];
++                Dt2 = acq->Dt2[t][f_idx];
++            } else
++#endif
++            {
++            Dt1 = rade_czero();
++            Dt2 = rade_czero();
++
++            for (int n = 0; n < M; n++) {
++                /* Note: Python uses np.conj(rx) first, then matmul
++                   So Dt1[t] = conj(rx[t:t+M]) . p_w */
++                Dt1 = rade_cadd(Dt1, rade_cmul(rade_cconj(rx[t + n]), acq->p_w[f_idx][n]));
++                Dt2 = rade_cadd(Dt2, rade_cmul(rade_cconj(rx[t + Nmf + n]), acq->p_w[f_idx][n]));
++            }
++
++            acq->Dt1[t][f_idx] = Dt1;
++            acq->Dt2[t][f_idx] = Dt2;
++            }
++
++            /* Combined metric: |Dt1| + |Dt2| */
++            float Dt12 = rade_cabs(Dt1) + rade_cabs(Dt2);
++
++            if (Dt12 > Dtmax12) {
++                Dtmax12 = Dt12;
++                f_ind_max = f_idx;
++                f_max = acq->fcoarse_range[f_idx];
++                t_max = t;
++            }
++        }
++    }
++
++    /* Calculate threshold based on noise statistics
++       Ref: radae.pdf "Pilot Detection over Multiple Frames" */
++    float sum_abs_Dt1 = 0.0f;
++    float sum_abs_Dt2 = 0.0f;
++    int count = 0;
++
++    for (int t = 0; t < Nmf; t++) {
++        for (int f_idx = 0; f_idx < n_fcoarse; f_idx++) {
++            sum_abs_Dt1 += rade_cabs(acq->Dt1[t][f_idx]);
++            sum_abs_Dt2 += rade_cabs(acq->Dt2[t][f_idx]);
++            count++;
++        }
++    }
++
++    float sigma_r1 = (sum_abs_Dt1 / count) / sqrtf(M_PI / 2.0f);
++    float sigma_r2 = (sum_abs_Dt2 / count) / sqrtf(M_PI / 2.0f);
++    float sigma_r = (sigma_r1 + sigma_r2) / 2.0f;
++
++    /* Threshold for detection */
++    acq->Dthresh = 2.0f * sigma_r * sqrtf(-logf(acq->Pacq_error1 / 5.0f));
++    acq->Dtmax12 = Dtmax12;
++    acq->f_ind_max = f_ind_max;
++
++    *tmax = t_max;
++    *fmax = f_max;
++
++    return (Dtmax12 > acq->Dthresh) ? 1 : 0;
++}
++
++#endif
++int rade_acq_pool_detect(struct rade_acq_pool *pool, rade_acq *acq,
++                         const RADE_COMP *rx, int *tmax, float *fmax) {
++    if (!pool) return rade_acq_detect_pilots_serial(acq, rx, tmax, fmax);
++    ++pool->stats.calls;
++#if RADE_ACQ_NEON
++    /* Helpers do only NEON vector groups, whose guarded arithmetic does not
++       depend on a stale thread rounding/FZ setting. All scalar/tail/unsupported
++       domains execute on the calling thread in the unchanged original TU. */
++    if (pool->workers > 1 && acq->nmf % 4 == 0 &&
++        acq->nmf / 4 >= (int)pool->workers && rade_acq_can_use_neon(acq, rx)) {
++        struct rade_acq_pool *previous = rade_acq_pool_scope(pool);
++        ++pool->stats.parallel_calls;
++        int result = rade_acq_detect_parallel(acq, rx, tmax, fmax);
++        rade_acq_pool_scope(previous);
++        return result;
++    }
++#endif
++    ++pool->stats.serial_calls;
++    return rade_acq_detect_pilots_serial(acq, rx, tmax, fmax);
++}
++int rade_acq_detect_pilots(rade_acq *acq, const RADE_COMP *rx, int *tmax, float *fmax) {
++    return rade_acq_pool_detect(scoped_pool, acq, rx, tmax, fmax);
++}
++#endif /* RADE_ACQ_PARALLEL */
+--- /dev/null
++++ b/src/rade_acq_parallel.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: BSD-2-Clause */
++#ifndef RADE_ACQ_PARALLEL_H
++#define RADE_ACQ_PARALLEL_H
++#include "rade_acq.h"
++#include <stdint.h>
++#ifndef RADE_ACQ_PARALLEL
++#define RADE_ACQ_PARALLEL 0
++#endif
++#ifdef __cplusplus
++extern "C" {
++#endif
++struct rade_acq_pool;
++struct rade_acquisition_stats {
++    unsigned workers; /* Includes the calling acquisition thread. */
++    uint64_t calls, parallel_calls, serial_calls;
++    uint64_t helper_jobs[3], helper_cpu_ns[3], dispatch_wait_ns;
++};
++#if RADE_ACQ_PARALLEL
++/* Internal API: caller serializes use, configuration, stats and destruction.
++   The pool owns helpers, but never owns the acquisition/receive sample storage. */
++int rade_acq_pool_create(unsigned workers, struct rade_acq_pool **out);
++void rade_acq_pool_destroy(struct rade_acq_pool *pool);
++unsigned rade_acq_pool_workers(const struct rade_acq_pool *pool);
++void rade_acq_pool_stats(const struct rade_acq_pool *pool, struct rade_acquisition_stats *out);
++int rade_acq_pool_detect(struct rade_acq_pool *pool, rade_acq *acq,
++                         const RADE_COMP *rx, int *tmax, float *fmax);
++struct rade_acq_pool *rade_acq_pool_scope(struct rade_acq_pool *pool);
++#ifdef RADE_ACQ_TEST_HOOKS
++int rade_acq_pool_test_fail_create_after(int successful_creates);
++unsigned rade_acq_pool_test_live_threads(void);
++#endif
++#endif
++#ifdef __cplusplus
++}
++#endif
++#endif

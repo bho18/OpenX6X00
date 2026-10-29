@@ -89,6 +89,38 @@ int32_t hw_get_i(hw_param_t p) {
     return (p < HW_PARAM_COUNT && has_register(p)) ? reg_i[p] : 0;
 }
 
+bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route) {
+    if (!route) return false;
+    route->record = reg_i[HW_RECORD] != 0;
+    route->modem = reg_i[HW_MODEM] != 0;
+    route->ptt = reg_i[HW_PTT] != 0;
+    return true;
+}
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *s) {
+    if (!s) return false;
+    /* No X6200 register layout is simulated here; ordinary values are enough
+     * to exercise the read-only interface without claiming hardware evidence. */
+    float power = reg_f[HW_TXPWR_F];
+    uint8_t tenths = !isfinite(power) || power <= 0 ? 0 : power >= 25.5f ? 255 : (uint8_t)(power * 10);
+    *s = (hw_freedv_cached_snapshot_t){
+        .route = {reg_i[HW_RECORD] != 0, reg_i[HW_MODEM] != 0, reg_i[HW_PTT] != 0},
+        .raw_route_bits_available = false,
+        .protected_route_bits = (reg_i[HW_SPLIT] ? 2u : 0u) | (reg_i[HW_ATU_TUNE] ? 0x2000u : 0u),
+        .vox_enabled = reg_i[HW_VOX] != 0,
+        .microphone = reg_i[HW_MIC], .hand_mic_gain = reg_i[HW_HMIC], .internal_mic_gain = reg_i[HW_IMIC],
+        .line_in = reg_i[HW_LINE_IN], .line_out = reg_i[HW_LINE_OUT], .speaker_mode = reg_i[HW_SPMODE],
+        .speaker_level = reg_i[HW_RXVOL], .monitor_level = reg_i[HW_MONI],
+        .requested_power_tenths_watt = tenths, .active_vfo = reg_i[HW_VFO_CUR],
+        .vfo_a_hz = vfo[0].freq, .vfo_b_hz = vfo[1].freq,
+        .backend_mode_a = vfo[0].mode, .backend_mode_b = vfo[1].mode,
+        .rx_filter_low_hz = reg_i[HW_FILTER1_LOW], .rx_filter_high_hz = reg_i[HW_FILTER1_HIGH],
+    };
+    return true;
+}
+#endif
+
 bool hw_set_i(hw_param_t p, int32_t v) {
     if (p >= HW_PARAM_COUNT) {
         fprintf(stderr, "hw_stub: hw_set_i(%d) is not a setting\n", p);

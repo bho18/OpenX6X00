@@ -34,7 +34,13 @@
 /* The group of the knobs, the buttons and the keyboard: the focused widget gets their keys */
 extern lv_group_t *keyboard_group;
 
+/* Set up the shared LVGL group independently of physical keyboard discovery. */
+void keyboard_group_init(void);
 void keyboard_init();
 
 /* A keyboard is plugged in and open */
 bool keyboard_ready();
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool keyboard_diagnostic_reset(void);
+#endif

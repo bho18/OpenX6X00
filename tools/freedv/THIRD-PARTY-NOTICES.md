@@ -1,0 +1,39 @@
+# Third-party notices
+
+The RADE V1 benchmark's speech-feature and FARGAN sequencing follows
+`rade_tx_wav.c` and `rade_rx_wav.c` in the pinned RADE C source. Those files
+carry the following notice:
+
+> Copyright (C) 2024 David Rowe
+>
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that the following conditions
+> are met:
+>
+> - Redistributions of source code must retain the above copyright
+> notice, this list of conditions and the following disclaimer.
+>
+> - Redistributions in binary form must reproduce the above copyright
+> notice, this list of conditions and the following disclaimer in the
+> documentation and/or other materials provided with the distribution.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+> ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+> LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+> A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
+> CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+> EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+> PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+> PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+> LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+> NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+> SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+This notice does not replace the notices for RADE, Opus, its model assets,
+libsamplerate or other dependencies when distributing binaries.
+
+The frozen RADE V1 receive fixture in `tools/freedv/fixtures/` was generated
+from the pinned RADE C project's `input_sample.wav` using `rade_tx_wav.c`.
+The fixture's README and provenance JSON identify the input, generator and
+model versions; `rade_c-LICENSE` preserves the repository's BSD 2-Clause notice.
+The fixture is distributed in benchmark packages as `fixtures/rade-modem.raw`.

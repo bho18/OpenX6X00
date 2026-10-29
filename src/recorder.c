@@ -1,3 +1,4 @@
+#include "freedv/writer_gate.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
@@ -73,6 +74,7 @@ static void write_failed(void *arg) {
 }
 
 void recorder_set_on(bool x) {
+    FD_WRITE_GUARD(return);
     if (x == atomic_load(&on))
         return;                         /* on already, or off already: nothing to do twice */
     if (x) {

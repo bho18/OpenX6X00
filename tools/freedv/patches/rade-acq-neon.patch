@@ -1,0 +1,196 @@
+--- a/src/rade_acq.c
++++ b/src/rade_acq.c
+@@ -38,6 +38,34 @@
+ #include <stdlib.h>
+ #include <assert.h>
+ 
++/* Experimental Cortex-A7 acquisition kernel; never enabled implicitly. */
++#ifndef RADE_ACQ_NEON
++#define RADE_ACQ_NEON 0
++#endif
++#if RADE_ACQ_NEON
++#if !defined(__ARM_NEON) || !defined(__ARM_FEATURE_FMA)
++#error "RADE_ACQ_NEON requires ARM NEON and fused multiply-add"
++#endif
++#if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ > 0)
++#error "RADE_ACQ_NEON requires ordinary floating-point semantics"
++#endif
++#include <arm_neon.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <fenv.h>
++#include <float.h>
++_Static_assert(sizeof(float) == sizeof(uint32_t) && FLT_RADIX == 2 &&
++               FLT_MANT_DIG == 24 && FLT_MIN_EXP == -125 && FLT_MAX_EXP == 128,
++               "IEEE binary32 is required");
++_Static_assert(sizeof(RADE_COMP) == 2 * sizeof(float), "complex layout");
++_Static_assert(offsetof(RADE_COMP, imag) == sizeof(float), "complex layout");
++#endif
++
++#ifdef RADE_ACQ_TEST_HOOKS
++static int rade_acq_test_used_neon;
++int rade_acq_test_neon_used(void) { return rade_acq_test_used_neon; }
++#endif
++
+ /*---------------------------------------------------------------------------*\
+                            INITIALIZATION
+ \*---------------------------------------------------------------------------*/
+@@ -84,6 +112,113 @@
+                            PILOT DETECTION
+ \*---------------------------------------------------------------------------*/
+ 
++#if RADE_ACQ_NEON
++/* Each lane is one independent time offset, not a partial reduction. The
++   sample reduction still runs n=0..M-1. Products match the original GCC 12
++   Cortex-A7 scalar VFP fusion pattern; accumulation remains a separate add.
++   ARMv7 NEON has fixed round-to-nearest and flush-to-zero semantics. Select
++   it only in a conservative finite domain whose exact product lattice is
++   2^-118 or coarser, so nonzero products/FMA cancellation/ordered sums stay
++   normal. Out-of-domain data retains the original scalar implementation. */
++static int rade_acq_component_in_range(float value, uint32_t minimum) {
++    uint32_t bits;
++    memcpy(&bits, &value, sizeof(bits));
++    bits &= 0x7fffffffu;
++    /* 0x47800000 is 2^16. NaN/Inf and subnormal values fail this check. */
++    return bits == 0 || (bits >= minimum && bits <= 0x47800000u);
++}
++
++static int rade_acq_can_use_neon(const rade_acq *acq, const RADE_COMP *rx) {
++    if (acq->nmf < 4 || acq->nmf > RADE_NMF ||
++        acq->m <= 0 || acq->m > RADE_M ||
++        acq->n_fcoarse <= 0 || acq->n_fcoarse > RADE_ACQ_NFREQ ||
++        fegetround() != FE_TONEAREST)
++        return 0;
++    size_t count = 2 * acq->nmf + acq->m - 1;
++    for (size_t i = 0; i < count; i++) {
++        /* RX lower bound 2^-40: float lattice spacing at least 2^-63. */
++        if (!rade_acq_component_in_range(rx[i].real, 0x2b800000u) ||
++            !rade_acq_component_in_range(rx[i].imag, 0x2b800000u))
++            return 0;
++    }
++    for (int f = 0; f < acq->n_fcoarse; f++) {
++        for (int n = 0; n < acq->m; n++) {
++            /* Pilot lower bound 2^-32: spacing at least 2^-55. */
++            if (!rade_acq_component_in_range(acq->p_w[f][n].real, 0x2f800000u) ||
++                !rade_acq_component_in_range(acq->p_w[f][n].imag, 0x2f800000u))
++                return 0;
++        }
++    }
++    return 1;
++}
++
++/* An explicit sign-bit flip avoids compiler scalarization of vnegq_f32
++   under strict floating-point options, without enabling unsafe math. */
++static inline float32x4_t rade_acq_negate4(float32x4_t value) {
++    return vreinterpretq_f32_u32(veorq_u32(vreinterpretq_u32_f32(value),
++                                        vdupq_n_u32(0x80000000u)));
++}
++
++static void rade_acq_correlate4(rade_acq *acq, const float *rx,
++                              int t, int f_idx) {
++    float32x4_t ar1 = vdupq_n_f32(0.0f);
++    float32x4_t ai1 = vdupq_n_f32(0.0f);
++    float32x4_t ar2 = vdupq_n_f32(0.0f);
++    float32x4_t ai2 = vdupq_n_f32(0.0f);
++    for (int n = 0; n < acq->m; n++) {
++        float32x4x2_t x1 = vld2q_f32(&rx[2 * (t + n)]);
++        float32x4x2_t x2 = vld2q_f32(&rx[2 * (t + acq->nmf + n)]);
++        float32x4_t pr = vdupq_n_f32(acq->p_w[f_idx][n].real);
++        float32x4_t pi = vdupq_n_f32(acq->p_w[f_idx][n].imag);
++        float32x4_t r1 = vfmaq_f32(vmulq_f32(x1.val[1], pi), x1.val[0], pr);
++        float32x4_t i1 = vfmaq_f32(rade_acq_negate4(vmulq_f32(x1.val[1], pr)), x1.val[0], pi);
++        float32x4_t r2 = vfmaq_f32(vmulq_f32(x2.val[1], pi), x2.val[0], pr);
++        float32x4_t i2 = vfmaq_f32(rade_acq_negate4(vmulq_f32(x2.val[1], pr)), x2.val[0], pi);
++        ar1 = vaddq_f32(ar1, r1);
++        ai1 = vaddq_f32(ai1, i1);
++        ar2 = vaddq_f32(ar2, r2);
++        ai2 = vaddq_f32(ai2, i2);
++    }
++    float rr1[4], ii1[4], rr2[4], ii2[4];
++    vst1q_f32(rr1, ar1); vst1q_f32(ii1, ai1);
++    vst1q_f32(rr2, ar2); vst1q_f32(ii2, ai2);
++    for (int lane = 0; lane < 4; lane++) {
++        acq->Dt1[t + lane][f_idx].real = rr1[lane];
++        acq->Dt1[t + lane][f_idx].imag = ii1[lane];
++        acq->Dt2[t + lane][f_idx].real = rr2[lane];
++        acq->Dt2[t + lane][f_idx].imag = ii2[lane];
++    }
++}
++
++static void rade_acq_grid_neon(rade_acq *acq, const RADE_COMP *rx) {
++    /* Bounded scratch: 16,632 bytes with current V1 dimensions. Copying
++       representations once gives vector loads a genuine float array;
++       no pointer arithmetic crosses RADE_COMP structure boundaries.
++       Production streaming worker stack size is not yet qualified. */
++    float packed_rx[2 * (2 * RADE_NMF + RADE_M - 1)];
++    assert(acq->nmf > 0 && acq->nmf <= RADE_NMF);
++    assert(acq->m > 0 && acq->m <= RADE_M);
++    size_t count = 2 * acq->nmf + acq->m - 1;
++    memcpy(packed_rx, rx, count * sizeof(RADE_COMP));
++    int t = 0;
++    for (; t + 3 < acq->nmf; t += 4)
++        for (int f = 0; f < acq->n_fcoarse; f++)
++            rade_acq_correlate4(acq, packed_rx, t, f);
++    /* Retain scalar handling for one to three final timing positions. */
++    for (; t < acq->nmf; t++) {
++        for (int f = 0; f < acq->n_fcoarse; f++) {
++            RADE_COMP a = rade_czero(), b = rade_czero();
++            for (int n = 0; n < acq->m; n++) {
++                a = rade_cadd(a, rade_cmul(rade_cconj(rx[t + n]), acq->p_w[f][n]));
++                b = rade_cadd(b, rade_cmul(rade_cconj(rx[t + acq->nmf + n]), acq->p_w[f][n]));
++            }
++            acq->Dt1[t][f] = a;
++            acq->Dt2[t][f] = b;
++        }
++    }
++}
++#endif
++
+ int rade_acq_detect_pilots(rade_acq *acq, const RADE_COMP *rx, int *tmax, float *fmax) {
+     int M = acq->m;
+     int Nmf = acq->nmf;
+@@ -101,13 +236,33 @@
+     memset(acq->Dt1, 0, sizeof(acq->Dt1));
+     memset(acq->Dt2, 0, sizeof(acq->Dt2));
+ 
+-    /* Search over time and frequency */
++#ifdef RADE_ACQ_TEST_HOOKS
++    rade_acq_test_used_neon = 0;
++#endif
++#if RADE_ACQ_NEON
++    int use_neon = rade_acq_can_use_neon(acq, rx);
++#ifdef RADE_ACQ_TEST_HOOKS
++    rade_acq_test_used_neon = use_neon;
++#endif
++    if (use_neon)
++        rade_acq_grid_neon(acq, rx);
++#endif
++
++    /* Keep maxima and threshold traversal in the original time/frequency order. */
+     for (int t = 0; t < Nmf; t++) {
+         for (int f_idx = 0; f_idx < n_fcoarse; f_idx++) {
+             /* Correlate with frequency-shifted pilot at time t
+                Dt1 = sum(conj(rx[t:t+M]) * p_w[:][f_idx]) */
+-            RADE_COMP Dt1 = rade_czero();
+-            RADE_COMP Dt2 = rade_czero();
++            RADE_COMP Dt1, Dt2;
++#if RADE_ACQ_NEON
++            if (use_neon) {
++                Dt1 = acq->Dt1[t][f_idx];
++                Dt2 = acq->Dt2[t][f_idx];
++            } else
++#endif
++            {
++            Dt1 = rade_czero();
++            Dt2 = rade_czero();
+ 
+             for (int n = 0; n < M; n++) {
+                 /* Note: Python uses np.conj(rx) first, then matmul
+@@ -118,6 +273,7 @@
+ 
+             acq->Dt1[t][f_idx] = Dt1;
+             acq->Dt2[t][f_idx] = Dt2;
++            }
+ 
+             /* Combined metric: |Dt1| + |Dt2| */
+             float Dt12 = rade_cabs(Dt1) + rade_cabs(Dt2);

@@ -15,6 +15,7 @@
 #include "screen_light.h"
 #include "control_owner.h"
 #include "key_input.h"
+#include "freedv/input_drain.h"
 
 #include <fcntl.h>
 #include <linux/input.h>
@@ -25,6 +26,10 @@
 #include <unistd.h>
 
 /* VOL: what is still to send of the last read, and whether the last key sent was down */
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static rotary_t *diagnostic_rotaries[4];
+static unsigned diagnostic_rotary_count;
+#endif
 static int32_t pending;
 static bool    key_down;
 
@@ -43,6 +48,9 @@ static void vol_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
             }
         }
         if (turned) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+            if (ctl_diagnostic_input_blocked()) knob->diagnostic_generation = ctl_remote_input_generation();
+#endif
             backlight_tick();
             ctl_local_input();
             pending                = sum;
@@ -73,6 +81,12 @@ rotary_t *rotary_init(char *dev_name) {
 
     rotary_t *knob = calloc(1, sizeof(*knob));
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (diagnostic_rotary_count == sizeof(diagnostic_rotaries)/sizeof(diagnostic_rotaries[0])) {
+        close(fd); free(knob); return NULL;
+    }
+    diagnostic_rotaries[diagnostic_rotary_count++] = knob;
+#endif
     knob->fd = fd;
     lv_indev_drv_init(&knob->indev_drv);
     knob->indev_drv.type      = LV_INDEV_TYPE_KEYPAD;
@@ -94,7 +108,7 @@ static struct {
     uint8_t         head, tail;
     pthread_mutex_t lock;
     lv_indev_drv_t  drv;
-} knob_main = {.lock = PTHREAD_MUTEX_INITIALIZER};
+} knob_main = {.fd=-1, .lock = PTHREAD_MUTEX_INITIALIZER};
 
 static void *main_knob_thread(void *arg) {
     struct pollfd      pfd = {.fd = knob_main.fd, .events = POLLIN};
@@ -107,12 +121,16 @@ static void *main_knob_thread(void *arg) {
         if (poll(&pfd, 1, -1) <= 0) {
             continue;
         }
-        while (read(knob_main.fd, &in, sizeof(in)) > 0) {
+        /* The reset barrier must not clear the ring while this reader still
+         * holds a pre-fence batch that it could publish afterward. */
+        pthread_mutex_lock(&knob_main.lock);
+        for (unsigned n = 0; n < 4096 && read(knob_main.fd, &in, sizeof(in)) > 0; ++n) {
             if (in.type == EV_REL) {
                 detents += in.value;
             }
         }
         if (!detents) {
+            pthread_mutex_unlock(&knob_main.lock);
             continue;
         }
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -122,7 +140,6 @@ static void *main_knob_thread(void *arg) {
         last = now;
         ms   = LV_MIN(ms, 500.0f) / LV_ABS(detents);
 
-        pthread_mutex_lock(&knob_main.lock);
         uint8_t next = (knob_main.head + 1) % TURNS_MAX;
 
         if (next != knob_main.tail) {     /* full: dropped, the GUI is stuck anyway */
@@ -183,3 +200,24 @@ void rotary_main_init(char *dev_name) {
     knob_main.drv.read_cb = main_knob_read;
     lv_indev_set_group(lv_indev_drv_register(&knob_main.drv), keyboard_group);
 }
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool rotary_diagnostic_reset(void) {
+    bool ok = true;
+    pending = 0; key_down = false;
+    for (unsigned i = 0; i < diagnostic_rotary_count; ++i) {
+        diagnostic_rotaries[i]->diagnostic_generation = 0;
+        if (!fd_diagnostic_drain_input(diagnostic_rotaries[i]->fd)) ok = false;
+    }
+    pthread_mutex_lock(&knob_main.lock);
+    if (!fd_diagnostic_drain_input(knob_main.fd)) ok = false;
+    knob_main.head = knob_main.tail = 0;
+    pthread_mutex_unlock(&knob_main.lock);
+    return ok;
+}
+bool rotary_diagnostic_local_event(lv_indev_t *input, unsigned generation) {
+    for (unsigned i = 0; i < diagnostic_rotary_count; ++i)
+        if (diagnostic_rotaries[i]->indev == input && diagnostic_rotaries[i]->diagnostic_generation == generation) return true;
+    return false;
+}
+#endif

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include "../freedv/writer_gate.h"
 
 #include <cstdint>
 #include <functional>
@@ -135,6 +136,7 @@ class Parameter : public SubjectT<ValueType>, public ParamBase {
     // (same condition as the notification), so an unchanged value neither
     // notifies observers nor dirties the pending-write buffer.
     void set(const ValueType &new_val) {
+        FD_WRITE_GUARD(return);
         ValueType v = new_val;
         if (validator_) {
             v = validator_(v);
@@ -147,6 +149,7 @@ class Parameter : public SubjectT<ValueType>, public ParamBase {
 
     // Same as set() but does not enqueue (used during bulk loads).
     void set_quiet(const ValueType &new_val) {
+        FD_WRITE_GUARD(return);
         ValueType v = new_val;
         if (validator_) {
             v = validator_(v);

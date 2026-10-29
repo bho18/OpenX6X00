@@ -57,6 +57,9 @@ void app_mem_save(const char *name);
 /* An event to the open window (queued, from any thread) */
 void dialog_send(lv_event_code_t code, void *param);
 bool dialog_is_run();
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool dialog_diagnostic_busy(void); /* atomic worker-safe snapshot; Settings exempt */
+#endif
 bool dialog_type_is_run(dialog_t *which);
 
 /* The window's object, and each of its controls */

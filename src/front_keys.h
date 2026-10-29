@@ -20,6 +20,9 @@ typedef struct {
     lv_indev_drv_t indev_drv;
     lv_indev_t    *indev;
     int            evdev_state;     /* the VOL press as LVGL sees it: pressed for one read */
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    unsigned       diagnostic_generation;
+#endif
     int            evdev_key;
 } keypad_t;
 
@@ -33,3 +36,13 @@ void keypad_power_set(bool down);
 /* Bottom buttons: a hold is a press longer than this many ms (0: back to 1 s), for an app
  * that wants quicker holds while it is open */
 void keypad_set_long_time(uint32_t hold);
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+/* GUI-thread-only diagnostic consent barrier. Acquire blocks remote injection,
+ * drains queued front inputs and cancels old hold/press state before returning.
+ * A false result does not acquire a new barrier. Keep the barrier until both
+ * the panel is closed and the radio session is fully restored/released. */
+bool front_keys_diagnostic_input_acquire(void);
+void front_keys_diagnostic_input_release(void);
+bool front_keys_diagnostic_local_event(void);
+#endif

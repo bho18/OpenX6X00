@@ -10,6 +10,7 @@
  *      INCLUDES
  *********************/
 #include "radio.h"
+#include "freedv/writer_gate.h"
 #include "board.h"
 
 #include "hw/hw.h"
@@ -54,6 +55,16 @@
 #include "start_trace.h"
 #include "clock.h"
 #include "wifi.h"
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include "freedv/packet_tx.h"
+#include "freedv/cached_snapshot.h"
+#include "freedv/radio_session.h"
+#include "control_owner.h"
+#include "recorder.h"
+#include "settings_window.h"
+#include "tci_server.h"
+#include "rtty.h"
+#endif
 
 /*********************
  *      DEFINES
@@ -129,6 +140,7 @@ static void * radio_thread(void *arg);
 
 /* The tuner found its network, on the LVGL thread (see the flow handler) */
 static void atu_done_cb(void *arg) {
+    FD_WRITE_GUARD(return);
     cfg_atu_save_network(*(uint32_t *)arg);
     param_i_set(cfg_atu_enabled, true);
 }
@@ -146,7 +158,18 @@ static radio_rx_tx_change_t notify_rx_tx;
 static void(*low_power_cb)(bool) = NULL;
 static bool low_power = false;
 
-static pthread_mutex_t  control_mux;
+static pthread_mutex_t  control_mux = PTHREAD_MUTEX_INITIALIZER;
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static freedv_packet_tx_tracker packet_tx_tracker = FREEDV_PACKET_TX_TRACKER_INIT;
+static fd_radio_session *freedv_owner;
+static atomic_uint freedv_base_errors;
+static atomic_bool freedv_startup_pending;
+static void freedv_startup_packet(void);
+static void freedv_startup_begin(void);
+static void freedv_startup_seal(void);
+static void freedv_initial_subscribe(Subject *, observer_cb, void *);
+static void freedv_protection_trip(void);
+#endif
 
 static hw_pack_t        pack_buf;
 static hw_pack_t       *pack = &pack_buf;
@@ -178,8 +201,8 @@ static tx_watch_t       tx_watch;
 static bool             resync_due;     /* resend the whole register block (base_guard.h) */
 static uint64_t         resync_time;
 static uint64_t         block_time;     /* the whole register block last sent (resend_all), radio thread only */
-static volatile bool    morse_on;
-static volatile uint32_t morse_ms;      /* the GUI's CW key last changed */
+static atomic_bool      morse_on;
+static atomic_uint      morse_ms;      /* the GUI's CW key last changed */
 static uint64_t         atu_time;       /* the tune asked, then the base last seen in TX for it */
 
 static void power_key_cb(void *arg) {
@@ -198,6 +221,7 @@ static uint32_t max_tx;
  **********************/
 
 void radio_bb_reset() {
+    FD_WRITE_GUARD(return);
     hw_bb_reset();
 }
 
@@ -227,9 +251,17 @@ bool radio_init() {
     return true;
 }
 
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#define RADIO_INITIAL_SUBSCRIBE freedv_initial_subscribe
+#else
+#define RADIO_INITIAL_SUBSCRIBE subject_subscribe_and_notify
+#endif
 void radio_start() {
 
     hw_start();
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    freedv_startup_begin();
+#endif
     base_ver = hw_base_ver();
     start_trace("base: version %s", hw_base_ver_str());
     /* What the digital TX level comes from, for a report of an app at 0 W (#16); the base version was nowhere */
@@ -237,8 +269,8 @@ void radio_start() {
             hw_base_ver_str(), params.line_in, params.line_out, params.play_gain_db_f.x, params.rec_gain_db_f.x,
             params.ft8_output_gain_offset.x);
 
-    subject_subscribe_and_notify((Subject*)cfg_band_vfoa_freq, on_vfo_freq_change, (void*)RADIO_VFO_A);
-    subject_subscribe_and_notify((Subject*)cfg_band_vfob_freq, on_vfo_freq_change, (void*)RADIO_VFO_B);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfoa_freq, on_vfo_freq_change, (void*)RADIO_VFO_A);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfob_freq, on_vfo_freq_change, (void*)RADIO_VFO_B);
 
     subject_subscribe((Subject*)cfg_transverter_0_from, on_transverter_change, NULL);
     subject_subscribe((Subject*)cfg_transverter_0_to, on_transverter_change, NULL);
@@ -247,103 +279,103 @@ void radio_start() {
     subject_subscribe((Subject*)cfg_transverter_1_to, on_transverter_change, NULL);
     subject_subscribe((Subject*)cfg_transverter_1_shift, on_transverter_change, NULL);
 
-    subject_subscribe_and_notify((Subject*)cfg_band_vfoa_mode, on_vfo_mode_change, (void*)RADIO_VFO_A);
-    subject_subscribe_and_notify((Subject*)cfg_band_vfob_mode, on_vfo_mode_change, (void*)RADIO_VFO_B);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfoa_mode, on_vfo_mode_change, (void*)RADIO_VFO_A);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfob_mode, on_vfo_mode_change, (void*)RADIO_VFO_B);
 
-    subject_subscribe_and_notify((Subject*)cfg_band_vfoa_agc, on_vfo_agc_change, (void*)RADIO_VFO_A);
-    subject_subscribe_and_notify((Subject*)cfg_band_vfob_agc, on_vfo_agc_change, (void*)RADIO_VFO_B);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfoa_agc, on_vfo_agc_change, (void*)RADIO_VFO_A);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfob_agc, on_vfo_agc_change, (void*)RADIO_VFO_B);
     subject_subscribe((Subject*)cfg_band_vfoa_mode, on_cw_agc_cond_change, NULL);
     subject_subscribe((Subject*)cfg_band_vfob_mode, on_cw_agc_cond_change, NULL);
     subject_subscribe((Subject*)cfg_cw_decoder, on_cw_agc_cond_change, NULL);
 
-    subject_subscribe_and_notify((Subject*)cfg_band_vfoa_att, on_vfo_att_change, (void*)RADIO_VFO_A);
-    subject_subscribe_and_notify((Subject*)cfg_band_vfob_att, on_vfo_att_change, (void*)RADIO_VFO_B);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfoa_att, on_vfo_att_change, (void*)RADIO_VFO_A);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfob_att, on_vfo_att_change, (void*)RADIO_VFO_B);
 
-    subject_subscribe_and_notify((Subject*)cfg_band_vfoa_pre, on_vfo_pre_change, (void*)RADIO_VFO_A);
-    subject_subscribe_and_notify((Subject*)cfg_band_vfob_pre, on_vfo_pre_change, (void*)RADIO_VFO_B);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfoa_pre, on_vfo_pre_change, (void*)RADIO_VFO_A);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_vfob_pre, on_vfo_pre_change, (void*)RADIO_VFO_B);
 
-    subject_subscribe_and_notify((Subject*)cfg_band_current_vfo, on_change_i, (void*)HW_VFO_CUR);
-    subject_subscribe_and_notify((Subject*)cfg_band_split, on_change_i, (void*)HW_SPLIT);
-    subject_subscribe_and_notify((Subject*)cfg_rfgain, on_change_i, (void*)HW_RFG);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_current_vfo, on_change_i, (void*)HW_VFO_CUR);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_split, on_change_i, (void*)HW_SPLIT);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_rfgain, on_change_i, (void*)HW_RFG);
 
-    subject_subscribe_and_notify((Subject*)cfg_band_if_shift, on_if_shift_change, NULL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_if_shift, on_if_shift_change, NULL);
 
-    subject_subscribe_and_notify((Subject*)cfg_band_tx_i_offset, on_change_i, (void*)HW_TX_I_OFFSET);
-    subject_subscribe_and_notify((Subject*)cfg_band_tx_q_offset, on_change_i, (void*)HW_TX_Q_OFFSET);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_tx_i_offset, on_change_i, (void*)HW_TX_I_OFFSET);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_tx_q_offset, on_change_i, (void*)HW_TX_Q_OFFSET);
 
     subject_subscribe((Subject*)cfg_band_id, on_band_change, NULL);
 
     subject_subscribe((Subject*)cfg_cur_agc, update_agc_time, NULL);
-    subject_subscribe_and_notify((Subject*)cfg_cur_mode, update_agc_time, NULL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_cur_mode, update_agc_time, NULL);
 
     subject_subscribe((Subject*)cfg_cur_filter_low, on_low_filter_change, NULL);
-    subject_subscribe_and_notify((Subject*)cfg_cur_mode, on_low_filter_change, NULL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_cur_mode, on_low_filter_change, NULL);
     subject_subscribe((Subject*)cfg_cur_filter_high, on_high_filter_change, NULL);
-    subject_subscribe_and_notify((Subject*)cfg_cur_mode, on_high_filter_change, NULL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_cur_mode, on_high_filter_change, NULL);
 
-    subject_subscribe_and_notify((Subject*)cfg_volume, on_volume_change, NULL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_volume, on_volume_change, NULL);
     subject_subscribe((Subject*)cfg_speaker_off, on_volume_change, NULL);   /* Speaker always off */
-    subject_subscribe_and_notify((Subject*)cfg_squelch, on_change_i, (void*)HW_SQL);
-    subject_subscribe_and_notify((Subject*)cfg_pwr, on_pwr_change, NULL);
-    subject_subscribe_and_notify((Subject*)cfg_output_gain, on_change_f, (void*)HW_ADC_DAC_GAIN_F);
-    subject_subscribe_and_notify((Subject*)cfg_band_dac_offset, on_change_f, (void*)HW_DAC_GAIN_F);
-    subject_subscribe_and_notify((Subject*)cfg_atu_enabled, on_change_i, (void*)HW_ATU_ENABLED);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_squelch, on_change_i, (void*)HW_SQL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_pwr, on_pwr_change, NULL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_output_gain, on_change_f, (void*)HW_ADC_DAC_GAIN_F);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_band_dac_offset, on_change_f, (void*)HW_DAC_GAIN_F);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_atu_enabled, on_change_i, (void*)HW_ATU_ENABLED);
     cfg_atu_network_subscribe(on_atu_network_change, NULL);
     on_atu_network_change(NULL, NULL);
 
     /* Compressor */
-    subject_subscribe_and_notify((Subject*)cfg_comp, on_change_comp_ratio, NULL);
-    subject_subscribe_and_notify((Subject*)cfg_comp_threshold_offset, on_change_f, (void*)HW_COMP_THRESHOLD_F);
-    subject_subscribe_and_notify((Subject*)cfg_comp_makeup_offset, on_change_f, (void*)HW_COMP_MAKEUP_F);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_comp, on_change_comp_ratio, NULL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_comp_threshold_offset, on_change_f, (void*)HW_COMP_THRESHOLD_F);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_comp_makeup_offset, on_change_f, (void*)HW_COMP_MAKEUP_F);
 
     /* VOX */
-    subject_subscribe_and_notify((Subject*)cfg_vox_on, on_change_i, (void*)HW_VOX);
-    subject_subscribe_and_notify((Subject*)cfg_vox_gain, on_change_i, (void*)HW_VOX_GAIN);
-    subject_subscribe_and_notify((Subject*)cfg_vox_ag, on_change_i, (void*)HW_VOX_AG);
-    subject_subscribe_and_notify((Subject*)cfg_vox_delay, on_change_i, (void*)HW_VOX_DELAY);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_vox_on, on_change_i, (void*)HW_VOX);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_vox_gain, on_change_i, (void*)HW_VOX_GAIN);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_vox_ag, on_change_i, (void*)HW_VOX_AG);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_vox_delay, on_change_i, (void*)HW_VOX_DELAY);
 
-    subject_subscribe_and_notify((Subject*)cfg_mic, on_change_i, (void*)HW_MIC);
-    subject_subscribe_and_notify((Subject*)cfg_hmic, on_change_i, (void*)HW_HMIC);
-    subject_subscribe_and_notify((Subject*)cfg_imic, on_change_i, (void*)HW_IMIC);
-    subject_subscribe_and_notify((Subject*)cfg_moni, on_volume_change, NULL);   /* radio_vol_refresh: muted with the speaker */
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_mic, on_change_i, (void*)HW_MIC);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_hmic, on_change_i, (void*)HW_HMIC);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_imic, on_change_i, (void*)HW_IMIC);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_moni, on_volume_change, NULL);   /* radio_vol_refresh: muted with the speaker */
 
-    subject_subscribe_and_notify((Subject*)cfg_rit, on_change_i, (void*)HW_RIT);
-    subject_subscribe_and_notify((Subject*)cfg_xit, on_change_i, (void*)HW_XIT);
-    subject_subscribe_and_notify((Subject*)cfg_fm_emphasis, on_change_i, (void*)HW_FM_EMP);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_rit, on_change_i, (void*)HW_RIT);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_xit, on_change_i, (void*)HW_XIT);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_fm_emphasis, on_change_i, (void*)HW_FM_EMP);
 
-    subject_subscribe_and_notify((Subject*)cfg_tx_filter_low, on_change_i, (void*)HW_TX_FILTER_LOW);
-    subject_subscribe_and_notify((Subject*)cfg_tx_filter_high, on_change_i, (void*)HW_TX_FILTER_HIGH);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_tx_filter_low, on_change_i, (void*)HW_TX_FILTER_LOW);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_tx_filter_high, on_change_i, (void*)HW_TX_FILTER_HIGH);
 
-    subject_subscribe_and_notify((Subject*)cfg_cessb_on, on_change_i, (void*)HW_CESSB);
-    subject_subscribe_and_notify((Subject*)cfg_cessb_power_up, on_change_f, (void*)HW_CESSB_POWER_UP_F);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_cessb_on, on_change_i, (void*)HW_CESSB);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_cessb_power_up, on_change_f, (void*)HW_CESSB_POWER_UP_F);
 
-    subject_subscribe_and_notify((Subject*)cfg_key_tone, on_change_i, (void*)HW_KEY_TONE);
-    subject_subscribe_and_notify((Subject*)cfg_key_speed, on_change_i, (void*)HW_KEY_SPEED);
-    subject_subscribe_and_notify((Subject*)cfg_key_mode, on_change_i, (void*)HW_KEY_MODE);
-    subject_subscribe_and_notify((Subject*)cfg_iambic_mode, on_change_i, (void*)HW_IAMBIC_MODE);
-    subject_subscribe_and_notify((Subject*)cfg_key_vol, on_change_i, (void*)HW_KEY_VOL);
-    subject_subscribe_and_notify((Subject*)cfg_key_train, on_change_i, (void*)HW_KEY_TRAIN);
-    subject_subscribe_and_notify((Subject*)cfg_qsk_time, on_change_i, (void*)HW_QSK_TIME);
-    subject_subscribe_and_notify((Subject*)cfg_key_ratio, on_change_f, (void*)HW_KEY_RATIO_F);
-    subject_subscribe_and_notify((Subject*)cfg_cw_peak_on, on_change_i, (void*)HW_CW_PEAK);
-    subject_subscribe_and_notify((Subject*)cfg_cw_peak_q, on_change_i, (void*)HW_CW_PEAK_Q);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_key_tone, on_change_i, (void*)HW_KEY_TONE);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_key_speed, on_change_i, (void*)HW_KEY_SPEED);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_key_mode, on_change_i, (void*)HW_KEY_MODE);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_iambic_mode, on_change_i, (void*)HW_IAMBIC_MODE);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_key_vol, on_change_i, (void*)HW_KEY_VOL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_key_train, on_change_i, (void*)HW_KEY_TRAIN);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_qsk_time, on_change_i, (void*)HW_QSK_TIME);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_key_ratio, on_change_f, (void*)HW_KEY_RATIO_F);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_cw_peak_on, on_change_i, (void*)HW_CW_PEAK);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_cw_peak_q, on_change_i, (void*)HW_CW_PEAK_Q);
 
-    subject_subscribe_and_notify((Subject*)cfg_agc_hang, on_change_i, (void*)HW_AGC_HANG);
-    subject_subscribe_and_notify((Subject*)cfg_agc_knee, on_change_i, (void*)HW_AGC_KNEE);
-    subject_subscribe_and_notify((Subject*)cfg_agc_slope, on_change_i, (void*)HW_AGC_SLOPE);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_agc_hang, on_change_i, (void*)HW_AGC_HANG);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_agc_knee, on_change_i, (void*)HW_AGC_KNEE);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_agc_slope, on_change_i, (void*)HW_AGC_SLOPE);
 
-    subject_subscribe_and_notify((Subject*)cfg_dnf, on_change_i, (void*)HW_DNF);
-    subject_subscribe_and_notify((Subject*)cfg_dnf_center, on_change_i, (void*)HW_DNF_CENTER);
-    subject_subscribe_and_notify((Subject*)cfg_dnf_width, on_change_i, (void*)HW_DNF_WIDTH);
-    subject_subscribe_and_notify((Subject*)cfg_dnf_auto, on_change_i, (void*)HW_DNF_AUTO);
-    subject_subscribe_and_notify((Subject*)cfg_nb, on_change_i, (void*)HW_NB);
-    subject_subscribe_and_notify((Subject*)cfg_nb_level, on_change_i, (void*)HW_NB_LEVEL);
-    subject_subscribe_and_notify((Subject*)cfg_nb_width, on_change_i, (void*)HW_NB_WIDTH);
-    subject_subscribe_and_notify((Subject*)cfg_nr, on_change_i, (void*)HW_NR);
-    subject_subscribe_and_notify((Subject*)cfg_nr_level, on_change_i, (void*)HW_NR_LEVEL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_dnf, on_change_i, (void*)HW_DNF);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_dnf_center, on_change_i, (void*)HW_DNF_CENTER);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_dnf_width, on_change_i, (void*)HW_DNF_WIDTH);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_dnf_auto, on_change_i, (void*)HW_DNF_AUTO);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_nb, on_change_i, (void*)HW_NB);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_nb_level, on_change_i, (void*)HW_NB_LEVEL);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_nb_width, on_change_i, (void*)HW_NB_WIDTH);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_nr, on_change_i, (void*)HW_NR);
+    RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_nr_level, on_change_i, (void*)HW_NR_LEVEL);
 
     if (hw_caps() & HW_CAP_ZOOM) {
-        subject_subscribe_and_notify((Subject*)cfg_mode_zoom, on_fw_zoom_change, NULL);
+        RADIO_INITIAL_SUBSCRIBE((Subject*)cfg_mode_zoom, on_fw_zoom_change, NULL);
     }
 
     hw_set_i(HW_CHARGER, params.charger.x == RADIO_CHARGER_ON);
@@ -352,13 +384,15 @@ void radio_start() {
     hw_set_i(HW_SPMODE, params.spmode.x);
     hw_set_i(HW_LINE_IN, params.line_in);
     hw_set_i(HW_LINE_OUT, params.line_out);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    freedv_startup_seal();
+#endif
 
     prev_time = get_time();
     idle_time = prev_time;
     start_time = prev_time;
     pack_time = prev_time;
 
-    pthread_mutex_init(&control_mux, NULL);
 
     pthread_t thread;
 
@@ -385,7 +419,47 @@ radio_state_t radio_get_state() {
     return state;
 }
 
+bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route) {
+    if (!route) return false;
+    hw_commanded_audio_route_t commanded;
+    radio_lock();
+    bool supported = hw_get_commanded_audio_route(&commanded);
+    if (supported) {
+        route->commanded_record = commanded.record;
+        route->commanded_modem = commanded.modem;
+        route->commanded_ptt = commanded.ptt;
+        route->observed_state = state;
+    }
+    radio_unlock();
+    if (supported) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        freedv_packet_tx_observation packet = freedv_packet_tx_read(&packet_tx_tracker, get_time());
+        route->packet_tx_known = packet.known;
+        route->packet_tx = packet.tx;
+        route->packet_age_ms = packet.age_ms;
+        route->packet_sequence = packet.sequence;
+#else
+        route->packet_tx_known = false;
+        route->packet_tx = false;
+        route->packet_age_ms = 0;
+        route->packet_sequence = 0;
+#endif
+    }
+    return supported;
+}
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+bool radio_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *snapshot) {
+    if (!snapshot) return false;
+    radio_lock();
+    bool supported = hw_get_freedv_cached_snapshot(snapshot);
+    radio_unlock();
+    return supported;
+}
+#endif
+
 void radio_set_freq(int32_t freq) {
+    FD_WRITE_GUARD(return);
     if (!radio_check_freq(freq)) {
         LV_LOG_ERROR("Freq %i incorrect", freq);
         return;
@@ -424,6 +498,7 @@ static atomic_bool split_held;
  * active VFO without split is the path both bases take. radio_set_freq moved the active one in split, so FT8 and the
  * other apps sent their tone at B + 1325 Hz, and never restored the IF shift (the X6100's VFO stayed off by it) */
 void radio_set_tx_freq(int32_t freq) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = param_i_get(cfg_band_current_vfo);
 
     if (freq == 0) {
@@ -447,6 +522,7 @@ void radio_set_tx_freq(int32_t freq) {
 }
 
 uint16_t radio_change_vol(int16_t df) {
+    FD_WRITE_GUARD(return param_i_get(cfg_volume));
     int32_t vol = param_i_get(cfg_volume);
     if (df == 0) {
         return vol;
@@ -467,6 +543,7 @@ uint16_t radio_change_vol(int16_t df) {
 }
 
 void radio_change_mute() {
+    FD_WRITE_GUARD(return);
     mute = !mute;
     radio_vol_refresh();
 }
@@ -475,6 +552,7 @@ void radio_change_mute() {
  * silences the speaker (headphones connected) or while a TCI client transmits; the monitor 0 at AF 0 too, which otherwise still played FT8's
  * tones (issue #1). A screen recording keeps the monitor at 30 at least on the X6100, but not under a TCI client's PTT */
 void radio_vol_refresh() {
+    FD_WRITE_GUARD(return);
     bool    muted = mute || tci_mute || btaudio_speaker_muted() || param_i_get(cfg_speaker_off);
     int32_t vol   = param_i_get(cfg_volume);
     int32_t moni  = param_i_get(cfg_moni);
@@ -497,16 +575,19 @@ void radio_vol_refresh() {
 /* A TCI client keyed the radio: the operator is at the other end, so the speaker and the TX
  * monitor stay quiet here until it unkeys; then both come back as they were */
 void radio_set_tci_mute(bool on) {
+    FD_WRITE_GUARD(return);
     if (tci_mute == on) return;
     tci_mute = on;
     radio_vol_refresh();
 }
 
 static void on_volume_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vol_refresh();
 }
 
 bool radio_change_spmode(int16_t df) {
+    FD_WRITE_GUARD(return false);
     if (df == 0) {
         return params.spmode.x;
     }
@@ -519,6 +600,10 @@ bool radio_change_spmode(int16_t df) {
 }
 
 void radio_start_atu() {
+    FD_WRITE_GUARD(return);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (radio_freedv_startup_waiting()) return;
+#endif
     if (tx_refused()) {
         return;
     }
@@ -527,6 +612,10 @@ void radio_start_atu() {
 
 /* Nothing moves before the scan is known to start: the VFO that transmits goes to `from` only then */
 bool radio_start_swrscan(int32_t from) {
+    FD_WRITE_GUARD(return false);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (radio_freedv_startup_waiting()) return false;
+#endif
     if (tx_refused() || !state_move(RADIO_RX, RADIO_SWRSCAN)) {
         return false;
     }
@@ -544,6 +633,7 @@ bool radio_start_swrscan(int32_t from) {
 }
 
 void radio_stop_swrscan() {
+    FD_WRITE_GUARD(return);
     if (state_move(RADIO_SWRSCAN, RADIO_RX)) {
         radio_lock();
         hw_set_i(HW_SWRSCAN, false);
@@ -553,19 +643,23 @@ void radio_stop_swrscan() {
 }
 
 void radio_set_pwr(float d) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(set_txpwr(d));
 }
 
 void radio_set_digi_cap(bool on) {
+    FD_WRITE_GUARD(return);
     digi_cap = on;
     radio_set_pwr(param_f_get(cfg_pwr));
 }
 
 void radio_set_tx_filter(uint16_t from_hz, uint16_t to_hz) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(hw_set_i(HW_TX_FILTER_LOW, from_hz); hw_set_i(HW_TX_FILTER_HIGH, to_hz));
 }
 
 void radio_set_rx_dsp_off(bool all_off) {
+    FD_WRITE_GUARD(return);
     bool nr = param_i_get(cfg_nr), nb = param_i_get(cfg_nb);
     bool dnf = param_i_get(cfg_dnf), dnf_auto = param_i_get(cfg_dnf_auto);
 
@@ -648,6 +742,10 @@ static bool tx_refused(void) {
 }
 
 void radio_set_ptt(bool tx) {
+    FD_WRITE_GUARD(return);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (tx && radio_freedv_startup_waiting()) return;
+#endif
     if (tx && tx_refused()) {
         return;
     }
@@ -657,6 +755,7 @@ void radio_set_ptt(bool tx) {
 static int mic_override = -1;      /* the walkie screen's mic, cfg_mic stays as saved */
 
 void radio_set_mic_override(int mic) {
+    FD_WRITE_GUARD(return);
     mic_override = mic;
     WITH_RADIO_LOCK(hw_set_i(HW_MIC, mic < 0 ? param_i_get(cfg_mic) : mic));
 }
@@ -665,25 +764,29 @@ int radio_get_mic(void) {
     return mic_override < 0 ? param_i_get(cfg_mic) : mic_override;
 }
 
+static atomic_bool modem_moved;
 static atomic_bool modem_on;    /* read on other threads (Winlink's on_air) while tx_player's thread keys */
 
 /* In split the audio goes out on the TX frequency through radio_set_tx_freq, as the apps' tone does (TCI's audio,
  * the voice messages): the active VFO moved before keying and back after; an app that moved it for its tone keeps
  * its own */
 void radio_set_modem(bool tx) {
-    static bool moved;
+    FD_WRITE_GUARD(return);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (tx && radio_freedv_startup_waiting()) return;
+#endif
 
     if (tx && tx_refused()) {
         return;
     }
     if (tx && param_i_get(cfg_band_split) && !atomic_load(&split_held)) {
         radio_set_tx_freq(radio_tx_freq());
-        moved = true;
+        modem_moved = true;
     }
     atomic_store(&modem_on, tx);
     WITH_RADIO_LOCK(hw_set_i(HW_MODEM, tx));
-    if (!tx && moved) {
-        moved = false;
+    if (!tx && modem_moved) {
+        modem_moved = false;
         radio_set_tx_freq(0);
     }
 }
@@ -716,6 +819,7 @@ static void play_mode_apply(audio_play_mode_t mode) {
 }
 
 void radio_set_play_mode(audio_play_mode_t mode) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(play_mode_apply(mode));
 }
 
@@ -744,27 +848,36 @@ void radio_usb_to_cat(void) {
 }
 
 void radio_speaker_play(bool speaker) {
+    FD_WRITE_GUARD(return);
     radio_set_play_mode(speaker ? AUDIO_PLAY_ON : AUDIO_PLAY_OFF);
 }
 
 void radio_set_line_in(uint8_t d) {
+    FD_WRITE_GUARD(return);
     CHANGE_PARAM(d, params.line_in, params.dirty.line_in, HW_LINE_IN);
 }
 
 void radio_set_line_out(uint8_t d) {
+    FD_WRITE_GUARD(return);
     CHANGE_PARAM(d, params.line_out, params.dirty.line_out, HW_LINE_OUT);
 }
 
 void radio_set_qsk_time(uint16_t ms) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(hw_set_i(HW_QSK_TIME, ms));
 }
 
 void radio_set_rec_moni(bool on) {
+    FD_WRITE_GUARD(return);
     rec_moni = on;
     radio_vol_refresh();
 }
 
 void radio_set_morse_key(bool on) {
+    FD_WRITE_GUARD(return);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (on && radio_freedv_startup_waiting()) return;
+#endif
     if (on && tx_refused()) {
         return;
     }
@@ -788,20 +901,24 @@ static void radio_unlock() {
 
 /* A setting straight to the base: user_data is the hw_param_t */
 static void on_change_i(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     int32_t v = subject_i_get((SubjectInt*)subj);
     WITH_RADIO_LOCK(hw_set_i((hw_param_t)(intptr_t)user_data, v));
 }
 
 static void on_change_f(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     float v = subject_f_get((SubjectFloat*)subj);
     WITH_RADIO_LOCK(hw_set_f((hw_param_t)(intptr_t)user_data, v));
 }
 
 static void on_pwr_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(set_txpwr(subject_f_get((SubjectFloat*)subj)));
 }
 
 static void on_vfo_freq_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val;
     if (vfo == RADIO_VFO_A) {
@@ -823,11 +940,13 @@ static void on_vfo_freq_change(Subject *subj, void *user_data) {
  * now applies. A shift set to 0 (off) left the base on the IF until the next retune, and the hand mic's PTT, which
  * the base keys by itself, went out there: 29.500 MHz on 10 m for a 2 m 145.500 */
 static void on_transverter_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     on_vfo_freq_change(NULL, (void *)RADIO_VFO_A);
     on_vfo_freq_change(NULL, (void *)RADIO_VFO_B);
 }
 
 static void on_vfo_mode_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
     radio_lock();
@@ -853,11 +972,13 @@ static void apply_vfo_agc(radio_vfo_t vfo) {
 }
 
 static void on_vfo_agc_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     (void)subj;
     apply_vfo_agc((radio_vfo_t)user_data);
 }
 
 static void on_cw_agc_cond_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     (void)subj;
     (void)user_data;
     apply_vfo_agc(RADIO_VFO_A);
@@ -865,6 +986,7 @@ static void on_cw_agc_cond_change(Subject *subj, void *user_data) {
 }
 
 static void update_agc_time(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_agc_t     agc = cparam_i_get(cfg_cur_agc);
     radio_mode_t    mode = cparam_i_get(cfg_cur_mode);
     uint16_t        agc_time = 500;
@@ -914,6 +1036,7 @@ static void update_agc_time(Subject *subj, void *user_data) {
 }
 
 static void on_vfo_att_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
     WITH_RADIO_LOCK(hw_vfo_set_att(vfo, new_val));
@@ -921,6 +1044,7 @@ static void on_vfo_att_change(Subject *subj, void *user_data) {
 }
 
 static void on_vfo_pre_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
     WITH_RADIO_LOCK(hw_vfo_set_pre(vfo, new_val));
@@ -928,6 +1052,7 @@ static void on_vfo_pre_change(Subject *subj, void *user_data) {
 }
 
 static void on_atu_network_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     (void)subj;
     (void)user_data;
     uint32_t new_val = cfg_atu_get_network();
@@ -936,6 +1061,7 @@ static void on_atu_network_change(Subject *subj, void *user_data) {
 }
 
 static void on_low_filter_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     radio_mode_t mode = cparam_i_get(cfg_cur_mode);
     if (mode == radio_mode_am || mode == radio_mode_nfm || mode == radio_mode_sam || mode == radio_mode_wfm) {
         // No update low on AM/FM, low should be -high
@@ -951,6 +1077,7 @@ static void on_low_filter_change(Subject *subj, void *user_data) {
 }
 
 static void on_high_filter_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     int32_t high = cparam_i_get(cfg_cur_filter_high);
     int32_t high2 = high + FILTER_2_OFFSET_OUT;
     switch (cparam_i_get(cfg_cur_mode)) {
@@ -976,6 +1103,7 @@ static void on_high_filter_change(Subject *subj, void *user_data) {
 }
 
 static void on_change_comp_ratio(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     uint8_t ratio = subject_i_get((SubjectInt*)subj);
     if (ratio < 1) {
         ratio = 1;
@@ -992,6 +1120,7 @@ static void on_change_comp_ratio(Subject *subj, void *user_data) {
 }
 
 static void on_fw_zoom_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     uint8_t zoom = subject_i_get((SubjectInt*)subj);
     uint8_t val = 0;
     while (zoom > 1) {
@@ -1002,6 +1131,7 @@ static void on_fw_zoom_change(Subject *subj, void *user_data) {
 }
 
 static void on_if_shift_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     int32_t shift = subject_i_get((SubjectInt*)subj);
     int32_t cur_freq = cparam_i_get(cfg_fg_freq);
 
@@ -1019,6 +1149,7 @@ static void on_if_shift_change(Subject *subj, void *user_data) {
 }
 
 static void on_band_change(Subject *subj, void *user_data) {
+    FD_WRITE_GUARD(return);
     // Workaround for bug with ignored IQ offset on band change from BASE
     int32_t i_val = param_i_get(cfg_band_tx_i_offset);
     int32_t q_val = param_i_get(cfg_band_tx_q_offset);
@@ -1223,9 +1354,26 @@ static void swr_trip_cb(void *arg) {
     cw_encoder_stop();
     paddle_keyer_stop();
     dialog_msg_voice_ptt_pressed();
-    radio_set_morse_key(false);
-    radio_set_modem(false);     /* the digital apps see it and stop (tx_player.c) */
-    radio_set_ptt(false);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    if (!fd_writer_enter()) {
+        /* Protection bypass: an exclusive diagnostic lease must never suppress
+         * SWR unkeying. Do not restore ordinary analog routing while TX holds. */
+        atomic_store(&modem_on, false);
+        morse_on = false;
+        radio_lock();
+        hw_pin_set(HW_PIN_MORSE_KEY, false);
+        hw_set_i(HW_MODEM, false);
+        hw_set_i(HW_PTT, false);
+        radio_unlock();
+    } else {
+#endif
+        radio_set_morse_key(false);
+        radio_set_modem(false);
+        radio_set_ptt(false);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        fd_writer_exit();
+    }
+#endif
     msg_schedule_text_fmt("TX stopped: SWR %.1f", *(float *)arg);
 }
 
@@ -1276,6 +1424,10 @@ static bool radio_tick() {
     int32_t d = now_time - prev_time;
 
     if (hw_flow_read(pack)) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        freedv_packet_tx_note(&packet_tx_tracker, pack->tx != 0, get_time());
+        freedv_startup_packet();
+#endif
         prev_time = now_time;
         pack_time = now_time;
         pack_vbat = pack->vbat;
@@ -1367,9 +1519,12 @@ static bool radio_tick() {
                      * queue at a time: with the GUI thread stalled and TX still on, a trip every ~320 ms took
                      * the reserve in 25 s from those that do not try again (TCI's unkey, FT8's last post).
                      * Marked before the put, the job may run before the put returns */
-                    if (swr_guard_check(&swr_guard, pack->tx_power * 0.1f, swr, param_i_get(cfg_swr_protect) * 0.1f, now_time) &&
-                        !atomic_exchange(&swr_trip_queued, true) && !scheduler_put_urgent(swr_trip_cb, &swr, sizeof(swr))) {
-                        atomic_store(&swr_trip_queued, false);
+                    if (swr_guard_check(&swr_guard, pack->tx_power * 0.1f, swr, param_i_get(cfg_swr_protect) * 0.1f, now_time)) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+                        freedv_protection_trip(); /* does not depend on GUI scheduling */
+#endif
+                        if (!atomic_exchange(&swr_trip_queued, true) && !scheduler_put_urgent(swr_trip_cb, &swr, sizeof(swr)))
+                            atomic_store(&swr_trip_queued, false);
                     }
                 }
                 break;
@@ -1450,7 +1605,14 @@ static bool radio_tick() {
                                TX_WATCH_CUT_MS, pack->vext * 0.1f, pack->vbat * 0.1f);
                 break;
             case TX_WATCH_RESTORE:
-                WITH_RADIO_LOCK(set_txpwr(param_f_get(cfg_pwr)));
+                radio_lock();
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+                if (freedv_owner) hw_set_f(HW_TXPWR_F, freedv_owner->restoration_complete ?
+                    freedv_owner->saved.requested_power_tenths_watt / 10.0f : 1.0f);
+                else
+#endif
+                    set_txpwr(param_f_get(cfg_pwr));
+                radio_unlock();
                 base_guard_log("base back in RX: TX power %.1f W restored (vext %.1f V, vbat %.1f V)",
                                param_f_get(cfg_pwr), pack->vext * 0.1f, pack->vbat * 0.1f);
                 break;
@@ -1498,6 +1660,9 @@ static void guard_events() {
     unsigned ev = base_guard_take(&resent, &lost, &reg);
 
     if (ev & BASE_GUARD_ERROR) {
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        atomic_fetch_add(&freedv_base_errors, 1);
+#endif
         base_guard_log("write to register %d failed: %u resent OK, %u lost; resending all registers", reg, resent, lost);
         tx_watch_error(&tx_watch, now_time);
     }
@@ -1550,3 +1715,325 @@ static void * radio_thread(void *arg) {
     }
     return NULL;
 }
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+/* No transport getter is a packet measurement. Every backend call here is
+ * serialized with the ordinary control mutex and never writes preferences. */
+bool radio_freedv_startup_waiting(void) { return atomic_load(&freedv_startup_pending); }
+const char *radio_freedv_error_string(fd_radio_error error) {
+    static const char *const messages[] = {
+        "OK", "Another radio/audio session is active", "Fresh RX status required",
+        "Diagnostic snapshot is unsupported", "Saved tuning or route contract changed",
+        "TX frequency, mode or protection guard refused", "Control transport resend failed",
+        "Cached restoration comparison failed", "Invalid diagnostic arguments",
+        "Startup recovery: release microphone PTT and wait for RX"
+    };
+    return (unsigned)error < sizeof(messages)/sizeof(messages[0]) ? messages[error] : "Unknown radio error";
+}
+static bool freedv_observe_locked(fd_observation *o) {
+    freedv_packet_tx_observation p = freedv_packet_tx_read(&packet_tx_tracker, get_time());
+    *o = (fd_observation){p.known, p.known && p.age_ms <= FD_RADIO_PACKET_MAX_AGE_MS, p.tx, p.sequence};
+    return p.known;
+}
+void radio_freedv_session_snapshot(const fd_radio_session *session, fd_radio_session *out) {
+    if (!session || !out) return;
+    radio_lock();
+    *out = *session;
+    radio_unlock();
+}
+bool radio_freedv_session_observe(fd_observation *o) {
+    if (!o) return false;
+    radio_lock();
+    bool ok = freedv_observe_locked(o);
+    /* The controller monitor aborts a running case on write/protection errors.
+     * Once clearing starts, packet observations remain available for recovery. */
+    if (freedv_owner && freedv_owner->case_active && !freedv_owner->software_cleared) {
+        unsigned errors = atomic_load(&freedv_base_errors) - freedv_owner->base_errors_at_acquire;
+        freedv_owner->base_error_events = errors;
+        if (freedv_owner->swr_trips_at_acquire != radio_swr_trips() || errors) {
+            freedv_owner->abort_reason = freedv_owner->last_error = errors ? FD_RADIO_TRANSPORT : FD_RADIO_TX_GUARD;
+            ok = false;
+        }
+    }
+    radio_unlock();
+    return ok;
+}
+static bool freedv_busy(void) {
+    return recorder_is_on() || screen_rec_is_on() || audio_freedv_other_audio_busy() ||
+        dialog_diagnostic_busy() ||
+        tci_server_clients() != 0 || cw_encoder_state() != CW_ENCODER_IDLE ||
+        rtty_get_state() != RTTY_OFF || morse_on || atomic_load(&modem_on) ||
+        atomic_load(&split_held) || modem_moved;
+}
+static bool freedv_rx(const fd_observation *o) { return o->known && o->fresh && !o->tx; }
+static bool freedv_transport(fd_radio_session *s) {
+    ++s->transport_attempts;
+    s->transport_ok = hw_resend_all();
+    if (!s->transport_ok) { ++s->transport_failures; s->last_error = FD_RADIO_TRANSPORT;
+        if (!s->abort_reason) s->abort_reason = FD_RADIO_TRANSPORT; }
+    return s->transport_ok;
+}
+bool radio_freedv_session_acquire(fd_radio_session *s, fd_observation *o) {
+    if (!s || !o || s->owned) return false;
+    memset(s, 0, sizeof(*s));
+    if (radio_freedv_startup_waiting()) { s->last_error = FD_RADIO_STARTUP; return false; }
+    /* Every getter used by freedv_busy is atomic; recheck after reservation
+     * still closes an application-start race without unsynchronized reads. */
+    if (freedv_busy()) { s->last_error = FD_RADIO_BUSY; return false; }
+    radio_lock();
+    hw_freedv_cached_snapshot_t snapshot;
+    if (freedv_owner || !hw_get_freedv_cached_snapshot(&snapshot)) {
+        s->last_error = freedv_owner ? FD_RADIO_BUSY : FD_RADIO_UNSUPPORTED;
+        radio_unlock(); return false;
+    }
+    if (state != RADIO_RX || !freedv_observe_locked(o) || !freedv_rx(o) || hw_tx_keyed_by_gui()) {
+        s->last_error = FD_RADIO_STATUS; radio_unlock(); return false;
+    }
+    if (!ctl_diagnostic_acquire()) { s->last_error = FD_RADIO_BUSY; radio_unlock(); return false; }
+    /* Nothing below can fail acquisition: a racing physical PTT or earlier
+     * audio-open leaves ready=false and the controller owns safe rollback. */
+    s->owned = true;
+    s->restoration_complete = true;
+    s->saved = snapshot;
+    if (hw_get_freedv_cached_snapshot(&snapshot)) s->saved = snapshot;
+    s->mic_override = mic_override; s->modem_on = atomic_load(&modem_on);
+    s->modem_moved = modem_moved; s->split_held = atomic_load(&split_held);
+    s->mute = mute; s->tci_mute = tci_mute; s->rec_monitor = rec_moni; s->digital_power_cap = digi_cap;
+    s->swr_trips_at_acquire = radio_swr_trips();
+    s->base_errors_at_acquire = atomic_load(&freedv_base_errors);
+    freedv_observe_locked(o); s->acquired_sequence = o->sequence;
+    s->ready = freedv_rx(o) && state == RADIO_RX && !hw_tx_keyed_by_gui() && !freedv_busy();
+    s->last_error = s->ready ? FD_RADIO_OK : FD_RADIO_BUSY;
+    freedv_owner = s;
+    radio_unlock(); return true;
+}
+static bool freedv_tx_permitted_locked(fd_radio_session *s) {
+    fd_observation o;
+    hw_freedv_cached_snapshot_t current;
+    if (!s || freedv_owner != s || !s->owned || !s->ready || radio_freedv_startup_waiting() ||
+        !freedv_observe_locked(&o) || !freedv_rx(&o) || state != RADIO_RX ||
+        s->swr_trips_at_acquire != radio_swr_trips() ||
+        s->base_errors_at_acquire != atomic_load(&freedv_base_errors) ||
+        !hw_get_freedv_cached_snapshot(&current) || !hw_freedv_tuning_matches(&s->saved, &current)) return false;
+    /* No diagnostic VFO movement is implemented. Explicitly refuse split or
+     * shifted TX rather than silently sending a waveform on another route. */
+    return !param_i_get(cfg_band_split) && !param_i_get(cfg_band_tx_shift) &&
+        cfg_is_tx_freq(radio_tx_freq());
+}
+bool radio_freedv_session_tx_permitted(fd_radio_session *s) {
+    radio_lock(); bool ok = freedv_tx_permitted_locked(s); radio_unlock(); return ok;
+}
+bool radio_freedv_session_apply(fd_radio_session *s, const fd_case *selected, radio_mic_sel_t mic) {
+    if (!s || !selected || (mic != radio_mic_builtin && mic != radio_mic_handle)) return false;
+    radio_lock();
+    fd_observation o;
+    bool valid = freedv_owner == s && s->owned && s->ready && !s->route_applied && !s->case_active &&
+        freedv_observe_locked(&o) && freedv_rx(&o) && state == RADIO_RX;
+    bool record=false, modem=false, ptt=false;
+    if (selected->kind != FD_CASE_PASSIVE) valid = valid &&
+        fd_matrix_bits((fd_matrix_case)selected->matrix_case, &record, &modem, &ptt);
+    if ((selected->kind == FD_CASE_ROUTE || selected->kind == FD_CASE_MIC_TX) &&
+        !freedv_tx_permitted_locked(s)) valid = false;
+    if (selected->kind == FD_CASE_MIC_TX) {
+        uint32_t mode = s->saved.active_vfo ? s->saved.backend_mode_b : s->saved.backend_mode_a;
+        valid = valid && (mode == radio_mode_usb || mode == radio_mode_usb_dig);
+    }
+    if (selected->kind < FD_CASE_PASSIVE || selected->kind > FD_CASE_MIC_TX) valid = false;
+    if (!valid) { if (s->owned) s->last_error = FD_RADIO_TX_GUARD; radio_unlock(); return false; }
+    s->software_cleared = false;
+    s->case_active = true;
+    s->abort_reason = FD_RADIO_OK;
+    s->readback_match = false;
+    s->restoration_complete = false;
+    if (selected->kind == FD_CASE_PASSIVE) { radio_unlock(); return true; }
+    /* Request low power and disable autonomous microphone VOX before applying
+     * route bits. Gain changes do not infer anything about measured RF audio. */
+    hw_set_f(HW_TXPWR_F, 1.0f);
+    hw_set_i(HW_VOX, false);
+    hw_set_i(HW_MIC, mic);
+    hw_set_i(HW_HMIC, s->saved.hand_mic_gain);
+    hw_set_i(HW_IMIC, s->saved.internal_mic_gain);
+    /* Preserve the saved monitor factor: forcing it off would conceal native
+     * capture routes whose behavior depends on monitor level. */
+    hw_set_i(HW_MONI, s->saved.monitor_level);
+    hw_set_i(HW_RECORD, record);
+    s->route_applied = true; /* set before a write failure so cleanup owns restoration */
+    hw_set_i(HW_MODEM, modem);
+    hw_set_i(HW_PTT, ptt);
+    bool ok = freedv_transport(s);
+    s->last_error = ok ? FD_RADIO_OK : FD_RADIO_TRANSPORT;
+    radio_unlock(); return ok;
+}
+bool radio_freedv_session_clear(fd_radio_session *s, uint64_t *sequence) {
+    if (!s || !sequence) return false;
+    radio_lock();
+    if (!s->owned || freedv_owner != s) { radio_unlock(); return false; }
+    s->software_cleared = true; /* permit actual packet observations after protection abort */
+    s->case_active = false; s->restoration_complete = false; s->readback_match = false;
+    /* Request minimum mic gains and VOX off before MODEM clearing can expose
+     * analog audio. Actual leakage is a hardware measurement; software still
+     * cannot override held physical PTT. */
+    hw_set_i(HW_HMIC, 0); hw_set_i(HW_IMIC, 0); hw_set_i(HW_VOX,false);
+    s->route_applied = true;
+    hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
+    atomic_store(&modem_on, false);
+    bool ok = freedv_transport(s);
+    fd_observation o; freedv_observe_locked(&o);
+    *sequence = s->clear_sequence = o.sequence;
+    radio_unlock(); return ok;
+}
+bool radio_freedv_session_restore(fd_radio_session *s, uint64_t clear_sequence) {
+    if (!s) return false;
+    radio_lock();
+    fd_observation o;
+    if (!s->owned || freedv_owner != s || !s->software_cleared ||
+        !freedv_observe_locked(&o) || !freedv_rx(&o) || o.sequence <= clear_sequence || state != RADIO_RX) {
+        s->last_error = FD_RADIO_STATUS; radio_unlock(); return false;
+    }
+    hw_freedv_cached_snapshot_t current;
+    if (!hw_get_freedv_cached_snapshot(&current) || !hw_freedv_tuning_matches(&s->saved, &current)) {
+        ++s->restoration_failures;
+        s->last_error = FD_RADIO_STATE_CHANGED; radio_unlock(); return false;
+    }
+    if (s->route_applied) hw_freedv_restore_owned(&s->saved);
+    bool ok = freedv_transport(s);
+    s->readback_match = hw_get_freedv_cached_snapshot(&s->restored) &&
+        hw_freedv_snapshot_matches(&s->saved, &s->restored);
+    if (ok && s->readback_match) {
+        mic_override=s->mic_override; atomic_store(&modem_on,s->modem_on); modem_moved=s->modem_moved;
+        atomic_store(&split_held,s->split_held); mute=s->mute; tci_mute=s->tci_mute;
+        rec_moni=s->rec_monitor; digi_cap=s->digital_power_cap;
+        s->restoration_complete=true; s->route_applied=false; s->case_active=false; s->last_error=FD_RADIO_OK;
+    } else {
+        ++s->restoration_failures;
+        if (ok) s->last_error=FD_RADIO_READBACK;
+        /* A partial restoration must not leave analog/VOX audio active while
+         * ownership is held for retry. These are stop-only changes; no tuning
+         * or persistent settings are rewritten. */
+        hw_set_i(HW_HMIC,0); hw_set_i(HW_IMIC,0); hw_set_i(HW_VOX,false);
+        hw_set_i(HW_MODEM,false); hw_set_i(HW_PTT,false);
+        s->route_applied=true; s->restoration_complete=false;
+    }
+    radio_unlock(); return ok && s->readback_match;
+}
+bool radio_freedv_session_release(fd_radio_session *s) {
+    if (!s) return false;
+    radio_lock();
+    fd_observation o;
+    bool ok = s->owned && freedv_owner == s && s->restoration_complete && !s->case_active &&
+        freedv_observe_locked(&o) && freedv_rx(&o) && state == RADIO_RX;
+    if (ok) {
+        /* Recheck at release: a delayed protection/power callback must not make
+         * the previously compared snapshot stale while ownership is retained. */
+        bool got = hw_get_freedv_cached_snapshot(&s->restored);
+        s->readback_match = got && hw_freedv_snapshot_matches(&s->saved,&s->restored);
+        if (!s->readback_match) {
+            ++s->restoration_failures;
+            s->restoration_complete=false; s->route_applied=true;
+            s->last_error=FD_RADIO_READBACK;
+            ok=false;
+        }
+    }
+    if (ok) ok = ctl_diagnostic_release(true);
+    if (ok) { freedv_owner=NULL; s->owned=false; s->ready=false; }
+    radio_unlock(); return ok;
+}
+#endif
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+static void freedv_protection_trip(void) {
+    radio_lock();
+    if (freedv_owner && freedv_owner->case_active && !freedv_owner->software_cleared) {
+        atomic_fetch_add(&swr_trips, 1);
+        hw_set_i(HW_HMIC, 0); hw_set_i(HW_IMIC, 0); hw_set_i(HW_VOX,false);
+        hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
+        atomic_store(&modem_on, false);
+        freedv_owner->abort_reason = freedv_owner->last_error = FD_RADIO_TX_GUARD;
+    }
+    radio_unlock();
+}
+#endif
+
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+/* Sensitive initial audio/power values are deferred until a post-clear RX packet. This keeps
+ * the GUI/flow alive during recovery without restoring analog speech under a
+ * continuously held physical PTT. The marker is in memory, never persisted. */
+static struct { Subject *subject; observer_cb callback; void *data; } freedv_initial[128];
+static unsigned freedv_initial_count;
+static atomic_bool freedv_startup_queued;
+static uint64_t freedv_startup_clear_sequence;
+static void freedv_startup_begin(void) {
+    atomic_store(&freedv_startup_pending, true);
+    radio_lock();
+    hw_set_i(HW_HMIC, 0); hw_set_i(HW_IMIC, 0);
+    hw_set_i(HW_VOX, false); hw_set_f(HW_TXPWR_F, 0.0f);
+    hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
+    hw_pin_set(HW_PIN_MORSE_KEY, false);
+    hw_set_i(HW_RECORD, true);
+    fd_observation o; freedv_observe_locked(&o);
+    freedv_startup_clear_sequence = o.sequence;
+    radio_unlock();
+    msg_schedule_text_fmt("Diagnostic recovery: release microphone PTT; waiting for RX");
+}
+static void freedv_initial_subscribe(Subject *subject, observer_cb callback, void *data) {
+    subject_subscribe(subject, callback, data);
+    if (freedv_initial_count == sizeof(freedv_initial)/sizeof(freedv_initial[0])) {
+        fprintf(stderr, "FreeDV diagnostic startup: initial setting capacity exceeded\n"); exit(1);
+    }
+    freedv_initial[freedv_initial_count].subject=subject;
+    freedv_initial[freedv_initial_count].callback=callback;
+    freedv_initial[freedv_initial_count].data=data;
+    ++freedv_initial_count;
+    /* Populate valid tuning/filter/cache settings before the first full block
+     * resend. Only analog-input selection/gains, VOX and TX power are deferred;
+     * sending an all-zero uninitialized VFO block could stop some basebands. */
+    bool sensitive = callback == on_pwr_change ||
+        (callback == on_change_i && ((hw_param_t)(intptr_t)data == HW_MIC ||
+         (hw_param_t)(intptr_t)data == HW_HMIC || (hw_param_t)(intptr_t)data == HW_IMIC ||
+         (hw_param_t)(intptr_t)data == HW_VOX));
+    if (!sensitive) callback(subject, data);
+}
+static void freedv_startup_seal(void) {
+    if (!fd_writer_reserve()) {
+        fprintf(stderr, "FreeDV diagnostic startup: competing writer before recovery\n"); exit(1);
+    }
+    radio_lock();
+    hw_set_i(HW_HMIC,0); hw_set_i(HW_IMIC,0); hw_set_i(HW_VOX,false);
+    hw_set_f(HW_TXPWR_F,0.0f); hw_set_i(HW_MODEM,false); hw_set_i(HW_PTT,false);
+    (void)hw_resend_all();
+    radio_unlock();
+}
+static void freedv_startup_restore_cb(void *unused) {
+    (void)unused;
+    radio_lock();
+    fd_observation o;
+    bool safe = radio_freedv_startup_waiting() && freedv_observe_locked(&o) && freedv_rx(&o) &&
+        o.sequence > freedv_startup_clear_sequence && state == RADIO_RX;
+    if (safe) {
+        hw_set_i(HW_RECORD, false);
+        hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
+    }
+    radio_unlock();
+    if (!safe) { atomic_store(&freedv_startup_queued, false); return; }
+    /* Startup flag continues to reject TX and session acquisition until all
+     * normal callbacks complete. All callbacks run on their required GUI thread. */
+    fd_writer_release();
+    for (unsigned i=0; i<freedv_initial_count; ++i)
+        freedv_initial[i].callback(freedv_initial[i].subject, freedv_initial[i].data);
+    radio_lock();
+    bool sent = hw_resend_all();
+    if (!sent) {
+        hw_set_i(HW_HMIC, 0); hw_set_i(HW_IMIC, 0); hw_set_f(HW_TXPWR_F, 0.0f);
+        hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
+    }
+    radio_unlock();
+    if (!sent) { fprintf(stderr, "FreeDV diagnostic startup: initial transport failed\n"); exit(1); }
+    atomic_store(&freedv_startup_pending, false);
+    msg_schedule_text_fmt("Diagnostic recovery complete: RX confirmed");
+}
+static void freedv_startup_packet(void) {
+    if (!radio_freedv_startup_waiting() || pack->tx || atomic_exchange(&freedv_startup_queued, true)) return;
+    if (!scheduler_put_urgent(freedv_startup_restore_cb, NULL, 0))
+        atomic_store(&freedv_startup_queued, false);
+}
+#endif

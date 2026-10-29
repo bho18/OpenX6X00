@@ -1,3 +1,4 @@
+#include "../freedv/writer_gate.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
@@ -601,34 +602,40 @@ void params_msg_cw_delete(uint32_t id) {
 }
 
 void params_bool_set(params_bool_t *var, bool x) {
+    FD_WRITE_GUARD(return);
     params_lock();
     var->x = x;
     params_unlock(&var->dirty);
 }
 
 void params_uint8_set(params_uint8_t *var, uint8_t x) {
+    FD_WRITE_GUARD(return);
     params_lock();
     var->x = x;
     params_unlock(&var->dirty);
 }
 
 void params_uint16_set(params_uint16_t *var, uint16_t x) {
+    FD_WRITE_GUARD(return);
     params_lock();
     var->x = x;
     params_unlock(&var->dirty);
 }
 
 void params_int32_set(params_int32_t *p, int32_t value) {
+    FD_WRITE_GUARD(return);
     params_lock(); p->x = value; params_unlock(&p->dirty);
 }
 
 void params_float_set(params_float_t *var, float x) {
+    FD_WRITE_GUARD(return);
     params_lock();
     var->x = x;
     params_unlock(&var->dirty);
 }
 
 void params_str_set(params_str_t *var, const char *x) {
+    FD_WRITE_GUARD(return);
     params_lock();
     strncpy(var->x, x, sizeof(var->x) - 1);
     params_unlock(&var->dirty);
