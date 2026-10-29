@@ -4,6 +4,9 @@ Use the diagnostic card already installed: release
 `freedv-native-diagnostics-20261028.1`, image source `2083e3e7`.
 **No reflash, standalone codec batch or two-minute fixture repeat is needed.**
 
+For SDR++ use the supplemental [two-recorder setup](sdrpp-recording.md), including
+turning Ignore silence off and distinguishing mono Audio WAV from Baseband IQ WAV.
+
 The operator has selected proof of concept first. The three functional recovery
 checks passed previously; the exact external 500 ms RF-stop measurement remains
 a separate qualification. The local Stop confirmation below records functional
