@@ -1,5 +1,10 @@
 # Normal recorder and diagnostic route comparison
 
+Subsequent speaking trials are assessed separately in
+[the speaking-trial report](native-route-speaking-results-2026-10-29.md).
+They include changed D1 RF behavior and sustained captured input; retain the
+beep-only input distinction below when interpreting the earlier cases.
+
 Evidence: `freedv-route-check-20261029-210846.zip`, SHA256
 `50e1b6c1e70dd846eb436da44d0af67d2b5fcd5d8594380031b34e9f1f723946`.
 The radio's build manifest identifies source
