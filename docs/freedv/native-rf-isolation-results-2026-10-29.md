@@ -83,6 +83,13 @@ record; the earlier beep-only trials remain excluded as microphone tests.
 
 ## Next implementation target
 
+The [current-card comparison guide](native-microphone-muting-session.md) runs
+the remaining two gain profiles using supported Audio settings between released
+diagnostic sessions. Because those operator changes are saved preferences, it
+explicitly requires restoring the originals manually after the tests. The
+diagnostic backend still applies and restores its acquired snapshot under its
+existing owner; no external register writer or runtime patch is used.
+
 The existing `play_mode_apply(AUDIO_PLAY_ON)` helper sets both microphone gains
 to zero and RECORD on for generated playback. The diagnostic route experiments
 deliberately retain the saved gains to test simultaneous microphone capture.
