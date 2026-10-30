@@ -1,5 +1,8 @@
 # Speaking trials after the beep-only route checks
 
+The subsequently supplied SDR files confirm an unencoded microphone component
+on both tested routes; see the [RF isolation assessment](native-rf-isolation-results-2026-10-29.md).
+
 Evidence: `freedv-route-check-20261029-213314.zip`, SHA256
 `c2e213795e67fe7071f1b0a2ffb5e0e069ab6ff28b90b07e6e9d92e0af5d370f`.
 Image source remains `21df019884da3e8cdc1b4521a4b4f8a51ca210e1` (`.2`).
@@ -103,14 +106,17 @@ Repeatability across sessions, real-time integrated microphone encoding/playback
 live RF speech and RF isolation are not established by the offline experiment.
 
 The D2 observation raises a separate gate: does unencoded microphone speech also
-reach RF while the generated waveform is transmitted? **Analog isolation remains
-INCONCLUSIVE, with suspected leakage.** A tone can coexist with such leakage;
+reach RF while the generated waveform is transmitted? The later SDR comparison
+confirms an unencoded component: **analog isolation FAILS for these profiles**.
+A tone can coexist with such leakage;
 hearing the tone is insufficient to qualify FreeDV routing. Do not confirm the
 independent microphone/TX route solely from this run.
 
-Use the already captured D1/D2 SDR WAVs, if available, to examine residual speech
-after accounting for the generated tone. Operator listening of the two offline
-round trips is now complete; RF evidence is the next comparison. No new image,
-automatic gain change, routine long-duration run or unchanged codec batch is
+The supplied D1/D2 SDR WAVs have now been compared with the microphone input after
+accounting for the generated tone; waveform matches support the operator's
+observation. Operator listening of both offline round trips is also complete.
+The RF assessment identifies a controlled suppression experiment as the next
+implementation target. No automatic gain adjustment,
+routine long-duration run or unchanged codec batch is
 justified by these results alone. The earlier beep-only assessment remains
 corrected: missing speech where none was supplied is not a capture failure.
