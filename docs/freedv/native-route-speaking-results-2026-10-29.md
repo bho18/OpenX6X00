@@ -75,7 +75,16 @@ and its normal stateful input/output resampling, then completed end-of-over.
 Each replay consumed all 351,600 input samples, encoded 67 blocks and delivered
 360,914 output samples with zero engine failures. The pinned reference decoder
 produced 7.63 seconds of non-silent audio from each generated waveform.
-**Intelligibility is pending operator listening.** Listening-only capture copies
+**The operator confirms intelligible words in both offline round trips.** D1
+sounds more analog/natural and quieter; D2 sounds more digital and louder.
+Both supplied clips passed through RADE encoding and reference decoding; the
+subjective description of D1 does not establish an analog codec bypass. The
+decoded AC RMS is approximately 224 for D1 and 674 for D2, consistent with the
+reported loudness difference. The original captured input also differs in level.
+These were not calibrated identical-input trials, so the difference does not
+identify a gain-control fault or justify an automatic gain adjustment.
+
+Separate listening-only capture copies
 remove DC and add bounded constant gain; these are distinct from unchanged codec
 input and original evidence.
 
@@ -86,10 +95,12 @@ The original real-time/margin findings remain unchanged.
 
 ## Qualification and next evidence
 
-The speaking trials recover sustained microphone-like capture activity with
-physical PTT released. They invalidate a blanket claim that this image cannot
-capture microphone input during software-owned TX. Repeatable usable microphone
-capture and live RADE speech still require content confirmation.
+**Capture-to-offline-codec intelligibility: PASS for these two captured inputs.**
+The speaking trials recover usable microphone speech during software-owned TX
+with physical PTT released on both tested routes. They invalidate a blanket
+claim that this image cannot capture microphone input during software-owned TX.
+Repeatability across sessions, real-time integrated microphone encoding/playback,
+live RF speech and RF isolation are not established by the offline experiment.
 
 The D2 observation raises a separate gate: does unencoded microphone speech also
 reach RF while the generated waveform is transmitted? **Analog isolation remains
@@ -98,8 +109,8 @@ hearing the tone is insufficient to qualify FreeDV routing. Do not confirm the
 independent microphone/TX route solely from this run.
 
 Use the already captured D1/D2 SDR WAVs, if available, to examine residual speech
-after accounting for the generated tone. Obtain operator listening of the two
-offline round trips before another encoding/RF demonstration. No new image,
+after accounting for the generated tone. Operator listening of the two offline
+round trips is now complete; RF evidence is the next comparison. No new image,
 automatic gain change, routine long-duration run or unchanged codec batch is
 justified by these results alone. The earlier beep-only assessment remains
 corrected: missing speech where none was supplied is not a capture failure.
