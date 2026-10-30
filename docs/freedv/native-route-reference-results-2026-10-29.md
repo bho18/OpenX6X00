@@ -9,24 +9,29 @@ in America/Chicago. Raw recordings remain private.
 
 ## Findings
 
-The operator confirms that **only the normal Auto/Hand MSG recordings contain
-clear speech**. None of the four diagnostic capture WAVs contains recognizable
-speech. Normal recording is therefore a working microphone reference on this
-card, according to operator playback. The MP3 references are not in the ZIP, so
-their samples and levels have not yet been independently compared.
+**Correction following operator clarification:** the operator did not speak into
+the microphone during D1 or D2, and answered no when asked whether they spoke
+during D0. These diagnostic runs were beep-only observations. Their lack of
+recorded speech **does not establish a microphone-capture failure**. The initial
+assessment incorrectly assumed speech had been supplied; that conclusion is
+withdrawn for this batch. Earlier microphone-test findings remain separate.
 
-The diagnostic cases ran tone generation, not RADE encoding or decoding. This
-failure is upstream of codec processing; codec compute capacity cannot explain
-missing speech in this particular batch. It remains unresolved whether the
-relevant difference is baseband routing, transient gain/state, channel selection,
-simultaneous playback, or application sequencing.
+The normal Auto/Hand MSG recordings contain clear speech according to operator
+playback. Normal recording is therefore a working microphone reference on this
+card. The MP3 references are not in the ZIP, so their samples and levels have not
+yet been independently compared.
+
+The diagnostic cases ran tone generation, not RADE encoding or decoding. They
+measure generated-audio routing and selected-state recovery. Microphone capture
+during diagnostic TX, and the cause of earlier missing microphone input, remain
+INCONCLUSIVE from this batch. It supplies no new codec-performance result.
 
 | Exported case | Commanded route | Observed packet state during sampled active seconds | Capture after the first 0.5 s | Operator RF observation |
 |---|---|---|---|---|
 | 1 | R1 M0 P0 | Fresh RX | AC RMS 5049.8; dominated by generated 735 Hz tone | D0 behaved as expected |
-| 2 | R1 M0 P1 | Fresh TX | AC RMS 48.1; no recognizable speech | No SDR audio or waterfall signal; near-zero indicated output |
-| 3 | R1 M0 P1 | Fresh TX | AC RMS 38.8; no recognizable speech | Repeat to verify the same D1 result |
-| 4 | R1 M1 P0 | Fresh TX | AC RMS 40.4; no recognizable speech | Operator says final “D3” behaved as expected; guide calls the final route D2 |
+| 2 | R1 M0 P1 | Fresh TX | AC RMS 48.1; no speech supplied | No SDR audio or waterfall signal; near-zero indicated output |
+| 3 | R1 M0 P1 | Fresh TX | AC RMS 38.8; no speech supplied | Repeat to verify the same D1 result |
+| 4 | R1 M1 P0 | Fresh TX | AC RMS 40.4; no speech supplied | Operator says final “D3” behaved as expected; guide calls the final route D2 |
 
 The case numbers and route names above come directly from the export, regardless
 of the checklist labels. The exact meaning of the operator's “D3” label is not
@@ -36,7 +41,8 @@ Between 0.5 and 7.5 seconds, approximately **99.93% of case 1's capture spectral
 power lies within 730–740 Hz**, around the generated 735 Hz tone. Its high level
 does not establish microphone capture. A listening-only bandpass/notch analysis
 leaves substantially less signal; it is not substituted for original samples or
-reported as intelligible speech. The operator confirms no speech in these WAVs.
+reported as intelligible speech. No microphone speech was deliberately supplied
+in these diagnostic runs, so this is a tone-routing observation only.
 
 ## What D1 establishes
 
@@ -48,8 +54,9 @@ There were no capture holes, capture drops, capture errors or recording discards
 
 Those facts establish application output and baseband TX status, not RF
 modulation. The operator heard the speaker tone stop when TX began and observed
-no usable SDR signal in two trials. **R1 M0 P1 does not qualify as an independent
-generated-RF/microphone route under the tested conditions.** Near-zero SSB power
+no usable SDR signal in two trials. **Generated-waveform RF delivery failed the
+operator observation on R1 M0 P1 under these conditions; microphone capture was
+not tested.** Near-zero SSB power
 is consistent with missing modulation, but the cause is not identified.
 
 Diagnostics requests **1 W**, even though the saved normal setting is **5 W**.
@@ -91,12 +98,15 @@ operator. A global dead microphone or globally muted capture source is therefore
 not supported by this evidence. Neither does this establish simultaneous
 microphone capture and generated RF: that remains unqualified.
 
-The immediate next step is to retrieve the **already recorded** FDVAUTO/FDVHAND
-MP3 references and the two existing D1 SDR recordings. The ZIP contains only
-inventories, a blank notes header and four radio case directories; those media
-files were not included. Compare their levels/content with the raw diagnostic
-samples before another RF trial, gain change or image deployment. No unchanged
-codec batch or routine long-duration run is warranted.
+The **already recorded** FDVAUTO/FDVHAND MP3 references and two existing D1 SDR
+recordings can supplement the working normal-recorder and failed D1 tone-delivery
+evidence. The ZIP contains only inventories, a blank notes header and four radio
+case directories; those media files were not included. Comparing normal speech
+to diagnostic runs with no speech input cannot diagnose a microphone regression.
+Any further microphone comparison must explicitly record when speech is supplied
+and the physical PTT state. The recipe differences above remain hypotheses, not
+demonstrated causes or a reason by themselves to change gains or deploy an image.
+No unchanged codec batch or routine long-duration run is warranted.
 
 Preserve earlier evidence: the original `.1` image already contains both silent
 TX13 and intelligible local TX14 on the same selected route. The new findings
