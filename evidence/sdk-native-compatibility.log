@@ -1,0 +1,18 @@
+[0/1] Re-running CMake...
+CMake Warning (dev) at lvgl/env_support/cmake/custom.cmake:66 (install):
+  Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+  "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+  command to set the policy and suppress this warning.
+Call Stack (most recent call first):
+  lvgl/CMakeLists.txt:16 (include)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Configuring done (0.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: /workspace/build/voice-sdk-native
+[1/6] Building C object src/CMakeFiles/x6100_gui.dir/freedv/voice_audio.c.o
+[2/6] Building C object src/CMakeFiles/x6100_gui.dir/screen_main.c.o
+[3/6] Building C object src/CMakeFiles/x6100_gui.dir/radio.c.o
+[4/6] Building C object src/CMakeFiles/x6100_gui.dir/dialog_modes.c.o
+[5/6] Building CXX object src/CMakeFiles/x6100_gui.dir/cfg_socket.cpp.o
+[6/6] Linking CXX executable src/x6100_gui

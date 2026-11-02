@@ -1,0 +1,6 @@
+{
+  "image_sha256": "a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab",
+  "archive_sha256": "0fdfdd2bc9f67cda6137a8adb8e60e829b2055db2506f1184cf8c3b924311b01",
+  "buildroot_commit": "8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3",
+  "firmware_commit": "fd7f0bba70c0c8f8854219b6422600cbd428a6dc"
+}

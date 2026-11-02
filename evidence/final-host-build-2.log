@@ -1,0 +1,15 @@
+[1/15] Building C object CMakeFiles/freedv_voice_audio_test.dir/tools/freedv/voice_audio_test.c.o
+[2/15] Building C object CMakeFiles/freedv_native_audio_adapter_test.dir/src/freedv/native_audio.c.o
+[3/15] Building C object CMakeFiles/freedv_native_coordinator_test.dir/tools/freedv/native_coordinator_test.c.o
+[4/15] Building C object CMakeFiles/freedv_native_audio_codec_adapter_test.dir/src/freedv/native_audio.c.o
+[5/15] Building C object CMakeFiles/freedv_persistent_case_test.dir/src/freedv/voice_audio.c.o
+[6/15] Building C object CMakeFiles/freedv_persistent_case_test.dir/src/freedv/native_audio.c.o
+[7/15] Building C object src/CMakeFiles/x6100_gui.dir/freedv/native_audio.c.o
+[8/15] Building C object src/CMakeFiles/x6100_gui.dir/freedv/voice_audio.c.o
+[9/15] Linking C executable freedv_voice_audio_test
+[10/15] Linking C executable freedv_native_coordinator_test
+[11/15] Linking C executable freedv_native_audio_adapter_test
+[12/15] Linking C executable freedv_native_audio_codec_adapter_test
+[13/15] Linking C executable freedv_persistent_case_test
+[14/15] Building C object src/CMakeFiles/x6100_gui.dir/freedv/diagnostics.c.o
+[15/15] Linking CXX executable src/x6100_gui

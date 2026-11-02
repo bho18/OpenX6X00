@@ -1,0 +1,4 @@
+Repository: bho18/OpenX6X00
+Helper checkout commit: f8d624b3a7ffdb1992715d184e4e090b6d250cab
+Use per-file hashes to identify any uncommitted helper edits.
+Historical diagnostic image: 2083e3e7. No production profile is qualified.

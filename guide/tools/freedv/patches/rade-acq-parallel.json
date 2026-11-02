@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "revision": "rade-acq-persistent-workers-v1",
+  "base_rade_commit": "c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9",
+  "requires_guarded_neon_patch": true,
+  "default_enabled": false,
+  "target_definition": "RADE_ACQ_PARALLEL=1",
+  "patch_sha256": "4343c892e60199677fe363940f144566229c14dd77c79bab14f1e9a1c1fe4ef3",
+  "baseline_files": {
+    "src/CMakeLists.txt": "a73b35413332abdf397092cc3a66301d5f1fddc36d370340644c9569c751925b",
+    "src/rade_api.c": "a9e369a05371e65125d942bedf7dad482b021b7959ff8e79fbf7dfa0dbe5b6d5",
+    "src/rade_api.h": "584b7041c6d478ad6b240da5a72534087ede88fb0f8fcb401b6986ffec10c5c3",
+    "src/rade_acq.c": "28f72e33aa6ad70cdad2ad0e311651e9298b03abbff93c8de50083097e0f6090"
+  },
+  "new_files": [
+    "src/rade_acq_parallel.c",
+    "src/rade_acq_parallel.h"
+  ],
+  "candidate_files": {
+    "src/CMakeLists.txt": "84fe4af4422c162e75ef9db070b6b6506dfbaae56673dfea4e34627e29201617",
+    "src/rade_api.c": "1527255e957ee442ea84fe43fce10f6d9b2aa7a97760338a0e480ae320799153",
+    "src/rade_api.h": "aa2d3e9d941dc96b0623873f6c8bd626d9155ef048dca92350b5d3930571ddeb",
+    "src/rade_acq_parallel.c": "5c321cc22da80822d9b8fb44e7054c312e38e36add403df522ae314101d2c31a",
+    "src/rade_acq_parallel.h": "0fca50a412c1efe6cef805e6c327c3546766edd27ee308fc1d618acbde0262d9"
+  },
+  "unchanged_guarded_acquisition_sha256": "28f72e33aa6ad70cdad2ad0e311651e9298b03abbff93c8de50083097e0f6090"
+}

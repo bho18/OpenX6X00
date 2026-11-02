@@ -1,0 +1,10 @@
+test_abi_accepts_debug_only_changes_and_rejects_code_changes (__main__.ImageTests.test_abi_accepts_debug_only_changes_and_rejects_code_changes) ... ok
+test_offline_replacement_preserves_source_boot_tail_and_other_files (__main__.ImageTests.test_offline_replacement_preserves_source_boot_tail_and_other_files) ... ok
+test_reject_device_symlink_and_bad_layout (__main__.ImageTests.test_reject_device_symlink_and_bad_layout) ... ok
+test_sdk_extract_rejects_link_escape (__main__.ImageTests.test_sdk_extract_rejects_link_escape) ... ok
+test_sdk_target_root_links_are_confined_and_host_absolute_links_refused (__main__.ImageTests.test_sdk_target_root_links_are_confined_and_host_absolute_links_refused) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.510s
+
+OK

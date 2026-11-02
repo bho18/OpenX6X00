@@ -1,0 +1,22 @@
+test_distinct_markers (test_kit.AnalysisTests.test_distinct_markers) ... ok
+test_known_gaps_delays_clipping_discontinuity (test_kit.AnalysisTests.test_known_gaps_delays_clipping_discontinuity) ... ok
+test_telemetry_large_partial_and_incomplete_reads (test_kit.AnalysisTests.test_telemetry_large_partial_and_incomplete_reads) ... ok
+test_timing_upper_bound (test_kit.AnalysisTests.test_timing_upper_bound) ... ok
+test_incomplete_missing_mismatched_recordings (test_kit.CollectorTests.test_incomplete_missing_mismatched_recordings) ... ok
+test_listening_remains_unassessed (test_kit.CollectorTests.test_listening_remains_unassessed) ... ok
+test_mismatched_build_profile (test_kit.CollectorTests.test_mismatched_build_profile) ... ok
+test_numbered_recordings_cannot_be_a_single_nonzero_output (test_kit.CollectorTests.test_numbered_recordings_cannot_be_a_single_nonzero_output) ... ok
+test_path_escape (test_kit.CollectorTests.test_path_escape) ... ok
+test_preflight_blocked_never_passes (test_kit.CollectorTests.test_preflight_blocked_never_passes) ... ok
+test_preflight_case_and_file_binding (test_kit.CollectorTests.test_preflight_case_and_file_binding) ... ok
+test_real_run_collect_assess (test_kit.CollectorTests.test_real_run_collect_assess) ... ok
+test_rehearsal_entire_collection (test_kit.CollectorTests.test_rehearsal_entire_collection) ... ok
+test_runner_rejects_other_build (test_kit.CollectorTests.test_runner_rejects_other_build) ... ok
+test_selected_preflight_and_pinned_inputs (test_kit.CollectorTests.test_selected_preflight_and_pinned_inputs) ... ok
+test_executable_modes_and_source_drift (test_kit.SourceTests.test_executable_modes_and_source_drift) ... ok
+test_web_and_native_lock_orders_and_failed_admission_lifetime (test_kit.WebLeaseTests.test_web_and_native_lock_orders_and_failed_admission_lifetime) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.113s
+
+OK

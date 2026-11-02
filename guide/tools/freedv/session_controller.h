@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+#pragma once
+#include "diagnostic_state.h"
+#include "src/freedv/watchdog.h"
+#include <stdbool.h>
+#include <stdint.h>
+#include <pthread.h>
+
+/* Backend contract; host tests use a mock. Hardware integration must implement all callbacks. None of
+ * these operations is implemented against real hardware yet. Implementations
+ * must be bounded, must serialize radio changes with the radio control lock,
+ * and must never call back into the controller synchronously. In particular,
+ * quiesce requests worker shutdown, flushes generated audio and clears software
+ * MODEM/PTT without waiting for file-worker joins. */
+typedef struct {
+    /* Atomically acquire the exclusive session and a complete snapshot, while
+     * rejecting recording, competing digital/audio sessions and other busy
+     * states. An incomplete snapshot or stale packet must fail acquisition.
+     * A failed acquire must leave no ownership or route changes behind. */
+    bool (*acquire_snapshot)(void *ctx, bool *commands_quiescent, fd_observation *observation);
+    bool (*release)(void *ctx); /* failure retains ownership/state for retry */
+    bool (*observe)(void *ctx, fd_observation *observation);
+    bool (*tx_permitted)(void *ctx);
+    /* Case kind is explicit: passive never changes routing or plays audio;
+     * RX playback requires session-local route qualification; route and mic TX
+     * cases require local arming. Recheck
+     * frequency, protection guards and packet TX state under the radio lock
+     * immediately before applying any change; refuse when uncertain. */
+    bool (*start)(void *ctx, const fd_case *selected);
+    /* On success, sequence is sampled after audio flush and command clearing. */
+    bool (*quiesce)(void *ctx, uint64_t *sequence);
+    /* Recheck a fresh post-clear RX packet while holding the radio lock before
+     * applying transient restoration. Never restore while hardware TX is held. */
+    /* Nonblocking: true only once generated audio is fenced and the playback
+     * server has acknowledged cancellation. False must retain session ownership. */
+    bool (*audio_quiescent)(void *ctx);
+    bool (*restore_if_safe)(void *ctx, uint64_t clear_sequence);
+    /* Optional, bounded cached source of the just-failed observe callback. */
+    fd_stop_reason (*abort_reason)(void *ctx);
+} fd_controller_backend;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    freedv_watchdog watchdog;
+    fd_session state;
+    fd_controller_backend backend;
+    void *context;
+    bool initialized;
+    pthread_t monitor;
+    bool monitor_shutdown;
+    int completed_probe;
+    bool probe_unkeyed;
+    bool probe_observed;
+    uint64_t probe_start_sequence;
+    bool cancelling; /* blocks restoration/new runs while a watchdog is joined */
+} fd_controller;
+
+bool fd_controller_init(fd_controller *controller, const fd_controller_backend *backend, void *context);
+bool fd_controller_acquire(fd_controller *controller);
+bool fd_controller_select_matrix(fd_controller *controller, fd_matrix_case selected);
+bool fd_controller_select_passive_rx(fd_controller *controller);
+bool fd_controller_arm(fd_controller *controller, bool local);
+/* TX timeout_ms must be 1..10000; RX cases allow up to 120000. Backend start must return promptly; the timer
+ * cannot interrupt a backend operation that blocks while holding the lock. */
+bool fd_controller_run(fd_controller *controller, uint64_t now_ms, unsigned timeout_ms);
+/* Stops and clears, or reports failure while retaining ownership for retry. */
+bool fd_controller_stop(fd_controller *controller);
+/* Retry clearing if needed; restore only after a later fresh RX packet and a
+ * successful backend recheck. False includes TX held, stale status or failure. */
+bool fd_controller_poll_restore(fd_controller *controller);
+bool fd_controller_release(fd_controller *controller);
+/* Only succeeds after release. Caller must serialize destruction with other APIs. */
+bool fd_controller_close(fd_controller *controller);
+
+/* Confirmation is local, after a completed/restored unkeyed matrix probe.
+ * Operator must also verify speaker/capture behavior; packet RX alone is not
+ * audio routing qualification. This qualification expires when ownership ends. */
+bool fd_controller_confirm_rx_route(fd_controller *c, fd_matrix_case route, bool local);
+bool fd_controller_select_rx_playback(fd_controller *c, fd_matrix_case route);
+bool fd_controller_select_mic_tx(fd_controller *c, fd_matrix_case route);
+/* Thread-safe status copy for GUI/export. */
+bool fd_controller_status(fd_controller *c, fd_session *status);
+
+bool fd_controller_begin_prepare(fd_controller *);
+bool fd_controller_finish_prepare(fd_controller *);
+
+bool fd_controller_stop_with_reason(fd_controller *, fd_stop_reason);

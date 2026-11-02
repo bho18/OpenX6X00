@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "frozen-generated-modem-fixture",
+  "fixture_revision": "rade-v1-host-reference-1",
+  "authoritative_pin": "tools/freedv/sources.json#/rade_c/modem_fixture",
+  "purpose": "Identical offline RADE V1 receive input across benchmark packages; not an RF capture or radio qualification.",
+  "baseline_change": "First explicitly frozen modem fixture. Earlier SDK packages regenerated on CI hosts and may have different waveform bytes. Compare matching fixture hashes.",
+  "generation": {
+    "environment": "x86_64 Linux host validation build; not the radio SDK",
+    "compiler_version": "cc (Debian 14.2.0-19) 14.2.0",
+    "firmware_commit": "d25c7d4d1f7b15932d387456023edbfc4e191524",
+    "original_package_manifest_sha256": "c5ae2c949afab01c6f7ed4d88f632d07ff2fb43fb48a3fdb975889d2e915cbc9",
+    "original_source_archive_sha256": "d64f5f7faa0edf4ef29d33221e865f8fc3a5afd20995cda48931ad7767fb8c89",
+    "rade_c_commit": "c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9",
+    "opus_commit": "940d4e5af64351ca8ba8390df3f555484c567fbb",
+    "input_path": "rade_c/input_sample.wav",
+    "input_sha256": "a53d3cc835a5668c4687dba80314b82d8a96d9e0431e5de5072fa397fc8c4a79",
+    "input_sample_rate_hz": 16000,
+    "input_samples": 157153,
+    "opus_model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453",
+    "opus_config_sha256": "8437bd6d75adc4d5faadff9a09eb155313fd96ed429e618041d373add778cc07",
+    "generator_binary_sha256": "b4aad788f08d1f7d49e2c32e44a10fd2ed87df7e6876084b99476b704055f386",
+    "generator_library_sha256": "b1468f53ac915556812fc4a2b513a58d5f5a7270629a7785f46d0cf4670815cb",
+    "generator_c_flags": "-O2 -g -DNDEBUG -std=gnu11",
+    "generator_library_c_flags": "-O2 -g -DNDEBUG -std=gnu11 -fPIC",
+    "generated_wav_sha256": "c6bed7d381509b886053534524d555dce6921a2b7f8d931528012b444ce6dd09",
+    "command": [
+      "rade_c/src/rade_tx_wav",
+      "sources/rade_c/input_sample.wav",
+      "rade-modem.wav"
+    ],
+    "payload_extraction": "Python wave.readframes(wave.getnframes()); mono 8000 Hz PCM16 WAV payload, no resampling or normalization",
+    "runtime_cpu_dispatch_recorded": false,
+    "cross_host_bit_reproducible": false
+  },
+  "attribution": {
+    "speech_source": "https://github.com/freedv/rade_c/blob/c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9/input_sample.wav",
+    "generator_source": "https://github.com/freedv/rade_c/blob/c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9/src/rade_tx_wav.c",
+    "repository_license": "BSD-2-Clause; see rade_c-LICENSE in this directory",
+    "generator_notice": "Copyright (C) 2024 David Rowe; see ../THIRD-PARTY-NOTICES.md",
+    "opus_and_models": "Pinned Opus and model notices accompany benchmark packages in licenses/; no model weights are embedded in this PCM file."
+  }
+}
