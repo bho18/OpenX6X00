@@ -28,11 +28,14 @@ A receive-only SDR cannot supply that signal. An installed official FreeDV GUI
 with **RADE V1 / RADEV1** is useful for immediate listening in section 6;
 without it you can collect the short recordings and return them for decoding.
 
-If the image is not installed yet, assemble it with `Assemble-Image.cmd` on
-Windows or `sh Assemble-Image.sh` on Linux/macOS. Write the verified `.img.xz`
-to a separate spare card with an xz-capable image writer and enable write
-verification. Preserve the working card and settings backup. Do not update the
-baseband or change the update signing key.
+If the image is not installed yet, download **x6200-persistent-voice-test.zip**
+from the **freedv-persistent-test-image-20261102** GitHub prerelease and extract
+it. The extracted folder contains one complete **x6200-persistent-voice-test.img**
+file. Write that `.img` to a separate spare card with your usual image writer
+and enable write verification. No image assembly or parts are needed. The
+separate `.img.xz` release asset is an optional compressed copy for writers
+that support xz. Preserve the working card and settings backup. Do not update
+the baseband or change the update signing key.
 
 Boot with **both physical PTT controls released and the dummy load connected**.
 Check ordinary receive, speaker, frequency/VFO, controls and waterfall. Record
@@ -56,8 +59,8 @@ Keep these recovery rules throughout:
 
 ## 2. Make one results folder on the computer
 
-The Windows commands below run in PowerShell from the **extracted GitHub
-download folder**, which contains `candidate-manifest.json` and `guide`.
+The Windows commands below run in PowerShell from the **extracted image ZIP
+folder**, which contains `candidate-manifest.json` and `guide`.
 Replace the example address with the radio's actual address.
 
 ```powershell

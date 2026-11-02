@@ -1,0 +1,59 @@
+name: Deliver persistent X6200 candidate as one image
+
+on:
+  push:
+    branches: [download-freedv-persistent-test-20261102]
+    paths:
+      - .github/workflows/publish-test-image.yml
+      - prepare-single-image.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deliver-persistent-x6200-test-image-20261102
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    if: github.repository == 'bho18/OpenX6X00' && github.ref == 'refs/heads/download-freedv-persistent-test-20261102'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the immutable candidate files
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Assemble, verify and package one flashable image
+        run: python3 prepare-single-image.py --output "$RUNNER_TEMP/single-image"
+      - name: Upload the verified files and publish the test prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: freedv-persistent-test-image-20261102
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to replace published files.'
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Download **x6200-persistent-voice-test.zip**, extract it, then write the single **x6200-persistent-voice-test.img** to a spare SD card. No assembly commands or image parts are needed.
+
+          The ZIP includes the complete operator runbook in START-HERE.md, collection tools, source and verification evidence. An unchanged `.img.xz` download is also available for image writers that support it.
+
+          This is the 2026-11-02 persistent FreeDV hardware-test candidate, labelled **FreeDV test** in APP → Modes. Its firmware/image is unchanged. Preserve the working .2 card for recovery. Hardware qualification and independent hand-mic release remain pending; this prerelease does not claim a qualified native voice mode.
+
+          Source: `f8d624b3a7ffdb1992715d184e4e090b6d250cab`.
+          Uncompressed image SHA256: `6de54712b899d5faae35b37fa7dab7bc8157d1bbde20b5d4c25d1af66d4399b4`.
+          NOTES
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --draft --prerelease --latest=false \
+            --title 'X6200 persistent FreeDV test image — 2026-11-02' \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            "$RUNNER_TEMP/single-image/x6200-persistent-voice-test.zip" \
+            "$RUNNER_TEMP/single-image/x6200-persistent-voice-test.img.xz" \
+            "$RUNNER_TEMP/single-image/DOWNLOAD-SHA256SUMS" \
+            "$RUNNER_TEMP/single-image/delivery-verification.json" \
+            "$RUNNER_TEMP/single-image/START-HERE.md"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
