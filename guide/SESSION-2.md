@@ -1,3 +1,6 @@
+> Historical operator procedure. Use [the consolidated runbook](../START-HERE.md)
+> for the installed 2026-11-02 candidate. These are not extra required steps.
+
 # Session 2: native receive routing, microphone source and recovery
 
 This is the follow-up evaluation after Session 1. Select the exact route/control

@@ -1,3 +1,6 @@
+> Historical operator procedure. For the installed 2026-11-02 candidate, use
+> [the consolidated runbook](candidate-test.md); do not add these steps to it.
+
 # Session 1: hand-mic RADE RF proof and ten short turns
 
 Use the diagnostic card already installed: release

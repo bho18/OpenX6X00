@@ -1,3 +1,6 @@
+> Historical operator procedure. For the installed 2026-11-02 candidate, use
+> [the consolidated runbook](candidate-test.md); do not add these steps to it.
+
 # Updated image: short TX delivery check
 
 Use this procedure only on the new delivery-fix diagnostic image, identified by

@@ -31,5 +31,8 @@
       "sha256": "4fa060a9534e9985154cda6dd69553cbdd7de1d15b1b5a96ee3bf77886396aa6"
     }
   ],
-  "hardware_qualified": false
+  "hardware_qualified": false,
+  "operator_runbook": "START-HERE.md",
+  "operator_runbook_updated_utc": "2026-11-02T17:46:50.322617+00:00",
+  "operator_documentation_only_update": true
 }
