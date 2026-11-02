@@ -35,7 +35,7 @@ def copy_files(source,destination):
             target=destination/path.relative_to(source); target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(path,target)
 
 
-def current_overlay(work,version):
+def current_overlay(work,version,web_wheel=None):
     overlay=work/'runtime-overlay'; overlay.mkdir()
     copy_files(ROOT/'rootfs',overlay)
     copy_files(ROOT/'images',overlay/'usr/share/x6100/images')
@@ -59,11 +59,18 @@ def current_overlay(work,version):
     if old_web_project!=(ROOT/'webserver/pyproject.toml').read_text():
         raise ValueError('webserver package requirements changed; review baseline runtime dependencies explicitly')
     wheels=work/'wheels'; wheels.mkdir()
-    run('python3','-m','pip','wheel','--no-deps','--wheel-dir',wheels,ROOT/'webserver')
+    if web_wheel:
+        shutil.copy2(web_wheel,wheels/Path(web_wheel).name)
+    else:
+        run('python3','-m','pip','wheel','--no-deps','--wheel-dir',wheels,ROOT/'webserver')
     wheel=list(wheels.glob('x6100_webserver-*.whl'))
     if len(wheel)!=1: raise ValueError('one current webserver wheel required')
     site=overlay/'usr/lib/python3.11/site-packages'; site.mkdir(parents=True)
     with ZipFile(wheel[0]) as archive:
+        for path in (ROOT/'webserver/src/x6100_webserver').rglob('*'):
+            if path.is_file() and '__pycache__' not in path.parts:
+                name=path.relative_to(ROOT/'webserver/src').as_posix()
+                if archive.read(name)!=path.read_bytes():raise ValueError('web wheel differs from candidate source: '+name)
         for member in archive.infolist():
             if Path(member.filename).is_absolute() or '..' in Path(member.filename).parts or member.filename.endswith('/'):
                 if member.filename.endswith('/'): continue

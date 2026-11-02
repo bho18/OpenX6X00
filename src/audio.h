@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "freedv/features.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -51,7 +52,10 @@ float audio_set_rec_vol(float db);
 
 float audio_get_peak_db();
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
+/* Suppress/flush the ordinary playback queue while the native stream owns
+ * routing. Bounded device acknowledgements; call without the radio lock. */
+bool audio_freedv_main_quiet(bool quiet);
 #include <sys/types.h>
 #include <stdint.h>
 /* The diagnostic session must own routing and competing audio writers before
@@ -62,18 +66,23 @@ float audio_get_peak_db();
 typedef struct {
     uint64_t monotonic_ns;
     uint64_t accepted_samples;
+    uint64_t generation, generation_accepted_samples;
+    bool drain_requested;
     bool cancellation_requested;
 } audio_freedv_underflow_event_t;
 typedef struct {
     uint64_t accepted_samples;
     uint64_t write_errors;
     uint64_t underflows; /* includes startup; compare snapshots after warm-up */
+    uint64_t generation, generation_accepted_samples, generation_underflows;
+    uint64_t generation_first_write_ns;
     uint64_t first_write_monotonic_ns;
     uint64_t underflows_before_first_write, underflows_after_first_write;
     unsigned underflow_events_stored, underflow_events_discarded;
     audio_freedv_underflow_event_t underflow_events[AUDIO_FREEDV_UNDERFLOW_EVENTS];
     uint64_t flushes;
     bool cancelled;
+    bool stream_failed;
     bool flush_acknowledged;
     uint32_t maxlength_bytes, target_bytes, prebuffer_bytes, min_request_bytes;
     bool latency_known;
@@ -93,6 +102,15 @@ bool audio_freedv_playback_cancel(audio_freedv_playback_t *);
 bool audio_freedv_playback_quiescent(audio_freedv_playback_t *);
 audio_freedv_playback_stats_t audio_freedv_playback_observe(audio_freedv_playback_t *);
 void audio_freedv_playback_close(audio_freedv_playback_t *);
+/* Reusable voice operations. Coordinator fences the pump/callback generation
+ * before rearm. A successful drain means the server callback completed, never
+ * just an empty application queue. Stale generations cannot write or drain. */
+bool audio_freedv_playback_rearm(audio_freedv_playback_t *, uint64_t generation);
+ssize_t audio_freedv_playback_submit_generation(audio_freedv_playback_t *, uint64_t generation,
+                                               const int16_t *, size_t);
+bool audio_freedv_playback_drain(audio_freedv_playback_t *, uint64_t generation);
+int audio_freedv_playback_drained(audio_freedv_playback_t *, uint64_t generation);
+bool audio_freedv_playback_cork(audio_freedv_playback_t *, bool cork);
 /* Compatibility wrappers for the previous single-worker tests. New diagnostic
  * sessions use the explicit handle so their watchdog can cancel playback. */
 bool audio_freedv_playback_begin(void);
@@ -113,6 +131,11 @@ typedef struct {
 } audio_freedv_capture_stats_t;
 bool audio_freedv_capture_begin(void);
 void audio_freedv_capture_end(void);
+/* Voice transitions flush server-side pre-boundary capture while admission is
+ * closed. Begin only after a successful callback, after applying the new route. */
+bool audio_freedv_capture_flush_begin(void);
+int audio_freedv_capture_flushed(void); /* 0 pending, 1 acknowledged, -1 failed */
+void audio_freedv_capture_flush_close(void);
 size_t audio_freedv_capture_read(int16_t *out, size_t capacity);
 audio_freedv_capture_stats_t audio_freedv_capture_stats(void);
 /* Configure only while capture is stopped and its consumers have joined.
@@ -127,6 +150,7 @@ size_t audio_freedv_capture_read_stereo(int16_t *out, size_t frame_capacity);
 typedef struct audio_freedv_mixer_snapshot audio_freedv_mixer_snapshot_t;
 audio_freedv_mixer_snapshot_t *audio_freedv_mixer_snapshot(void);
 bool audio_freedv_mixer_restore(audio_freedv_mixer_snapshot_t *);
+bool audio_freedv_mixer_levels(const long playback[2],const long capture[2]);
 void audio_freedv_mixer_snapshot_free(audio_freedv_mixer_snapshot_t *);
 /* Selected diagnostic state only, suitable for result metadata (JSON). */
 bool audio_freedv_mixer_snapshot_describe(const audio_freedv_mixer_snapshot_t *, char *buffer, size_t capacity);

@@ -149,6 +149,7 @@ def main():
     parser.add_argument('--data', type=Path, help='host data directory (default: HOST_DATA_DIR in CMakeCache.txt)')
     parser.add_argument('--output', type=Path, help='retain screenshots and check summary in this directory')
     parser.add_argument('--snapshot', action='store_true', help='open and check the opt-in diagnostic panel using local MFK input')
+    parser.add_argument('--candidate',action='store_true',help='verify the unqualified APP/Modes test entry; never acquire/arm/run')
     args = parser.parse_args()
     cache = args.build.resolve() / 'CMakeCache.txt'
     values = dict(line.split('=', 1) for line in cache.read_text().splitlines()
@@ -172,12 +173,17 @@ def main():
         image_path = output / 'settings.jpg'
         states = [idle_state(client)]
         observations = ['settings opened by local front keys']
-        for key in ('APP', 'F1', 'F2'):
+        for key in (('APP','F2') if args.candidate else ('APP', 'F1', 'F2')):
             drive.key(key, 100)
             time.sleep(0.7)
-        wait_for(client, image_path, ('SETTINGS', 'GENERAL'))
-        print('PASS: Settings opened in the host simulator')
-        if args.snapshot:
+        if args.candidate:
+            drive.turn('mfk',13)
+            wait_for(client,image_path,('FREEDV TEST',))
+            drive.key('MFK',100)
+        else:
+            wait_for(client, image_path, ('SETTINGS', 'GENERAL'))
+            print('PASS: Settings opened in the host simulator')
+        if args.snapshot and not args.candidate:
             for key in ('F1', 'F1'):
                 drive.key(key, 100)
                 time.sleep(0.7)
@@ -191,6 +197,7 @@ def main():
             image_path = output / 'diagnostic-entry.jpg'
             wait_for(client, image_path, ('OPEN FREEDV DIAGNOSTICS',))
             drive.key('MFK', 100)
+        if args.snapshot or args.candidate:
             image_path = output / 'diagnostic-panel.jpg'
             panel_text = wait_for(client, image_path,
                                   ('FREEDV DIAGNOSTICS', 'IDLE', 'ACQUIRE', 'ARM', 'RUN', 'STOP'), panel=True)
@@ -201,6 +208,10 @@ def main():
             observations += ['diagnostic entry focused and clicked by local MFK',
                              'Acquire Arm Run Stop controls visible', 'idle packet status visible']
             print('PASS: local MFK opened diagnostics with idle packet status and Acquire/Arm/Run/Stop controls')
+            if args.candidate:
+                drive.key('MFK',100);time.sleep(.2)
+                drive.turn('mfk',80);drive.key('MFK',100);time.sleep(.2)
+                wait_for(client,output/'persistent-case.jpg',('PERSISTENT LIVE RECEIVE',),panel=True)
             # The initial focus is the case selector. One reverse detent wraps
             # to Close; never focus/click Acquire, Arm or Run during this check.
             drive.turn('mfk', -1)
@@ -211,7 +222,8 @@ def main():
             observations.append('local MFK Close returned to ordinary screen')
             print('PASS: local MFK closed diagnostics safely without acquiring, arming or running a case')
         (output / 'summary.json').write_text(json.dumps({
-            'status': 'PASS', 'host_simulator_only': True, 'diagnostic_panel': args.snapshot,
+            'status': 'PASS', 'host_simulator_only': True, 'diagnostic_panel': args.snapshot or args.candidate,
+            'candidate_app_entry':args.candidate,
             'input_transport': 'local evdev-format FIFOs', 'data_directory': str(data),
             'acquire_arm_run_actions': 0, 'idle_radio_states': states, 'observations': observations,
         }, indent=2) + '\n')

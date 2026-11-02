@@ -6,6 +6,7 @@
  *  Copyright (c) 2026 Joeri Van Dooren ON6URE / Guru-RF
  */
 
+#include "freedv/features.h"
 #include "control_owner.h"
 #include "radio.h"
 #include "freedv/writer_gate.h"
@@ -20,8 +21,9 @@
 
 static pthread_mutex_t mux = PTHREAD_MUTEX_INITIALIZER;
 static ctl_info_t      owner;
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 static ctl_info_t      before_diagnostic;
+static ctl_info_t      before_freedv;
 #endif
 static atomic_uint     version;
 static atomic_uint_fast64_t injected_ms;
@@ -52,8 +54,8 @@ bool ctl_claim(ctl_kind_t kind, int id, const char *name, bool take) {
     bool ok;
 
     pthread_mutex_lock(&mux);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
-    if (kind == CTL_DIAGNOSTIC || owner.kind == CTL_DIAGNOSTIC) {
+#ifdef ENABLE_FREEDV_CONTROL
+    if (kind == CTL_DIAGNOSTIC || owner.kind == CTL_DIAGNOSTIC || kind == CTL_FREEDV || owner.kind == CTL_FREEDV) {
         pthread_mutex_unlock(&mux);
         return false;
     }
@@ -71,8 +73,8 @@ bool ctl_claim(ctl_kind_t kind, int id, const char *name, bool take) {
 }
 
 void ctl_release(ctl_kind_t kind, int id) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
-    if (kind == CTL_DIAGNOSTIC) return; /* only the diagnostic owner releases its lease */
+#ifdef ENABLE_FREEDV_CONTROL
+    if (kind == CTL_DIAGNOSTIC || kind == CTL_FREEDV) return; /* only the session releases its lease */
 #endif
     pthread_mutex_lock(&mux);
     if (owner.kind == kind && owner.id == id)
@@ -106,14 +108,14 @@ void ctl_local_input(void) {
      * blocks all new ones. Fresh front input no longer needs the approximate
      * legacy time heuristic to reclaim local ownership. */
     if (
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
         !ctl_diagnostic_input_blocked() &&
 #endif
         now_ms() - atomic_load(&injected_ms) < INJECT_MS)
         return;
     pthread_mutex_lock(&mux);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
-    if (owner.kind == CTL_DIAGNOSTIC) {
+#ifdef ENABLE_FREEDV_CONTROL
+    if (owner.kind == CTL_DIAGNOSTIC || owner.kind == CTL_FREEDV) {
         pthread_mutex_unlock(&mux);
         return;
     }
@@ -123,7 +125,7 @@ void ctl_local_input(void) {
     pthread_mutex_unlock(&mux);
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool ctl_diagnostic_acquire(void) {
     pthread_mutex_lock(&mux);
     bool ok = (owner.kind == CTL_NONE || owner.kind == CTL_LOCAL) && !ctl_transmitting();
@@ -146,9 +148,28 @@ bool ctl_diagnostic_release(bool restoration_complete_and_rx_confirmed) {
     pthread_mutex_unlock(&mux);
     return ok;
 }
+bool ctl_freedv_acquire(void) {
+    pthread_mutex_lock(&mux);
+    bool ok = (owner.kind == CTL_NONE || owner.kind == CTL_LOCAL) && !ctl_transmitting();
+    if (ok) ok = fd_writer_voice_reserve();
+    if (ok) {
+        before_freedv = owner;
+        set_owner(CTL_FREEDV, 0, "FreeDV");
+    }
+    pthread_mutex_unlock(&mux); return ok;
+}
+bool ctl_freedv_release(bool restoration_complete_and_rx_confirmed) {
+    pthread_mutex_lock(&mux);
+    bool ok = owner.kind == CTL_FREEDV && restoration_complete_and_rx_confirmed && !ctl_transmitting();
+    if (ok) {
+        set_owner(before_freedv.kind, before_freedv.id, before_freedv.name);
+        fd_writer_release();
+    }
+    pthread_mutex_unlock(&mux); return ok;
+}
 #endif
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 #include <limits.h>
 static pthread_mutex_t remote_input_mux = PTHREAD_MUTEX_INITIALIZER;
 static atomic_bool diagnostic_input_blocked;

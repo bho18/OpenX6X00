@@ -1,4 +1,7 @@
+#define _GNU_SOURCE
+#include "freedv/features.h"
 #include "freedv/writer_gate.h"
+#include "freedv/mode.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
@@ -6,8 +9,6 @@
  *
  *  Copyright (c) 2022-2023 Belousov Oleg aka R1CBU
  */
-#define _GNU_SOURCE
-
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +30,7 @@
 #include "params/params.h"
 #include "cfg/cfg_api.h"
 #include "btaudio.h"
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 #include "freedv/capture_ring.h"
 #endif
 
@@ -46,12 +47,15 @@ static char                 *play_device = BOARD_PA_SINK;
 /* Local playback on the Bluetooth headphones (audio_play_bt_begin), per
  * thread: the TX players never see it, so TX audio always goes to the codec. */
 static __thread pa_stream   *bt_stm = NULL;
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 struct audio_freedv_playback {
     atomic_bool cancellation_requested;
     atomic_bool flush_acknowledged;
     pa_stream *stream;
     pa_operation *flush;
+    pa_operation *drain, *cork;
+    uint64_t generation, drain_generation;
+    int drain_status;
     audio_freedv_playback_stats_t stats;
 };
 static __thread audio_freedv_playback_t *compat_playback;
@@ -80,7 +84,7 @@ static pa_stream            *monitor_stm = NULL;
 static float                peak_db = -60.0f;
 static bool                 connected;      /* the context was READY once */
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 /* The PulseAudio mainloop lock serializes activation against its callback.
  * A diagnostic worker is the sole consumer and writes files outside it. */
 static freedv_capture_ring  diagnostic_capture;
@@ -90,6 +94,60 @@ static unsigned              diagnostic_capture_channel;
 static freedv_capture_ring   diagnostic_left, diagnostic_right;
 static void on_stream_state(pa_stream *s, void *userdata);
 static atomic_uint          diagnostic_capture_errors;
+static pa_operation        *voice_capture_flush;
+static atomic_int           voice_capture_flush_status;
+
+static void voice_main_operation_done(pa_stream *stream,int success,void *context) {
+    (void)stream;atomic_store_explicit((atomic_int *)context,success?1:-1,memory_order_release);
+}
+bool audio_freedv_main_quiet(bool quiet) {
+    if(!mloop || !play_stm)return false;
+    atomic_int cork_status,flush_status;atomic_init(&cork_status,0);atomic_init(&flush_status,quiet?0:1);
+    pa_threaded_mainloop_lock(mloop);
+    pa_operation *cork=pa_stream_cork(play_stm,quiet,voice_main_operation_done,&cork_status);
+    pa_operation *flush=quiet?pa_stream_flush(play_stm,voice_main_operation_done,&flush_status):NULL;
+    pa_threaded_mainloop_unlock(mloop);
+    struct timespec start,t;clock_gettime(CLOCK_MONOTONIC,&start);
+    bool ok=cork && (!quiet || flush);
+    while(ok && (!atomic_load(&cork_status) || !atomic_load(&flush_status))){
+        clock_gettime(CLOCK_MONOTONIC,&t);
+        if((t.tv_sec-start.tv_sec)*1000000000LL+t.tv_nsec-start.tv_nsec>=500000000LL){ok=false;break;}
+        struct timespec pause={0,2000000};nanosleep(&pause,NULL);
+    }
+    ok=ok && atomic_load(&cork_status)==1 && atomic_load(&flush_status)==1;
+    /* Cancel under the PA lock before the callback's stack context expires. */
+    pa_threaded_mainloop_lock(mloop);
+    if(cork){pa_operation_cancel(cork);pa_operation_unref(cork);}
+    if(flush){pa_operation_cancel(flush);pa_operation_unref(flush);}
+    pa_threaded_mainloop_unlock(mloop);return ok;
+}
+
+static void voice_capture_flush_done(pa_stream *stream, int success, void *unused) {
+    (void)stream; (void)unused;
+    atomic_store_explicit(&voice_capture_flush_status, success ? 1 : -1, memory_order_release);
+}
+bool audio_freedv_capture_flush_begin(void) {
+    if (!mloop) return false;
+    pa_threaded_mainloop_lock(mloop);
+    pa_stream *stream = diagnostic_capture_channel ? diagnostic_stereo : capture_stm;
+    bool ok = !diagnostic_capture_active && stream && pa_stream_get_state(stream) == PA_STREAM_READY;
+    if (ok) {
+        if (voice_capture_flush) { pa_operation_cancel(voice_capture_flush); pa_operation_unref(voice_capture_flush); }
+        atomic_store(&voice_capture_flush_status, 0);
+        voice_capture_flush = pa_stream_flush(stream, voice_capture_flush_done, NULL);
+        ok = voice_capture_flush != NULL;
+        if (!ok) atomic_store(&voice_capture_flush_status, -1);
+    }
+    pa_threaded_mainloop_unlock(mloop); return ok;
+}
+int audio_freedv_capture_flushed(void) { return atomic_load_explicit(&voice_capture_flush_status, memory_order_acquire); }
+void audio_freedv_capture_flush_close(void) {
+    if (!mloop) return;
+    pa_threaded_mainloop_lock(mloop);
+    if (voice_capture_flush) { pa_operation_cancel(voice_capture_flush); pa_operation_unref(voice_capture_flush); voice_capture_flush = NULL; }
+    atomic_store(&voice_capture_flush_status, 0);
+    pa_threaded_mainloop_unlock(mloop);
+}
 
 bool audio_freedv_capture_begin(void) {
     if (!mloop || !capture_stm) return false;
@@ -264,6 +322,26 @@ bool audio_freedv_mixer_restore(audio_freedv_mixer_snapshot_t *saved) {
     snd_mixer_close(mixer);
     return ok;
 }
+bool audio_freedv_mixer_levels(const long playback[2],const long capture[2]) {
+    if(!playback || !capture)return false;
+#ifdef HOST_BUILD
+    return true;
+#else
+    snd_mixer_t *mixer=diagnostic_mixer_open();if(!mixer)return false;
+    snd_mixer_elem_t *play=diagnostic_mixer_find(mixer,"AIF1 DA0");
+    snd_mixer_elem_t *record=diagnostic_mixer_find(mixer,"ADC");
+    long play_low=0,play_high=0,rec_low=0,rec_high=0;
+    bool ok=play && record && snd_mixer_selem_get_playback_volume_range(play,&play_low,&play_high)>=0 &&
+        snd_mixer_selem_get_capture_volume_range(record,&rec_low,&rec_high)>=0;
+    for(unsigned i=0;ok && i<2;++i)ok=playback[i]>=play_low && playback[i]<=play_high && capture[i]>=rec_low && capture[i]<=rec_high;
+    for(unsigned i=0;ok && i<2;++i)ok=snd_mixer_selem_set_playback_volume(play,diagnostic_channels[i],playback[i])>=0 &&
+        snd_mixer_selem_set_capture_volume(record,diagnostic_channels[i],capture[i])>=0;
+    audio_freedv_mixer_snapshot_t got={0};
+    ok=ok && diagnostic_mixer_read(mixer,&got);
+    for(unsigned i=0;ok && i<2;++i)ok=got.playback[i]==playback[i] && got.capture[i]==capture[i];
+    snd_mixer_close(mixer);return ok;
+#endif
+}
 void audio_freedv_mixer_snapshot_free(audio_freedv_mixer_snapshot_t *saved) { free(saved); }
 bool audio_freedv_mixer_snapshot_describe(const audio_freedv_mixer_snapshot_t *saved, char *buffer, size_t capacity) {
     if (!saved || !buffer || !capacity) return false;
@@ -399,6 +477,9 @@ static void on_state_change(pa_context *c, void *userdata) {
         /* PulseAudio went away under us: every stream is dead, the receiver is silent and the
          * waterfall stands. Out, so x6100_daemon brings PulseAudio and us back. */
         LV_LOG_ERROR("PulseAudio gone (%s): exiting for a restart", pa_strerror(pa_context_errno(c)));
+        /* Clear native software TX before the daemon restarts this process.
+         * This path never waits for a PulseAudio operation or codec worker. */
+        freedv_mode_device_fault();
         fflush(stdout);
         fflush(stderr);
         _exit(AUDIO_EXIT_NO_SERVER);
@@ -448,7 +529,7 @@ static void read_callback(pa_stream *s, size_t nbytes, void *udata) {
     const void *buf = NULL;
 
     if (pa_stream_peek(s, &buf, &nbytes) < 0) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
         if (diagnostic_capture_active) atomic_fetch_add_explicit(&diagnostic_capture_errors, 1, memory_order_relaxed);
 #endif
         LV_LOG_WARN("Capture: %s", pa_strerror(pa_context_errno(ctx)));
@@ -456,7 +537,7 @@ static void read_callback(pa_stream *s, size_t nbytes, void *udata) {
     }
     if (nbytes == 0)
         return;
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (diagnostic_capture_active && !diagnostic_capture_channel) {
         if (nbytes % sizeof(int16_t)) atomic_fetch_add_explicit(&diagnostic_capture_errors, 1, memory_order_relaxed);
         freedv_capture_ring_push(&diagnostic_capture, buf, nbytes / sizeof(int16_t));
@@ -475,7 +556,7 @@ static void read_callback(pa_stream *s, size_t nbytes, void *udata) {
         }
     }
     int drop_result = pa_stream_drop(s);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (drop_result < 0 && diagnostic_capture_active)
         atomic_fetch_add_explicit(&diagnostic_capture_errors, 1, memory_order_relaxed);
 #else
@@ -530,6 +611,9 @@ void audio_init() {
 
     pa_threaded_mainloop_lock(mloop);
     pa_stream_set_read_callback(capture_stm, read_callback, NULL);
+#ifdef ENABLE_FREEDV_CONTROL
+    pa_stream_set_state_callback(capture_stm, diagnostic_stereo_state, NULL);
+#endif
     res = pa_stream_connect_record(capture_stm, capture_device, &attr, PA_STREAM_ADJUST_LATENCY | PA_STREAM_DONT_MOVE);
     if (res < 0) {
         LV_LOG_ERROR("pa_stream_connect_record() failed: %s", pa_strerror(pa_context_errno(ctx)));
@@ -593,7 +677,7 @@ int audio_play(int16_t *samples_buf, size_t samples) {
     int res = pa_stream_write(stm, samples_buf, samples * 2, NULL, 0, PA_SEEK_RELATIVE);
     pa_threaded_mainloop_unlock(mloop);
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (res >= 0 && samples) ordinary_audio_written();
 #endif
     if (res < 0) {
@@ -717,7 +801,7 @@ bool audio_play_lowlat_begin(void) {
     pa_threaded_mainloop_lock(mloop);
     bt_stm = stream_open("X6100 GUI Network voice", play_device, &attr);
     pa_threaded_mainloop_unlock(mloop);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (bt_stm) atomic_fetch_add_explicit(&ordinary_playback_streams, 1, memory_order_release);
 #endif
     return bt_stm != NULL;
@@ -732,7 +816,7 @@ void audio_play_lowlat_end(void) {
     pa_stream_unref(bt_stm);
     pa_threaded_mainloop_unlock(mloop);
     bt_stm = NULL;
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     atomic_fetch_sub_explicit(&ordinary_playback_streams, 1, memory_order_release);
 #endif
 }
@@ -746,7 +830,7 @@ bool audio_play_if_room(int16_t *samples_buf, size_t samples) {
     size_t bytes = LV_MIN(pa_stream_writable_size(cur_stm()), samples * 2) & ~(size_t)1;
     if (bytes) {
         int result = pa_stream_write(cur_stm(), samples_buf, bytes, NULL, 0, PA_SEEK_RELATIVE);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
         if (result >= 0) ordinary_audio_written();
 #else
         (void)result;
@@ -756,7 +840,7 @@ bool audio_play_if_room(int16_t *samples_buf, size_t samples) {
     return bytes > 0;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 static uint64_t diagnostic_audio_clock_ns(void) {
     struct timespec t;
     if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
@@ -766,6 +850,7 @@ static void diagnostic_playback_underflow(pa_stream *stream, void *userdata) {
     (void)stream;
     audio_freedv_playback_t *p = userdata;
     ++p->stats.underflows;
+    ++p->stats.generation_underflows;
     if (p->stats.accepted_samples) ++p->stats.underflows_after_first_write;
     else ++p->stats.underflows_before_first_write;
     if (p->stats.underflow_events_stored < AUDIO_FREEDV_UNDERFLOW_EVENTS) {
@@ -773,6 +858,8 @@ static void diagnostic_playback_underflow(pa_stream *stream, void *userdata) {
         *e = (audio_freedv_underflow_event_t){
             .monotonic_ns = diagnostic_audio_clock_ns(),
             .accepted_samples = p->stats.accepted_samples,
+            .generation=p->generation,.generation_accepted_samples=p->stats.generation_accepted_samples,
+            .drain_requested=p->drain!=NULL,
             .cancellation_requested = atomic_load_explicit(&p->cancellation_requested, memory_order_acquire)
         };
     } else ++p->stats.underflow_events_discarded;
@@ -813,11 +900,11 @@ audio_freedv_playback_t *audio_freedv_playback_open(void) {
     if (!p->stream) { free(p); return NULL; }
     return p;
 }
-ssize_t audio_freedv_playback_submit(audio_freedv_playback_t *p, const int16_t *samples, size_t count) {
+ssize_t audio_freedv_playback_submit_generation(audio_freedv_playback_t *p, uint64_t generation, const int16_t *samples, size_t count) {
     if (!mloop || !p) return -1;
     pa_threaded_mainloop_lock(mloop);
     ssize_t accepted = -1;
-    if (atomic_load_explicit(&p->cancellation_requested, memory_order_acquire) || p->stats.cancelled || !p->stream || (count && !samples) || count > SIZE_MAX / sizeof(*samples) ||
+    if (generation != p->generation || p->drain || atomic_load_explicit(&p->cancellation_requested, memory_order_acquire) || p->stats.cancelled || !p->stream || (count && !samples) || count > SIZE_MAX / sizeof(*samples) ||
         count > SSIZE_MAX || pa_stream_get_state(p->stream) != PA_STREAM_READY) goto error;
     if (!count) { accepted = 0; goto done; }
     size_t bytes = pa_stream_writable_size(p->stream);
@@ -828,6 +915,8 @@ ssize_t audio_freedv_playback_submit(audio_freedv_playback_t *p, const int16_t *
     if (pa_stream_write(p->stream, samples, n * sizeof(*samples), NULL, 0, PA_SEEK_RELATIVE) < 0) goto error;
     if (!p->stats.accepted_samples) p->stats.first_write_monotonic_ns = diagnostic_audio_clock_ns();
     p->stats.accepted_samples += n;
+    if(!p->stats.generation_accepted_samples)p->stats.generation_first_write_ns=diagnostic_audio_clock_ns();
+    p->stats.generation_accepted_samples+=n;
     accepted = (ssize_t)n;
     goto done;
 error:
@@ -836,10 +925,65 @@ done:
     pa_threaded_mainloop_unlock(mloop);
     return accepted;
 }
+ssize_t audio_freedv_playback_submit(audio_freedv_playback_t *p, const int16_t *samples, size_t count) {
+    return audio_freedv_playback_submit_generation(p, 0, samples, count);
+}
+static void voice_drain_done(pa_stream *stream, int success, void *userdata) {
+    audio_freedv_playback_t *p = userdata;
+    if (stream == p->stream && p->drain_generation == p->generation &&
+        !atomic_load_explicit(&p->cancellation_requested, memory_order_acquire))
+        p->drain_status = success ? 1 : -1;
+}
+bool audio_freedv_playback_drain(audio_freedv_playback_t *p, uint64_t generation) {
+    if (!mloop || !p) return false;
+    pa_threaded_mainloop_lock(mloop);
+    bool ok = generation == p->generation && !atomic_load(&p->cancellation_requested) &&
+        p->stream && pa_stream_get_state(p->stream) == PA_STREAM_READY;
+    if (ok && !p->drain) {
+        p->drain_generation = generation; p->drain_status = 0;
+        p->drain = pa_stream_drain(p->stream, voice_drain_done, p);
+        if (!p->drain) { p->drain_status = -1; ok = false; }
+    }
+    pa_threaded_mainloop_unlock(mloop); return ok;
+}
+int audio_freedv_playback_drained(audio_freedv_playback_t *p, uint64_t generation) {
+    if (!mloop || !p) return -1;
+    pa_threaded_mainloop_lock(mloop);
+    int status = generation == p->generation && !atomic_load(&p->cancellation_requested) ? p->drain_status : -1;
+    pa_threaded_mainloop_unlock(mloop); return status;
+}
+bool audio_freedv_playback_cork(audio_freedv_playback_t *p, bool cork) {
+    if (!mloop || !p) return false;
+    pa_threaded_mainloop_lock(mloop);
+    if (p->cork) { pa_operation_cancel(p->cork); pa_operation_unref(p->cork); }
+    p->cork = p->stream ? pa_stream_cork(p->stream, cork, NULL, NULL) : NULL;
+    bool ok = p->cork != NULL;
+    pa_threaded_mainloop_unlock(mloop); return ok;
+}
+bool audio_freedv_playback_rearm(audio_freedv_playback_t *p, uint64_t generation) {
+    if (!mloop || !p || !generation) return false;
+    pa_threaded_mainloop_lock(mloop);
+    bool ok = generation > p->generation && audio_freedv_playback_quiescent(p) &&
+        p->stream && pa_stream_get_state(p->stream) == PA_STREAM_READY;
+    if (ok) {
+        /* The PA mainloop lock plus operation cancellation retires all old
+         * callbacks before their context is reused for the next generation. */
+        if (p->drain) { pa_operation_cancel(p->drain); pa_operation_unref(p->drain); p->drain = NULL; }
+        if (p->flush) { pa_operation_cancel(p->flush); pa_operation_unref(p->flush); p->flush = NULL; }
+        p->generation = generation; p->drain_status = 0;
+        p->stats.generation=generation;p->stats.generation_accepted_samples=0;
+        p->stats.generation_underflows=0;p->stats.generation_first_write_ns=0;
+        p->stats.cancelled = p->stats.flush_acknowledged = false;
+        atomic_store(&p->flush_acknowledged, false);
+        atomic_store(&p->cancellation_requested, false);
+    }
+    pa_threaded_mainloop_unlock(mloop); return ok;
+}
 audio_freedv_playback_stats_t audio_freedv_playback_observe(audio_freedv_playback_t *p) {
     if (!mloop || !p) return (audio_freedv_playback_stats_t){0};
     pa_threaded_mainloop_lock(mloop);
     audio_freedv_playback_stats_t out = p->stats;
+    out.stream_failed = !p->stream || pa_stream_get_state(p->stream) != PA_STREAM_READY;
     out.cancelled |= atomic_load_explicit(&p->cancellation_requested, memory_order_acquire);
     out.latency_known = false;
     if (p->stream && !p->stats.cancelled) {
@@ -880,6 +1024,8 @@ void audio_freedv_playback_close(audio_freedv_playback_t *p) {
     (void)audio_freedv_playback_cancel(p);
     pa_threaded_mainloop_lock(mloop);
     if (p->flush) { pa_operation_cancel(p->flush); pa_operation_unref(p->flush); }
+    if (p->drain) { pa_operation_cancel(p->drain); pa_operation_unref(p->drain); }
+    if (p->cork) { pa_operation_cancel(p->cork); pa_operation_unref(p->cork); }
     if (p->stream) {
         pa_stream_set_underflow_callback(p->stream, NULL, NULL);
         pa_stream_disconnect(p->stream);
@@ -927,7 +1073,7 @@ bool audio_play_bt_begin(void) {
     }
     pa_threaded_mainloop_unlock(mloop);
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (s) atomic_fetch_add_explicit(&ordinary_playback_streams, 1, memory_order_release);
 #endif
     return s != NULL;
@@ -944,7 +1090,7 @@ void audio_play_bt_end(void) {
     pa_stream_unref(bt_stm);
     pa_threaded_mainloop_unlock(mloop);
     bt_stm = NULL;
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     atomic_fetch_sub_explicit(&ordinary_playback_streams, 1, memory_order_release);
 #endif
 }

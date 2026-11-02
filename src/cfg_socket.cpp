@@ -17,6 +17,12 @@
 
 #include "cfg_socket.h"
 #include "freedv/writer_gate.h"
+#include "freedv/mode.h"
+#ifdef ENABLE_FREEDV_VOICE
+extern "C" {
+#include "freedv/voice_audio.h"
+}
+#endif
 
 #include "cfg/settings_manager.h"
 #include "cfg/settings_manager_api.h"
@@ -293,6 +299,59 @@ static const char *band_use_get(cJSON *req, char *out, size_t size, int *l) {
     return NULL;
 }
 
+static int freedv_stats_get(char *out,size_t size) {
+#ifdef ENABLE_FREEDV_VOICE
+    fd_voice_audio_snapshot s={};
+    if(!freedv_mode_audio_stats(&s))return snprintf(out,size,"{\"t\":\"freedv_stats\",\"available\":false}\n");
+    cJSON *root=cJSON_CreateObject();
+    cJSON_AddStringToObject(root,"t","freedv_stats");cJSON_AddBoolToObject(root,"available",true);
+    const fd_qualified_profile *profile=freedv_mode_profile();
+    if(profile){cJSON_AddStringToObject(root,"profile_id",profile->id);cJSON_AddStringToObject(root,"hardware",profile->hardware);}
+    auto number=[](cJSON *object,const char *name,uint64_t value){char text[32];snprintf(text,sizeof(text),"%llu",(unsigned long long)value);cJSON_AddRawToObject(object,name,text);};
+    number(root,"sampled_ms",s.sampled_ms);number(root,"generation",s.generation);
+    cJSON_AddBoolToObject(root,"cancelled",s.cancelled);cJSON_AddBoolToObject(root,"failed",s.failed);cJSON_AddBoolToObject(root,"finishing",s.finishing);
+    cJSON *previous=cJSON_AddObjectToObject(root,"previous_tx");
+    number(previous,"generation",s.previous_tx_generation);number(previous,"input_samples",s.previous_tx_input_samples);
+    number(previous,"first_write_ns",s.previous_tx_first_write_ns);number(previous,"underflows",s.previous_tx_underflows);
+    cJSON_AddBoolToObject(previous,"finished",s.previous_tx_finished);
+    cJSON *engine=cJSON_AddObjectToObject(root,"engine");
+#define ENGINE(field) number(engine,#field,s.engine.field)
+    ENGINE(input_samples);ENGINE(output_samples);ENGINE(delivered_samples);ENGINE(modem_blocks);ENGINE(speech_frames);ENGINE(eoo_count);
+    ENGINE(input_depth);ENGINE(output_depth);ENGINE(input_high_water);ENGINE(output_high_water);ENGINE(failures);
+    ENGINE(rade_creations);ENGINE(encoder_creations);ENGINE(decoder_creations);ENGINE(resampler_creations);ENGINE(worker_creations);
+    ENGINE(synchronized_blocks);ENGINE(synthesis_blocks);ENGINE(acquisitions);
+    ENGINE(processing_ns);ENGINE(synthesis_ns);ENGINE(queue_wait_ns);ENGINE(scheduling_delay_ns);ENGINE(scheduling_max_ns);ENGINE(scheduling_events);
+#undef ENGINE
+    cJSON *histogram=cJSON_AddArrayToObject(engine,"duration_histogram");
+    for(unsigned i=0;i<32;++i)cJSON_AddItemToArray(histogram,cJSON_CreateNumber((double)s.engine.duration_histogram[i]));
+    cJSON *capture=cJSON_AddObjectToObject(root,"capture");
+    number(capture,"queued_samples",s.capture.queued_samples);number(capture,"dropped_samples",s.capture.dropped_samples);
+    number(capture,"hole_samples",s.capture.hole_samples);number(capture,"capture_errors",s.capture.capture_errors);
+    cJSON *playback=cJSON_AddObjectToObject(root,"playback");
+#define PLAYBACK(field) number(playback,#field,s.playback.field)
+    PLAYBACK(accepted_samples);PLAYBACK(write_errors);PLAYBACK(underflows);PLAYBACK(generation);
+    PLAYBACK(generation_accepted_samples);PLAYBACK(generation_underflows);PLAYBACK(generation_first_write_ns);
+    PLAYBACK(maxlength_bytes);PLAYBACK(target_bytes);PLAYBACK(prebuffer_bytes);PLAYBACK(min_request_bytes);PLAYBACK(queued_latency_us);
+    PLAYBACK(underflow_events_discarded);
+#undef PLAYBACK
+    cJSON_AddBoolToObject(playback,"latency_known",s.playback.latency_known);
+    cJSON_AddBoolToObject(playback,"stream_failed",s.playback.stream_failed);
+    cJSON *events=cJSON_AddArrayToObject(playback,"underflow_events");
+    for(unsigned i=0;i<s.playback.underflow_events_stored;++i){
+        const auto &event=s.playback.underflow_events[i];cJSON *item=cJSON_CreateObject();
+        number(item,"monotonic_ns",event.monotonic_ns);number(item,"generation",event.generation);
+        number(item,"generation_accepted_samples",event.generation_accepted_samples);
+        cJSON_AddBoolToObject(item,"drain_requested",event.drain_requested);cJSON_AddBoolToObject(item,"cancelled",event.cancellation_requested);
+        cJSON_AddItemToArray(events,item);
+    }
+    char *text=cJSON_PrintUnformatted(root);cJSON_Delete(root);
+    int length=text?snprintf(out,size,"%s\n",text):snprintf(out,size,"{\"t\":\"err\",\"err\":\"Telemetry allocation failed\"}\n");
+    cJSON_free(text);return length;
+#else
+    return snprintf(out,size,"{\"t\":\"freedv_stats\",\"available\":false}\n");
+#endif
+}
+
 /* The answer to one request line */
 static int handle_line(const char *line, char *out, size_t size) {
     cJSON      *req  = cJSON_Parse(line);
@@ -302,6 +361,13 @@ static int handle_line(const char *line, char *out, size_t size) {
 
     if (!cJSON_IsString(name)) {
         err = "Bad request";
+    } else if (!strcmp(name->valuestring, "freedv_stats")) {
+        l=freedv_stats_get(out,size);
+    } else if (!strcmp(name->valuestring, "freedv_get")) {
+        fd_voice_status status={};bool active=freedv_mode_status(&status);
+        l=snprintf(out,size,"{\"t\":\"freedv\",\"active\":%s,\"state\":%u,\"fault\":%u,\"frequency\":%d,\"vfo\":%u,\"timeout\":%u,\"radio_held\":%s,\"hand_held\":%s,\"radio_unknown\":%s,\"hand_unknown\":%s}\n",
+            active?"true":"false",status.state,status.fault,status.tuning.frequency,status.tuning.vfo,status.timeout_seconds,
+            status.ptt_held[0]?"true":"false",status.ptt_held[1]?"true":"false",status.ptt_unknown[0]?"true":"false",status.ptt_unknown[1]?"true":"false");
     } else if (!strcmp(name->valuestring, "disp_get")) {
         l = disp_get(out, size);
     } else if (!strcmp(name->valuestring, "disp_set")) {
@@ -327,7 +393,7 @@ static int handle_line(const char *line, char *out, size_t size) {
 
 /* One request per connection: a line in, a line out, the socket closes */
 static void serve(int fd) {
-    char   in[IN_SIZE], out[2048];
+    char   in[IN_SIZE], out[8192];
     size_t n = 0;
     struct timeval tv = {3, 0};
 

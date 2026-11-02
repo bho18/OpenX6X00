@@ -9,6 +9,7 @@
 /* The MFK knob as an LVGL encoder: its turns from its own device, its press from the
  * buttons' device (keypad.c sets pressed) */
 
+#include "freedv/features.h"
 #include "mfk_device.h"
 
 #include "screen_light.h"
@@ -21,7 +22,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 static encoder_t *diagnostic_encoder;
 #endif
 static void mfk_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
@@ -62,7 +63,7 @@ encoder_t *encoder_init(char *dev_name) {
 
     encoder_t *knob = calloc(1, sizeof(*knob));
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     diagnostic_encoder = knob;
 #endif
     knob->fd = fd;
@@ -75,7 +76,7 @@ encoder_t *encoder_init(char *dev_name) {
     return knob;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool encoder_diagnostic_reset(void) {
     if (!diagnostic_encoder) return true;
     diagnostic_encoder->pressed = false;

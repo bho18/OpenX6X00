@@ -1,3 +1,7 @@
+> Current persistent-native development: [operating guide](../../docs/freedv/operating-guide.md),
+> [implementation and qualification status](../../docs/freedv/implementation-status.md),
+> [qualification workflow](qualification/README.md). Production release remains blocked.
+
 # FreeDV reference tooling
 
 `sources.json` records the first-milestone source pins and speech fixture hashes.

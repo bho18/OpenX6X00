@@ -173,3 +173,23 @@ INSERT INTO digital_modes VALUES
     (31, 'GhostNet 80m',  3575000, 3, 3),
     (32, 'GhostNet 40m',  7107000, 3, 3),
     (33, 'GhostNet 20m', 14107000, 3, 3);
+
+-- FreeDV HF bookmarks, official GUI a2d5365f. Mode is governed by qualification.
+INSERT OR IGNORE INTO digital_modes(label, freq, mode, type) VALUES
+    ('FreeDV 1.8700', 1870000, 3, 6),
+    ('FreeDV 3.6250', 3625000, 3, 6),
+    ('FreeDV 3.6430', 3643000, 3, 6),
+    ('FreeDV 3.6930', 3693000, 3, 6),
+    ('FreeDV 3.6970', 3697000, 3, 6),
+    ('FreeDV 3.8030', 3803000, 3, 6),
+    ('FreeDV 5.4035', 5403500, 3, 6),
+    ('FreeDV 5.3685', 5368500, 3, 6),
+    ('FreeDV 7.1770', 7177000, 3, 6),
+    ('FreeDV 7.1970', 7197000, 3, 6),
+    ('FreeDV 14.2360', 14236000, 3, 6),
+    ('FreeDV 14.2400', 14240000, 3, 6),
+    ('FreeDV 18.1180', 18118000, 3, 6),
+    ('FreeDV 21.3130', 21313000, 3, 6),
+    ('FreeDV 24.9330', 24933000, 3, 6),
+    ('FreeDV 28.3300', 28330000, 3, 6),
+    ('FreeDV 28.7200', 28720000, 3, 6);

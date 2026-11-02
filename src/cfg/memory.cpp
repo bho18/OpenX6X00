@@ -1,3 +1,5 @@
+#include "../freedv/mode.h"
+#include "../freedv/writer_gate.h"
 // memory.cpp
 // Orchestration layer for user memory slots on the `memory` table.
 //
@@ -18,6 +20,7 @@
 // cfg_memory_save: store the current active VFO frequency, mode, agc, pre and
 // att into the memory slot `id`. Returns true when every field was saved.
 extern "C" bool cfg_memory_save(int32_t id) {
+    FD_WRITE_GUARD(return false);
     bool ok = true;
     ok      = MemoryTable::Save(id, "vfoa_freq", cfg_sm.cp_fg_freq.get()) == SUCCESS && ok;
     ok      = MemoryTable::Save(id, "vfoa_mode", cfg_sm.cp_cur_mode.get()) == SUCCESS && ok;
@@ -32,6 +35,10 @@ extern "C" bool cfg_memory_save(int32_t id) {
 // stored frequency) is set first so the band context is correct before the
 // frequency observer fires.
 extern "C" bool cfg_memory_load(int32_t id) {
+#ifdef ENABLE_FREEDV_VOICE
+    if(freedv_mode_active() && !fd_writer_voice_authorized())return freedv_mode_request(FD_LOCAL_MEMORY,id);
+#endif
+    FD_WRITE_GUARD(return false);
     int32_t freq = 0, mode = 0, agc = 0, att = 0, pre = 0;
     bool    has_freq = false, has_mode = false, has_agc = false, has_att = false, has_pre = false;
 

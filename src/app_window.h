@@ -11,6 +11,7 @@
 #ifndef X6100_DIALOG_H
 #define X6100_DIALOG_H
 
+#include "freedv/features.h"
 #include "lvgl/lvgl.h"
 #include <liquid/liquid.h>
 #include "helpers.h"
@@ -57,7 +58,7 @@ void app_mem_save(const char *name);
 /* An event to the open window (queued, from any thread) */
 void dialog_send(lv_event_code_t code, void *param);
 bool dialog_is_run();
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool dialog_diagnostic_busy(void); /* atomic worker-safe snapshot; Settings exempt */
 #endif
 bool dialog_type_is_run(dialog_t *which);

@@ -26,3 +26,4 @@ bool info_tx_blocked(void);
 
 /* An app holds the mode (FT8, CW trainer, ...): the mode shown soft */
 void info_lock_mode(bool lock);
+void info_refresh_effective(void); /* GUI: ownership/profile changed without saving preferences */

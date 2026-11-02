@@ -8,6 +8,8 @@
 // write into the active VFO band params and trigger mode/band switching).
 
 #include "digital_modes.h"
+#include "../freedv/mode.h"
+#include "../freedv/writer_gate.h"
 
 #include <atomic>
 #include <cstdio>
@@ -42,10 +44,15 @@ extern "C" bool cfg_digital_load(int8_t dir, cfg_digital_type_t type) {
         return false;
     }
 
+#ifdef ENABLE_FREEDV_VOICE
+    if(freedv_mode_active() && !fd_writer_voice_authorized()) {
+        return type == CFG_DIG_TYPE_FREEDV && freedv_mode_request(FD_LOCAL_FREQUENCY,result.value.freq);
+    }
+#endif
     last_label = result.value.label;
     last_freq  = result.value.freq;
     cfg_sm.cp_fg_freq.set(result.value.freq);
-    cfg_sm.cp_cur_mode.set(result.value.mode);
+    if (type != CFG_DIG_TYPE_FREEDV) cfg_sm.cp_cur_mode.set(result.value.mode);
     return true;
 }
 
@@ -71,3 +78,9 @@ extern "C" int cfg_digital_list(cfg_digital_type_t type, cfg_digital_preset_t *o
     }
     return n;
 }
+
+extern "C" int cfg_digital_count(cfg_digital_type_t type) {return DigitalModesTable::count(type);}
+extern "C" bool cfg_digital_bookmark_save(int32_t old_frequency,int32_t frequency,const char *label) {
+    return DigitalModesTable::save_bookmark(CFG_DIG_TYPE_FREEDV,old_frequency,frequency,label);
+}
+extern "C" bool cfg_digital_bookmark_delete(int32_t frequency) {return DigitalModesTable::erase_bookmark(CFG_DIG_TYPE_FREEDV,frequency);}

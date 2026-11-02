@@ -9,7 +9,9 @@
 /*********************
  *      INCLUDES
  *********************/
+#include "freedv/features.h"
 #include "radio.h"
+#include "freedv/mode.h"
 #include "freedv/writer_gate.h"
 #include "board.h"
 
@@ -55,7 +57,7 @@
 #include "start_trace.h"
 #include "clock.h"
 #include "wifi.h"
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 #include "freedv/packet_tx.h"
 #include "freedv/cached_snapshot.h"
 #include "freedv/radio_session.h"
@@ -135,6 +137,9 @@ static void on_volume_change(Subject *subj, void *user_data);
 static void recover_processing_audio_inputs();
 #endif
 static bool tx_refused(void);
+#ifdef ENABLE_FREEDV_VOICE
+static int voice_monitor_level(void);
+#endif
 static bool radio_tick();
 static void * radio_thread(void *arg);
 
@@ -159,7 +164,7 @@ static void(*low_power_cb)(bool) = NULL;
 static bool low_power = false;
 
 static pthread_mutex_t  control_mux = PTHREAD_MUTEX_INITIALIZER;
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 static freedv_packet_tx_tracker packet_tx_tracker = FREEDV_PACKET_TX_TRACKER_INIT;
 static fd_radio_session *freedv_owner;
 static atomic_uint freedv_base_errors;
@@ -169,6 +174,9 @@ static void freedv_startup_begin(void);
 static void freedv_startup_seal(void);
 static void freedv_initial_subscribe(Subject *, observer_cb, void *);
 static void freedv_protection_trip(void);
+#endif
+#ifdef ENABLE_FREEDV_VOICE
+static bool voice_startup_safe(void);
 #endif
 
 static hw_pack_t        pack_buf;
@@ -251,7 +259,7 @@ bool radio_init() {
     return true;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 #define RADIO_INITIAL_SUBSCRIBE freedv_initial_subscribe
 #else
 #define RADIO_INITIAL_SUBSCRIBE subject_subscribe_and_notify
@@ -259,7 +267,7 @@ bool radio_init() {
 void radio_start() {
 
     hw_start();
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     freedv_startup_begin();
 #endif
     base_ver = hw_base_ver();
@@ -384,7 +392,7 @@ void radio_start() {
     hw_set_i(HW_SPMODE, params.spmode.x);
     hw_set_i(HW_LINE_IN, params.line_in);
     hw_set_i(HW_LINE_OUT, params.line_out);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     freedv_startup_seal();
 #endif
 
@@ -432,7 +440,7 @@ bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route) {
     }
     radio_unlock();
     if (supported) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
         freedv_packet_tx_observation packet = freedv_packet_tx_read(&packet_tx_tracker, get_time());
         route->packet_tx_known = packet.known;
         route->packet_tx = packet.tx;
@@ -448,7 +456,7 @@ bool radio_get_commanded_audio_route(radio_commanded_audio_route_t *route) {
     return supported;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool radio_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *snapshot) {
     if (!snapshot) return false;
     radio_lock();
@@ -477,6 +485,7 @@ bool radio_check_freq(int32_t freq) {
  * shift below 0 Hz left it at 100 kHz, which can transmit and keyed there. This one is refused (tx_refused) and red
  * on the screen instead */
 int32_t radio_tx_freq(void) {
+    if(freedv_mode_active())return cparam_i_get(cfg_fg_freq);
     int32_t shift = param_i_get(cfg_band_tx_shift);
     int32_t fg = cparam_i_get(cfg_fg_freq);
 
@@ -522,6 +531,9 @@ void radio_set_tx_freq(int32_t freq) {
 }
 
 uint16_t radio_change_vol(int16_t df) {
+#ifdef ENABLE_FREEDV_VOICE
+    if(freedv_mode_active() && !fd_writer_voice_authorized()) { (void)freedv_mode_request(FD_LOCAL_VOLUME,df);return param_i_get(cfg_volume); }
+#endif
     FD_WRITE_GUARD(return param_i_get(cfg_volume));
     int32_t vol = param_i_get(cfg_volume);
     if (df == 0) {
@@ -568,6 +580,9 @@ void radio_vol_refresh() {
     else if (muted || vol == 0) moni = 0;
     radio_lock();
     hw_set_i(HW_RXVOL, muted ? 0 : vol);
+#ifdef ENABLE_FREEDV_VOICE
+    if(fd_writer_voice_owned())moni=voice_monitor_level();
+#endif
     hw_set_i(HW_MONI, moni);
     radio_unlock();
 }
@@ -601,7 +616,7 @@ bool radio_change_spmode(int16_t df) {
 
 void radio_start_atu() {
     FD_WRITE_GUARD(return);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (radio_freedv_startup_waiting()) return;
 #endif
     if (tx_refused()) {
@@ -613,7 +628,7 @@ void radio_start_atu() {
 /* Nothing moves before the scan is known to start: the VFO that transmits goes to `from` only then */
 bool radio_start_swrscan(int32_t from) {
     FD_WRITE_GUARD(return false);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (radio_freedv_startup_waiting()) return false;
 #endif
     if (tx_refused() || !state_move(RADIO_RX, RADIO_SWRSCAN)) {
@@ -743,7 +758,7 @@ static bool tx_refused(void) {
 
 void radio_set_ptt(bool tx) {
     FD_WRITE_GUARD(return);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (tx && radio_freedv_startup_waiting()) return;
 #endif
     if (tx && tx_refused()) {
@@ -772,7 +787,7 @@ static atomic_bool modem_on;    /* read on other threads (Winlink's on_air) whil
  * its own */
 void radio_set_modem(bool tx) {
     FD_WRITE_GUARD(return);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (tx && radio_freedv_startup_waiting()) return;
 #endif
 
@@ -875,7 +890,7 @@ void radio_set_rec_moni(bool on) {
 
 void radio_set_morse_key(bool on) {
     FD_WRITE_GUARD(return);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (on && radio_freedv_startup_waiting()) return;
 #endif
     if (on && tx_refused()) {
@@ -1354,7 +1369,7 @@ static void swr_trip_cb(void *arg) {
     cw_encoder_stop();
     paddle_keyer_stop();
     dialog_msg_voice_ptt_pressed();
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (!fd_writer_enter()) {
         /* Protection bypass: an exclusive diagnostic lease must never suppress
          * SWR unkeying. Do not restore ordinary analog routing while TX holds. */
@@ -1370,7 +1385,7 @@ static void swr_trip_cb(void *arg) {
         radio_set_morse_key(false);
         radio_set_modem(false);
         radio_set_ptt(false);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
         fd_writer_exit();
     }
 #endif
@@ -1424,7 +1439,7 @@ static bool radio_tick() {
     int32_t d = now_time - prev_time;
 
     if (hw_flow_read(pack)) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
         freedv_packet_tx_note(&packet_tx_tracker, pack->tx != 0, get_time());
         freedv_startup_packet();
 #endif
@@ -1520,7 +1535,8 @@ static bool radio_tick() {
                      * the reserve in 25 s from those that do not try again (TCI's unkey, FT8's last post).
                      * Marked before the put, the job may run before the put returns */
                     if (swr_guard_check(&swr_guard, pack->tx_power * 0.1f, swr, param_i_get(cfg_swr_protect) * 0.1f, now_time)) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
+                        freedv_mode_protection();
                         freedv_protection_trip(); /* does not depend on GUI scheduling */
 #endif
                         if (!atomic_exchange(&swr_trip_queued, true) && !scheduler_put_urgent(swr_trip_cb, &swr, sizeof(swr)))
@@ -1606,7 +1622,7 @@ static bool radio_tick() {
                 break;
             case TX_WATCH_RESTORE:
                 radio_lock();
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
                 if (freedv_owner) hw_set_f(HW_TXPWR_F, freedv_owner->restoration_complete ?
                     freedv_owner->saved.requested_power_tenths_watt / 10.0f : 1.0f);
                 else
@@ -1660,7 +1676,7 @@ static void guard_events() {
     unsigned ev = base_guard_take(&resent, &lost, &reg);
 
     if (ev & BASE_GUARD_ERROR) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
         atomic_fetch_add(&freedv_base_errors, 1);
 #endif
         base_guard_log("write to register %d failed: %u resent OK, %u lost; resending all registers", reg, resent, lost);
@@ -1716,7 +1732,7 @@ static void * radio_thread(void *arg) {
     return NULL;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 /* No transport getter is a packet measurement. Every backend call here is
  * serialized with the ordinary control mutex and never writes preferences. */
 bool radio_freedv_startup_waiting(void) { return atomic_load(&freedv_startup_pending); }
@@ -1760,7 +1776,7 @@ bool radio_freedv_session_observe(fd_observation *o) {
 }
 static bool freedv_busy(void) {
     return recorder_is_on() || screen_rec_is_on() || audio_freedv_other_audio_busy() ||
-        dialog_diagnostic_busy() ||
+        (dialog_diagnostic_busy() && !freedv_mode_active()) ||
         tci_server_clients() != 0 || cw_encoder_state() != CW_ENCODER_IDLE ||
         rtty_get_state() != RTTY_OFF || morse_on || atomic_load(&modem_on) ||
         atomic_load(&split_held) || modem_moved;
@@ -1940,7 +1956,7 @@ bool radio_freedv_session_release(fd_radio_session *s) {
 }
 #endif
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 static void freedv_protection_trip(void) {
     radio_lock();
     if (freedv_owner && freedv_owner->case_active && !freedv_owner->software_cleared) {
@@ -1954,7 +1970,7 @@ static void freedv_protection_trip(void) {
 }
 #endif
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 /* Sensitive initial audio/power values are deferred until a post-clear RX packet. This keeps
  * the GUI/flow alive during recovery without restoring analog speech under a
  * continuously held physical PTT. The marker is in memory, never persisted. */
@@ -2005,10 +2021,14 @@ static void freedv_startup_seal(void) {
 }
 static void freedv_startup_restore_cb(void *unused) {
     (void)unused;
+    bool physical_ready=true;
+#ifdef ENABLE_FREEDV_VOICE
+    physical_ready=voice_startup_safe();
+#endif
     radio_lock();
     fd_observation o;
     bool safe = radio_freedv_startup_waiting() && freedv_observe_locked(&o) && freedv_rx(&o) &&
-        o.sequence > freedv_startup_clear_sequence && state == RADIO_RX;
+        o.sequence > freedv_startup_clear_sequence && state == RADIO_RX && physical_ready;
     if (safe) {
         hw_set_i(HW_RECORD, false);
         hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
@@ -2036,4 +2056,8 @@ static void freedv_startup_packet(void) {
     if (!scheduler_put_urgent(freedv_startup_restore_cb, NULL, 0))
         atomic_store(&freedv_startup_queued, false);
 }
+#endif
+
+#ifdef ENABLE_FREEDV_VOICE
+#include "freedv/voice_radio.inc"
 #endif

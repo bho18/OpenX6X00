@@ -4,8 +4,13 @@ file(GLOB APP_CFG_SOURCES
 )
 
 add_library(cfg STATIC ${APP_CFG_SOURCES})
-if(ENABLE_FREEDV_DIAGNOSTICS)
-    target_compile_definitions(cfg PUBLIC ENABLE_FREEDV_DIAGNOSTICS=1)
+if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
+    if(ENABLE_FREEDV_DIAGNOSTICS)
+        target_compile_definitions(cfg PUBLIC ENABLE_FREEDV_DIAGNOSTICS=1)
+    endif()
+    if(ENABLE_FREEDV_VOICE)
+        target_compile_definitions(cfg PUBLIC ENABLE_FREEDV_VOICE=1)
+    endif()
     target_link_libraries(cfg PUBLIC freedv_writer_gate)
 endif()
 

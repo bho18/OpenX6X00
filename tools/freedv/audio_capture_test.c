@@ -10,9 +10,18 @@ static const void *mock_data;
 static size_t mock_bytes, dsp_seen;
 static int peek_error, drop_error, drops, lock_depth;
 static pa_stream_state_t mock_state = PA_STREAM_READY;
+static int operation_token, flush_unref;
+static pa_stream_success_cb_t capture_flush_callback;
+pa_operation *pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *data) {
+    assert(s == capture_stm && lock_depth == 1 && !data);
+    capture_flush_callback = cb; return (pa_operation *)&operation_token;
+}
+void pa_operation_cancel(pa_operation *p) { assert(p == (pa_operation *)&operation_token && lock_depth == 1); capture_flush_callback = NULL; }
+void pa_operation_unref(pa_operation *p) { assert(p == (pa_operation *)&operation_token); ++flush_unref; }
 
 void pa_threaded_mainloop_lock(pa_threaded_mainloop *m) { assert(m == mloop); assert(!lock_depth); ++lock_depth; }
 void pa_threaded_mainloop_unlock(pa_threaded_mainloop *m) { assert(m == mloop); assert(lock_depth == 1); --lock_depth; }
+void pa_threaded_mainloop_signal(pa_threaded_mainloop *m,int wait) { assert(m == mloop && lock_depth == 1 && !wait); }
 pa_stream_state_t pa_stream_get_state(const pa_stream *s) { assert(s == capture_stm); assert(lock_depth == 1); return mock_state; }
 int pa_stream_peek(pa_stream *s, const void **data, size_t *nbytes) {
     assert(s == capture_stm);
@@ -60,12 +69,30 @@ int main(void) {
     assert(audio_freedv_capture_stats().capture_errors == 3); /* peek, odd byte count, drop */
     assert(audio_freedv_capture_read(output, 8) == 1 && output[0] == input[0]);
     audio_freedv_capture_end();
+
+    /* Server capture flush must acknowledge before the next boundary starts;
+     * this is separate from resetting the application's PCM ring. */
+    assert(audio_freedv_capture_flush_begin());
+    assert(audio_freedv_capture_flushed() == 0);
+    capture_flush_callback(capture_stm, 0, NULL);
+    assert(audio_freedv_capture_flushed() == -1);
+    assert(audio_freedv_capture_flush_begin());
+    capture_flush_callback(capture_stm, 1, NULL);
+    assert(audio_freedv_capture_flushed() == 1);
+    audio_freedv_capture_flush_close();
+    assert(flush_unref == 2 && !capture_flush_callback);
     mock_bytes = sizeof(input); drop_error = 0;
     read_callback(capture_stm, 0, NULL);
     assert(audio_freedv_capture_read(output, 8) == 0 && dsp_seen == 15 && drops == 5);
     assert(audio_freedv_capture_begin());
     audio_freedv_capture_stats_t s = audio_freedv_capture_stats();
     assert(!s.dropped_samples && !s.hole_samples && !s.capture_errors && !s.queued_samples);
+    pa_threaded_mainloop_lock(mloop);
+    mock_state = PA_STREAM_FAILED;
+    diagnostic_stereo_state(capture_stm,NULL);
+    pa_threaded_mainloop_unlock(mloop);
+    assert(audio_freedv_capture_stats().capture_errors == 1);
+    mock_state = PA_STREAM_READY;
     audio_freedv_capture_end();
 
     /* Exercise the actual callback, bounded queue and background WAV writer

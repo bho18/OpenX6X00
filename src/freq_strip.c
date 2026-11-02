@@ -32,6 +32,7 @@ int freq_strip_step_char(const char *text, int32_t step, bool *big) {
 #ifndef FREQ_STRIP_STEP_ONLY   /* tests/test_freq_strip.cpp: the digit alone */
 
 #include "freq_strip.h"
+#include "freedv/mode.h"
 
 #include "broadcast_db.h"
 #include "cfg/cfg_api.h"
@@ -120,14 +121,15 @@ static void ind_set(lv_obj_t *l, bool on) {
 }
 
 static void ind_update_cb(Subject *subj, void *user_data) {
-    ind_set(nr_label, param_i_get(cfg_nr));
-    ind_set(nb_label, param_i_get(cfg_nb));
-    ind_set(dnf_label, param_i_get(cfg_dnf));
+    const fd_qualified_profile *profile=freedv_mode_profile();
+    ind_set(nr_label, profile?profile->nr:param_i_get(cfg_nr));
+    ind_set(nb_label, profile?false:param_i_get(cfg_nb));
+    ind_set(dnf_label, profile?profile->notch:param_i_get(cfg_dnf));
     ind_set(rit_label, true);
     ind_set(xit_label, true);
-    if (param_i_get(cfg_rit)) lv_obj_clear_flag(rit_label, LV_OBJ_FLAG_HIDDEN);
+    if (!profile && param_i_get(cfg_rit)) lv_obj_clear_flag(rit_label, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(rit_label, LV_OBJ_FLAG_HIDDEN);
-    if (param_i_get(cfg_xit)) lv_obj_clear_flag(xit_label, LV_OBJ_FLAG_HIDDEN);
+    if (!profile && param_i_get(cfg_xit)) lv_obj_clear_flag(xit_label, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(xit_label, LV_OBJ_FLAG_HIDDEN);
     vision_fit();
 }
@@ -240,7 +242,7 @@ static void update_cb(Subject *subj, void *user_data) {
                               theme_hex(blocked ? TC_err : TC_text_dim), mhz2, khz2, hz2 / 10, tail);
         lv_label_set_text(vfo_badge, b ? "B" : "A");
         lv_label_set_text_fmt(band_label, "#%06x %s#", theme_hex(TC_accent), app);   /* the open app only */
-    } else if (param_i_get(cfg_band_split)) {
+    } else if (!freedv_mode_active() && param_i_get(cfg_band_split)) {
         uint16_t mhz2, khz2, hz2;
         split_freq(cparam_i_get(cfg_bg_freq), &mhz2, &khz2, &hz2);
         if (theme_shape.mono) lv_obj_set_style_text_font(freq_label, &sony_36, 0);   /* both fit, 23 cells */
@@ -452,7 +454,7 @@ lv_obj_t *freq_strip_init(lv_obj_t *parent) {
 void freq_strip_set_label(const char *text, int32_t freq_hz) {
     snprintf(note, sizeof(note), "%s", text);
     note_freq = freq_hz;
-    if (strip) update_cb(NULL, NULL);
+    if (strip) {update_cb(NULL, NULL);ind_update_cb(NULL,NULL);}
 }
 
 void freq_strip_set_app(const char *name) {

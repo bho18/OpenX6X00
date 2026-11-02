@@ -22,6 +22,7 @@ typedef enum {
     CFG_DIG_TYPE_JS8_GHOSTNET = 3,  /* JS8 on the GhostNet nets */
     CFG_DIG_TYPE_WSPR,
     CFG_DIG_TYPE_FT2,   /* 5 (upstream's 4 is WSPR here) */
+    CFG_DIG_TYPE_FREEDV = 6, /* frequency bookmarks; the qualified profile owns mode */
 } cfg_digital_type_t;
 
 // Load the next (dir > 0), closest (dir == 0) or previous (dir < 0) digital
@@ -46,6 +47,16 @@ typedef struct {
 // The presets of `type` in frequency order, at most `max`: how many were written.
 int cfg_digital_list(cfg_digital_type_t type, cfg_digital_preset_t *out, int max);
 
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+int cfg_digital_count(cfg_digital_type_t);
+bool cfg_digital_bookmark_save(int32_t old_frequency,int32_t frequency,const char *label);
+bool cfg_digital_bookmark_delete(int32_t frequency);
 #ifdef __cplusplus
 }
 #endif

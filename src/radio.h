@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "freedv/features.h"
 #include <stdbool.h>
 #include <stdint.h>
 

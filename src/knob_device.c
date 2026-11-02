@@ -10,6 +10,7 @@
  * detent, the key chosen by the knob's state (edit or select). The main knob goes to the
  * screen as EVENT_ROTARY with its speed. */
 
+#include "freedv/features.h"
 #include "knob_device.h"
 
 #include "screen_light.h"
@@ -26,7 +27,7 @@
 #include <unistd.h>
 
 /* VOL: what is still to send of the last read, and whether the last key sent was down */
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 static rotary_t *diagnostic_rotaries[4];
 static unsigned diagnostic_rotary_count;
 #endif
@@ -48,7 +49,7 @@ static void vol_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
             }
         }
         if (turned) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
             if (ctl_diagnostic_input_blocked()) knob->diagnostic_generation = ctl_remote_input_generation();
 #endif
             backlight_tick();
@@ -81,7 +82,7 @@ rotary_t *rotary_init(char *dev_name) {
 
     rotary_t *knob = calloc(1, sizeof(*knob));
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (diagnostic_rotary_count == sizeof(diagnostic_rotaries)/sizeof(diagnostic_rotaries[0])) {
         close(fd); free(knob); return NULL;
     }
@@ -108,6 +109,10 @@ static struct {
     uint8_t         head, tail;
     pthread_mutex_t lock;
     lv_indev_drv_t  drv;
+#ifdef ENABLE_FREEDV_VOICE
+    lv_indev_t *indev;
+    unsigned voice_generation;
+#endif
 } knob_main = {.fd=-1, .lock = PTHREAD_MUTEX_INITIALIZER};
 
 static void *main_knob_thread(void *arg) {
@@ -174,6 +179,9 @@ static void main_knob_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     pthread_mutex_unlock(&knob_main.lock);
 
     if (sum) {
+#ifdef ENABLE_FREEDV_VOICE
+        knob_main.voice_generation=ctl_diagnostic_input_blocked()?ctl_remote_input_generation():0;
+#endif
         rotary_data_t *ev = malloc(sizeof(*ev));
 
         backlight_tick();
@@ -198,11 +206,23 @@ void rotary_main_init(char *dev_name) {
     lv_indev_drv_init(&knob_main.drv);
     knob_main.drv.type    = LV_INDEV_TYPE_KEYPAD;
     knob_main.drv.read_cb = main_knob_read;
-    lv_indev_set_group(lv_indev_drv_register(&knob_main.drv), keyboard_group);
+    lv_indev_t *input=lv_indev_drv_register(&knob_main.drv);
+#ifdef ENABLE_FREEDV_VOICE
+    knob_main.indev=input;
+#endif
+    lv_indev_set_group(input, keyboard_group);
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
+#ifdef ENABLE_FREEDV_VOICE
+bool rotary_voice_local_event(lv_indev_t *input,unsigned generation) {
+    return input==knob_main.indev && knob_main.voice_generation==generation;
+}
+#endif
 bool rotary_diagnostic_reset(void) {
+#ifdef ENABLE_FREEDV_VOICE
+    knob_main.voice_generation=0;
+#endif
     bool ok = true;
     pending = 0; key_down = false;
     for (unsigned i = 0; i < diagnostic_rotary_count; ++i) {

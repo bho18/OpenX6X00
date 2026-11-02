@@ -47,8 +47,8 @@ bool freedv_watchdog_open(freedv_watchdog *w, freedv_watchdog_expired_fn expired
     return true;
 }
 
-bool freedv_watchdog_arm(freedv_watchdog *w, unsigned duration_ms) {
-    if (!w || !duration_ms || duration_ms > 120000) return false;
+static bool arm(freedv_watchdog *w, unsigned duration_ms, unsigned maximum) {
+    if (!w || !duration_ms || duration_ms > maximum) return false;
     struct timespec deadline;
     if (clock_gettime(CLOCK_MONOTONIC, &deadline)) return false;
     deadline.tv_sec += (time_t)(duration_ms / 1000);
@@ -65,6 +65,8 @@ bool freedv_watchdog_arm(freedv_watchdog *w, unsigned duration_ms) {
     pthread_mutex_unlock(&w->mutex);
     return ok;
 }
+bool freedv_watchdog_arm(freedv_watchdog *w, unsigned duration_ms) { return arm(w, duration_ms, 120000); }
+bool freedv_watchdog_arm_voice(freedv_watchdog *w, unsigned duration_ms) { return arm(w, duration_ms, 600000); }
 
 void freedv_watchdog_cancel(freedv_watchdog *w) {
     pthread_mutex_lock(&w->mutex);

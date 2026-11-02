@@ -6,6 +6,7 @@
  */
 
 #include "dialog_modes.h"
+#include "freedv/mode.h"
 
 #include "buttons.h"
 #include "events.h"
@@ -64,6 +65,11 @@ static const struct {
     {"SSTV", "", ACTION_APP_SSTV, -1, "image"},
     {"WeFax", "", ACTION_APP_WEFAX, -1, "image"},
     {"NavTex", "", ACTION_APP_NAVTEX, -1, "navtex"},
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    {"FreeDV test", "RADE V1 candidate", ACTION_APP_FREEDV, -1, "text"},
+#else
+    {"FreeDV", "RADE V1", ACTION_APP_FREEDV, -1, "text"},
+#endif
 };
 
 #define MODES_N ((int)(sizeof(modes) / sizeof(modes[0])))
@@ -72,6 +78,7 @@ static const struct {
 _Static_assert(BOX_Y + BOX_H <= 480 - BUTTONS_H_MAX, "Modes menu overlaps the buttons");
 _Static_assert(BOX_Y + T_BOX_H <= 480 - BUTTONS_H_MAX, "Modes grid overlaps the buttons");
 
+static int mode_count;
 static bool tiles;      /* drawn as the icon grid */
 
 static lv_obj_t *rows[MODES_N];
@@ -89,7 +96,7 @@ static dialog_t dialog = {
 dialog_t *dialog_modes = &dialog;
 
 static void show_sel(void) {
-    for (int i = 0; i < MODES_N; i++) {
+    for (int i = 0; i < mode_count; i++) {
         bool on = i == sel;
         if (tiles) {
             /* child 0 the icon, 1 the name, 2 the note */
@@ -131,7 +138,7 @@ static void key_cb(lv_event_t *e) {
             show_sel();
             break;
         case LV_KEY_RIGHT:
-            if (sel < MODES_N - 1) sel++;
+            if (sel < mode_count - 1) sel++;
             show_sel();
             break;
         case LV_KEY_UP:
@@ -139,7 +146,7 @@ static void key_cb(lv_event_t *e) {
             show_sel();
             break;
         case LV_KEY_DOWN:
-            if (tiles ? sel + T_COLS < MODES_N : sel < MODES_N - 1) sel += tiles ? T_COLS : 1;
+            if (tiles ? sel + T_COLS < mode_count : sel < mode_count - 1) sel += tiles ? T_COLS : 1;
             show_sel();
             break;
         case LV_KEY_ENTER:
@@ -179,6 +186,10 @@ static void construct_cb(lv_obj_t *parent) {
     dialog.btn_page = dialog.prev_page;
     if (dialog.btn_page) buttons_load_page(dialog.btn_page);
 
+    mode_count=MODES_N-(freedv_mode_available()?0:1);
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+    mode_count=MODES_N;
+#endif
     tiles = params.icon_menus.x;
 
     lv_obj_t *box = lv_obj_create(parent);
@@ -195,7 +206,7 @@ static void construct_cb(lv_obj_t *parent) {
     lv_label_set_text(head, "DIGITAL MODES");
     lv_obj_set_pos(head, 22, 9);
 
-    for (int i = 0; tiles && i < MODES_N; i++) {
+    for (int i = 0; tiles && i < mode_count; i++) {
         lv_obj_t *t = lv_obj_create(box);
         rows[i]     = t;
         lv_obj_remove_style_all(t);
@@ -225,7 +236,7 @@ static void construct_cb(lv_obj_t *parent) {
         lv_obj_align(note, LV_ALIGN_BOTTOM_MID, 0, -4);
     }
 
-    for (int i = 0; !tiles && i < MODES_N; i++) {
+    for (int i = 0; !tiles && i < mode_count; i++) {
         lv_obj_t *row = lv_obj_create(box);
         rows[i]       = row;
         lv_obj_remove_style_all(row);
@@ -255,7 +266,7 @@ static void construct_cb(lv_obj_t *parent) {
     lv_label_set_text(hint, "MFK: choose - press: open - Modes: close");
     lv_obj_set_pos(hint, 22, tiles ? HEAD_H + T_ROWS * T_H + (T_ROWS - 1) * T_GAP + 4 : HEAD_H + ROWS_N * ROW_H + 8);
 
-    sel = last_used < 0 ? 0 : last_used;
+    sel = last_used < 0 || last_used>=mode_count ? 0 : last_used;
     show_sel();
 
     lv_group_add_obj(keyboard_group, box);

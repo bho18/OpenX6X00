@@ -320,6 +320,14 @@ static int _13_x6200_stock_transverters() {
     return 0;
 }
 
+/* Pinned official GUI a2d5365f, ReportingConfiguration HF frequencies.
+ * Bookmarks store a compatible USB value; recall never changes the profile.
+ * Run once as a migration: deleted/edited user bookmarks stay deleted/edited. */
+static int _14_freedv_bookmarks() {
+    return add_dial_presets(CFG_DIG_TYPE_FREEDV,
+        "('FreeDV 1.8700', 1870000), ('FreeDV 3.6250', 3625000), ('FreeDV 3.6430', 3643000), ('FreeDV 3.6930', 3693000), ('FreeDV 3.6970', 3697000), ('FreeDV 3.8030', 3803000), ('FreeDV 5.4035', 5403500), ('FreeDV 5.3685', 5368500), ('FreeDV 7.1770', 7177000), ('FreeDV 7.1970', 7197000), ('FreeDV 14.2360', 14236000), ('FreeDV 14.2400', 14240000), ('FreeDV 18.1180', 18118000), ('FreeDV 21.3130', 21313000), ('FreeDV 24.9330', 24933000), ('FreeDV 28.3300', 28330000), ('FreeDV 28.7200', 28720000)", "FreeDV");
+}
+
 static int (*migrations[])() = {
     _0_init_migrations,
     _1_create_ftx_table,
@@ -335,6 +343,7 @@ static int (*migrations[])() = {
     _11_x6200_transverters_off,
     _12_line_in_restore,
     _13_x6200_stock_transverters,
+    _14_freedv_bookmarks,
 };
 
 int migrations_apply(void) {

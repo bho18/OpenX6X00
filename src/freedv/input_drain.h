@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #pragma once
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include "features.h"
+#ifdef ENABLE_FREEDV_CONTROL
 #include <stdbool.h>
 #include <unistd.h>
 #include <errno.h>

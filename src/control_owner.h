@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "freedv/features.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -23,8 +24,8 @@ extern "C" {
 #endif
 
 typedef enum { CTL_NONE = 0, CTL_LOCAL, CTL_BROWSER, CTL_TCI
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
-    , CTL_DIAGNOSTIC
+#ifdef ENABLE_FREEDV_CONTROL
+    , CTL_DIAGNOSTIC, CTL_FREEDV
 #endif
 } ctl_kind_t;
 
@@ -53,7 +54,7 @@ void ctl_injected(void);
 /* On the air, by anyone (the radio's state) */
 bool ctl_transmitting(void);
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 /* Local diagnostic code only: refuse remote owners and non-RX radio states.
  * This lease blocks competing control claims, but does not by itself stop
  * local writers, active audio workers or hardware PTT. Do not use it as a
@@ -62,12 +63,14 @@ bool ctl_diagnostic_acquire(void);
 /* Only the session can attest restoration and a fresh post-stop RX packet.
  * Also refuses release while the GUI's radio state is not RX. */
 bool ctl_diagnostic_release(bool restoration_complete_and_rx_confirmed);
+bool ctl_freedv_acquire(void);
+bool ctl_freedv_release(bool restoration_complete_and_rx_confirmed);
 #endif
 
 /* The remote key/knob writer holds this short critical section through the
  * device write or enqueue. Diagnostic input fencing waits for all admitted
  * writes, then drains their queues before local consent can be accepted. */
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool ctl_remote_input_begin(unsigned *generation);
 void ctl_remote_input_end(void);
 unsigned ctl_remote_input_generation(void);

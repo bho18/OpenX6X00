@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "freedv/features.h"
 #include "lvgl/lvgl.h"
 
 /* Keys of the USB keyboard with no character, as LVGL gets them (the X11 keysyms) */
@@ -41,6 +42,9 @@ void keyboard_init();
 /* A keyboard is plugged in and open */
 bool keyboard_ready();
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool keyboard_diagnostic_reset(void);
+#ifdef ENABLE_FREEDV_VOICE
+bool keyboard_voice_local_event(lv_indev_t *,unsigned generation);
+#endif
 #endif

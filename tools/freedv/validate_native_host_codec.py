@@ -48,7 +48,7 @@ def main():
     run('git','-C',source,'apply',ROOT/'tools/freedv/patches/rade-acq-neon.patch')
     cmake=source/'src/CMakeLists.txt'; cmake.write_text(cmake.read_text()+NEON_CMAKE)
     patch=apply_rade_acquisition_parallel(ROOT,source)
-    run('cmake','-S',source,'-B',package/'rade_c','-DRADE_ACQ_PARALLEL=ON','-DRADE_ACQ_NEON=OFF')
+    run('cmake','-S',source,'-B',package/'rade_c','-DCMAKE_BUILD_TYPE=RelWithDebInfo','-DRADE_ACQ_PARALLEL=ON','-DRADE_ACQ_NEON=OFF')
     run('cmake','--build',package/'rade_c','--target','rade','rade_rx_wav','rade_v1_text_test','-j',a.jobs)
     opus=package/'rade_c/build_opus-prefix/src/build_opus'
     run('python3',ROOT/'tools/freedv/validate_shared_speech.py','--rade-source',source/'src',

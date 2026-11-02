@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "../freedv/features.h"
 #include <complex.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -151,6 +152,21 @@ const char      *hw_base_ver_str(void);
 /* HW_CAP_* bits (radio_types.h); valid once hw_start() ran */
 uint32_t         hw_caps(void);
 
+typedef enum { HW_PTT_SOURCE_RADIO, HW_PTT_SOURCE_HAND } hw_ptt_source_t;
+typedef struct {
+    bool valid, pressed;
+    hw_ptt_source_t source;
+    uint64_t sequence, monotonic_ms;
+} hw_ptt_observation_t;
+/* Independent physical controls only. Unsupported sources return invalid,
+ * never aggregate TX or cached software commands. Polls need an actual fresh
+ * observation; they may not merely restamp a previously received value. */
+uint32_t hw_independent_ptt_sources(void);
+bool hw_ptt_observe(hw_ptt_source_t, hw_ptt_observation_t *);
+#ifdef FREEDV_HOST_TEST_PROFILE
+void hw_stub_ptt_set(hw_ptt_source_t, bool pressed);
+#endif
+
 /* A setting to the base. True when it changed (the base got it); the settings the base holds in
  * a register of their own are compared first, the packed ones are always sent */
 bool hw_set_i(hw_param_t p, int32_t v);
@@ -168,7 +184,7 @@ typedef struct {
 } hw_commanded_audio_route_t;
 bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route);
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 /* Cached commands only. Values describe the backend's register representation;
  * they are not measured hardware state. In particular, shared_route_bits may
  * contain tune, split and power-off bits: it must never be written back whole. */
@@ -231,6 +247,7 @@ static inline void hw_freedv_restore_owned(const hw_freedv_cached_snapshot_t *s)
 /* The two VFOs. True when the value changed */
 bool hw_vfo_set_freq(radio_vfo_t vfo, int32_t hz);
 bool hw_vfo_set_mode(radio_vfo_t vfo, radio_mode_t mode);
+bool hw_vfo_mode_matches(radio_vfo_t vfo, radio_mode_t mode); /* cached command readback */
 void hw_vfo_set_agc(radio_vfo_t vfo, radio_agc_t agc);
 void hw_vfo_set_att(radio_vfo_t vfo, bool on);
 void hw_vfo_set_pre(radio_vfo_t vfo, bool on);

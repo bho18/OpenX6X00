@@ -10,6 +10,8 @@
  */
 
 #define _GNU_SOURCE
+#include "../../freedv/writer_gate.h"
+#include "../../freedv/features.h"
 #include "../hw.h"
 
 #include <math.h>
@@ -52,6 +54,7 @@ bool hw_control_init(void) {
 }
 
 void hw_bb_reset(void) {
+    FD_HARDWARE_GUARD(return, false);
 }
 
 void hw_start(void) {
@@ -97,7 +100,7 @@ bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route) {
     return true;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *s) {
     if (!s) return false;
     /* No X6200 register layout is simulated here; ordinary values are enough
@@ -122,6 +125,7 @@ bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *s) {
 #endif
 
 bool hw_set_i(hw_param_t p, int32_t v) {
+    FD_HARDWARE_GUARD(return false, (p == HW_PTT || p == HW_MODEM || p == HW_ATU_TUNE || p == HW_SWRSCAN || p == HW_HMIC || p == HW_IMIC || p == HW_VOX) && !v);
     if (p >= HW_PARAM_COUNT) {
         fprintf(stderr, "hw_stub: hw_set_i(%d) is not a setting\n", p);
         return false;
@@ -134,6 +138,7 @@ bool hw_set_i(hw_param_t p, int32_t v) {
 }
 
 bool hw_set_f(hw_param_t p, float v) {
+    FD_HARDWARE_GUARD(return false, p == HW_TXPWR_F && v <= 0);
     if (p >= HW_PARAM_COUNT) {
         fprintf(stderr, "hw_stub: hw_set_f(%d) is not a setting\n", p);
         return false;
@@ -143,6 +148,7 @@ bool hw_set_f(hw_param_t p, float v) {
 }
 
 bool hw_vfo_set_freq(radio_vfo_t v, int32_t hz) {
+    FD_HARDWARE_GUARD(return false, false);
     if (vfo[v].freq == hz) {
         return false;
     }
@@ -151,6 +157,7 @@ bool hw_vfo_set_freq(radio_vfo_t v, int32_t hz) {
 }
 
 bool hw_vfo_set_mode(radio_vfo_t v, radio_mode_t mode) {
+    FD_HARDWARE_GUARD(return false, false);
     if (vfo[v].mode == mode) {
         return false;
     }
@@ -159,18 +166,22 @@ bool hw_vfo_set_mode(radio_vfo_t v, radio_mode_t mode) {
 }
 
 void hw_vfo_set_agc(radio_vfo_t v, radio_agc_t agc) {
+    FD_HARDWARE_GUARD(return, false);
     vfo[v].agc = agc;
 }
 
 void hw_vfo_set_att(radio_vfo_t v, bool on) {
+    FD_HARDWARE_GUARD(return, false);
     vfo[v].att = on;
 }
 
 void hw_vfo_set_pre(radio_vfo_t v, bool on) {
+    FD_HARDWARE_GUARD(return, false);
     vfo[v].pre = on;
 }
 
 void hw_poweroff(void) {
+    FD_HARDWARE_GUARD(return, false);
 }
 
 bool hw_resend_all(void) {
@@ -182,6 +193,7 @@ bool hw_tx_keyed_by_gui(void) {
 }
 
 void hw_pin_set(hw_pin_t pin, bool on) {
+    FD_HARDWARE_GUARD(return, pin != HW_PIN_BB_RESET && (pin != HW_PIN_MORSE_KEY || !on));
     if (pin <= HW_PIN_BB_RESET) {
         pins[pin] = on;
     }
@@ -261,3 +273,28 @@ bool hw_flow_read(hw_pack_t *p) {
 void hw_flow_restart(void) {
     next_pack_ns = 0;
 }
+
+#ifdef FREEDV_HOST_TEST_PROFILE
+#include <stdatomic.h>
+static atomic_bool test_ptt[2];
+static atomic_uint_fast64_t test_ptt_sequence;
+void hw_stub_ptt_set(hw_ptt_source_t source, bool pressed) {
+    if (source <= HW_PTT_SOURCE_HAND) atomic_store(&test_ptt[source], pressed);
+}
+uint32_t hw_independent_ptt_sources(void) { return 3; }
+bool hw_ptt_observe(hw_ptt_source_t source, hw_ptt_observation_t *out) {
+    if (!out || source > HW_PTT_SOURCE_HAND) return false;
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+    *out=(hw_ptt_observation_t){true,atomic_load(&test_ptt[source]),source,
+        atomic_fetch_add(&test_ptt_sequence,1)+1,(uint64_t)t.tv_sec*1000+t.tv_nsec/1000000};
+    return true;
+}
+#else
+uint32_t hw_independent_ptt_sources(void) { return 0; }
+bool hw_ptt_observe(hw_ptt_source_t source, hw_ptt_observation_t *out) {
+    if (out) *out=(hw_ptt_observation_t){.source=source};
+    return false;
+}
+#endif
+
+bool hw_vfo_mode_matches(radio_vfo_t selected,radio_mode_t mode) { return selected<=RADIO_VFO_B && vfo[selected].mode==mode; }

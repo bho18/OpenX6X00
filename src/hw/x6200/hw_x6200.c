@@ -11,6 +11,8 @@
  */
 
 #define _GNU_SOURCE
+#include "../../freedv/writer_gate.h"
+#include "../../freedv/features.h"
 #include "../hw.h"
 #include "../../base_guard.h"
 
@@ -140,6 +142,7 @@ bool hw_control_init(void) {
 }
 
 void hw_bb_reset(void) {
+    FD_HARDWARE_GUARD(return, false);
     x6200_gpio_set(x6200_pin_bb_reset, 1);
     usleep(100000);
     x6200_gpio_set(x6200_pin_bb_reset, 0);
@@ -219,7 +222,7 @@ bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route) {
     return true;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *s) {
     if (!s) return false;
     uint32_t mic = x6200_control_get(x6200_micsel_pttmode_chge_spmode_auxiqgen_sqlthr);
@@ -258,6 +261,7 @@ static void dnf_apply(void) {
 }
 
 bool hw_set_i(hw_param_t p, int32_t v) {
+    FD_HARDWARE_GUARD(return false, (p == HW_PTT || p == HW_MODEM || p == HW_ATU_TUNE || p == HW_SWRSCAN || p == HW_HMIC || p == HW_IMIC || p == HW_VOX) && !v);
     int reg = reg_of(p);
 
     if (reg >= 0) {
@@ -359,6 +363,7 @@ bool hw_set_i(hw_param_t p, int32_t v) {
 }
 
 bool hw_set_f(hw_param_t p, float v) {
+    FD_HARDWARE_GUARD(return false, p == HW_TXPWR_F && v <= 0);
     switch (p) {
         case HW_TXPWR_F:            x6200_control_txpwr_set(v); break;
         case HW_KEY_RATIO_F:        x6200_control_key_ratio_set(v); break;
@@ -377,6 +382,7 @@ bool hw_set_f(hw_param_t p, float v) {
 }
 
 bool hw_vfo_set_freq(radio_vfo_t vfo, int32_t hz) {
+    FD_HARDWARE_GUARD(return false, false);
     if (x6200_control_get(vfo == RADIO_VFO_A ? x6200_vfoa_freq : x6200_vfob_freq) == (uint32_t)hz) {
         return false;
     }
@@ -385,6 +391,7 @@ bool hw_vfo_set_freq(radio_vfo_t vfo, int32_t hz) {
 }
 
 bool hw_vfo_set_mode(radio_vfo_t vfo, radio_mode_t mode) {
+    FD_HARDWARE_GUARD(return false, false);
     x6200_mode_t m = lib_mode(mode);
 
     if (x6200_control_get(vfo == RADIO_VFO_A ? x6200_vfoa_mode : x6200_vfob_mode) == (uint32_t)m) {
@@ -395,18 +402,22 @@ bool hw_vfo_set_mode(radio_vfo_t vfo, radio_mode_t mode) {
 }
 
 void hw_vfo_set_agc(radio_vfo_t vfo, radio_agc_t agc) {
+    FD_HARDWARE_GUARD(return, false);
     x6200_control_vfo_agc_set((x6200_vfo_t)vfo, (x6200_agc_t)agc);
 }
 
 void hw_vfo_set_att(radio_vfo_t vfo, bool on) {
+    FD_HARDWARE_GUARD(return, false);
     x6200_control_vfo_att_set((x6200_vfo_t)vfo, on ? x6200_att_on : x6200_att_off);
 }
 
 void hw_vfo_set_pre(radio_vfo_t vfo, bool on) {
+    FD_HARDWARE_GUARD(return, false);
     x6200_control_vfo_pre_set((x6200_vfo_t)vfo, on ? x6200_pre_on : x6200_pre_off);
 }
 
 void hw_poweroff(void) {
+    FD_HARDWARE_GUARD(return, false);
     x6200_control_poweroff();
 }
 
@@ -422,6 +433,7 @@ bool hw_tx_keyed_by_gui(void) {
 }
 
 void hw_pin_set(hw_pin_t pin, bool on) {
+    FD_HARDWARE_GUARD(return, pin != HW_PIN_BB_RESET && (pin != HW_PIN_MORSE_KEY || !on));
     switch (pin) {
         case HW_PIN_WIFI:       x6200_gpio_set(x6200_pin_wifi, on ? 1 : 0); break;
         case HW_PIN_LIGHT:      x6200_gpio_set(x6200_pin_light, on ? 1 : 0); break;
@@ -470,3 +482,14 @@ bool hw_flow_read(hw_pack_t *p) {
 void hw_flow_restart(void) {
     x6200_flow_restart();
 }
+
+/* The pinned control API exposes aggregate TX, not an independent hand-mic
+ * held/release observation while software MODEM is active. Keep this source
+ * unsupported until documented hardware behavior supplies that observation. */
+uint32_t hw_independent_ptt_sources(void) { return 0; }
+bool hw_ptt_observe(hw_ptt_source_t source, hw_ptt_observation_t *out) {
+    if (out) *out = (hw_ptt_observation_t){.source=source};
+    return false;
+}
+
+bool hw_vfo_mode_matches(radio_vfo_t vfo,radio_mode_t mode) { return x6200_control_get(vfo == RADIO_VFO_A ? x6200_vfoa_mode : x6200_vfob_mode) == (uint32_t)lib_mode(mode); }

@@ -42,6 +42,18 @@ void pa_stream_set_underflow_callback(pa_stream *s, pa_stream_notify_cb_t cb, vo
     assert((cb == diagnostic_playback_underflow && userdata) || (!cb && !userdata));
 }
 static pa_stream_success_cb_t flush_callback;
+static pa_stream_success_cb_t drain_callback;
+static void *drain_userdata;
+static int drain_ok = 1;
+pa_operation *pa_stream_drain(pa_stream *s, pa_stream_success_cb_t cb, void *userdata) {
+    assert(s == (pa_stream *)&token_stream && locks == 1 && cb && userdata);
+    drain_callback = cb; drain_userdata = userdata;
+    return drain_ok ? (pa_operation *)&token_operation : NULL;
+}
+pa_operation *pa_stream_cork(pa_stream *s, int cork, pa_stream_success_cb_t cb, void *userdata) {
+    assert(s == (pa_stream *)&token_stream && locks == 1 && !cb && !userdata);
+    (void)cork; return (pa_operation *)&token_operation;
+}
 static void *flush_userdata;
 static pa_buffer_attr actual_attr = {.maxlength=17640, .tlength=8820, .prebuf=5292, .minreq=882};
 const pa_buffer_attr *pa_stream_get_buffer_attr(pa_stream *s) { (void)s; assert(locks == 1); return &actual_attr; }
@@ -72,6 +84,7 @@ int main(void) {
     assert(!audio_play_lowlat_begin());
     fd_writer_release();
     assert(p && !bt_stm); /* independent of the worker's network/Bluetooth TLS */
+    assert(!audio_freedv_playback_observe(p).stream_failed);
     diagnostic_playback_underflow(p->stream, p); /* stream may underflow during unkeyed preparation */
     assert(audio_freedv_playback_observe(p).underflows_before_first_write == 1);
     assert(!audio_freedv_playback_observe(p).first_write_monotonic_ns);
@@ -93,6 +106,7 @@ int main(void) {
     writable = 2; write_error = 1;
     assert(audio_freedv_playback_submit(p, pcm, 1) == -1);
     test_state = PA_STREAM_FAILED;
+    assert(audio_freedv_playback_observe(p).stream_failed);
     assert(audio_freedv_playback_submit(p, pcm, 1) == -1);
     assert(audio_freedv_playback_observe(p).write_errors == 5);
     assert(audio_freedv_playback_observe(p).queued_latency_us == 42000);
@@ -139,6 +153,48 @@ int main(void) {
     audio_freedv_playback_end();
     audio_freedv_playback_end();
     assert(disconnects == 2);
+    p = audio_freedv_playback_open();
+    assert(p);
+    unsigned before = disconnects;
+    for (uint64_t generation = 1; generation <= 100; ++generation) {
+        assert(audio_freedv_playback_cork(p, true));
+        assert(audio_freedv_playback_cancel(p));
+        assert(!audio_freedv_playback_rearm(p, generation)); /* callback pending */
+        pa_threaded_mainloop_lock(mloop);
+        flush_callback(p->stream, 1, flush_userdata);
+        pa_threaded_mainloop_unlock(mloop);
+        assert(audio_freedv_playback_rearm(p, generation));
+        audio_freedv_playback_stats_t per_turn=audio_freedv_playback_observe(p);
+        assert(per_turn.generation==generation && !per_turn.generation_accepted_samples && !per_turn.generation_underflows);
+        assert(!audio_freedv_playback_rearm(p, generation));
+        assert(audio_freedv_playback_cork(p, false));
+        writable = 2; write_error = 0;
+        assert(audio_freedv_playback_submit_generation(p, generation-1, pcm, 1) == -1);
+        assert(audio_freedv_playback_submit_generation(p, generation, pcm, 1) == 1);
+        per_turn=audio_freedv_playback_observe(p);assert(per_turn.generation_accepted_samples==1 && per_turn.generation_first_write_ns);
+        assert(audio_freedv_playback_drain(p, generation));
+        assert(audio_freedv_playback_drained(p, generation) == 0);
+        pa_threaded_mainloop_lock(mloop);
+        drain_callback(p->stream, 1, drain_userdata);
+        pa_threaded_mainloop_unlock(mloop);
+        assert(audio_freedv_playback_drained(p, generation) == 1);
+        assert(audio_freedv_playback_submit_generation(p, generation, pcm, 1) == -1);
+        assert(disconnects == before); /* rearm retains the actual PA handle */
+    }
+    audio_freedv_playback_close(p);
+    assert(disconnects == before+1);
+    p = audio_freedv_playback_open();
+    assert(p && audio_freedv_playback_drain(p, 0));
+    pa_threaded_mainloop_lock(mloop);
+    drain_callback(p->stream, 0, drain_userdata);
+    pa_threaded_mainloop_unlock(mloop);
+    assert(audio_freedv_playback_drained(p, 0) == -1);
+    audio_freedv_playback_request_cancel(p);
+    pa_threaded_mainloop_lock(mloop);
+    drain_callback(p->stream, 1, drain_userdata); /* completion after cancel cannot pass */
+    pa_threaded_mainloop_unlock(mloop);
+    assert(audio_freedv_playback_drained(p, 0) == -1);
+    audio_freedv_playback_close(p);
     puts("PASS: cross-thread cancellation, acknowledged flush, partial writes and finite buffer attributes");
     return 0;
 }

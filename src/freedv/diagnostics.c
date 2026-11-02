@@ -2,6 +2,9 @@
 #define _POSIX_C_SOURCE 200809L
 #include "diagnostics.h"
 #include "native_audio.h"
+#ifdef ENABLE_FREEDV_VOICE
+#include "voice_audio.h"
+#endif
 #include "radio_session.h"
 #include "../../tools/freedv/session_controller.h"
 #include "../app_window.h"
@@ -47,7 +50,9 @@
 #define CASE_CONFIRM_STOP 18
 #define CASE_INTERRUPTED_FIXTURE 19
 #define CASE_MODEM_TX 20
-static const char *case_names[] = {"Capture 10s", "Route R0 M0 P0", "Route R0 M0 P1", "Route R0 M1 P0", "Route R0 M1 P1", "Route R1 M0 P0", "Route R1 M0 P1", "Route R1 M1 P0", "Route R1 M1 P1", "RADE fixture to speaker 120s", "Hand/built-in mic RADE TX 8s", "Live receive RADE 120s", "Local tone during receive 20s", "Manual Stop test", "Watchdog timeout test", "Audio failure test", "Confirm unkeyed RX route", "Confirm independent mic/TX route", "Confirm Stop/timeout/failure observations", "Interrupted RADE fixture 20s", "Known RADE waveform TX 8s"};
+#define CASE_PERSISTENT_TX 21
+#define CASE_PERSISTENT_RX 22
+static const char *case_names[] = {"Capture 10s", "Route R0 M0 P0", "Route R0 M0 P1", "Route R0 M1 P0", "Route R0 M1 P1", "Route R1 M0 P0", "Route R1 M0 P1", "Route R1 M1 P0", "Route R1 M1 P1", "RADE fixture to speaker 120s", "Hand/built-in mic RADE TX 8s", "Live receive RADE 120s", "Local tone during receive 20s", "Manual Stop test", "Watchdog timeout test", "Audio failure test", "Confirm unkeyed RX route", "Confirm independent mic/TX route", "Confirm Stop/timeout/failure observations", "Interrupted RADE fixture 20s", "Known RADE waveform TX 8s", "Persistent hand-mic TX 8s + finish", "Persistent live receive 120s"};
 typedef enum { CMD_ACQUIRE, CMD_ARM, CMD_RUN, CMD_EXPORT } command_kind;
 typedef struct { command_kind command; unsigned selected, route, mic, channel, mixer; } command;
 typedef struct {
@@ -63,6 +68,9 @@ static struct {
     fd_controller controller;
     fd_radio_session radio;
     fd_native_audio *audio;
+    fd_voice_audio *persistent;
+    unsigned persistent_channel,persistent_mixer;
+    bool persistent_main_quiet;
     bool audio_joined, audio_restored;
     atomic_bool case_running, stop, close, input_release_pending, controller_failed, evidence_failed;
     atomic_uint clears, clear_ms, abort_ms;
@@ -226,8 +234,22 @@ static bool clear_case(void *arg,uint64_t *sequence) {
     return ok;
 }
 static bool audio_quiet(void *arg) {(void)arg;return !d.audio||(d.audio_joined&&d.audio_restored&&fd_native_audio_quiescent(d.audio));}
+#ifdef ENABLE_FREEDV_VOICE
+static bool persistent_close(void) {
+    fd_observation observation={0};
+    if(!radio_freedv_session_observe(&observation) || !observation.known || !observation.fresh || observation.tx)return false;
+    if(d.persistent){fd_voice_audio_close(d.persistent);d.persistent=NULL;}
+    if(d.persistent_main_quiet){
+        if(!audio_freedv_main_quiet(false))return false;
+        d.persistent_main_quiet=false;
+    }
+    return true;
+}
+#else
+static bool persistent_close(void) {return true;}
+#endif
 static bool restore_radio(void *arg,uint64_t sequence) {(void)arg;return radio_freedv_session_restore(&d.radio,sequence);}
-static bool case_is_tx(unsigned selected) {return (selected>=CASE_ROUTE_FIRST&&selected<=CASE_ROUTE_LAST)||selected==CASE_MIC_TX||selected==CASE_MODEM_TX||(selected>=CASE_STOP&&selected<=CASE_FAILURE);}
+static bool case_is_tx(unsigned selected) {return (selected>=CASE_ROUTE_FIRST&&selected<=CASE_ROUTE_LAST)||selected==CASE_MIC_TX||selected==CASE_MODEM_TX||selected==CASE_PERSISTENT_TX||(selected>=CASE_STOP&&selected<=CASE_FAILURE);}
 static const char *state_name(fd_state s) {switch(s){case FD_IDLE:return "Idle";case FD_READY:return "Ready";case FD_ARMED:return "Armed";case FD_RUNNING:return "Running";case FD_WAIT_RX:return "Waiting for RX / restoration";case FD_RESTORE:return "Restoring";case FD_PREPARING:return "Preparing while unkeyed";}return "Unknown";}
 static void export_summary(void) {
     if(!d.directory[0])return;
@@ -289,7 +311,19 @@ static void audio_json(FILE *f,const fd_native_stats *a) {
     number(f,"feature_max_depth",c->feature_max_depth);number(f,"failures",c->failures);number(f,"padded_native_samples",c->padded_native_samples);number(f,"tx_finished",c->tx_finished);
     number(f,"output_wait_events",c->output_wait_events);number(f,"output_wait_ns",c->output_wait_ns);
     number(f,"tx_prepared_blocks",c->tx_prepared_blocks);
-    fputs("}}",f);
+    fputs("},\"persistent_engine\":",f);fputs(a->persistent_engine?"true":"false",f);
+    if(a->persistent_engine){
+        const fd_voice_stats *p=&a->persistent;fputs(",\"persistent\":{\"implementation\":\"production_voice_audio\"",f);
+#define PERSIST(field) number(f,#field,p->field)
+        PERSIST(generation);PERSIST(turns);PERSIST(input_samples);PERSIST(output_samples);PERSIST(delivered_samples);
+        PERSIST(speech_frames);PERSIST(modem_blocks);PERSIST(eoo_count);PERSIST(padded_samples);PERSIST(finished);
+        PERSIST(rade_creations);PERSIST(encoder_creations);PERSIST(decoder_creations);PERSIST(resampler_creations);PERSIST(worker_creations);
+        PERSIST(input_high_water);PERSIST(output_high_water);PERSIST(synchronized_blocks);PERSIST(synthesis_blocks);PERSIST(acquisitions);
+        PERSIST(processing_ns);PERSIST(synthesis_ns);PERSIST(queue_wait_ns);PERSIST(scheduling_delay_ns);PERSIST(failures);
+#undef PERSIST
+        fputc('}',f);
+    }
+    fputc('}',f);
 }
 static void save_case(void) {
     char path[384];snprintf(path,sizeof(path),"%s/coordinator.json",d.case_directory);FILE *f=private_file(path);if(!f){atomic_store(&d.evidence_failed,true);return;}
@@ -311,23 +345,31 @@ static void save_case(void) {
 static bool select_case(command cmd) {
     if(cmd.selected==CASE_CAPTURE)return fd_controller_select_passive_rx(&d.controller);
     if(cmd.selected>=CASE_ROUTE_FIRST&&cmd.selected<=CASE_ROUTE_LAST)return fd_controller_select_matrix(&d.controller,(fd_matrix_case)(cmd.selected-CASE_ROUTE_FIRST));
-    if(cmd.selected==CASE_MIC_TX||cmd.selected==CASE_MODEM_TX)return fd_controller_select_mic_tx(&d.controller,(fd_matrix_case)cmd.route);
+    if(cmd.selected==CASE_MIC_TX||cmd.selected==CASE_MODEM_TX||cmd.selected==CASE_PERSISTENT_TX)return fd_controller_select_mic_tx(&d.controller,(fd_matrix_case)cmd.route);
     if(cmd.selected>=CASE_STOP&&cmd.selected<=CASE_FAILURE)return fd_controller_select_matrix(&d.controller,(fd_matrix_case)cmd.route);
     return fd_controller_select_rx_playback(&d.controller,(fd_matrix_case)cmd.route);
 }
 static bool prepare_case(command cmd) {
+    bool persistent=cmd.selected==CASE_PERSISTENT_TX || cmd.selected==CASE_PERSISTENT_RX;
+#ifndef ENABLE_FREEDV_VOICE
+    if(persistent){message("This image has no persistent voice test adapter");return false;}
+#endif
+    if(cmd.selected==CASE_PERSISTENT_TX && cmd.mic!=radio_mic_handle){message("Persistent TX tests use the hand microphone");return false;}
+    if(persistent && d.persistent && (cmd.channel!=d.persistent_channel || cmd.mixer!=d.persistent_mixer)){
+        message("Close/reacquire before changing persistent capture channel or mixer");return false;
+    }
     if(atomic_load(&d.evidence_failed)){message("Result storage failed; export this incomplete session and restart diagnostics");return false;}
-    unsigned excerpt_ms=cmd.selected==CASE_RX_TONE||cmd.selected==CASE_INTERRUPTED_FIXTURE?20000:
-        cmd.selected==CASE_CAPTURE?10000:cmd.selected==CASE_FIXTURE||cmd.selected==CASE_LIVE_RX?4000:8000;
+    unsigned excerpt_ms=cmd.selected==CASE_PERSISTENT_TX?9500:cmd.selected==CASE_RX_TONE||cmd.selected==CASE_INTERRUPTED_FIXTURE?20000:
+        cmd.selected==CASE_CAPTURE?10000:cmd.selected==CASE_FIXTURE||cmd.selected==CASE_LIVE_RX||cmd.selected==CASE_PERSISTENT_RX?4000:8000;
     /* Reserve full bounded excerpts plus metadata before preparation. Audio
      * callbacks never write files; no evidence is deleted to recover space. */
     unsigned channels=1+(cmd.channel?2:0)+(cmd.selected!=CASE_CAPTURE);
     uint64_t reserve=(uint64_t)excerpt_ms*44100u*2u*channels/1000u+1024u*1024u;
     if(!storage_ok(reserve)){message("Storage reserve/capture budget reached. Export and close this session.");return false;}
-    if(cmd.selected==CASE_MIC_TX&&(!(d.tx_qualified[cmd.mic][cmd.channel][cmd.mixer]&(1u<<cmd.route))||!d.stop_confirmed[cmd.mic][cmd.channel][cmd.mixer][cmd.route])){message("First confirm independent mic/TX routing and all three Stop checks");return false;}
+    if((cmd.selected==CASE_MIC_TX||cmd.selected==CASE_PERSISTENT_TX)&&(!(d.tx_qualified[cmd.mic][cmd.channel][cmd.mixer]&(1u<<cmd.route))||!d.stop_confirmed[cmd.mic][cmd.channel][cmd.mixer][cmd.route])){message("First confirm independent mic/TX routing and all three Stop checks");return false;}
     if(cmd.selected==CASE_MODEM_TX&&!d.stop_confirmed[cmd.mic][cmd.channel][cmd.mixer][cmd.route]){message("First complete and confirm all three functional Stop checks");return false;}
     if((cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE||cmd.selected==CASE_MIC_TX||cmd.selected==CASE_LIVE_RX||cmd.selected==CASE_MODEM_TX)&&!fd_native_audio_codec_available()){message("This build has no native codec; diagnostic image build must enable it");return false;}
-    if((cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE||cmd.selected==CASE_LIVE_RX||cmd.selected==CASE_RX_TONE)&&!(d.rx_qualified[cmd.mic][cmd.channel][cmd.mixer]&(1u<<cmd.route))){message("Confirm an unkeyed route for this exact microphone/channel/mixer first");return false;}
+    if((cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE||cmd.selected==CASE_LIVE_RX||cmd.selected==CASE_RX_TONE||cmd.selected==CASE_PERSISTENT_RX)&&!(d.rx_qualified[cmd.mic][cmd.channel][cmd.mixer]&(1u<<cmd.route))){message("Confirm an unkeyed route for this exact microphone/channel/mixer first");return false;}
     if(!select_case(cmd)){message("Case selection refused; restore the previous case or confirm its unkeyed RX route");return false;}
     if(!fd_controller_begin_prepare(&d.controller)){message("Preparation refused: need fresh RX and an exclusive ready session");return false;}
     d.current_case=cmd.selected;d.current_route=cmd.selected>=CASE_ROUTE_FIRST&&cmd.selected<=CASE_ROUTE_LAST?cmd.selected-CASE_ROUTE_FIRST:cmd.route;d.current_mic=cmd.mic;d.current_channel=cmd.channel;d.current_mixer=cmd.mixer;
@@ -339,7 +381,14 @@ static bool prepare_case(command cmd) {
     fd_native_kind kind=cmd.selected==CASE_CAPTURE?FD_NATIVE_CAPTURE:(cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?FD_NATIVE_RADE_FIXTURE:cmd.selected==CASE_MIC_TX?FD_NATIVE_RADE_MIC_TX:cmd.selected==CASE_MODEM_TX?FD_NATIVE_MODEM_TX:cmd.selected==CASE_LIVE_RX?FD_NATIVE_RADE_LIVE_RX:FD_NATIVE_TONE;
     static const char *mixers[]={NULL,"Stereo","Reverse Stereo","Sum Mono","Mix Mono"};
     fd_native_config config={.kind=kind,.fixture_path=FREEDV_DATA_DIR "/fixtures/rade-continuous.raw",.output_directory=d.case_directory,.generation=d.generation,.duration_ms=cmd.selected==CASE_FIXTURE||cmd.selected==CASE_LIVE_RX?120000:(cmd.selected==CASE_RX_TONE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?20000:cmd.selected==CASE_CAPTURE?10000:8000,.capture_channel=cmd.channel,.mixer_item=mixers[cmd.mixer],.capture_input=true,.inject_failure_ms=cmd.selected==CASE_FAILURE?1500:0,.interrupt_fixture=cmd.selected==CASE_INTERRUPTED_FIXTURE};
-    config.excerpt_ms=excerpt_ms>config.duration_ms?config.duration_ms:excerpt_ms;
+    if(persistent){
+        config.kind=cmd.selected==CASE_PERSISTENT_TX?FD_NATIVE_PERSISTENT_TX:FD_NATIVE_PERSISTENT_RX;
+        config.duration_ms=cmd.selected==CASE_PERSISTENT_TX?8000:120000;config.persistent_slot=&d.persistent;
+        d.persistent_channel=cmd.channel;d.persistent_mixer=cmd.mixer;
+        d.persistent_main_quiet=true;
+        if(!audio_freedv_main_quiet(true)){d.preparation_failed=true;message("Ordinary playback did not quiesce");fd_controller_stop(&d.controller);return false;}
+    }
+    config.excerpt_ms=cmd.selected==CASE_PERSISTENT_TX?excerpt_ms:excerpt_ms>config.duration_ms?config.duration_ms:excerpt_ms;
     char error[180]={0};d.audio=fd_native_audio_prepare(&config,error,sizeof(error));
     event("case_preparation");
     if(!d.audio||!fd_native_audio_observe(d.audio).prepared){d.preparation_failed=true;message(error[0]?error:"Audio preparation failed; stopping and restoring");fd_controller_stop(&d.controller);return false;}
@@ -376,7 +425,7 @@ static void command_execute(command cmd) {
     if(tx){
         if(state.state!=FD_ARMED||cmd.selected!=d.current_case||(cmd.selected>=CASE_ROUTE_FIRST&&cmd.selected<=CASE_ROUTE_LAST?cmd.selected-CASE_ROUTE_FIRST:cmd.route)!=d.current_route||cmd.mic!=d.current_mic||cmd.channel!=d.current_channel||cmd.mixer!=d.current_mixer){message("Select Arm for this exact case/route/microphone/channel/mixer, then Run");return;}
     }else if(!prepare_case(cmd))return;
-    d.started_ms=milliseconds();unsigned timeout=cmd.selected==CASE_TIMEOUT?3000:tx?8000:cmd.selected==CASE_CAPTURE?10000:(cmd.selected==CASE_RX_TONE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?20000:120000;
+    d.started_ms=milliseconds();unsigned timeout=cmd.selected==CASE_TIMEOUT?3000:cmd.selected==CASE_PERSISTENT_TX?10000:tx?8000:cmd.selected==CASE_CAPTURE?10000:(cmd.selected==CASE_RX_TONE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?20000:120000;
     if(fd_controller_run(&d.controller,d.started_ms,timeout)){message("Running. Stop is always available.");event("case_run");}
     else {message("Run refused by RX/frequency/protection guards; restoring prepared resources");fd_controller_stop(&d.controller);}
 }
@@ -410,7 +459,7 @@ static void *coordinator(void *unused) {
         if(status.state==FD_WAIT_RX)restore_case_iteration(&status);
         fd_controller_status(&d.controller,&status);
         if(atomic_load(&d.close)){
-            if(status.state==FD_READY){if(fd_controller_release(&d.controller)){atomic_store(&d.input_release_pending,true);event("radio_session_released");export_summary();atomic_store(&d.close,false);message("Radio restored and released. Results remain in the /tmp folder.");}}
+            if(status.state==FD_READY){if(persistent_close() && fd_controller_release(&d.controller)){atomic_store(&d.input_release_pending,true);event("radio_session_released");export_summary();atomic_store(&d.close,false);message("Radio restored and released. Results remain in the /tmp folder.");}}
             else if(status.state==FD_IDLE){atomic_store(&d.input_release_pending,true);atomic_store(&d.close,false);}
             else if(status.state!=FD_WAIT_RX&&status.state!=FD_RESTORE)fd_controller_stop_with_reason(&d.controller,FD_STOP_CLOSE);
         }
@@ -459,18 +508,19 @@ static void refresh(lv_timer_t *timer) {
         fd_native_stats *a=&progress.audio;fd_stream_stats *c=&a->codec;
         const char *restoration=!progress.radio_owned?"released":progress.radio_restored&&progress.radio_readback_match&&a->mixer_restored?"verified":"pending";
         char capture_level[80];
-        if(a->input_level_samples)snprintf(capture_level,sizeof(capture_level),"Capture AC %.1f / peak %u",a->input_ac_rms,a->input_peak);
+        if(a->persistent_engine)snprintf(capture_level,sizeof(capture_level),"Retained engine: %llu turns | mic peak %u",(unsigned long long)a->persistent.turns,a->input_peak);
+        else if(a->input_level_samples)snprintf(capture_level,sizeof(capture_level),"Capture AC %.1f / peak %u",a->input_ac_rms,a->input_peak);
         else snprintf(capture_level,sizeof(capture_level),"Capture AC not sampled");
         uint64_t now=milliseconds(),age=now>=progress.sampled_ms?now-progress.sampled_ms:0;
         snprintf(counters,sizeof(counters),"Input %llu / play %llu | audio faults %u\nCodec %llu blocks / sync %llu | uf(all) %llu\n%s\nQ in/out/f %u/%u/%u cap %u | D/H %u/%u\nRestore %s | bus errors %u | c%u cache %llu ms",
             (unsigned long long)a->input_samples,(unsigned long long)a->output_samples,a->failures,
-            (unsigned long long)c->blocks,(unsigned long long)c->synchronized_blocks,(unsigned long long)a->playback.underflows,
+            (unsigned long long)(a->persistent_engine?a->persistent.modem_blocks:c->blocks),(unsigned long long)(a->persistent_engine?a->persistent.synchronized_blocks:c->synchronized_blocks),(unsigned long long)a->playback.underflows,
             capture_level,
-            c->input_depth,c->output_depth,c->feature_depth,a->capture.queued_samples,a->capture.dropped_samples,a->capture.hole_samples,
+            a->persistent_engine?a->persistent.input_depth:c->input_depth,a->persistent_engine?a->persistent.output_depth:c->output_depth,c->feature_depth,a->capture.queued_samples,a->capture.dropped_samples,a->capture.hole_samples,
             restoration,progress.transport_failures,progress.case_number,(unsigned long long)age);
     } else snprintf(counters,sizeof(counters),"Audio counters: preparing / not sampled");
     snprintf(text,sizeof(text),"%s\n%s\n%s\n%s",radio_freedv_startup_waiting()?"Release PTT: startup waiting for fresh RX":ready?state_name(state.state):"Starting diagnostics",info,route_text,counters);
-    lv_label_set_text(ui.status,text);lv_label_set_text(ui.note,directory[0]?directory:"Use a dummy load and the receive-only SDR. Choose USB before acquiring.");
+    lv_label_set_text(ui.status,text);lv_label_set_text(ui.note,directory[0]?directory:"Use a dummy load and receive SDR. Select USB or USB-DIG before acquiring.");
 }
 /* This GUI timer remains alive after a forced panel deletion. Remote injection
  * is unblocked only after radio ownership has actually been released. */

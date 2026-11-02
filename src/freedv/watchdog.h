@@ -23,6 +23,9 @@ typedef struct {
 bool freedv_watchdog_open(freedv_watchdog *watchdog, freedv_watchdog_expired_fn expired, void *context);
 /* 1..120000 ms; the controller separately limits all RF cases to 10000 ms, no implicit restart or second arm while active. */
 bool freedv_watchdog_arm(freedv_watchdog *watchdog, unsigned duration_ms);
+/* Native voice uses 30..600 s; the diagnostic controller retains its separate
+ * 10 s RF gate and the original arm() maximum is unchanged. */
+bool freedv_watchdog_arm_voice(freedv_watchdog *watchdog, unsigned duration_ms);
 /* Waits for an already-started callback. Do not hold the radio lock. */
 void freedv_watchdog_cancel(freedv_watchdog *watchdog);
 /* Cancels, waits for the worker and destroys synchronization. Do not hold the

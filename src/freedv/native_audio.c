@@ -3,6 +3,10 @@
 #include "native_audio.h"
 #include "capture_dispatch.h"
 #include "wav_capture.h"
+#include "../board.h"
+#ifdef ENABLE_FREEDV_VOICE
+#include "voice_audio.h"
+#endif
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -33,6 +37,9 @@ struct fd_native_audio {
     audio_freedv_playback_t *playback;
     fd_capture_dispatch dispatcher;
     freedv_capture_ring output_recording;
+    freedv_capture_ring persistent_stereo;
+    fd_voice_audio *persistent;
+    atomic_uint persistent_written,persistent_peak;
     freedv_wav_capture capture_wav, output_wav, stereo_wav;
     FILE *fixture;
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
@@ -51,6 +58,9 @@ static void pause_ms(unsigned ms) {
     struct timespec t={(time_t)(ms/1000),(long)(ms%1000)*1000000L}; nanosleep(&t,NULL);
 }
 static bool codec_case(fd_native_kind kind) { return kind>=FD_NATIVE_RADE_FIXTURE&&kind<=FD_NATIVE_RADE_LIVE_RX; }
+static void error_text(char *,size_t,const char *);
+static bool open_excerpt(fd_native_audio *,freedv_wav_capture *,const char *,
+    size_t (*)(void *,int16_t *,size_t),audio_freedv_capture_stats_t (*)(void *),unsigned);
 bool fd_native_audio_codec_available(void) {
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
     return true;
@@ -64,6 +74,9 @@ void fd_native_audio_request_stop(fd_native_audio *a) {
     if (a->playback) audio_freedv_playback_request_cancel(a->playback);
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
     if (a->codec) fd_stream_abort(a->codec);
+#endif
+#ifdef ENABLE_FREEDV_VOICE
+    if(a->persistent)fd_voice_audio_cancel(a->persistent);
 #endif
 }
 bool fd_native_audio_stop_requested(fd_native_audio *a) { return a && atomic_load_explicit(&a->stop,memory_order_acquire); }
@@ -82,10 +95,12 @@ static audio_freedv_capture_stats_t capture_stats(void *context) {
     audio_freedv_capture_stats_t s=audio_freedv_capture_stats();
     freedv_capture_stats q=freedv_capture_ring_stats(&a->dispatcher.queues[FD_CAPTURE_RECORDING]);
     s.dropped_samples+=q.dropped_samples;
+    if(a->persistent)s.dropped_samples+=freedv_capture_ring_stats(&a->persistent_stereo).dropped_samples;
     return s;
 }
 static size_t stereo_read(void *context,int16_t *samples,size_t count) {
     fd_native_audio *a=context;
+    if(a->persistent)return freedv_capture_ring_pop(&a->persistent_stereo,samples,count);
     size_t frames=audio_freedv_capture_read_stereo(samples,count/2);
     return atomic_load_explicit(&a->running,memory_order_acquire)?frames*2:0;
 }
@@ -97,6 +112,85 @@ static audio_freedv_capture_stats_t output_stats(void *context) {
     freedv_capture_stats s=freedv_capture_ring_stats(&a->output_recording);
     return (audio_freedv_capture_stats_t){s.queued_samples,s.dropped_samples,s.hole_samples,0};
 }
+#ifdef ENABLE_FREEDV_VOICE
+static void persistent_input(void *context,const int16_t *samples,size_t n) {
+    fd_native_audio *a=context;
+    freedv_capture_ring_push(&a->dispatcher.queues[FD_CAPTURE_RECORDING],samples,n);
+    unsigned peak=atomic_load(&a->persistent_peak);
+    for(size_t i=0;i<n;++i){unsigned value=samples[i]<0?-(int)samples[i]:samples[i];if(value>peak)peak=value;}
+    atomic_store(&a->persistent_peak,peak);
+}
+static void persistent_output(void *context,const int16_t *samples,size_t n) {
+    fd_native_audio *a=context;freedv_capture_ring_push(&a->output_recording,samples,n);
+    atomic_fetch_add(&a->persistent_written,(unsigned)n);
+}
+static void persistent_stereo(void *context,const int16_t *samples,size_t n) {
+    fd_native_audio *a=context;freedv_capture_ring_push(&a->persistent_stereo,samples,n);
+}
+static void persistent_error(void *context) {failed(context);}
+static void persistent_stats(fd_native_audio *a) {
+    fd_voice_audio_snapshot snapshot;
+    if(!fd_voice_audio_snapshot_get(a->persistent,&snapshot))return;
+    pthread_mutex_lock(&a->mutex);
+    a->stats.persistent_engine=true;a->stats.persistent=fd_voice_audio_observe(a->persistent);
+    a->stats.capture=snapshot.capture;a->stats.playback=snapshot.playback;
+    a->stats.input_samples=a->stats.persistent.input_samples;a->stats.output_samples=atomic_load(&a->persistent_written);
+    a->stats.input_level_samples=a->stats.input_samples;a->stats.input_peak=atomic_load(&a->persistent_peak);
+    a->stats.elapsed_ms=now_ms()-a->epoch_ms;
+    pthread_mutex_unlock(&a->mutex);
+}
+static void *persistent_worker(void *context) {
+    fd_native_audio *a=context;
+    while(!atomic_load(&a->running) && !fd_native_audio_stop_requested(a))pause_ms(2);
+    if(!fd_native_audio_stop_requested(a) &&
+       !fd_voice_audio_begin(a->persistent,a->config.kind==FD_NATIVE_PERSISTENT_TX?FD_VOICE_TX:FD_VOICE_RX,a->config.generation))failed(a);
+    uint64_t drain_deadline=0;
+    while(!fd_native_audio_stop_requested(a)) {
+        persistent_stats(a);
+        if(fd_voice_audio_failed(a->persistent)){failed(a);break;}
+        if(a->tx_finishing){
+            int drained=fd_voice_audio_drained(a->persistent);
+            if(drained<0 || now_ms()>=drain_deadline){failed(a);break;}
+            if(drained==1){persistent_stats(a);fd_native_audio_request_stop(a);break;}
+        }else if(now_ms()-a->epoch_ms>=a->config.duration_ms){
+            if(a->config.kind==FD_NATIVE_PERSISTENT_RX){fd_native_audio_request_stop(a);break;}
+            if(!fd_voice_audio_finish(a->persistent,a->config.generation)){failed(a);break;}
+            a->tx_finishing=true;drain_deadline=now_ms()+1500;
+        }
+        pause_ms(2);
+    }
+    fd_voice_audio_cancel(a->persistent);return NULL;
+}
+static bool prepare_persistent(fd_native_audio *a,char *error,size_t size) {
+    if(!a->config.persistent_slot){error_text(error,size,"Persistent session storage is required");return false;}
+    if(!*a->config.persistent_slot){
+        fd_qualified_profile candidate={.sample_rate=AUDIO_CAPTURE_RATE,.capture_device=BOARD_PA_SOURCE,
+            .playback_device=BOARD_PA_SINK,.capture_channel=a->config.capture_channel,
+            .mixer=a->config.mixer_item?a->config.mixer_item:""};
+#if defined(FREEDV_HOST_TEST_PROFILE) || defined(HOST_BUILD)
+        candidate.capture_device="@default-source@";candidate.playback_device="@default-sink@";candidate.mixer="host-default";
+#endif
+        *a->config.persistent_slot=fd_voice_audio_open(&candidate);
+    }
+    a->persistent=*a->config.persistent_slot;
+    if(!a->persistent || !fd_voice_audio_fence(a->persistent) ||
+       !audio_freedv_capture_configure(a->config.capture_channel,a->config.mixer_item)){
+        error_text(error,size,"Cannot prepare retained production audio adapter");return false;
+    }
+    a->dispatcher.enabled[FD_CAPTURE_RECORDING]=true;
+    fd_voice_audio_taps taps={persistent_input,persistent_output,persistent_stereo,a};
+    if(!fd_voice_audio_set_taps(a->persistent,&taps))return false;
+    fd_voice_audio_on_error(a->persistent,persistent_error,a);
+    if(!open_excerpt(a,&a->capture_wav,"capture.wav",capture_read,capture_stats,1) ||
+       !open_excerpt(a,&a->output_wav,"output.wav",output_read,output_stats,1) ||
+       (a->stereo && !open_excerpt(a,&a->stereo_wav,"capture-stereo.wav",stereo_read,capture_stats,2))){
+        error_text(error,size,"Cannot open bounded persistent-case recordings");return false;
+    }
+    if(pthread_create(&a->input_thread,NULL,persistent_worker,a))return false;
+    a->input_started=true;a->stats.persistent_engine=true;a->stats.prepared=true;
+    return true;
+}
+#endif
 static bool open_excerpt(fd_native_audio *a,freedv_wav_capture *writer,const char *name,
                          size_t (*read)(void *,int16_t *,size_t),
                          audio_freedv_capture_stats_t (*stats)(void *),unsigned channels) {
@@ -291,8 +385,8 @@ static void error_text(char *error,size_t size,const char *text){if(error&&size)
 fd_native_audio *fd_native_audio_prepare(const fd_native_config *config,char *error,size_t size) {
     if(!config || !config->generation || !config->duration_ms || config->duration_ms>120000 ||
        config->capture_channel>3 || config->inject_failure_ms>config->duration_ms || !config->output_directory ||
-       config->excerpt_ms>20000 || config->excerpt_ms>config->duration_ms ||
-       config->kind<FD_NATIVE_CAPTURE || config->kind>FD_NATIVE_MODEM_TX ||
+       config->excerpt_ms>20000 || config->excerpt_ms>config->duration_ms+(config->kind==FD_NATIVE_PERSISTENT_TX?1500:0) ||
+       config->kind<FD_NATIVE_CAPTURE || config->kind>FD_NATIVE_PERSISTENT_RX ||
        (config->interrupt_fixture && config->kind!=FD_NATIVE_RADE_FIXTURE)) {
         error_text(error,size,"Invalid diagnostic audio case");return NULL;
     }
@@ -303,7 +397,8 @@ fd_native_audio *fd_native_audio_prepare(const fd_native_config *config,char *er
     a->config=*config;
     if(pthread_mutex_init(&a->mutex,NULL)){free(a);return NULL;}
     atomic_init(&a->stop,false);atomic_init(&a->running,false);atomic_init(&a->input_done,false);atomic_init(&a->failures,0);
-    fd_capture_dispatch_init(&a->dispatcher);freedv_capture_ring_init(&a->output_recording);
+    atomic_init(&a->persistent_written,0);atomic_init(&a->persistent_peak,0);
+    fd_capture_dispatch_init(&a->dispatcher);freedv_capture_ring_init(&a->output_recording);freedv_capture_ring_init(&a->persistent_stereo);
     freedv_wav_capture_init(&a->capture_wav);freedv_wav_capture_init(&a->output_wav);freedv_wav_capture_init(&a->stereo_wav);
     a->stats.kind=config->kind;a->stats.generation=config->generation;a->stats.native_codec_available=fd_native_audio_codec_available();
     a->stats.recording_excerpt_limit_ms=config->excerpt_ms?config->excerpt_ms:4000;
@@ -313,6 +408,14 @@ fd_native_audio *fd_native_audio_prepare(const fd_native_config *config,char *er
     a->mixer=audio_freedv_mixer_snapshot();
     if(!a->mixer){error_text(error,size,"Cannot snapshot audio mixer");failed(a);return a;}
     if(!audio_freedv_mixer_snapshot_describe(a->mixer,a->saved_mixer,sizeof(a->saved_mixer))){error_text(error,size,"Cannot describe audio mixer");failed(a);return a;}
+    if(config->kind==FD_NATIVE_PERSISTENT_TX || config->kind==FD_NATIVE_PERSISTENT_RX){
+#ifdef ENABLE_FREEDV_VOICE
+        if(!prepare_persistent(a,error,size))failed(a);
+#else
+        error_text(error,size,"This build has no persistent voice adapter");failed(a);
+#endif
+        return a;
+    }
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
     if(codec_case(config->kind)) {
         a->codec=fd_stream_prepare(config->kind==FD_NATIVE_RADE_MIC_TX?FD_STREAM_TX:FD_STREAM_RX,config->generation);
@@ -365,6 +468,14 @@ bool fd_native_audio_finish(fd_native_audio *a) {
     if(a->finished)return true;
     fd_native_audio_request_stop(a);
     if(a->input_started){if(pthread_join(a->input_thread,NULL)){failed(a);return false;}a->input_started=false;}
+#ifdef ENABLE_FREEDV_VOICE
+    if(a->persistent){
+        if(!fd_voice_audio_fence(a->persistent))return false;
+        persistent_stats(a);
+        fd_voice_audio_on_error(a->persistent,NULL,NULL);
+        (void)fd_voice_audio_set_taps(a->persistent,NULL);
+    }
+#endif
     if(a->playback_started){if(pthread_join(a->playback_thread,NULL)){failed(a);return false;}a->playback_started=false;}
     else if(a->playback)(void)audio_freedv_playback_cancel(a->playback);
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
@@ -379,7 +490,7 @@ bool fd_native_audio_finish(fd_native_audio *a) {
         if(result==FREEDV_WAV_JOIN_ERROR)return false;
         recorded+=writers[i]->samples;discarded+=writers[i]->discarded_samples;
     }
-    cache_stats(a);
+    if(!a->persistent)cache_stats(a);
     pthread_mutex_lock(&a->mutex);a->stats.recorder_samples=recorded;a->stats.recorder_discarded_samples=discarded;a->stats.finished=true;pthread_mutex_unlock(&a->mutex);
     a->finished=true;return true;
 }

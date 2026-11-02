@@ -11,7 +11,9 @@
  * long and its release. The VOL press is an LVGL key of its own (KEY_VOL_PRESS), once a
  * press however long it is held; the MFK press is the button of the MFK encoder (encoder.c). */
 
+#include "freedv/features.h"
 #include "front_keys.h"
+#include "freedv/mode.h"
 
 #include "screen_light.h"
 #include "control_owner.h"
@@ -64,7 +66,7 @@ static const struct {
 #define VOL_PRESS BTN_TRIGGER_HAPPY21
 #define MFK_PRESS BTN_TRIGGER_HAPPY27
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 static keypad_t *diagnostic_pads[4];
 static unsigned diagnostic_pad_count;
 #endif
@@ -98,6 +100,7 @@ static keypad_key_t button_of(uint16_t code) {
 
 /* One input event a call; value 1 is a press, anything else (release, autorepeat) lets go */
 static void button_event(const struct input_event *in) {
+    if(in->code == BTN_TRIGGER_HAPPY4 && freedv_mode_radio_ptt(in->value != 0))return;
     cur.key = button_of(in->code);
     if (hold_timer) {
         lv_timer_del(hold_timer);
@@ -124,7 +127,7 @@ static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
         data->continue_reading = true;
 
         if (in.type == EV_KEY) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
             if (in.value == 1 && ctl_diagnostic_input_blocked())
                 pad->diagnostic_generation = ctl_remote_input_generation();
 #endif
@@ -139,7 +142,7 @@ static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
                 }
             } else if (in.code == MFK_PRESS) {
                 if (mfk) {
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
                     if (ctl_diagnostic_input_blocked()) {
                         unsigned generation = ctl_remote_input_generation();
                         if (in.value == 1) mfk->diagnostic_generation = generation;
@@ -194,7 +197,7 @@ keypad_t *keypad_init(char *dev_name) {
 
     keypad_t *pad = calloc(1, sizeof(*pad));
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     if (diagnostic_pad_count == sizeof(diagnostic_pads)/sizeof(diagnostic_pads[0])) {
         close(fd); free(pad); return NULL;
     }
@@ -212,7 +215,7 @@ keypad_t *keypad_init(char *dev_name) {
     return pad;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 static bool diagnostic_inputs_reset(void) {
     bool ok = true;
     if (hold_timer) { lv_timer_del(hold_timer); hold_timer = NULL; }
@@ -258,5 +261,16 @@ bool front_keys_diagnostic_local_event(void) {
     for (unsigned i = 0; i < diagnostic_pad_count; ++i)
         if (diagnostic_pads[i]->indev == input && diagnostic_pads[i]->diagnostic_generation == generation) return true;
     return false;
+}
+#endif
+
+#ifdef ENABLE_FREEDV_VOICE
+bool front_keys_voice_local_event(void) {
+    if(front_keys_diagnostic_local_event())return true;
+    if(!ctl_diagnostic_input_blocked())return false;
+    lv_indev_t *input=lv_indev_get_act();
+    if(!input)return false;
+    unsigned generation=ctl_remote_input_generation();
+    return rotary_voice_local_event(input,generation) || keyboard_voice_local_event(input,generation);
 }
 #endif

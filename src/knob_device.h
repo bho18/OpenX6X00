@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "freedv/features.h"
 #include "gui_events.h"
 #include "lvgl/lvgl.h"
 
@@ -18,7 +19,7 @@ typedef struct {
     int            fd;
     uint16_t       left[3];
     uint16_t       right[3];
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     unsigned       diagnostic_generation;
 #endif
     uint8_t        state;           /* vol_state_t */
@@ -39,7 +40,10 @@ rotary_t *rotary_init(char *dev_name);
 /* Open the main knob's device and start its reader thread */
 void rotary_main_init(char *dev_name);
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 bool rotary_diagnostic_reset(void);
+#ifdef ENABLE_FREEDV_VOICE
+bool rotary_voice_local_event(lv_indev_t *,unsigned generation);
+#endif
 bool rotary_diagnostic_local_event(lv_indev_t *input, unsigned generation);
 #endif

@@ -9,7 +9,9 @@
 /* The input group every knob and button feeds, and the USB (or Bluetooth) keyboard:
  * found at start and again whenever a USB device comes or goes. */
 
+#include "freedv/features.h"
 #include "key_input.h"
+#include "control_owner.h"
 #include "freedv/input_drain.h"
 
 #include "cw_encoder.h"
@@ -43,6 +45,10 @@ lv_group_t *keyboard_group;
 
 static lv_indev_drv_t kbd_drv;      /* registered with the first keyboard, kept after */
 static bool           ready;
+#ifdef ENABLE_FREEDV_VOICE
+static lv_indev_t *voice_keyboard;
+static unsigned voice_keyboard_generation;
+#endif
 static kbd_keys_t     kbd_keys;     /* what LVGL sees of the keyboard */
 static dev_t          kbd_rdev;     /* the one open: a different node (unplugged and back) opens again */
 static ino_t          kbd_ino;
@@ -65,6 +71,9 @@ static bool next_key(void *unused, uint16_t *scancode, uint32_t *key, int *state
             }
             continue;
         }
+#ifdef ENABLE_FREEDV_VOICE
+        if(ev.value==1 && ctl_diagnostic_input_blocked())voice_keyboard_generation=ctl_remote_input_generation();
+#endif
         *key      = xkb_process_key(ev.code, ev.value);     /* xkb follows Shift from these too */
         *scancode = ev.code;
         *state    = ev.value;
@@ -144,7 +153,11 @@ static void open_keyboard(char *path) {
         lv_indev_drv_init(&kbd_drv);
         kbd_drv.type    = LV_INDEV_TYPE_KEYPAD;
         kbd_drv.read_cb = kbd_read;
-        lv_indev_set_group(lv_indev_drv_register(&kbd_drv), keyboard_group);
+        lv_indev_t *input=lv_indev_drv_register(&kbd_drv);
+#ifdef ENABLE_FREEDV_VOICE
+        voice_keyboard=input;
+#endif
+        lv_indev_set_group(input, keyboard_group);
     }
     ready = true;
 }
@@ -203,8 +216,16 @@ bool keyboard_ready() {
     return ready;
 }
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
+#ifdef ENABLE_FREEDV_VOICE
+bool keyboard_voice_local_event(lv_indev_t *input,unsigned generation) {
+    return ready && input==voice_keyboard && voice_keyboard_generation==generation;
+}
+#endif
 bool keyboard_diagnostic_reset(void) {
+#ifdef ENABLE_FREEDV_VOICE
+    voice_keyboard_generation=0;
+#endif
     kbd_keys = (kbd_keys_t){0};
     return !ready || fd_diagnostic_drain_input(evdev_fd);
 }

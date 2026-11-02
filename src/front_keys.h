@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "freedv/features.h"
 #include "gui_events.h"
 #include "lvgl/lvgl.h"
 
@@ -20,7 +21,7 @@ typedef struct {
     lv_indev_drv_t indev_drv;
     lv_indev_t    *indev;
     int            evdev_state;     /* the VOL press as LVGL sees it: pressed for one read */
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     unsigned       diagnostic_generation;
 #endif
     int            evdev_key;
@@ -37,7 +38,7 @@ void keypad_power_set(bool down);
  * that wants quicker holds while it is open */
 void keypad_set_long_time(uint32_t hold);
 
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
 /* GUI-thread-only diagnostic consent barrier. Acquire blocks remote injection,
  * drains queued front inputs and cancels old hold/press state before returning.
  * A false result does not acquire a new barrier. Keep the barrier until both
@@ -45,4 +46,7 @@ void keypad_set_long_time(uint32_t hold);
 bool front_keys_diagnostic_input_acquire(void);
 void front_keys_diagnostic_input_release(void);
 bool front_keys_diagnostic_local_event(void);
+#ifdef ENABLE_FREEDV_VOICE
+bool front_keys_voice_local_event(void);
+#endif
 #endif

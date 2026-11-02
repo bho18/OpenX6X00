@@ -10,6 +10,11 @@
  */
 
 #include "screen_main.h"
+#include "freedv/mode.h"
+#include "freedv/writer_gate.h"
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#include "freedv/diagnostics.h"
+#endif
 
 #include "ft8/ft2.h"
 #include "gui_styles.h"
@@ -420,6 +425,7 @@ static const char *app_name(press_action_t a) {
         case ACTION_APP_JTTY:       return "JTTY";
         case ACTION_APP_CHANNELS:   return "Channels";
         case ACTION_APP_BIRDIE:     return "Birdie Cal";
+        case ACTION_APP_FREEDV:     return "FreeDV";
         default:                   return NULL;    /* Modes menu: a menu, not an app */
     }
 }
@@ -440,17 +446,29 @@ static void close_apps(void) {
 
 /* As the GEN key: the app closes, the GEN buttons come back */
 void main_screen_close_app(void) {
+    if(freedv_mode_defer_app(0))return;
     close_apps();
     buttons_load_page_group(buttons_group_gen);
 }
 
 void main_screen_start_app(press_action_t app_action) {
+    if(freedv_mode_defer_app(app_action))return;
+    if(app_action==ACTION_APP_FREEDV && !freedv_mode_available()){
+#ifdef ENABLE_FREEDV_DIAGNOSTICS
+        FD_WRITE_GUARD(return);
+        close_apps();freedv_diagnostics_open();
+#endif
+        return;
+    }
+    if(app_action==ACTION_APP_FREEDV){close_apps();freedv_mode_open();return;}
+    FD_WRITE_GUARD(return);
     /* Modes again closes its menu. */
     if (app_action == ACTION_APP_MODES && dialog_type_is_run(dialog_modes)) {
         dialog_destruct();
         return;
     }
     close_apps();
+
 
     /* The digital apps open where they were last used */
     switch (app_action) {
@@ -556,7 +574,7 @@ void main_screen_action(press_action_t action) {
 
         default:
             /* Voice mode and battery info were removed but may still be stored: nothing */
-            if (action >= ACTION_APP_RTTY && action <= ACTION_APP_CHANNELS) {
+            if ((action >= ACTION_APP_RTTY && action <= ACTION_APP_CHANNELS) || action==ACTION_APP_FREEDV) {
                 main_screen_start_app(action);
             }
             break;
@@ -1002,6 +1020,9 @@ static void freq_shift(int16_t diff, uint16_t dt) {
         snap_hz   = spot;
         snap_hold = hold;
     }
+    if(freedv_mode_active() && !fd_writer_voice_authorized()){
+        freedv_mode_request(FD_LOCAL_FREQUENCY,freq);return;
+    }
     cparam_i_set(cfg_fg_freq, freq);
     plan_mode(old, freq);
 }
@@ -1187,13 +1208,16 @@ bool main_screen_mode_locked() {
 
 /* A jump, not a turn of the knob: the spectrum starts again */
 void main_screen_set_freq(uint64_t freq) {
+    if(freedv_mode_active() && !fd_writer_voice_authorized()){
+        if(freq<=INT32_MAX)freedv_mode_request(FD_LOCAL_FREQUENCY,(int32_t)freq);return;
+    }
     cparam_i_set(cfg_fg_freq, freq);
     event_send(lv_scr_act(), EVENT_SCREEN_UPDATE, NULL);
 }
 
 /* The frequency on the screen: the TX one of a split while transmitting */
 static int32_t shown_freq(void) {
-    if (param_i_get(cfg_band_split) && radio_get_state() == RADIO_TX) {
+    if (!freedv_mode_active() && param_i_get(cfg_band_split) && radio_get_state() == RADIO_TX) {
         return cparam_i_get(cfg_bg_freq);
     }
     return cparam_i_get(cfg_fg_freq);

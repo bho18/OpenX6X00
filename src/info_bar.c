@@ -7,6 +7,7 @@
  */
 
 #include "info_bar.h"
+#include "freedv/mode.h"
 
 #include "cfg/cfg_api.h"
 #include "gui_styles.h"
@@ -182,19 +183,21 @@ static void deck_update(Subject *subj, void *user_data) {
     static const char *const agc[] = {"AGC OFF", "AGC-S", "AGC-F", "AGC-A"};   /* radio_agc_t order */
     radio_agc_t a = cparam_i_get(cfg_cur_agc);
     int32_t     bw = cparam_i_get(cfg_cur_filter_bw), step = param_i_get(cfg_mode_freq_step);
+    const fd_qualified_profile *profile=freedv_mode_profile();
+    if(profile){a=(radio_agc_t)profile->agc;bw=profile->rx_high_hz-profile->rx_low_hz;}
     int32_t     half = 50000 / (params.waterfall_zoom.x ? LV_MAX(1, param_i_get(cfg_mode_zoom)) : 1);
 
     if (!theme_shape.deck) return;
     char        b[16], st[16];
 
-    deck_set(D_ATT, cparam_i_get(cfg_cur_att));
-    deck_set(D_PRE, cparam_i_get(cfg_cur_pre));
-    deck_set(D_NR, param_i_get(cfg_nr));
-    deck_set(D_NB, param_i_get(cfg_nb));
-    deck_set(D_DNF, param_i_get(cfg_dnf));
-    deck_set(D_SPL, param_i_get(cfg_band_split));
-    deck_set(D_RIT, param_i_get(cfg_rit));
-    deck_set(D_XIT, param_i_get(cfg_xit));
+    deck_set(D_ATT, profile?profile->attenuation:cparam_i_get(cfg_cur_att));
+    deck_set(D_PRE, profile?profile->preamp:cparam_i_get(cfg_cur_pre));
+    deck_set(D_NR, profile?profile->nr:param_i_get(cfg_nr));
+    deck_set(D_NB, profile?false:param_i_get(cfg_nb));
+    deck_set(D_DNF, profile?profile->notch:param_i_get(cfg_dnf));
+    deck_set(D_SPL, profile?false:param_i_get(cfg_band_split));
+    deck_set(D_RIT, profile?false:param_i_get(cfg_rit));
+    deck_set(D_XIT, profile?false:param_i_get(cfg_xit));
     lv_label_set_text(deck_ind[D_AGC], a <= radio_agc_auto ? agc[a] : "AGC");
     lv_obj_set_style_text_color(deck_ind[D_AGC], a == radio_agc_off ? TC(text_mute) : TC(ok), 0);
     lv_obj_set_style_bg_opa(deck_ind[D_AGC], a == radio_agc_off ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
@@ -205,7 +208,7 @@ static void deck_update(Subject *subj, void *user_data) {
     if (step < 1000) snprintf(st, sizeof(st), "%d Hz", (int)step);
     else if (step % 1000) snprintf(st, sizeof(st), "%d.%d kHz", (int)(step / 1000), (int)(step % 1000 / 100));
     else snprintf(st, sizeof(st), "%d kHz", (int)(step / 1000));
-    lv_label_set_text_fmt(deck_info, "BW %s   IF %+d   STEP %s", b, (int)param_i_get(cfg_band_if_shift), st);
+    lv_label_set_text_fmt(deck_info, "BW %s   IF %+d   STEP %s", b, (int)(profile?0:param_i_get(cfg_band_if_shift)), st);
     if (half % 1000) lv_label_set_text_fmt(deck_scope, "SCOPE \xC2\xB1%d.%dk", (int)(half / 1000), (int)(half % 1000 / 100));
     else lv_label_set_text_fmt(deck_scope, "SCOPE \xC2\xB1%dk", (int)(half / 1000));
 }
@@ -300,6 +303,8 @@ static const char *name_of(const char *const *names, size_t n, int32_t i) {
 }
 
 const char *info_params_mode_label_get(void) {
+    const fd_qualified_profile *profile=freedv_mode_profile();
+    if(profile)return profile->local_mode==FD_PROFILE_USB_DIG?"USB-D":"USB";
     static const char *const names[] = {"LSB", "LSB-D", "USB", "USB-D", "CW", "CW-R", "AM", "NFM", "SAM", "WFM"};   /* radio_mode_t order */
 
     return name_of(names, sizeof(names) / sizeof(names[0]), cparam_i_get(cfg_cur_mode));
@@ -308,10 +313,12 @@ const char *info_params_mode_label_get(void) {
 const char *info_params_agc(void) {
     static const char *const names[] = {"OFF", "SLOW", "FAST", "AUTO"};   /* radio_agc_t order */
 
-    return name_of(names, sizeof(names) / sizeof(names[0]), cparam_i_get(cfg_cur_agc));
+    const fd_qualified_profile *profile=freedv_mode_profile();
+    return name_of(names, sizeof(names) / sizeof(names[0]), profile?profile->agc:cparam_i_get(cfg_cur_agc));
 }
 
 const char *info_params_tx_shift_label(void) {
+    if(freedv_mode_active())return NULL;
     static char s[8];
     int32_t     hz = param_i_get(cfg_band_tx_shift);
     int32_t     a  = hz < 0 ? -hz : hz;
@@ -328,6 +335,7 @@ const char *info_params_tx_shift_label(void) {
 }
 
 bool info_tx_blocked(void) {
+    if(freedv_mode_active())return !cfg_is_tx_freq(cparam_i_get(cfg_fg_freq));
     return param_i_get(cfg_band_split) && !cfg_is_tx_freq(radio_tx_freq());
 }
 
@@ -336,7 +344,7 @@ const char *info_params_vfo_label_get(void) {
     const char *shift = info_params_tx_shift_label();
 
     if (shift) return shift;
-    if (param_i_get(cfg_band_split)) return b ? "SPL-B" : "SPL-A";
+    if (!freedv_mode_active() && param_i_get(cfg_band_split)) return b ? "SPL-B" : "SPL-A";
     return b ? "VFO-B" : "VFO-A";
 }
 
@@ -464,6 +472,8 @@ static void vfo_update(Subject *subj, void *user_data) {
 /* Digital modes in their own colour; a mode an app holds, soft */
 static void mode_update(Subject *subj, void *user_data) {
     radio_mode_t m   = cparam_i_get(cfg_cur_mode);
+    const fd_qualified_profile *profile=freedv_mode_profile();
+    if(profile)m=profile->local_mode==FD_PROFILE_USB_DIG?radio_mode_usb_dig:radio_mode_usb;
     bool         dig = m == radio_mode_lsb_dig || m == radio_mode_usb_dig;
 
     lv_label_set_text(items[INFO_MODE], info_params_mode_label_get());
@@ -488,8 +498,8 @@ static void pill_set(lv_obj_t *o, bool on) {
 
 static void pill_update(Subject *subj, void *user_data) {
     info_items_t i = (intptr_t)user_data;
-
-    pill_set(items[i], cparam_i_get(i == INFO_PRE ? cfg_cur_pre : cfg_cur_att));
+    const fd_qualified_profile *profile=freedv_mode_profile();
+    pill_set(items[i], profile?(i==INFO_PRE?profile->preamp:profile->attenuation):cparam_i_get(i == INFO_PRE ? cfg_cur_pre : cfg_cur_att));
 }
 
 /* ATU: faint on a transverter band (the tuner is not in the path), red when not tuned here */
@@ -502,4 +512,9 @@ static void atu_update(Subject *subj, void *user_data) {
         pill_paint(o, TC(text_soft), TC(focus), LV_OPA_20);
     else
         pill_paint(o, cfg_atu_is_loaded() ? TC(focus_text) : TC(err_strong), TC(focus), PILL_ON_OPA);
+}
+void info_refresh_effective(void) {
+    if(!obj)return;
+    vfo_update(NULL,NULL);mode_update(NULL,NULL);agc_update(NULL,NULL);deck_update(NULL,NULL);
+    pill_update(NULL,(void *)(intptr_t)INFO_PRE);pill_update(NULL,(void *)(intptr_t)INFO_ATT);
 }

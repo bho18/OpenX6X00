@@ -27,6 +27,7 @@ import zipfile
 import bottle
 
 from . import settings
+from . import radio_lease
 
 app = bottle.Bottle()   # the configurator pages and their API
 
@@ -37,6 +38,32 @@ HOST_ONLY_READS = ("/files/", "/api/backup/download")
 # Reads sent as a POST (a form with the selection), with no secret in them: by any name, as the GET reads are (the
 # QSOs and the pictures are on the pages by any name). The cross-site check still applies
 POST_READS = ("/logs/export", "/api/gallery/zip")
+
+
+@app.hook('before_request')
+def radio_settings_lease():
+    """Keep external changes atomic with native/diagnostic ownership admission.
+
+    The GUI takes an exclusive flock before acquiring its settings reservation.
+    Holding this shared lock through the response includes SQLite's commit;
+    polling a status flag before a database write would leave an entry race.
+    """
+    req = bottle.request
+    if req.method in ("GET", "HEAD", "OPTIONS") or req.path in POST_READS:
+        return
+    try:
+        fd = radio_lease.acquire()
+    except OSError:
+        raise bottle.HTTPResponse(json.dumps({"status": "error", "msg": "Radio settings are owned by FreeDV; exit it before remote changes"}),
+                                  409, {"Content-Type": "application/json"})
+    req.environ['openx6x00.settings_lock'] = fd
+
+
+@app.hook('after_request')
+def radio_settings_release():
+    fd = bottle.request.environ.pop('openx6x00.settings_lock', None)
+    if fd is not None:
+        radio_lease.release(fd)
 
 
 def host_refused():

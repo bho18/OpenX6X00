@@ -622,10 +622,15 @@ class DigitalModesTable {
     static LoadResult find_next(int32_t type, int32_t current_freq);
     static LoadResult find_closest(int32_t type, int32_t current_freq);
     static LoadResult find_prev(int32_t type, int32_t current_freq);
+    static int count(int32_t type);
+    static bool save_bookmark(int32_t type,int32_t old_frequency,int32_t frequency,const char *label);
+    static bool erase_bookmark(int32_t type,int32_t frequency);
 
   private:
     // Database handle shared by all statements of this table.
     inline static sqlite3 *db_ = nullptr;
+    inline static std::mutex edit_mutex_;
+
 
     // get_next: freq > :freq AND type = :type ORDER BY freq ASC LIMIT 1.
     inline static sqlite3_stmt *get_next_stmt_ = nullptr;

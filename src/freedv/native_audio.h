@@ -2,6 +2,7 @@
 #pragma once
 #include "../audio.h"
 #include "../../tools/freedv/rade_stream.h"
+#include "voice_engine.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -12,8 +13,10 @@ extern "C" {
  * owned. None of these functions selects a radio route or keys RF. */
 typedef enum {
     FD_NATIVE_CAPTURE, FD_NATIVE_TONE, FD_NATIVE_RADE_FIXTURE,
-    FD_NATIVE_RADE_MIC_TX, FD_NATIVE_RADE_LIVE_RX, FD_NATIVE_MODEM_TX
+    FD_NATIVE_RADE_MIC_TX, FD_NATIVE_RADE_LIVE_RX, FD_NATIVE_MODEM_TX,
+    FD_NATIVE_PERSISTENT_TX, FD_NATIVE_PERSISTENT_RX
 } fd_native_kind;
+typedef struct fd_voice_audio fd_voice_audio;
 typedef struct {
     fd_native_kind kind;
     const char *fixture_path; /* signed16LE mono at8kHz, RX fixture only */
@@ -26,6 +29,7 @@ typedef struct {
     const char *mixer_item; /*NULL keep exact saved setting */
     bool interrupt_fixture; /*2s zero input every12s, preserving decoder state */
     bool capture_input; /* concurrent physical capture during fixture playback */
+    fd_voice_audio **persistent_slot; /* diagnostic session owns retained adapter */
 } fd_native_config;
 typedef struct fd_native_audio fd_native_audio;
 typedef struct {
@@ -44,6 +48,8 @@ typedef struct {
     audio_freedv_capture_stats_t capture;
     audio_freedv_playback_stats_t playback;
     fd_stream_stats codec;
+    bool persistent_engine;
+    fd_voice_stats persistent;
 } fd_native_stats;
 fd_native_audio *fd_native_audio_prepare(const fd_native_config *, char *error, size_t error_size);
 bool fd_native_audio_start(fd_native_audio *);

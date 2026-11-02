@@ -65,7 +65,8 @@
   "opus": {
     "repository": "https://github.com/xiph/opus",
     "commit": "940d4e5af64351ca8ba8390df3f555484c567fbb",
-    "model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453"
+    "model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453",
+    "upstream_zip_sha256": "20e37f9079ac2b80e3235cd8ce2547829e147bf44a2f5dd28a888fa3e9c24341"
   },
   "x6200_ne10": {
     "repository": "https://github.com/projectNe10/Ne10",
@@ -96,5 +97,11 @@
     "baseline_image_sha256": "a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab",
     "baseline_artifact_id": 12701486870,
     "baseline_artifact_sha256": "0fdfdd2bc9f67cda6137a8adb8e60e829b2055db2506f1184cf8c3b924311b01"
+  },
+  "freedv_gui": {
+    "repository": "https://github.com/freedv/freedv-gui",
+    "commit": "a2d5365fbbb651be67959d47c351573f9374d5e0",
+    "source_archive_sha256": "ca3c083fc54ec5e6266560492576a8e08d970ffd51ca40875236cca19fade58c",
+    "track": "complete official GUI build, separate from backend harness"
   }
 }

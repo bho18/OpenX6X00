@@ -27,6 +27,7 @@
 #include "dialog_jtty.h"
 #include "dialog_wspr.h"
 #include "app_sstv.h"
+#include "freedv/mode.h"
 
 /* The bar scales: PWR 0-10 W, SWR 1-5 (more shows 5), ALC 0-10 */
 #define PWR_MAX     10.0f
@@ -194,7 +195,9 @@ static bool digital_app_open(void) {
 
 /* TX: the readings from zero, the strip or the panel (under the frequency strip). RX: all hidden */
 static void radio_cb(lv_event_t *e) {
-    if (lv_event_get_code(e) == EVENT_RADIO_RX) {
+    /* Native voice owns its state and Stop/Exit panel throughout recovery.
+     * Keep the generic meter overlay from covering those controls. */
+    if (lv_event_get_code(e) == EVENT_RADIO_RX || freedv_mode_active()) {
         lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(strip, LV_OBJ_FLAG_HIDDEN);

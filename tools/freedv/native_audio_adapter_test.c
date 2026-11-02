@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #define _POSIX_C_SOURCE 200809L
 #include "src/freedv/native_audio.h"
+#ifdef ENABLE_FREEDV_VOICE
+#include "src/freedv/voice_audio.h"
+#endif
 #include <assert.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -10,10 +13,11 @@
 #include <math.h>
 #include <unistd.h>
 struct audio_freedv_mixer_snapshot {int saved;};
-struct audio_freedv_playback {atomic_bool cancelled,requested;atomic_ullong samples;};
+struct audio_freedv_playback {atomic_bool cancelled,requested,draining;atomic_ullong samples,generation;};
 static atomic_bool active, allow_ack;
 static atomic_uint restored;
 static audio_freedv_playback_t *current;
+static unsigned playback_creations;
 static bool synthetic_microphone;
 static uint64_t capture_epoch, capture_read_samples;
 static uint64_t millis(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return(uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;}
@@ -22,11 +26,11 @@ audio_freedv_mixer_snapshot_t *audio_freedv_mixer_snapshot(void){return calloc(1
 bool audio_freedv_mixer_snapshot_describe(const audio_freedv_mixer_snapshot_t *s,char *out,size_t capacity){(void)s;return snprintf(out,capacity,"{\"mock\":true}")>0;}
 bool audio_freedv_mixer_restore(audio_freedv_mixer_snapshot_t *s){assert(s);atomic_fetch_add(&restored,1);return true;}
 void audio_freedv_mixer_snapshot_free(audio_freedv_mixer_snapshot_t *s){free(s);}
-bool audio_freedv_capture_configure(unsigned channel,const char *item){return !channel&&!item;}
+bool audio_freedv_capture_configure(unsigned channel,const char *item){return !channel&&(!item || !*item);}
 bool audio_freedv_capture_begin(void){capture_epoch=millis();capture_read_samples=0;return !atomic_exchange(&active,true);}
 void audio_freedv_capture_end(void){atomic_store(&active,false);}
 size_t audio_freedv_capture_read(int16_t *out,size_t capacity){
-    if(!synthetic_microphone)return 0;
+    if(!synthetic_microphone || !atomic_load(&active))return 0;
     uint64_t due=(millis()-capture_epoch)*44100u/1000u;
     size_t n=due>capture_read_samples?(size_t)(due-capture_read_samples):0;
     if(n>capacity)n=capacity;
@@ -35,7 +39,22 @@ size_t audio_freedv_capture_read(int16_t *out,size_t capacity){
 }
 size_t audio_freedv_capture_read_stereo(int16_t *out,size_t frames){(void)out;(void)frames;return 0;}
 audio_freedv_capture_stats_t audio_freedv_capture_stats(void){return(audio_freedv_capture_stats_t){0};}
-audio_freedv_playback_t *audio_freedv_playback_open(void){assert(!current);current=calloc(1,sizeof(*current));return current;}
+audio_freedv_playback_t *audio_freedv_playback_open(void){assert(!current);++playback_creations;current=calloc(1,sizeof(*current));return current;}
+#ifdef ENABLE_FREEDV_VOICE
+bool audio_freedv_capture_flush_begin(void){assert(!atomic_load(&active));return true;}
+int audio_freedv_capture_flushed(void){return 1;}
+void audio_freedv_capture_flush_close(void){}
+bool audio_freedv_playback_cork(audio_freedv_playback_t *p,bool cork){(void)cork;return p!=NULL;}
+bool audio_freedv_playback_rearm(audio_freedv_playback_t *p,uint64_t generation){
+    assert(p && generation>atomic_load(&p->generation));atomic_store(&p->generation,generation);
+    atomic_store(&p->cancelled,false);atomic_store(&p->requested,false);atomic_store(&p->draining,false);return true;
+}
+ssize_t audio_freedv_playback_submit_generation(audio_freedv_playback_t *p,uint64_t generation,const int16_t *samples,size_t count){
+    assert(generation==atomic_load(&p->generation));return audio_freedv_playback_submit(p,samples,count);
+}
+bool audio_freedv_playback_drain(audio_freedv_playback_t *p,uint64_t generation){assert(generation==atomic_load(&p->generation));atomic_store(&p->draining,true);return true;}
+int audio_freedv_playback_drained(audio_freedv_playback_t *p,uint64_t generation){assert(generation==atomic_load(&p->generation));return atomic_load(&p->draining)?1:0;}
+#endif
 void audio_freedv_playback_request_cancel(audio_freedv_playback_t *p){atomic_store(&p->cancelled,true);}
 bool audio_freedv_playback_cancel(audio_freedv_playback_t *p){audio_freedv_playback_request_cancel(p);atomic_store(&p->requested,true);return true;}
 bool audio_freedv_playback_quiescent(audio_freedv_playback_t *p){return atomic_load(&p->cancelled)&&atomic_load(&p->requested)&&atomic_load(&allow_ack);}
@@ -76,6 +95,7 @@ int main(int argc,char **argv){
     wait_stopped(a);assert(fd_native_audio_observe(a).failures);
     (void)fd_native_audio_finish(a);assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);cleanup(inject_dir);
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
+#ifndef ENABLE_FREEDV_VOICE
     assert(argc==2 && fd_native_audio_codec_available());
     char codec_dir[]="/tmp/freedv-native-codec-XXXXXX";assert(mkdtemp(codec_dir));
     config=(fd_native_config){.kind=FD_NATIVE_RADE_FIXTURE,.fixture_path=argv[1],.output_directory=codec_dir,
@@ -111,6 +131,35 @@ int main(int argc,char **argv){
     assert(!stats.failures&&stats.output_samples>10000&&!stats.codec.blocks);
     assert(stats.output_samples==stats.playback.accepted_samples);
     assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);cleanup(modem_dir);synthetic_microphone=false;
+#endif
+#ifdef ENABLE_FREEDV_VOICE
+    fd_voice_audio *retained=NULL;unsigned before=playback_creations;
+    synthetic_microphone=true;
+    for(unsigned turn=0;turn<100;++turn){
+        char persistent_dir[]="/tmp/freedv-persistent-case-XXXXXX";assert(mkdtemp(persistent_dir));
+        config=(fd_native_config){.kind=turn%2?FD_NATIVE_PERSISTENT_RX:FD_NATIVE_PERSISTENT_TX,
+            .output_directory=persistent_dir,.generation=6+turn,.duration_ms=80,.persistent_slot=&retained};
+        a=fd_native_audio_prepare(&config,error,sizeof(error));assert(a && fd_native_audio_observe(a).prepared);
+        assert(retained && playback_creations==before+1);
+        uint64_t accepted_before=atomic_load(&current->samples);
+        assert(fd_native_audio_start(a));wait_stopped(a);assert(fd_native_audio_finish(a));
+        stats=fd_native_audio_observe(a);
+        if(stats.failures || stats.persistent.failures)fprintf(stderr,"persistent turn %u: native failures %u, engine failures %u, in=%llu out=%llu finished=%u eoo=%llu\n",turn,stats.failures,stats.persistent.failures,(unsigned long long)stats.input_samples,(unsigned long long)stats.output_samples,stats.persistent.finished,(unsigned long long)stats.persistent.eoo_count);
+        assert(stats.persistent_engine && !stats.failures && !stats.persistent.failures);
+        assert(stats.persistent.rade_creations==1 && stats.persistent.encoder_creations==1 && stats.persistent.decoder_creations==1);
+        assert(stats.persistent.resampler_creations==4 && stats.persistent.worker_creations==2);
+        assert(stats.output_samples==atomic_load(&current->samples)-accepted_before);
+        if(config.kind==FD_NATIVE_PERSISTENT_TX){
+            assert(stats.persistent.finished && stats.persistent.eoo_count==turn/2+1);
+        }
+        char output[256];snprintf(output,sizeof(output),"%s/output.wav",persistent_dir);
+        FILE *wav=fopen(output,"rb");assert(wav);assert(!fseek(wav,0,SEEK_END));
+        assert((uint64_t)ftell(wav)==44+stats.output_samples*2);fclose(wav);
+        assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);cleanup(persistent_dir);
+    }
+    fd_voice_audio_close(retained);assert(!current);synthetic_microphone=false;
+    puts("PASS: 100 diagnostic turns use the actual retained production engine/adapter; bounded recording sample accounting and one EOO per TX");
+#endif
 #else
     config.kind=FD_NATIVE_RADE_FIXTURE;assert(!fd_native_audio_codec_available());
     assert(!fd_native_audio_prepare(&config,error,sizeof(error)));

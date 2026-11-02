@@ -67,6 +67,7 @@
 
 #define _GNU_SOURCE     /* accept4, pipe2 */
 
+#include "freedv/features.h"
 #include <stdio.h>       /* before jpeglib.h, which wants FILE */
 
 #include "remote_server.h"
@@ -1489,9 +1490,11 @@ static void ctl_tell(client_t *c) {
         snprintf(who, sizeof(who), "tci");
     else if (o.kind == CTL_BROWSER)
         snprintf(who, sizeof(who), "browser %s", o.name);
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
+#ifdef ENABLE_FREEDV_CONTROL
     else if (o.kind == CTL_DIAGNOSTIC)
         snprintf(who, sizeof(who), "diagnostics");
+    else if (o.kind == CTL_FREEDV)
+        snprintf(who, sizeof(who), "freedv");
 #endif
     else
         snprintf(who, sizeof(who), "none");

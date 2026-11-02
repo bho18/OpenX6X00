@@ -1,4 +1,6 @@
 #include "settings_manager_api.h"
+#include "../freedv/mode.h"
+#include "../freedv/writer_gate.h"
 
 #include "db.h"
 #include "settings_manager.h"
@@ -66,6 +68,11 @@ void cfg_band_load_next(bool up) {
             id = b.id;
     }
     if (id != BAND_UNDEFINED) {
+#ifdef ENABLE_FREEDV_VOICE
+        if (freedv_mode_active() && !fd_writer_voice_authorized()) {
+            (void)freedv_mode_request(FD_LOCAL_BAND,id); return;
+        }
+#endif
         cfg_sm.p_band_id.set(id);
     }
 }
@@ -75,6 +82,11 @@ void cfg_pwr_set(float watts) {
 }
 
 void cfg_vfo_toggle(void) {
+#ifdef ENABLE_FREEDV_VOICE
+    if(freedv_mode_active() && !fd_writer_voice_authorized()) {
+        (void)freedv_mode_request(FD_LOCAL_VFO,1-cfg_sm.p_band_current_vfo.get());return;
+    }
+#endif
     cfg_sm.vfo_toggle();
 }
 

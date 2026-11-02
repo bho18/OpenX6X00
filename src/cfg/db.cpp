@@ -10,6 +10,7 @@
  * per-call name lookups.
  */
 #include "db.h"
+#include "../freedv/writer_gate.h"
 
 #include "../lvgl/lvgl.h"
 #include <pthread.h>
@@ -1069,4 +1070,32 @@ void cfg_db_shutdown() {
     MemoryTable::Shutdown();
     DigitalModesTable::Shutdown();
     AtuTable::Shutdown();
+}
+
+int DigitalModesTable::count(int32_t type) {
+    std::lock_guard lock(edit_mutex_);sqlite3_stmt *stmt=nullptr;int n=-1;
+    if(db_ && sqlite3_prepare_v2(db_,"SELECT count(*) FROM digital_modes WHERE type=?",-1,&stmt,nullptr)==SQLITE_OK){
+        sqlite3_bind_int(stmt,1,type);if(sqlite3_step(stmt)==SQLITE_ROW)n=sqlite3_column_int(stmt,0);
+    }
+    if(stmt)sqlite3_finalize(stmt);return n;
+}
+bool DigitalModesTable::save_bookmark(int32_t type,int32_t old_frequency,int32_t frequency,const char *label) {
+    FD_WRITE_GUARD(return false);
+    if(type!=6 || frequency<=0 || old_frequency<0 || !label || !*label || strlen(label)>64)return false;
+    std::lock_guard lock(edit_mutex_);sqlite3_stmt *stmt=nullptr;
+    const char *sql=old_frequency ? "UPDATE digital_modes SET label=?,freq=? WHERE type=? AND freq=?" :
+        "INSERT INTO digital_modes(label,freq,type,mode) VALUES(?,?,?,3)";
+    bool ok=db_ && sqlite3_prepare_v2(db_,sql,-1,&stmt,nullptr)==SQLITE_OK;
+    if(ok){sqlite3_bind_text(stmt,1,label,-1,SQLITE_TRANSIENT);sqlite3_bind_int(stmt,2,frequency);sqlite3_bind_int(stmt,3,type);
+        if(old_frequency)sqlite3_bind_int(stmt,4,old_frequency);
+        ok=sqlite3_step(stmt)==SQLITE_DONE && sqlite3_changes(db_)==1;}
+    if(stmt)sqlite3_finalize(stmt);return ok;
+}
+bool DigitalModesTable::erase_bookmark(int32_t type,int32_t frequency) {
+    FD_WRITE_GUARD(return false);
+    if(type!=6 || frequency<=0)return false;
+    std::lock_guard lock(edit_mutex_);sqlite3_stmt *stmt=nullptr;
+    bool ok=db_ && sqlite3_prepare_v2(db_,"DELETE FROM digital_modes WHERE type=? AND freq=?",-1,&stmt,nullptr)==SQLITE_OK;
+    if(ok){sqlite3_bind_int(stmt,1,type);sqlite3_bind_int(stmt,2,frequency);ok=sqlite3_step(stmt)==SQLITE_DONE && sqlite3_changes(db_)==1;}
+    if(stmt)sqlite3_finalize(stmt);return ok;
 }
