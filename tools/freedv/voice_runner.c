@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: BSD-2-Clause
 #define _POSIX_C_SOURCE 200809L
 #include "../../src/freedv/voice_engine.h"
+/* This operator runner uses checked operations, including I/O and transitions.
+ * They must execute in release/SDK builds as well as host test builds. */
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -27,6 +27,9 @@ def main():
     verification=json.loads(a.verification.read_text())
     if verification.get('status')!='PASS' or verification.get('host_tests',0)<30 or verification.get('persistent_turns',0)<100:
         raise ValueError('completed host suite and actual persistent-case verification are required')
+    smoke=verification.get('arm_runner',{})
+    if smoke.get('status')!='PASS' or smoke.get('stats',{}).get('modem_blocks',0)<1 or smoke['stats'].get('failures',1):
+        raise ValueError('ARM runner must execute real processing; zero-work success is not valid evidence')
     for name,expected in verification['source_files'].items():
         if sha(ROOT/name)!=expected:raise ValueError('verification source mismatch: '+name)
     if sha(a.baseline)!=BASELINE_SHA:raise ValueError('verified X6200 baseline image required')
