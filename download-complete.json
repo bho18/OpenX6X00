@@ -1,0 +1,35 @@
+{
+  "complete": true,
+  "source_commit": "f8d624b3a7ffdb1992715d184e4e090b6d250cab",
+  "image_file": "x6200-persistent-voice-test.img.xz",
+  "image_bytes": 115738848,
+  "compressed_image_sha256": "9f1cf21ddc48e62aa94dd439fcc8d5f84db8d277dcadc19a0ce6b7ed25287aa9",
+  "segments": [
+    {
+      "name": "x6200-persistent-voice-test.img.xz.part01",
+      "bytes": 25165824,
+      "sha256": "594230bcf24be5bd12af0616082cfcc897d987f29f24639f7a5d426cd760add0"
+    },
+    {
+      "name": "x6200-persistent-voice-test.img.xz.part02",
+      "bytes": 25165824,
+      "sha256": "c43f18a916c6a04098fdda2b54960f5bca17fc76d7e970c9629b29b49849d0a5"
+    },
+    {
+      "name": "x6200-persistent-voice-test.img.xz.part03",
+      "bytes": 25165824,
+      "sha256": "0f680fe02faffcdbbc0d195507eec61c13b7566d9ddfb0b755e99be8505a7569"
+    },
+    {
+      "name": "x6200-persistent-voice-test.img.xz.part04",
+      "bytes": 25165824,
+      "sha256": "fa01f54dad805d584b667970d88070999f9dce36e598c0eeccd38f6fcb17269e"
+    },
+    {
+      "name": "x6200-persistent-voice-test.img.xz.part05",
+      "bytes": 15075552,
+      "sha256": "4fa060a9534e9985154cda6dd69553cbdd7de1d15b1b5a96ee3bf77886396aa6"
+    }
+  ],
+  "hardware_qualified": false
+}
