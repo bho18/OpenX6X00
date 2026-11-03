@@ -1,0 +1,49 @@
+name: Publish verified FreeDV capture continuity retest image
+on:
+  push:
+    branches: [download-freedv-continuity-fix-20261103]
+    paths: ['.github/workflows/publish-freedv-continuity-fix.yml', 'continuity-fix-20261103/**', 'test-input-check.ps1']
+permissions:
+  contents: write
+concurrency:
+  group: freedv-continuity-fix-20261103
+  cancel-in-progress: false
+jobs:
+  deliver:
+    if: github.repository == 'bho18/OpenX6X00' && github.ref == 'refs/heads/download-freedv-continuity-fix-20261103'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate Windows helper syntax and collection rejection cases
+        shell: pwsh
+        run: |
+          ./test-input-check.ps1
+          Push-Location continuity-fix-20261103/tools
+          python3 -m unittest test_radio_retest test_capture_source_watch test_capture_continuity
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+      - name: Recover the identified reference image from repository storage
+        run: |
+          set -euo pipefail
+          cat x6200-persistent-voice-test.img.xz.part0{1,2,3,4,5} > "$RUNNER_TEMP/old.img.xz"
+          echo '9f1cf21ddc48e62aa94dd439fcc8d5f84db8d277dcadc19a0ce6b7ed25287aa9  '"$RUNNER_TEMP/old.img.xz" | sha256sum -c -
+          xz -d "$RUNNER_TEMP/old.img.xz"
+      - name: Reconstruct exact validated bytes and package one flashable image
+        run: |
+          python3 continuity-fix-20261103/prepare-release.py --base "$RUNNER_TEMP/old.img" --base-source candidate-source.tar.xz --input continuity-fix-20261103 --output "$RUNNER_TEMP/retest"
+      - name: Publish new test prerelease without replacing the earlier candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: freedv-continuity-fix-20261103
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing replacement.'
+            exit 1
+          fi
+          cp continuity-fix-20261103/START-HERE.md "$RUNNER_TEMP/release-notes.md"
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --latest=false --title 'X6200 FreeDV capture continuity retest — 2026-11-03' --notes-file "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/retest/x6200-freedv-continuity-fix.zip" "$RUNNER_TEMP/retest/START-HERE.md" "$RUNNER_TEMP/retest/LOCAL-CODEX-TASK.md" "$RUNNER_TEMP/retest/candidate-manifest.json" "$RUNNER_TEMP/retest/software-verification.json" "$RUNNER_TEMP/retest/delivery-verification.json" "$RUNNER_TEMP/retest/DOWNLOAD-SHA256SUMS.txt"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
