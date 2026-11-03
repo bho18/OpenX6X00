@@ -21,6 +21,7 @@ typedef struct {
     uint64_t generation;
     unsigned inject_failure_ms; /*0 disabled; controlled worker-failure case */
     unsigned duration_ms; /* 1..120000; coordinator imposes RF<=10000 */
+    unsigned excerpt_ms; /*0 preserves legacy4s; explicit1..20000 and<=duration_ms */
     unsigned capture_channel; /*0 existingmono,1L,2R,3explicit mean */
     const char *mixer_item; /*NULL keep exact saved setting */
     bool interrupt_fixture; /*2s zero input every12s, preserving decoder state */
@@ -32,6 +33,7 @@ typedef struct {
     bool prepared, started, stop_requested, finished, quiescent, mixer_restored;
     bool native_codec_available;
     unsigned failures;
+    unsigned recording_excerpt_limit_ms;
     uint64_t generation, elapsed_ms, input_samples, output_samples, interrupted_input_samples;
     uint64_t recorder_samples, recorder_discarded_samples;
     uint64_t aborted_codec_output_samples, aborted_playback_samples;

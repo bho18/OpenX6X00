@@ -757,10 +757,25 @@ bool audio_play_if_room(int16_t *samples_buf, size_t samples) {
 }
 
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
+static uint64_t diagnostic_audio_clock_ns(void) {
+    struct timespec t;
+    if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
+    return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+}
 static void diagnostic_playback_underflow(pa_stream *stream, void *userdata) {
     (void)stream;
     audio_freedv_playback_t *p = userdata;
     ++p->stats.underflows;
+    if (p->stats.accepted_samples) ++p->stats.underflows_after_first_write;
+    else ++p->stats.underflows_before_first_write;
+    if (p->stats.underflow_events_stored < AUDIO_FREEDV_UNDERFLOW_EVENTS) {
+        audio_freedv_underflow_event_t *e = &p->stats.underflow_events[p->stats.underflow_events_stored++];
+        *e = (audio_freedv_underflow_event_t){
+            .monotonic_ns = diagnostic_audio_clock_ns(),
+            .accepted_samples = p->stats.accepted_samples,
+            .cancellation_requested = atomic_load_explicit(&p->cancellation_requested, memory_order_acquire)
+        };
+    } else ++p->stats.underflow_events_discarded;
 }
 static void diagnostic_flush_done(pa_stream *stream, int success, void *userdata) {
     (void)stream;
@@ -811,6 +826,7 @@ ssize_t audio_freedv_playback_submit(audio_freedv_playback_t *p, const int16_t *
     size_t n = count < available ? count : available;
     if (!n) { accepted = 0; goto done; }
     if (pa_stream_write(p->stream, samples, n * sizeof(*samples), NULL, 0, PA_SEEK_RELATIVE) < 0) goto error;
+    if (!p->stats.accepted_samples) p->stats.first_write_monotonic_ns = diagnostic_audio_clock_ns();
     p->stats.accepted_samples += n;
     accepted = (ssize_t)n;
     goto done;

@@ -103,7 +103,8 @@ static bool open_excerpt(fd_native_audio *a,freedv_wav_capture *writer,const cha
     int n=snprintf(path,sizeof(path),"%s/%s",a->config.output_directory,name);
     if (n<0 || (size_t)n>=sizeof(path)) return false;
     freedv_wav_source source={.read=read,.stats=stats,.context=a,.channels=channels};
-    writer->max_samples=4u*AUDIO_CAPTURE_RATE*channels;
+    unsigned ms=a->config.excerpt_ms?a->config.excerpt_ms:4000u;
+    writer->max_samples=(uint64_t)ms*AUDIO_CAPTURE_RATE*channels/1000u;
     return freedv_wav_capture_start_source(writer,path,wav_failed,a,&source);
 }
 #ifdef ENABLE_FREEDV_NATIVE_CODEC
@@ -261,6 +262,7 @@ static void error_text(char *error,size_t size,const char *text){if(error&&size)
 fd_native_audio *fd_native_audio_prepare(const fd_native_config *config,char *error,size_t size) {
     if(!config || !config->generation || !config->duration_ms || config->duration_ms>120000 ||
        config->capture_channel>3 || config->inject_failure_ms>config->duration_ms || !config->output_directory ||
+       config->excerpt_ms>20000 || config->excerpt_ms>config->duration_ms ||
        config->kind<FD_NATIVE_CAPTURE || config->kind>FD_NATIVE_RADE_LIVE_RX ||
        (config->interrupt_fixture && config->kind!=FD_NATIVE_RADE_FIXTURE)) {
         error_text(error,size,"Invalid diagnostic audio case");return NULL;
@@ -275,6 +277,7 @@ fd_native_audio *fd_native_audio_prepare(const fd_native_config *config,char *er
     fd_capture_dispatch_init(&a->dispatcher);freedv_capture_ring_init(&a->output_recording);
     freedv_wav_capture_init(&a->capture_wav);freedv_wav_capture_init(&a->output_wav);freedv_wav_capture_init(&a->stereo_wav);
     a->stats.kind=config->kind;a->stats.generation=config->generation;a->stats.native_codec_available=fd_native_audio_codec_available();
+    a->stats.recording_excerpt_limit_ms=config->excerpt_ms?config->excerpt_ms:4000;
     a->capture=config->kind!=FD_NATIVE_RADE_FIXTURE || config->capture_input;
     a->stereo=a->capture && config->capture_channel!=0;
     strcpy(a->saved_mixer,"null");strcpy(a->restored_mixer,"null");

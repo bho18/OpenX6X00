@@ -57,6 +57,9 @@ int main(int argc,char **argv){
     assert(fd_native_audio_restore(a));assert(atomic_load(&restored)==1);
     fd_native_stats stats=fd_native_audio_observe(a);assert(stats.finished&&stats.output_samples==stats.playback.accepted_samples);
     fd_native_audio_destroy(a);cleanup(dir);
+    config.excerpt_ms=20001;assert(!fd_native_audio_prepare(&config,error,sizeof(error)));
+    config.excerpt_ms=121;assert(!fd_native_audio_prepare(&config,error,sizeof(error)));
+    config.excerpt_ms=0;
     char inject_dir[]="/tmp/freedv-native-failure-XXXXXX";assert(mkdtemp(inject_dir));
     config.output_directory=inject_dir;config.generation=2;config.duration_ms=500;config.inject_failure_ms=50;
     a=fd_native_audio_prepare(&config,error,sizeof(error));assert(a&&fd_native_audio_start(a));

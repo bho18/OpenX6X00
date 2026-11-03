@@ -72,6 +72,9 @@ int main(void) {
     assert(!audio_play_lowlat_begin());
     fd_writer_release();
     assert(p && !bt_stm); /* independent of the worker's network/Bluetooth TLS */
+    diagnostic_playback_underflow(p->stream, p); /* stream may underflow during unkeyed preparation */
+    assert(audio_freedv_playback_observe(p).underflows_before_first_write == 1);
+    assert(!audio_freedv_playback_observe(p).first_write_monotonic_ns);
     assert(audio_freedv_playback_observe(p).maxlength_bytes == 17640);
     writable = 5;
     assert(audio_freedv_playback_submit(p, pcm, 5) == 2);
@@ -81,6 +84,7 @@ int main(void) {
     assert(audio_freedv_playback_submit(p, pcm + 2, 3) == 3);
     assert(written == sizeof(pcm) && writes == 2);
     assert(audio_freedv_playback_observe(p).accepted_samples == 5);
+    assert(audio_freedv_playback_observe(p).first_write_monotonic_ns > 0);
     assert(audio_freedv_playback_submit(p, NULL, 0) == 0);
     assert(audio_freedv_playback_submit(p, NULL, 1) == -1);
     assert(audio_freedv_playback_submit(p, pcm, SIZE_MAX) == -1);
@@ -97,7 +101,14 @@ int main(void) {
     latency_negative = 0; latency_error = -1;
     assert(!audio_freedv_playback_observe(p).latency_known);
     diagnostic_playback_underflow(p->stream, p);
-    assert(audio_freedv_playback_observe(p).underflows == 1);
+    assert(audio_freedv_playback_observe(p).underflows == 2);
+    assert(audio_freedv_playback_observe(p).underflows_after_first_write == 1);
+    assert(audio_freedv_playback_observe(p).underflow_events[1].accepted_samples == 5);
+    assert(audio_freedv_playback_observe(p).underflow_events[1].monotonic_ns >=
+           audio_freedv_playback_observe(p).first_write_monotonic_ns);
+    for(unsigned i=0;i<AUDIO_FREEDV_UNDERFLOW_EVENTS;++i) diagnostic_playback_underflow(p->stream,p);
+    assert(audio_freedv_playback_observe(p).underflow_events_stored == AUDIO_FREEDV_UNDERFLOW_EVENTS);
+    assert(audio_freedv_playback_observe(p).underflow_events_discarded == 2);
     pa_threaded_mainloop_lock(mloop);
     audio_freedv_playback_request_cancel(p); /* must work even while PA lock is held */
     assert(!audio_freedv_playback_quiescent(p));

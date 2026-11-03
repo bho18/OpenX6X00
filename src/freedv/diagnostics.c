@@ -111,10 +111,12 @@ static uint64_t directory_bytes(const char *name) {
         if(n>UINT64_MAX-total) {total=UINT64_MAX;break;}total+=n;
     } closedir(dir);return total;
 }
-static bool storage_ok(void) {
+static bool storage_ok(uint64_t additional) {
     struct statvfs fs;
-    return !statvfs("/tmp",&fs) && (uint64_t)fs.f_bavail*fs.f_frsize>=64u*1024u*1024u &&
-        (!d.directory[0]||directory_bytes(d.directory)<64u*1024u*1024u);
+    const uint64_t limit=64u*1024u*1024u;
+    uint64_t used=d.directory[0]?directory_bytes(d.directory):0;
+    return additional<=limit && used<=limit-additional && !statvfs("/tmp",&fs) &&
+        (uint64_t)fs.f_bavail*fs.f_frsize>=limit+additional;
 }
 static void copy_selected(const char *from,const char *to) {
     FILE *in=fopen(from,"rb");if(!in)return; FILE *out=private_file(to);
@@ -122,7 +124,7 @@ static void copy_selected(const char *from,const char *to) {
 }
 static bool bundle_open(void) {
     if(d.directory[0])return d.events!=NULL;
-    if(!storage_ok()) {message("Need 64 MiB free temporary storage; export old results first");return false;}
+    if(!storage_ok(0)) {message("Need 64 MiB free temporary storage; export old results first");return false;}
     time_t now=time(NULL);struct tm t;gmtime_r(&now,&t);char stamp[32];strftime(stamp,sizeof(stamp),"%Y%m%d-%H%M%S",&t);
     char folder[256];snprintf(folder,sizeof(folder),"/tmp/freedv-native-%s-%ld",stamp,(long)getpid());
     if(mkdir(folder,0700)) {message("Cannot create private results directory");return false;}
@@ -252,11 +254,24 @@ static void snapshot_json(FILE *f,const hw_freedv_cached_snapshot_t *s) {
 static void audio_json(FILE *f,const fd_native_stats *a) {
     fputs("{\"timing_scope\":\"all_active_blocks_including_acquisition_and_startup\"",f);
     number(f,"kind",a->kind);number(f,"generation",a->generation);number(f,"input_samples",a->input_samples);number(f,"output_samples",a->output_samples);
+    number(f,"recording_excerpt_limit_ms",a->recording_excerpt_limit_ms);
     number(f,"interrupted_input_samples",a->interrupted_input_samples);number(f,"recorder_samples",a->recorder_samples);number(f,"recorder_discarded_samples",a->recorder_discarded_samples);
     number(f,"aborted_codec_output_samples",a->aborted_codec_output_samples);number(f,"aborted_playback_samples",a->aborted_playback_samples);
     number(f,"capture_dropped_samples",a->capture.dropped_samples);number(f,"capture_hole_samples",a->capture.hole_samples);number(f,"capture_errors",a->capture.capture_errors);
     number(f,"playback_accepted_samples",a->playback.accepted_samples);number(f,"playback_write_errors",a->playback.write_errors);
     number(f,"playback_underflows_including_startup",a->playback.underflows);number(f,"playback_flushes",a->playback.flushes);number(f,"playback_flush_acknowledged",a->playback.flush_acknowledged);
+    number(f,"playback_first_write_monotonic_ns",a->playback.first_write_monotonic_ns);
+    number(f,"playback_underflows_before_first_write",a->playback.underflows_before_first_write);
+    number(f,"playback_underflows_after_first_write",a->playback.underflows_after_first_write);
+    number(f,"playback_underflow_events_discarded",a->playback.underflow_events_discarded);
+    fputs(",\"playback_underflow_events\":[",f);
+    for(unsigned i=0;i<a->playback.underflow_events_stored;++i) {
+        const audio_freedv_underflow_event_t *e=&a->playback.underflow_events[i];
+        if(i)fputc(',',f);
+        fprintf(f,"{\"monotonic_ns\":%llu,\"accepted_samples\":%llu,\"cancellation_requested\":%s}",
+            (unsigned long long)e->monotonic_ns,(unsigned long long)e->accepted_samples,e->cancellation_requested?"true":"false");
+    }
+    fputc(']',f);
     number(f,"playback_latency_known",a->playback.latency_known);number(f,"playback_queued_latency_us",a->playback.queued_latency_us);
     number(f,"pa_maxlength_bytes",a->playback.maxlength_bytes);number(f,"pa_target_bytes",a->playback.target_bytes);number(f,"pa_prebuffer_bytes",a->playback.prebuffer_bytes);number(f,"pa_min_request_bytes",a->playback.min_request_bytes);
     fputs(",\"codec\":{\"radio_io\":false",f);const fd_stream_stats *c=&a->codec;
@@ -297,7 +312,13 @@ static bool select_case(command cmd) {
 }
 static bool prepare_case(command cmd) {
     if(atomic_load(&d.evidence_failed)){message("Result storage failed; export this incomplete session and restart diagnostics");return false;}
-    if(!storage_ok()){message("Storage reserve/capture budget reached. Export and close this session.");return false;}
+    unsigned excerpt_ms=cmd.selected==CASE_RX_TONE||cmd.selected==CASE_INTERRUPTED_FIXTURE?20000:
+        cmd.selected==CASE_CAPTURE?10000:cmd.selected==CASE_FIXTURE||cmd.selected==CASE_LIVE_RX?4000:8000;
+    /* Reserve full bounded excerpts plus metadata before preparation. Audio
+     * callbacks never write files; no evidence is deleted to recover space. */
+    unsigned channels=1+(cmd.channel?2:0)+(cmd.selected!=CASE_CAPTURE);
+    uint64_t reserve=(uint64_t)excerpt_ms*44100u*2u*channels/1000u+1024u*1024u;
+    if(!storage_ok(reserve)){message("Storage reserve/capture budget reached. Export and close this session.");return false;}
     if(cmd.selected==CASE_MIC_TX&&(!(d.tx_qualified[cmd.mic][cmd.channel][cmd.mixer]&(1u<<cmd.route))||!d.stop_confirmed[cmd.mic][cmd.channel][cmd.mixer][cmd.route])){message("First confirm independent mic/TX routing and all three Stop checks");return false;}
     if((cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE||cmd.selected==CASE_MIC_TX||cmd.selected==CASE_LIVE_RX)&&!fd_native_audio_codec_available()){message("This build has no native codec; diagnostic image build must enable it");return false;}
     if((cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE||cmd.selected==CASE_LIVE_RX||cmd.selected==CASE_RX_TONE)&&!(d.rx_qualified[cmd.mic][cmd.channel][cmd.mixer]&(1u<<cmd.route))){message("Confirm an unkeyed route for this exact microphone/channel/mixer first");return false;}
@@ -312,6 +333,7 @@ static bool prepare_case(command cmd) {
     fd_native_kind kind=cmd.selected==CASE_CAPTURE?FD_NATIVE_CAPTURE:(cmd.selected==CASE_FIXTURE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?FD_NATIVE_RADE_FIXTURE:cmd.selected==CASE_MIC_TX?FD_NATIVE_RADE_MIC_TX:cmd.selected==CASE_LIVE_RX?FD_NATIVE_RADE_LIVE_RX:FD_NATIVE_TONE;
     static const char *mixers[]={NULL,"Stereo","Reverse Stereo","Sum Mono","Mix Mono"};
     fd_native_config config={.kind=kind,.fixture_path=FREEDV_DATA_DIR "/fixtures/rade-continuous.raw",.output_directory=d.case_directory,.generation=d.generation,.duration_ms=cmd.selected==CASE_FIXTURE||cmd.selected==CASE_LIVE_RX?120000:(cmd.selected==CASE_RX_TONE||cmd.selected==CASE_INTERRUPTED_FIXTURE)?20000:cmd.selected==CASE_CAPTURE?10000:8000,.capture_channel=cmd.channel,.mixer_item=mixers[cmd.mixer],.capture_input=true,.inject_failure_ms=cmd.selected==CASE_FAILURE?1500:0,.interrupt_fixture=cmd.selected==CASE_INTERRUPTED_FIXTURE};
+    config.excerpt_ms=excerpt_ms>config.duration_ms?config.duration_ms:excerpt_ms;
     char error[180]={0};d.audio=fd_native_audio_prepare(&config,error,sizeof(error));
     event("case_preparation");
     if(!d.audio||!fd_native_audio_observe(d.audio).prepared){d.preparation_failed=true;message(error[0]?error:"Audio preparation failed; stopping and restoring");fd_controller_stop(&d.controller);return false;}
