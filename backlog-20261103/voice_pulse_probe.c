@@ -6,7 +6,11 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <sys/stat.h>
-void dsp_put_audio_samples(size_t n,int16_t *p){(void)n;(void)p;}
+static atomic_uint legacy_calls;
+void dsp_put_audio_samples(size_t n,int16_t *p){
+    (void)n;(void)p;atomic_fetch_add(&legacy_calls,1);
+    if(getenv("FREEDV_PROBE_SLOW_LEGACY"))usleep(600000);
+}
 void freedv_mode_device_fault(void){fprintf(stderr,"PA context failed\n");abort();}
 void _lv_log_add(lv_log_level_t level,const char *file,int line,const char *func,const char *fmt,...){
     (void)level;(void)file;(void)line;(void)func;va_list a;va_start(a,fmt);vfprintf(stderr,fmt,a);va_end(a);fputc('\n',stderr);
@@ -16,6 +20,7 @@ int main(int argc,char **argv){
     assert(argc==2 && getenv("PULSE_SERVER"));
     assert(!strncmp(getenv("PULSE_SERVER"),"unix:/tmp/freedv-pulse-probe-",27));
     play_device="freedv_probe_sink";
+    capture_device="freedv_probe_source";
     mloop=pa_threaded_mainloop_new();assert(!pa_threaded_mainloop_start(mloop));
     mlapi=pa_threaded_mainloop_get_api(mloop);context_connect();
     pa_threaded_mainloop_lock(mloop);
@@ -47,7 +52,7 @@ int main(int argc,char **argv){
                         (unsigned long long)t.engine.output_samples,(unsigned long long)t.playback.generation_accepted_samples,(unsigned long long)t.engine.speech_frames,
                         (unsigned long long)t.engine.modem_blocks,(unsigned long long)t.engine.processing_ns,(unsigned long long)t.engine.queue_wait_ns,
                         (unsigned long long)t.engine.scheduling_delay_ns,(unsigned long long)(process_cpu_ns()-cpu_start));
-                    ++trace_count;last_trace=elapsed;
+                    assert(!fflush(trace));++trace_count;last_trace=elapsed;
                 }
             }
             usleep(2000);
@@ -55,19 +60,28 @@ int main(int argc,char **argv){
         assert(!fclose(trace));
         assert(fd_native_audio_finish(a));fd_native_stats s=fd_native_audio_observe(a);
         fd_voice_audio_snapshot snapshot;assert(fd_voice_audio_snapshot_get(retained,&snapshot));
+        fprintf(stderr,"CAPTURE turn=%u callbacks=%u max_chunk=%u max_gap_ms=%u pump_gap_ms=%u observe_ms=%u creations=%u max_bytes=%u frag_bytes=%u\n",
+            turn,s.capture.callbacks,s.capture.largest_callback_samples,s.capture.longest_callback_gap_ms,
+            s.pump_gap_ms,s.device_observe_ms,s.capture.stream_creations,s.capture.granted_maxlength_bytes,s.capture.granted_fragment_bytes);
         fprintf(stderr,"TURN %u native_fail=%u adapter_fail=%u in=%llu out=%llu capture_queue=%u capture_holes=%u stream_failed=%u\n",
             turn,s.failures,snapshot.failed,(unsigned long long)s.input_samples,(unsigned long long)s.output_samples,
             snapshot.capture.queued_samples,snapshot.capture.hole_samples,snapshot.playback.stream_failed);
+        fprintf(stderr,"CONTINUITY turn=%u first_callback_ms=%u inter_callback_gap_ms=%u last_callback_ms=%u capture_start_ms=%u\n",
+            turn,s.capture.first_callback_delay_ms,s.capture.longest_inter_callback_gap_ms,s.capture.last_callback_ms,s.capture.started_ms);
         char report[1100];snprintf(report,sizeof(report),"%s/result.json",dir);FILE *f=fopen(report,"w");assert(f);
-        fprintf(f,"{\"turn\":%u,\"failures\":%u,\"first_audio_fault\":%u,\"fault_generation\":%llu,\"fault_monotonic_ms\":%llu,\"fault_capture_queue\":%u,\"fault_engine_input_depth\":%u,\"native_failure_line\":%u,\"input_samples\":%llu,\"output_samples\":%llu,\"capture_queue\":%u,\"capture_holes\":%u,\"engine_input_depth\":%u,\"engine_output_depth\":%u,\"engine_output_samples_total\":%llu,\"processing_ns_total\":%llu,\"queue_wait_ns_total\":%llu,\"scheduling_delay_ns_total\":%llu,\"process_cpu_ns\":%llu,\"elapsed_ms\":%u,\"trace_rows\":%u,\"flush_acknowledged\":%s,\"eoo\":%llu,\"rade_creations\":%u,\"scope\":\"private virtual devices; no RF or listening qualification\"}\n",
+        fprintf(f,"{\"turn\":%u,\"failures\":%u,\"first_audio_fault\":%u,\"fault_generation\":%llu,\"fault_monotonic_ms\":%llu,\"fault_capture_queue\":%u,\"fault_engine_input_depth\":%u,\"native_failure_line\":%u,\"input_samples\":%llu,\"output_samples\":%llu,\"capture_queue\":%u,\"capture_holes\":%u,\"capture_first_callback_ms\":%u,\"capture_inter_gap_ms\":%u,\"capture_granted_maxlength_bytes\":%u,\"capture_creations\":%u,\"engine_input_depth\":%u,\"engine_output_depth\":%u,\"engine_output_samples_total\":%llu,\"processing_ns_total\":%llu,\"queue_wait_ns_total\":%llu,\"scheduling_delay_ns_total\":%llu,\"process_cpu_ns\":%llu,\"elapsed_ms\":%u,\"trace_rows\":%u,\"flush_acknowledged\":%s,\"eoo\":%llu,\"rade_creations\":%u,\"scope\":\"private virtual devices; no RF or listening qualification\"}\n",
             turn,s.failures,s.persistent_fault,(unsigned long long)s.persistent_fault_generation,(unsigned long long)s.persistent_fault_ms,s.fault_capture_queued,s.fault_engine_input_depth,
-            s.failure_line,(unsigned long long)s.input_samples,(unsigned long long)s.output_samples,snapshot.capture.queued_samples,snapshot.capture.hole_samples,
+            s.failure_line,(unsigned long long)s.input_samples,(unsigned long long)s.output_samples,snapshot.capture.queued_samples,snapshot.capture.hole_samples,s.capture.first_callback_delay_ms,s.capture.longest_inter_callback_gap_ms,s.capture.granted_maxlength_bytes,s.capture.stream_creations,
             snapshot.engine.input_depth,snapshot.engine.output_depth,(unsigned long long)snapshot.engine.output_samples,(unsigned long long)snapshot.engine.processing_ns,
             (unsigned long long)snapshot.engine.queue_wait_ns,(unsigned long long)snapshot.engine.scheduling_delay_ns,(unsigned long long)(process_cpu_ns()-cpu_start),
             audio_clock_ms()-start,trace_count,snapshot.playback.flush_acknowledged?"true":"false",(unsigned long long)s.persistent.eoo_count,s.persistent.rade_creations);assert(!fclose(f));
         if(s.failures){fd_native_audio_destroy(a);fd_voice_audio_close(retained);return 1;}
         assert(s.persistent.finished);assert(s.persistent.eoo_count==turn);
-        assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);usleep(300000);
+        assert(s.capture.stream_creations==1);
+        assert(s.capture.granted_maxlength_bytes==88200);
+        assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);
+        /* Match the physical retest's idle gap, including server idle suspend. */
+        if(turn<4)usleep(getenv("FREEDV_PROBE_LONG_IDLE")?20000000:300000);
     }
     fd_voice_audio_close(retained);
     pa_threaded_mainloop_stop(mloop);pa_threaded_mainloop_free(mloop);
