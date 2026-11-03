@@ -1,0 +1,19 @@
+name: Investigate actual FreeDV playback backpressure
+on:
+  push:
+    branches: [investigate-freedv-backlog-20261103]
+    paths: ['.github/workflows/freedv-backlog.yml','backlog-20261103/**']
+permissions:
+  contents: read
+jobs:
+  playback:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: backlog-20261103
+      - run: sudo apt-get update -qq && sudo apt-get install -y pulseaudio
+      - name: Run actual production playback against private virtual devices
+        run: python3 backlog-20261103/run.py
