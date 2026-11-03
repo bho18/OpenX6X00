@@ -66,6 +66,8 @@
   "artifacts": {
     "arm-runner.log": "ebddf80a8850728fb2db6a237d556595bacd8d99ecdbb6d8cb8ef14d1b78c1b5",
     "collector-tests.log": "6c3ecb0c89526d199688dfbc7e0ef42f1dfc6049cb0ae2369177bec729072165",
+    "helper-fix-host-build.log": "8c35b1682f73592d30612d7b0fabdb384fcfff35cb5a076cb48b85b1368aa794",
+    "helper-fix-sdk-build.log": "8c35b1682f73592d30612d7b0fabdb384fcfff35cb5a076cb48b85b1368aa794",
     "host-tests.log": "088546a920af39b0353204edf58b78f4c893ecf66962e7c36e6333d6e2d97214",
     "normal-build.log": "d27086cce51604dcc4f1a901d102b3da6bbb6b26dd5c6d95360b879f6ab31cfa",
     "pulse-ci.log": "13df86dfc07547311901fceeca16190fab65dc716a8d6d96b30cbc1daac4a178",
@@ -80,7 +82,9 @@
     "x6100": "b54abd4c914667f316d916311401e249c70415d4c73f8161e5e06f8fd737e9fe"
   },
   "collector_tests": 20,
+  "compiled_code_revision": "84883da69641157ddaa8206ad3acf8050832e51c",
   "hardware_qualified": false,
+  "helper_only_followup": "Only the PowerShell status-message quoting changed. Host and ARM builds report no work to do; compiled binaries are unchanged. Windows parse/mock SSH checks are required by the publication workflow.",
   "historical_70_percent_margin": "FAIL; unchanged",
   "host_tests": 32,
   "listening": "UNASSESSED",
@@ -100,7 +104,7 @@
     "successful_turns": 12
   },
   "scope": "Software verification only; physical continuity and mic/PTT routing test pending",
-  "source_commit": "84883da69641157ddaa8206ad3acf8050832e51c",
+  "source_commit": "7fb07274529d06ac1b078e37e2878faeea3ef968",
   "source_files": {
     ".clang-format": "b1620751f06f04cc858b13e7c44d4c1fe53d84fc7a3e14fd37466e2740af6904",
     ".github/ISSUE_TEMPLATE/bug.yml": "ffc69f9bde7854409dba2364c1f0007a173f1bf526b54d9cc279aeb3896f818a",
@@ -1663,7 +1667,7 @@
     "tools/freedv/Invoke-FreeDVRetest.ps1": "52c2aa6394f10d894e9b702ac7760d267e2e0893130a0c965148214cc363bfd3",
     "tools/freedv/README.md": "c615d9859aa764d61c3574efe3ef766c93ea706bab00d9c95e1944d55e74bb7f",
     "tools/freedv/Start-FreeDVCaptureWatch.ps1": "09c605564bb1a108c8674ca0050856d45e6e3919c720ed9fee0034710b664da2",
-    "tools/freedv/Start-FreeDVInputCheck.ps1": "8711f89c06795a768862d054c5bb00326033e17cd2ffa515a67bb861ef37e736",
+    "tools/freedv/Start-FreeDVInputCheck.ps1": "e848b7b076cef3b0e5c84bbd7ae5d1b11b40cbf5579f14585cdc048d3bf0ee03",
     "tools/freedv/THIRD-PARTY-NOTICES.md": "9c812192e8fa2a4d924fba655b8528504650370b680da8718fedf3e5d6ff8eac",
     "tools/freedv/acquisition_evidence.py": "7dd2685f9d2bd35d8518a133d3e818069ec2773a2a2ac577b8cd9296fef9dfef",
     "tools/freedv/analyze_sdr_offset.py": "0753ff36110cc949b006b30ed70f079e49610b8fc6be6f10d0ed7740aa9f3dca",
@@ -1881,7 +1885,7 @@
     "webserver/src/x6100_webserver/views/winlink.html": "358f1a80adbc5dea5442c8e6bfe5fe2a1c45084242f15796e4b530d093aa545a"
   },
   "source_tree_hash_method": "SHA256 of UTF-8 JSON source_files with sorted keys and compact comma/colon separators",
-  "source_tree_sha256": "44be065913f21404f335375a42842d0176fe9863f885ba5d64517800c9c03cd2",
+  "source_tree_sha256": "63a7b0bacf474bad8344cf9bd24e4d920589d868834fa2d005cdbe4a4a356d15",
   "status": "PASS",
   "target_builds": {
     "x6100_full_application": "PASS",

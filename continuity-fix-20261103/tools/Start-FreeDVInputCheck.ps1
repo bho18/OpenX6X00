@@ -11,4 +11,4 @@ if($LASTEXITCODE -ne 0){throw 'Could not copy read-only watcher.'}
 if($LASTEXITCODE -ne 0){throw 'Capture preflight failed. Read the BLOCKED reason above; no recording started.'}
 & ssh @sshOptions "root@$RadioIp" "nohup python3 '$remote' --gui-sha256 '$($m.gui_sha256)' --seconds 60 >/tmp/freedv-capture-source-watch-start.log 2>&1 </dev/null &"
 if($LASTEXITCODE -ne 0){throw 'Watcher launch failed.'}
-Write-Host 'Independent input recording started for 60 seconds. Run this profile's two locally armed turns now. Keep physical PTT released except during the timed middle phase in START-HERE.md; collect after both profile recordings finish.'
+Write-Host 'Independent input recording started for 60 seconds. Run the two locally armed turns now. Keep physical PTT released except during the timed middle phase in START-HERE.md; collect after both profile recordings finish.'

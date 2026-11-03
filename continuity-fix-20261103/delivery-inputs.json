@@ -69,9 +69,9 @@
   "files": {
     "LOCAL-CODEX-TASK.md": "3536c6c48108453f9a358ec9e74d5850c18ce3f95b10e0bc163f6562297edd9d",
     "START-HERE.md": "e91a617490f185b394d8c669c6abda7e09222b3bc9df38dca65be91e643b48df",
-    "candidate-manifest.json": "509618813d629e5cbcd26616206e47d2c121602ccf57a21a2c3886dddbe52a19",
-    "candidate-source.bundle": "76ae8fa33351d09a1194bfc710b39ab159e3c9aa0ad5818fa490618df8fd101a",
-    "evidence/actual-image-abi.json": "ebdbb0b6a1419164fcbfc8235982367847222f3b3a2ce6ddc2bff607d931b574",
+    "candidate-manifest.json": "4d1865ede86b4d70499fe87885b668f77e5211f5ea9d562cfbaafa3211480aab",
+    "candidate-source.bundle": "087ce262b88484632c5ee8af0e984023e519f7b9222be89d0d77cf921bee8971",
+    "evidence/actual-image-abi.json": "eef488ab6d92065509093f3aa07aec4a3e43571bbcf23050b34e80478a54632a",
     "evidence/arm-runner.log": "ebddf80a8850728fb2db6a237d556595bacd8d99ecdbb6d8cb8ef14d1b78c1b5",
     "evidence/collector-tests.log": "6c3ecb0c89526d199688dfbc7e0ef42f1dfc6049cb0ae2369177bec729072165",
     "evidence/host-tests.log": "088546a920af39b0353204edf58b78f4c893ecf66962e7c36e6333d6e2d97214",
@@ -81,7 +81,7 @@
     "evidence/target-tests.log": "c871d0627f5ee753bc7e219008d3a7356a945bcb4fabf83430cfb0d14662cb31",
     "evidence/x6100-build.log": "f7cc80102fa2102bff4d64edf0e796e6852e64ed4092672f7f42e70c63825014",
     "prepare-release.py": "ac493619302b313c35c1d052bcea3f5b7907bfc83ca03dc5a946e06dc71583a4",
-    "software-verification.json": "3203a531cfb9e712dc4e6c902c3f0d9b68845c8a303526a7caa6fbd91d828f80",
+    "software-verification.json": "b0d2e4e3425e921c70b5a5b0881a390d98b5e3d61cc6d7c18d21da35574ed627",
     "source-updates/CMakeLists.txt": "6230efdfcf22416b7f9a66cbb3dcb03feffdcef795af726aa94f16c4449ed495",
     "source-updates/docs/freedv/LOCAL-CODEX-TASK.md": "38492c28fe3067fcdcf639a209b8101c54782e3b461e073940b6652884884a4e",
     "source-updates/docs/freedv/backlog-probe-update.md": "262acb67caded3e8d64a045a493e8c1a07c33443a614c28019c0cae787b0adde",
@@ -99,7 +99,7 @@
     "source-updates/tools/freedv/Invoke-FreeDVBacklogProbe.ps1": "39e5d8a76fd8c351d25571736de1d95b92150d3d88dc703f27a240bc04a32b28",
     "source-updates/tools/freedv/Invoke-FreeDVRetest.ps1": "52c2aa6394f10d894e9b702ac7760d267e2e0893130a0c965148214cc363bfd3",
     "source-updates/tools/freedv/Start-FreeDVCaptureWatch.ps1": "09c605564bb1a108c8674ca0050856d45e6e3919c720ed9fee0034710b664da2",
-    "source-updates/tools/freedv/Start-FreeDVInputCheck.ps1": "8711f89c06795a768862d054c5bb00326033e17cd2ffa515a67bb861ef37e736",
+    "source-updates/tools/freedv/Start-FreeDVInputCheck.ps1": "e848b7b076cef3b0e5c84bbd7ae5d1b11b40cbf5579f14585cdc048d3bf0ee03",
     "source-updates/tools/freedv/analyze_sdr_offset.py": "0753ff36110cc949b006b30ed70f079e49610b8fc6be6f10d0ed7740aa9f3dca",
     "source-updates/tools/freedv/audio_capture_test.c": "6e5c81fb193426314d656fd56d6a221486e863f5bebb53f9b0998a2e79c3592e",
     "source-updates/tools/freedv/build_voice_candidate.py": "7d63fd8bd7839386114d13d4b2653d693a4a74086d4d431024e9e58c778fd689",
@@ -115,7 +115,7 @@
     "source-updates/tools/freedv/voice_audio_test.c": "04d0027735fd599527a158fcd5efac9b78fdc1796a6da9535d11fc6ecf1901ed",
     "source-updates/tools/freedv/voice_pulse_probe.c": "2a80050a60bc3b94148cd9fda6e2523f158a6ef03f3c392e7aecd992829d5f20",
     "tools/Invoke-FreeDVRetest.ps1": "52c2aa6394f10d894e9b702ac7760d267e2e0893130a0c965148214cc363bfd3",
-    "tools/Start-FreeDVInputCheck.ps1": "8711f89c06795a768862d054c5bb00326033e17cd2ffa515a67bb861ef37e736",
+    "tools/Start-FreeDVInputCheck.ps1": "e848b7b076cef3b0e5c84bbd7ae5d1b11b40cbf5579f14585cdc048d3bf0ee03",
     "tools/analyze_sdr_offset.py": "0753ff36110cc949b006b30ed70f079e49610b8fc6be6f10d0ed7740aa9f3dca",
     "tools/capture_source_watch.py": "33b4711aea79ecf72df0d4107c2fb197c5c8c97fd75844f4466adf66734e4bc3",
     "tools/check_capture_continuity.py": "44052fcc61472a154deed099246256959f5155b21abf1f67223e18f94fc19331",
@@ -123,8 +123,8 @@
     "tools/test_capture_continuity.py": "d06298ebd6e6b6b631aeeecefb8194b066ca8c80f36849a1a45f09a2143c1ec5",
     "tools/test_capture_source_watch.py": "2819e9a5f1ab2ea4351b62670ec5b388fdfc2a5a3e3d1c77a5eff91cb1eb7b15",
     "tools/test_radio_retest.py": "0ab70e7b222660e487b1293aaf72e35b3bb0561bbb5d1251204045b585a91898",
-    "transport/image.patch.01.zst": "1ea7e630d6cb4e0d7cf1b5f31990754ddbedabe7ad5b193f9ad1a7b52d0bdc67",
-    "transport/image.patch.02.zst": "a1fb2d3c7fe945c099d9fbc52420af769ef358a15cc06298e73b74f0cf772438",
-    "transport/image.patch.03.zst": "d26f75f52630006bfe63ecb552a994a0e231d43180234767bcc23c1882946d94"
+    "transport/image.patch.01.zst": "f9fbeead3740645f5457d1db22a1d10514b4c39ce20ceef447e7a73a6a42111c",
+    "transport/image.patch.02.zst": "0304eeee65f64f816c5a99b6e110fd2d4d91d13ca19d375848722f8c7cc152ba",
+    "transport/image.patch.03.zst": "33798684a3a727d4bc3dcf3b3a532457c3ac806dc751719ad52d62ee73bdd71d"
   }
 }
