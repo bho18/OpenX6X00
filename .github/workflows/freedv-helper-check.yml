@@ -1,0 +1,15 @@
+name: Validate continuity retest Windows launcher
+on:
+  push:
+    branches: [check-freedv-continuity-helper-20261103]
+permissions:
+  contents: read
+jobs:
+  windows-helper:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - shell: pwsh
+        run: ./test-input-check.ps1
