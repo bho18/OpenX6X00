@@ -2,7 +2,7 @@ name: Publish verified FreeDV capture isolation retest image
 on:
   push:
     branches: [download-freedv-capture-fix-20261103]
-    paths: ['.github/workflows/publish-freedv-capture-fix.yml', 'capture-fix-20261103/**']
+    paths: ['.github/workflows/publish-freedv-capture-fix.yml', 'capture-fix-20261103/**', 'test-watch.ps1']
 permissions:
   contents: write
 concurrency:
