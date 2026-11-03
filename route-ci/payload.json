@@ -1,0 +1,37 @@
+{
+  "probe": {
+    "parts": [
+      "probe.000.b64",
+      "probe.001.b64",
+      "probe.002.b64",
+      "probe.003.b64",
+      "probe.004.b64",
+      "probe.005.b64",
+      "probe.006.b64",
+      "probe.007.b64",
+      "probe.008.b64",
+      "probe.009.b64",
+      "probe.010.b64",
+      "probe.011.b64",
+      "probe.012.b64",
+      "probe.013.b64",
+      "probe.014.b64",
+      "probe.015.b64",
+      "probe.016.b64"
+    ],
+    "sha256": "992b573d6a73a07b4371732e9ec295438e822ff05c2900c0e302699ba128509b"
+  },
+  "speech.raw": {
+    "parts": [
+      "speech.raw.000.b64",
+      "speech.raw.001.b64",
+      "speech.raw.002.b64",
+      "speech.raw.003.b64",
+      "speech.raw.004.b64",
+      "speech.raw.005.b64",
+      "speech.raw.006.b64",
+      "speech.raw.007.b64"
+    ],
+    "sha256": "ecfaa9c9543087481df0e6c901d87021ba91c5d370fd5e7debe4e5bccb2faadb"
+  }
+}

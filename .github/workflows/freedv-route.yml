@@ -1,0 +1,50 @@
+name: FreeDV route candidate software checks
+on:
+  push:
+    branches: [download-freedv-route-fix-20261103]
+    paths: ['route-ci/**', '.github/workflows/freedv-route.yml']
+permissions:
+  contents: read
+jobs:
+  pulse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: route-ci
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ef4c85d4e95e76536af74ca64c2d1d14c8ce02d2
+          path: reference
+          persist-credentials: false
+          sparse-checkout: backlog-20261103
+      - run: sudo apt-get update -qq && sudo apt-get install -y pulseaudio libsamplerate0
+      - run: python3 route-ci/run.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: freedv-route-software-results
+          path: |
+            route-ci/summary.json
+            route-ci/**/probe.log
+            route-ci/**/result.json
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: route-ci
+      - shell: pwsh
+        run: |
+          $errors=$null; $tokens=$null
+          [System.Management.Automation.Language.Parser]::ParseFile("$pwd/route-ci/Invoke-FreeDVAgent.ps1",[ref]$tokens,[ref]$errors) | Out-Null
+          if($errors.Count){$errors | Format-List; exit 1}
+          function global:ssh { $global:LASTEXITCODE=0; '{"status":"READY"}' }
+          function global:scp { $global:LASTEXITCODE=0 }
+          '{"gui_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pulse_probe_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' | Set-Content route-ci/candidate-manifest.json
+          ./route-ci/Invoke-FreeDVAgent.ps1 -Action Preflight -CandidateManifest route-ci/candidate-manifest.json
+          ./route-ci/Invoke-FreeDVAgent.ps1 -Action Stage -Case record-ordinary-zero -RepeatFive -CandidateManifest route-ci/candidate-manifest.json
+          ./route-ci/Invoke-FreeDVAgent.ps1 -Action Abort -CandidateManifest route-ci/candidate-manifest.json
