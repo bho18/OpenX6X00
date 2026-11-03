@@ -1,0 +1,72 @@
+Internal ctest changing into directory: /workspace/build/voice-radio-fix/host
+Test project /workspace/build/voice-radio-fix/host
+      Start  1: freedv_retest_collection
+ 1/30 Test  #1: freedv_retest_collection .........   Passed    0.16 sec
+      Start  2: freedv_voice_writer
+ 2/30 Test  #2: freedv_voice_writer ..............   Passed    0.00 sec
+      Start  3: freedv_voice_bookmarks
+ 3/30 Test  #3: freedv_voice_bookmarks ...........   Passed    0.01 sec
+      Start  4: freedv_voice_audio
+ 4/30 Test  #4: freedv_voice_audio ...............Subprocess aborted***Exception:   2.00 sec
+freedv_voice_audio_test: /workspace/build/voice-radio-fix/source/tools/freedv/voice_audio_test.c:64: main: Assertion `now()<deadline' failed.
+
+      Start  5: freedv_voice_session
+ 5/30 Test  #5: freedv_voice_session .............   Passed    3.42 sec
+      Start  6: freedv_voice_timeout
+ 6/30 Test  #6: freedv_voice_timeout .............   Passed   30.09 sec
+      Start  7: freedv_input_fence
+ 7/30 Test  #7: freedv_input_fence ...............   Passed    0.01 sec
+      Start  8: freedv_front_input
+ 8/30 Test  #8: freedv_front_input ...............   Passed    0.00 sec
+      Start  9: freedv_remote_input_fence
+ 9/30 Test  #9: freedv_remote_input_fence ........   Passed    0.00 sec
+      Start 10: freedv_voice_radio
+10/30 Test #10: freedv_voice_radio ...............   Passed    0.00 sec
+      Start 11: freedv_native_coordinator
+11/30 Test #11: freedv_native_coordinator ........   Passed    0.15 sec
+      Start 12: freedv_native_radio_backend
+12/30 Test #12: freedv_native_radio_backend ......   Passed    0.01 sec
+      Start 13: freedv_native_audio_adapter
+13/30 Test #13: freedv_native_audio_adapter ......   Passed    0.24 sec
+      Start 14: freedv_audio_stereo
+14/30 Test #14: freedv_audio_stereo ..............   Passed    0.01 sec
+      Start 15: freedv_voice_faults
+15/30 Test #15: freedv_voice_faults ..............   Passed    1.05 sec
+      Start 16: freedv_voice_engine
+16/30 Test #16: freedv_voice_engine ..............   Passed    1.34 sec
+      Start 17: freedv_persistent_cases
+17/30 Test #17: freedv_persistent_cases ..........   Passed   37.99 sec
+      Start 18: freedv_native_stream
+18/30 Test #18: freedv_native_stream .............   Passed    3.40 sec
+      Start 19: freedv_writer_preferences
+19/30 Test #19: freedv_writer_preferences ........   Passed    0.01 sec
+      Start 20: freedv_capture_dispatch
+20/30 Test #20: freedv_capture_dispatch ..........   Passed    0.16 sec
+      Start 21: freedv_session_controller
+21/30 Test #21: freedv_session_controller ........   Passed    0.35 sec
+      Start 22: freedv_wav_capture
+22/30 Test #22: freedv_wav_capture ...............   Passed    0.03 sec
+      Start 23: freedv_capture_ring
+23/30 Test #23: freedv_capture_ring ..............   Passed    0.04 sec
+      Start 24: freedv_audio_capture
+24/30 Test #24: freedv_audio_capture .............   Passed    0.00 sec
+      Start 25: freedv_audio_playback
+25/30 Test #25: freedv_audio_playback ............   Passed    0.00 sec
+      Start 26: freedv_packet_tx
+26/30 Test #26: freedv_packet_tx .................   Passed    0.00 sec
+      Start 27: freedv_stub_snapshot
+27/30 Test #27: freedv_stub_snapshot .............   Passed    0.00 sec
+      Start 28: freedv_watchdog
+28/30 Test #28: freedv_watchdog ..................   Passed    0.19 sec
+      Start 29: freedv_control_lease
+29/30 Test #29: freedv_control_lease .............   Passed    0.01 sec
+      Start 30: freedv_diagnostic_state
+30/30 Test #30: freedv_diagnostic_state ..........   Passed    0.00 sec
+
+97% tests passed, 1 tests failed out of 30
+
+Total Test time (real) =  80.69 sec
+
+The following tests FAILED:
+	  4 - freedv_voice_audio (Subprocess aborted)
+Errors while running CTest

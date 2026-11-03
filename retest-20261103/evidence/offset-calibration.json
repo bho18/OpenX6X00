@@ -1,0 +1,21 @@
+[
+  {
+    "injected_hz": 79.0,
+    "measured_hz": 78.99999999999983,
+    "coherence": 0.9999999999948738,
+    "index": 17200,
+    "status": "PASS"
+  },
+  {
+    "injected_hz": -71.0,
+    "measured_hz": -71.00000000000017,
+    "coherence": 0.9999999999263529,
+    "index": 17200,
+    "status": "PASS"
+  },
+  {
+    "case": "unrelated noise rejected",
+    "coherence": 0.08112192705572534,
+    "status": "PASS"
+  }
+]

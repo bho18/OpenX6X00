@@ -1,0 +1,16 @@
+{
+  "status": "PASS",
+  "x6100_application_build": {
+    "status": "PASS",
+    "log_sha256": "6550055210ab04b5a12ddf2e7328bb0e1f6664be675a72ba189e2fb15e075cbb"
+  },
+  "x6200_normal_application_build": {
+    "status": "PASS",
+    "log_sha256": "68a7083af10d582ffd67b146d5fc5de3ce034da7d2d7502d2c0db462f51e250a"
+  },
+  "offset_tool_calibration": {
+    "status": "PASS",
+    "result_sha256": "09c22d0b0b250a12cde0fbbbe545d2ff7653595d3367a42c5eed7e1f5a6620c3"
+  },
+  "hardware_qualified": false
+}

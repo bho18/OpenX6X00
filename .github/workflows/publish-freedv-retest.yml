@@ -1,0 +1,61 @@
+name: Publish verified FreeDV focused retest image
+on:
+  push:
+    branches: [download-freedv-retest-20261103]
+    paths: ['.github/workflows/publish-freedv-retest.yml', 'retest-20261103/**']
+permissions:
+  contents: write
+concurrency:
+  group: freedv-retest-20261103
+  cancel-in-progress: false
+jobs:
+  deliver:
+    if: github.repository == 'bho18/OpenX6X00' && github.ref == 'refs/heads/download-freedv-retest-20261103'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate Windows helper syntax and collection rejection cases
+        shell: pwsh
+        run: |
+          $Tokens = $null
+          $Errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/retest-20261103/tools/Invoke-FreeDVRetest.ps1", [ref]$Tokens, [ref]$Errors) | Out-Null
+          if ($Errors.Count -gt 0) { $Errors | Format-List; exit 1 }
+          python3 retest-20261103/tools/test_radio_retest.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Recover the identified reference image from repository storage
+        run: |
+          set -euo pipefail
+          cat x6200-persistent-voice-test.img.xz.part0{1,2,3,4,5} > "$RUNNER_TEMP/old.img.xz"
+          echo '9f1cf21ddc48e62aa94dd439fcc8d5f84db8d277dcadc19a0ce6b7ed25287aa9  '"$RUNNER_TEMP/old.img.xz" | sha256sum -c -
+          xz -d "$RUNNER_TEMP/old.img.xz"
+      - name: Reconstruct exact validated bytes and package one flashable image
+        run: |
+          python3 retest-20261103/prepare-retest.py --base "$RUNNER_TEMP/old.img" --base-source candidate-source.tar.xz --input retest-20261103 --output "$RUNNER_TEMP/retest"
+      - name: Publish new test prerelease without replacing the earlier candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: freedv-retest-20261103
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing replacement.'
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Download **x6200-freedv-retest.zip**, extract it, and flash its single **x6200-freedv-retest.img** to the candidate card. Preserve the working .2 card for recovery. No image assembly is required.
+
+          Follow **START-HERE.md** in the ZIP. This replaces the earlier A/B/P runbook: one automated SSH adapter probe, consecutive hand-microphone transmissions, one RX/TX transition, and automatic evidence collection. The previously completed basic tone/playback/Stop confirmations are omitted.
+
+          Changes: first-fault and queue diagnostics survive export; faulted sessions are rejected before another RF attempt; microphone indication measures AC rather than DC; current stream flush state is exported. Includes a private virtual-device four-turn probe for local Codex/Windows SSH and an SDR frequency-offset analysis tool. Existing USB-DIG recordings showed offsets beyond the receiver acquisition range; correction and listening are separate assessments.
+
+          The original second-turn fault and route isolation still need target evidence. This is a diagnostic retest candidate, not a qualified native voice release. Both physical PTT controls remain released during bounded software-keyed cases.
+
+          Source: `6279ae76e15c368a507bfcf8cef93bb0445130c9`.
+          Image SHA256: `b451c3516a5f0c804d081ed79f78f52f970f753f54698b81fb656933e41a489d`.
+          NOTES
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --latest=false --title 'X6200 FreeDV focused retest — 2026-11-03' --notes-file "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/retest/x6200-freedv-retest.zip" "$RUNNER_TEMP/retest/START-HERE.md" "$RUNNER_TEMP/retest/LOCAL-CODEX-TASK.md" "$RUNNER_TEMP/retest/candidate-manifest.json" "$RUNNER_TEMP/retest/software-verification.json" "$RUNNER_TEMP/retest/delivery-verification.json" "$RUNNER_TEMP/retest/DOWNLOAD-SHA256SUMS"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
