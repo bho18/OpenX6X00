@@ -1,77 +1,111 @@
-# X6200 FreeDV continuity-fix candidate — current test instructions
+# X6200 FreeDV route investigation — current operating guide
 
-This is the single current workflow for this iteration. Flash the **new continuity-fix image** to the candidate card. The working .2 card is recovery only. The downloaded ZIP contains one complete `.img`; extract that file and write it with verification. There are no parts to assemble.
+This candidate implements shared production/diagnostic audio routing and named microphone comparisons. It is an experimental diagnostic candidate. Ordinary FreeDV availability remains gated by hardware qualification and independent hand-PTT support.
 
-## PTT instructions for every turn
+Install the **new complete image** on the candidate card. Keep the working `.2` card as recovery. Extract the ZIP and write its single `.img` with verification. The working `.2` card is not the image under test. Boot with both PTT buttons released and the existing dummy load/attenuated SDR arrangement. Do not change the baseband firmware.
 
-**Do not keep the hand-mic PTT released for the whole turn.** This test deliberately compares microphone input with that button released, held, then released again. Apply the same sequence to all four turns (USB one/two and Digital one/two).
+## What changed and what this test decides
 
-* **Radio-side PTT:** leave released throughout the entire test.
-* **Hand-mic PTT:** leave released during boot, setup, Acquire and Arm. Start timing when you press **Run**. Leave it released for seconds **0–2**, press and hold it for seconds **2–5**, then release it at **5 seconds** and keep it released through the remaining speech, automatic finish, restoration and the wait between turns.
-* If the case faults, **release hand-mic PTT immediately**, then use Stop if needed and follow the failure-collection step.
+The firmware's voice-message recorder suppresses the internal microphone gain; the earlier FreeDV diagnostic restored both gains. Diagnostic and production activation now share the same driver: mute inputs, select the route, confirm transport, then admit the hand microphone. Ordinary preferences return on Close, with RECORD restored before microphone gains. A retained stereo stream now refuses a change to mono instead of silently discarding every sample. The capture-loss protection remains in place.
 
-Speak during all three phases. The earlier instruction to keep both physical PTT controls released for an entire turn belongs to the previous test; it does not apply to this comparison. This clarification changes no test timing or firmware and requires no new image download.
+The first question is whether the ordinary recording convention repeatedly captures the external acoustic speech. The second is whether introducing MODEM removes that capture. RF delivery, old tone cases and speaker demonstrations are not repeated as prerequisites.
 
-## What this iteration fixes and tests
+## Preparation by the local agent
 
-The independent recording in the November 3 08:39 collection proves a defect in the previous candidate: turn two silently lost **25,520 samples (578.685 ms)** during a 773 ms capture-delivery pause. The original 200 ms PulseAudio record queue could overflow without reporting holes or drops. The new candidate requests one second of finite transport capacity, verifies the actual grant, retains the **500 ms processing-backlog limit**, and faults explicitly when capture delivery stalls more than 500 ms after the first callback. Initial capture has a separate one-second deadline. Late callbacks cannot erase a recorded stall.
+Use this directory's `Invoke-FreeDVAgent.ps1`, its Python helpers and `candidate-manifest.json`. Use existing SSH authentication and strict host checking for `root@192.168.100.62`; the browser is `http://192.168.100.62/`. Do not change keys, host records, execution policy, mixer controls or services independently.
 
-The adapter now keeps its empty playback stream uncorked while acquired, with cancellation plus acknowledged flush fencing each turn. This avoids permitting idle suspension between ordinary turns. No silent PCM is written to keep it alive. Device suspension is a plausible contributor to the physical pause, not a proven hardware cause.
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action Preflight
+.\Invoke-FreeDVAgent.ps1 -Action SpeechFixture
+```
 
-The AF-volume-4 experiment did **not** restore microphone audio: both the GUI and independent source recording stayed nearly constant during TX. We still need to distinguish mode-dependent input routing from physical hand-microphone PTT gating. This workflow combines that comparison with the retained-turn check: **two eight-second turns in USB, then two in USB-DIG**. No tone, speaker, old A/B/P matrix, virtual probe, RX test or official-GUI listening repetition is requested.
+The second command creates `numbered-speech.wav` using Windows speech synthesis. Retain its hash and the original file. Position a PC speaker near the **hand microphone**, at a fixed ordinary speaking level. Replay that WAV continuously during microphone cases. The fixture is acoustic input to the normal hand microphone; it does not provide remote microphone/PTT support.
 
-## Install and prepare once
+The agent inventories input devices, source channels, mixer controls and installed identity. Report any missing prerequisite as BLOCKED. It must never reinterpret aggregate TX as independent hand-PTT release.
 
-1. Preserve the working .2 card. Extract the release ZIP, verify its download/image hashes against `DOWNLOAD-SHA256SUMS.txt` and `candidate-manifest.json`, flash its single `.img` to the candidate card and boot with both physical PTT controls released. During each test turn, use the hand-mic PTT sequence above.
-2. Use the same dummy load, attenuated SDR connection and 14.100 MHz setup. The diagnostic requests **1 W**. Keep the SDR demodulator in upper sideband, with the same frequency, approximately 3 kHz filter and gain for both profiles. Avoid clipping. Create a `recordings` folder in the extracted release directory.
-3. On the ordinary radio receive screen select **USB**, speaker/AF **4** and hand microphone. Keep microphone/monitor gains and processing settings consistent for the two modes. The collector preserves effective settings; record any intentional differences rather than assuming the SSB and DIGI saved groups match. Do not retune to compensate for the previously observed SDR recording offset.
-4. Open **APP → Modes → FreeDV test**. Select **Repeat hand-mic TX 8s + finish / R1 M1 P0 / Hand mic / Existing mono / Keep mixer**. Select **Acquire once** and wait for ready. The mono choice uses the retained production capture stream.
+Open **APP → Modes → FreeDV test** locally and press **Acquire**. Leave the frequency and USB profile fixed. Both physical PTT controls remain **released throughout every test below**, including RF, unless a later specifically named physical-PTT case replaces that instruction. Run/Arm refers to the front-panel diagnostic controls, not either PTT button.
 
-## USB: first turn and retained turn
+## First batch: capture without RF
 
-5. Start one continuous SDR WAV recording as `recordings\USB.wav`. In PowerShell, from the extracted release folder, run:
+The agent stages the existing voice-recorder convention:
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\tools\Start-FreeDVInputCheck.ps1 -RadioIp 192.168.100.62 -CandidateManifest .\candidate-manifest.json
-   ```
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action Stage -Case record-ordinary-zero -RepeatFive
+```
 
-   The helper verifies the installed GUI hash, physical capture source, recorder and storage, then starts a **60-second independent input recording**. It uses the existing SSH key and strict host checking. It does not key RF, change routing/mixers, restart services or alter preferences. If preflight says BLOCKED, stop and preserve the output. The execution-policy flag applies to this process only.
-6. Locally **Arm → Run**. During the eight-second case, use the following approximate timing, speaking continuously and announcing the physical button changes:
+After staging, verify the radio shows **Record ordinary mic / internal zero** and R1 M0 P0. Start continuous independent source recording before local Run. The agent uses the staged helper and expected GUI hash:
 
-   | Case time | Hand-mic PTT | Say |
-   | --- | --- | --- |
-   | 0–2 seconds | Released | “USB one, released, alpha start.” |
-   | 2–5 seconds | Press and hold | “USB one, held, one two three four.” |
-   | 5–8 seconds | Release | “USB one, released again, alpha finish.” |
+```text
+python3 /tmp/freedv-agent-kit/capture_source_watch.py --gui-sha256 <candidate gui_sha256> --channels 2 --chunks --seconds 150
+```
 
-   Keep the radio-side PTT released throughout. Release hand-mic PTT **before** the automatic case finish. Listen on the SDR for any ordinary analog voice alongside the modem; note whether it appears only while held. The software MODEM command does not guarantee control over physically held PTT.
-7. Wait for automatic unkey and **completed restoration**, then wait **20 seconds**. Leave the session acquired. **Arm → Run** once more with the same released → held → released timing, saying “USB two … bravo start … five six seven eight … bravo finish.” Do not Close/Acquire between the two turns.
-8. Export after the second turn, then Close FreeDV and stop the SDR recording. If any case faults or fails to restore, release hand PTT, use Stop if needed, export and **end this batch**. Do not retry a failed session or continue to USB-DIG. Collect the failure evidence once the recorder finishes. Restoration must wait for observed RX; use the established recovery path if it stays in TX.
+Run that command in a separate SSH process, with stdout/stderr retained. The GUI remains running. It records the physical PA source in ten-second stereo WAV chunks; it sends no radio, playback or mixer commands. These channels may already be mixed by ALSA, so stereo alone does not prove physical separation.
 
-## USB-DIG: same comparison
+Press **Run once locally**. Five eight-second recordings run with approximately twenty seconds between them. This batch cannot enable MODEM or software PTT. Keep the acoustic fixture playing and both PTT buttons released. No speaking or button choreography is needed. Stop the batch on a displayed fault; do not retry it.
 
-9. After closing FreeDV and after the first 60-second watcher has finished, select **USB-DIG** on the ordinary receive screen. Retain 14.100 MHz, AF 4, microphone/monitor gains and the same SDR settings. Reopen FreeDV test and select/acquire the same case and route.
-10. Start `recordings\USB-DIG.wav` and run the **same PowerShell helper again**. It creates a separate timestamped independent recording.
-11. Run two eight-second turns using the same physical PTT timing and the same 20-second interval while retained. Say “Digital one … charlie start … one two three four … charlie finish,” then “Digital two … delta start … five six seven eight … delta finish.” Release PTT before each case ends. Export, Close and stop the SDR recording. Stop after any fault; no retries.
+The agent polls and collects:
 
-## Collect once
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action Status
+.\Invoke-FreeDVAgent.ps1 -Action Events
+.\Invoke-FreeDVAgent.ps1 -Action Collect -OutputDir .\evidence-record-ordinary-zero
+.\Invoke-FreeDVAgent.ps1 -Action Assess
+```
 
-12. After the second watcher's 60 seconds have elapsed (or the first if the batch stopped early), run:
+Collection is incremental and verifies every transferred file against its transfer manifest. Repeat Collect after interrupted transfer. Preserve originals. Collect only after all five cases and the independent watcher finish; an active file changing during collection is an incomplete collection, not PASS. Exported `control-trace.jsonl` describes requested/cached commands and transport results, not physical register readback.
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\tools\Invoke-FreeDVRetest.ps1 -Action Collect -RadioIp 192.168.100.62 -RecordingDir .\recordings
-   ```
+Listen to one numbered capture and inspect all five for fixture presence, flat intervals, sample continuity and restoration. Do not count a single spike or hum as usable speech. Activity remains INCONCLUSIVE until listening identifies the phrase and its first/last words.
 
-   Upload the resulting `freedv-collect-*.zip`. Keep the original files unchanged and do not reboot before collection. Include whether each turn completed, whether input or analog speech appeared only while hand PTT was held, and any difference in button behavior. The collector includes case WAVs/JSON, independent raw/WAV capture and delivery timestamps, installed identity, logs and mixer/device inventory. COLLECTED means retrieval, not a voice-test PASS.
+## The next batch is selected by that result
 
-## How these results will be assessed
+- If ordinary/zero captures reliably, compare **record-ordinary-saved** using the same five-run procedure. This changes only internal mic gain.
+- If the gain comparison matters, compare **record-hand-zero** against ordinary/zero. This changes microphone selection while keeping the internal gain zero.
+- Use **record-hand-saved** only when needed to reconstruct the previous diagnostic convention.
+- If the first turn succeeds and a later turn fails, inspect the intervening command/resend/restore trace before another batch. Keep the selected profile and streams retained. Do not return to automatic microphone selection between ordinary persistent voice turns.
+- If the independent source has the fixture but the adapter does not, investigate sample/channel delivery. If both lose it, investigate the common route/source boundary. Do not change RADE normalization to repair missing input.
+- If ordinary recording also fails, investigate that firmware microphone path first. Do not proceed to RF.
 
-* Compare every GUI capture sample against the concurrent reference using `tools/check_capture_continuity.py`. A unique full match establishes PCM continuity only. A proved deletion fails; ambiguous alignment stays INCONCLUSIVE. Neither outcome establishes intelligibility.
-* Check actual granted buffers, first-callback delay, subsequent gaps, first-fault reason and frozen queue depths. Fault **16 / FD_AUDIO_CAPTURE_STALL** is an explicit stalled-input failure, not a successful turn. A continuing server stall may now stop promptly instead of producing an apparently completed short recording.
-* Check one EOO per successful turn, retained resources, fresh RX restoration and underflows before drain. Keep drain-tail underflows distinct.
-* Compare microphone activity in released/held/released phases within each mode, then compare modes with effective settings recorded. Mic recovery only while held would support PTT-dependent gating. Recovery in only one profile would support a profile-dependent route. Analog speech mixed into RF still fails isolation even if mic capture improves.
-* Match saved modem output to SDR and assess derived frequency-corrected copies when useful. No additional listening task is needed until saved microphone input contains identifiable speech. USB and USB-DIG remain unqualified; independent hand-PTT release, bidirectional RF and prior processing-margin failures are not cleared by this test.
+Each condition needs its own staged batch and one local Run. Change nothing else. Collect and verify evidence between batches. If temporary storage becomes insufficient, stop; transfer and verify completed evidence before removing only those identified remote test copies. Do not delete originals on Windows or unrelated radio logs.
 
-## For local Codex
+## Introduce modem transmission after capture succeeds
 
-Use this guide only. Automate hash verification, the two read-only watcher launches, completion checks and the final collection. The user operates Arm/Run and physical PTT locally. Use the current manifest; do not change SSH keys, host records, global execution policy, services, routing or RF remotely. Preserve the working card and all original evidence. Verify helper SHA256SUMS and ZIP CRC/member hashes. Do not publish private evidence or repeat the previous probes/basic tests. Report actual faults, missing files and unassessed listening separately from collection success.
+The local agent stages:
+
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action Stage -Case modem-waveform
+```
+
+Start the acoustic fixture, continuous independent source capture and SDR recording before Arm. Verify **Known RADE waveform TX 8s**, R1 M1 P0, hand microphone, existing mono and saved mixer. The diagnostic requests 1 W and preserves protections. Press **Arm → Run locally for this transmission**. Both physical PTT controls stay released. The stored waveform avoids live encoder workload while testing whether MODEM changes microphone admission.
+
+After natural completion and fresh RX, collect immediately. Associate this case with its SDR recording. Stop on any fault; do not rerun an unchanged failure.
+
+- Capture survives MODEM: stage `live-speech` for one eight-second locally armed turn with the same fixture and profile.
+- Capture disappears at MODEM activation: stage `modem-prekey-gain` for one separately armed comparison, which changes only whether the shared driver raises the hand gain before or after keying. Capture source and SDR throughout. Compare the control traces and source recordings. Return that evidence before issuing another candidate; no USB-DIG or tone sweep.
+- Intelligible capture but poor local decode: replay that exact capture through fresh/retained engines and the pinned reference.
+- Good local decode but poor SDR decode: inspect measured carrier offset, waveform alignment, clipping and discontinuities. Keep original SDR recordings unchanged; corrections are derived analysis copies.
+
+After two targeted corrections fail against the same signature, suspend manual repeats and investigate the unresolved firmware behavior from preserved evidence.
+
+## Automated tests without RF
+
+The speech probe runs actual ARM processing and retained audio streams on a **private virtual PulseAudio server**, with a separate speech source and output sink:
+
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action Probe -Turns 4 -SpeechWav .\numbered-speech.wav
+```
+
+Start with four turns. Increase to 100 only after the short run passes and storage preflight permits retaining every output. These results do not qualify the physical microphone route or intelligibility. Existing engine tools additionally exercise 100 TX/RX turns, 100 lifecycles and valid modem RX; distinguish paced physical execution from accelerated host results.
+
+## Stop, recovery and results
+
+Local **Stop** is always available. The agent can also request cancellation:
+
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action Abort
+```
+
+Abort clears pending recording repetitions. It cannot force RX while a physical PTT remains held. Release both physical controls, wait for fresh RX/restoration, then Close. If recovery remains pending, preserve the status/logs and use the working card recovery path. Persisted settings never resume active TX.
+
+Current independent hand-PTT release remains unsupported by the pinned documented control API. Normal APP-mode exposure stays gated. Later acceptance requires both physical controls, twenty successful speech turns, controlled RF reception while the speaker plays, both official-GUI directions and the conversation. A transmitting peer/RF source is needed for receive qualification. Independent RF timing and the historical 70% processing-margin failure remain open gates.
+
+The local agent should return one verified private evidence folder and a concise result: identities, completed cases, first failure, input/source comparison, control trace findings, listening assessment and the next named action. COLLECTED means retrieved; it never means accepted.

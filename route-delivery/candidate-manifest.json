@@ -1,0 +1,20 @@
+{
+  "firmware_commit": "a3c6e4eabc16b8da73f6bc2d1e5a73d352f59a29",
+  "source_tree_sha256": "318f25da405fd882fa40215a003e5ed625612688cd798d984c50e84a4ec0178e",
+  "software_gates_passed": true,
+  "hardware_qualified": false,
+  "ready_for_guided_hardware_tests": true,
+  "candidate_kind": "persistent voice diagnostic spare-card image",
+  "normal_mode_qualified": false,
+  "host_verification_sha256": "d826d82436e88c094bf11cf12d3b38198dcadcb1581dc123a910040a94e9c439",
+  "gui_sha256": "d246a334c60ae5255d0d56bc01585f388e59e9e864661857f8dd1d48476b9c66",
+  "runner_sha256": "8e67e736781f7498dd5a8fc833d9e453e460f95adcd2be99683cdc897fc8114f",
+  "rade_sha256": "9d04766b1743a4cc3ef575497273a0d6a993e1cc10731d1bc5bada04723e230d",
+  "web_wheel_sha256": "43eda02525491d79e5e6aeb663e8e21c9a0f30f0194c4b429f0d4ee23bf3351f",
+  "model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453",
+  "physical_hand_ptt_release": "UNSUPPORTED by pinned documented API; never inferred from aggregate TX",
+  "pulse_probe_sha256": "83c0d9eb3c28c9c4d537389fe57a15b6d2f7b09a0b71555a9ea835ee1b09401d",
+  "image_sha256": "d0682160dad9ff23cf8eeda90adad8278c6a6cd6f249d50d8e586e89c282aa28",
+  "signature_key_preserved": true,
+  "actual_image_abi": "PASS"
+}

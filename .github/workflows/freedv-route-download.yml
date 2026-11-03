@@ -1,0 +1,47 @@
+name: Publish complete FreeDV route test image
+on:
+  push:
+    branches: [download-freedv-route-fix-20261103]
+    paths: ['route-delivery/**', '.github/workflows/freedv-route-download.yml']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: route-delivery
+      - name: Require completed audio and Windows software checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api repos/bho18/OpenX6X00/actions/runs/41731596633 --jq .conclusion)" = success
+          test "$(gh api repos/bho18/OpenX6X00/actions/runs/41732817029 --jq .conclusion)" = success
+      - name: Reconstruct and verify the complete image and source archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y zstd
+          mkdir baseline
+          gh release download freedv-continuity-fix-20261103 --repo bho18/OpenX6X00 --pattern x6200-freedv-continuity-fix.zip --dir baseline
+          echo 'f93add221d7197a4dabd263f77e7d5f3ce0bcf87c0e3d369f69a9269d2d7d3ab  baseline/x6200-freedv-continuity-fix.zip' | sha256sum -c -
+          unzip -q baseline/x6200-freedv-continuity-fix.zip x6200-freedv-continuity-fix.img candidate-source.tar.xz -d baseline
+          python3 route-delivery/prepare-release.py --base baseline/x6200-freedv-continuity-fix.img --base-source baseline/candidate-source.tar.xz --input route-delivery --output final
+      - name: Publish the verified experimental candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.txt <<'EOF'
+          Experimental X6200 diagnostic candidate for the microphone-routing investigation. Production FreeDV remains gated by hardware qualification and independent hand-PTT release support.
+
+          Download x6200-freedv-route-fix.zip, extract its single complete .img, and write the candidate card with verification. Preserve the working .2 recovery card. START-HERE.md is the single current guide and includes the local-agent assignment.
+
+          Start with the repeated unkeyed voice-recording comparison. Both physical PTT controls remain released. Every RF case requires local Arm then Run. No repeated old tone/basic setup matrix is required.
+
+          The shared driver, retained route restoration, stereo/mono capture fix, command trace and Windows agent runner are included. Software evidence: 34 host checks, 27 Python checks, 100 actual-engine TX/RX speech-excerpt pairs, 600 seconds of accelerated valid RX, actual ARM processing under QEMU, four speech-driven PulseAudio turns and 100 device lifecycles with stable descriptors. Accelerated/virtual results do not qualify physical routing, intelligibility or radio performance.
+          EOF
+          gh release create freedv-route-fix-20261103 --repo bho18/OpenX6X00 --prerelease --target "$GITHUB_SHA" --title 'X6200 FreeDV route diagnostic candidate — November 3, 2026' --notes-file release-notes.txt final/x6200-freedv-route-fix.zip final/DOWNLOAD-SHA256SUMS.txt final/START-HERE.md final/candidate-manifest.json final/software-verification.json final/delivery-verification.json
