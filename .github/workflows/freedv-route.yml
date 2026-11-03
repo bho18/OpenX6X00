@@ -7,6 +7,7 @@ permissions:
   contents: read
 jobs:
   pulse:
+    if: "!contains(github.event.head_commit.message, '[windows-only]')"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -48,3 +49,18 @@ jobs:
           ./route-ci/Invoke-FreeDVAgent.ps1 -Action Preflight -CandidateManifest route-ci/candidate-manifest.json
           ./route-ci/Invoke-FreeDVAgent.ps1 -Action Stage -Case record-ordinary-zero -RepeatFive -CandidateManifest route-ci/candidate-manifest.json
           ./route-ci/Invoke-FreeDVAgent.ps1 -Action Abort -CandidateManifest route-ci/candidate-manifest.json
+          $global:downloads=0
+          function global:scp {
+            $global:LASTEXITCODE=0
+            $destination=$args[-1]
+            $source=$args[-2]
+            if($source -like '*:/tmp/freedv-agent-results/transfer-manifest.json'){
+              $hash=[Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('fixture'))).ToLowerInvariant()
+              @{ 'radio/tmp/fixture.txt'=$hash } | ConvertTo-Json | Set-Content -LiteralPath $destination
+            }elseif($source -like '*:/tmp/freedv-agent-results/radio/tmp/fixture.txt'){
+              [IO.File]::WriteAllText($destination,'fixture');$global:downloads++
+            }
+          }
+          ./route-ci/Invoke-FreeDVAgent.ps1 -Action Collect -CandidateManifest route-ci/candidate-manifest.json -OutputDir verified-transfer
+          ./route-ci/Invoke-FreeDVAgent.ps1 -Action Collect -CandidateManifest route-ci/candidate-manifest.json -OutputDir verified-transfer
+          if($global:downloads -ne 1){throw 'Verified chunks were unnecessarily downloaded again'}

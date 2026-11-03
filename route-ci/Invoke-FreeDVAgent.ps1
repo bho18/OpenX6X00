@@ -48,13 +48,19 @@ if($Action -eq 'Probe'){
 if($LASTEXITCODE){throw "$Action failed; preserve the output for diagnosis"}
 if($Action -eq 'Collect'){
  New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
- & scp -O -r @opts "root@${RadioIp}:/tmp/freedv-agent-results/." $OutputDir
- if($LASTEXITCODE){throw 'Transfer interrupted; repeat Collect to resume'}
+ & scp -O @opts "root@${RadioIp}:/tmp/freedv-agent-results/transfer-manifest.json" (Join-Path $OutputDir 'transfer-manifest.json')
+ if($LASTEXITCODE){throw 'Manifest transfer interrupted; repeat Collect'}
  $manifest=Get-Content -Raw (Join-Path $OutputDir 'transfer-manifest.json') | ConvertFrom-Json
  foreach($entry in $manifest.PSObject.Properties){
-  if($entry.Name -match '(^/|(^|/)\.\.(/|$))'){throw 'Unsafe transfer entry'}
+  if($entry.Name -notmatch '^[A-Za-z0-9_./-]+$' -or $entry.Name -match '(^/|(^|/)\.\.(/|$))'){throw 'Unsafe transfer entry'}
   $path=Join-Path $OutputDir $entry.Name
-  if(!(Test-Path -LiteralPath $path) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.Value){throw "Transfer hash mismatch: $($entry.Name)"}
+  if((Test-Path -LiteralPath $path) -and (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -eq $entry.Value){continue}
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+  $partial=$path+'.partial'
+  & scp -O @opts "root@${RadioIp}:/tmp/freedv-agent-results/$($entry.Name)" $partial
+  if($LASTEXITCODE){throw 'Transfer interrupted; repeat Collect to resume verified chunks'}
+  if((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.Value){throw "Transfer hash mismatch: $($entry.Name)"}
+  Move-Item -LiteralPath $partial -Destination $path -Force
  }
  Write-Host "Verified private evidence: $OutputDir"
 }
