@@ -1,0 +1,8 @@
+Internal ctest changing into directory: /workspace/build/voice-backlog/host
+Test project /workspace/build/voice-backlog/host
+    Start 4: freedv_voice_audio
+1/1 Test #4: freedv_voice_audio ...............   Passed   11.09 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =  11.09 sec

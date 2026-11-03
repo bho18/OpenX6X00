@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "staged virtual-device probe update; no image/GUI replacement",
+  "source_commit": "75a2317222ca787d8cb551a2f7a47587a78d8234",
+  "base_firmware_commit": "6279ae76e15c368a507bfcf8cef93bb0445130c9",
+  "expected_gui_sha256": "8385f2d489294df235fae4896018fde849b9669b9a6d62956abc1223c9394010",
+  "probe_sha256": "bc5d0308a9f727459afb0cfa88cbce04fd78d300358b239c8826b1e3692f3789",
+  "helper_sha256": "21d9c09e6948f49461ad35cdb8c3d517bbcf06d6ee9110656cd8bb65b70fbbb3",
+  "actual_image_abi": "PASS",
+  "fixture": {
+    "null_sink_norewinds": true,
+    "maximum_block_ms": 50
+  },
+  "backlog_limit_ms": 500,
+  "target_probe_status": "PENDING",
+  "hardware_qualified": false
+}

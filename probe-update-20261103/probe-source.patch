@@ -1,0 +1,295 @@
+diff --git a/docs/freedv/backlog-probe-update.md b/docs/freedv/backlog-probe-update.md
+new file mode 100644
+index 0000000..b1b6692
+--- /dev/null
++++ b/docs/freedv/backlog-probe-update.md
+@@ -0,0 +1,35 @@
++# FreeDV backlog probe correction — 2026-11-03
++
++Keep the installed 2026-11-03 retest image (firmware `6279ae76e15c368a507bfcf8cef93bb0445130c9`). **Do not reflash, repeat the earlier RF batch, or run Acquire/Arm/Run for this update.**
++
++## What failed and what changed
++
++The first-turn virtual probe failure was reproduced with the actual engine, audio adapter and PulseAudio on a host. The original fixture stopped accepting playback at exactly 2,646 samples. It then failed with fault 2 after accepting 48,572 microphone samples, almost identical to the target's 48,574. The host failure showed only about 10 ms of processing time and about 500 ms of output-queue waiting.
++
++A separate playback-only reproduction found nearly two seconds of cold sink latency while the stream was uncorked, healthy, and accepting no more samples. PulseAudio 16.1's null sink defaults to a two-second scheduling block. The fixture now uses its documented `norewinds=1` option, which caps that virtual block at 50 ms. This changes the private test fixture. The engine's 500 ms input-backlog protection, 200 ms microphone reserve, modem cadence and codec arithmetic are unchanged.
++
++With the corrected fixture, all four host engine/adapter turns completed with one retained RADE context and EOO counts 1–4. This establishes the correction on the host; the X6200 result is still pending. It does not resolve or pass the earlier physical-route second-turn failure, microphone isolation, RF reception or intelligibility.
++
++The staged probe now exports the exact two depths used by the backlog guard, engine output depth, cumulative processing/output-wait/scheduling time, per-turn process CPU time, and a bounded 100 ms trace. The source and binary are identified in `probe-manifest.json`.
++
++## Run once from Windows
++
++1. Download and extract `freedv-backlog-probe-20261103.zip` completely into a new folder. Keep all files together.
++2. Leave the radio on its ordinary receive screen, with physical PTT released. Use its existing network connection at `192.168.100.62`. No SDR recording, microphone speech, tuning or image change is needed.
++3. In PowerShell opened in that extracted folder, run:
++
++   ```powershell
++   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Run-BacklogProbe.ps1 -RadioIp 192.168.100.62
++   ```
++
++   This execution-policy setting applies only to that child process. Existing Windows SSH keys and strict host checking are used. No host records or keys are changed.
++4. Wait about one minute. The command stages a hash-verified probe under a new `/tmp/freedv-retest-*` directory, starts its own private virtual-device PulseAudio server, runs four eight-second turns, collects existing logs/device inventory and saves **one `freedv-backlog-<timestamp>.zip`** beside the extracted folder.
++5. Return that ZIP, whether the result is PASS, FAIL, BLOCKED or INCONCLUSIVE. **Stop here; this update requests no manual RF work.**
++
++The installed GUI and probe are not replaced. The running GUI, system PulseAudio, radio settings, microphone routing and transmitter controls are not changed. The private server is stopped after the test; the remote evidence directory remains available. Missing virtual-device support is BLOCKED with no physical-device fallback.
++
++If it passes, all four turns must complete with substantial input/output, EOO counts 1–4, one RADE creation and acknowledged device flushes. A synchronized stream or nonzero output alone is insufficient. Silent virtual input means speech intelligibility remains UNASSESSED even on PASS.
++
++## For local Codex
++
++Run the single command above using the existing verified SSH connection. Inspect `bundle/probe/result.json`, each `turn-*/result.json` and `trace.jsonl`, `fixture.json`, and `bundle/collect`. Verify the returned helper `SHA256SUMS`. Report the first fault-time capture plus engine input depth, output queue depth, output waiting versus processing/CPU time, and number of completed turns. A collection result is evidence retrieval, not test acceptance. Do not perform any RF/UI actions, restart services, change keys, or publish collected evidence. Return the ZIP to this conversation.
+diff --git a/src/freedv/voice_audio.c b/src/freedv/voice_audio.c
+index 071cc06..65349ec 100644
+--- a/src/freedv/voice_audio.c
++++ b/src/freedv/voice_audio.c
+@@ -44,13 +44,13 @@ void fd_voice_audio_cancel(fd_voice_audio *a) {
+     fd_voice_cancel(a->engine);
+     audio_freedv_playback_request_cancel(a->playback);
+ }
+-static void failure_at(fd_voice_audio *a,unsigned reason) {
++static void failure_with_depth(fd_voice_audio *a,unsigned reason,unsigned capture_queued,unsigned engine_depth) {
+     unsigned expected=FD_AUDIO_OK;
+     if(atomic_compare_exchange_strong(&a->first_fault,&expected,reason)){
+         atomic_store(&a->fault_generation,atomic_load(&a->attempted_generation));
+         atomic_store(&a->fault_ms,now());
+-        atomic_store(&a->fault_capture_queued,audio_freedv_capture_stats().queued_samples);
+-        atomic_store(&a->fault_engine_input_depth,fd_voice_observe(a->engine).input_depth);
++        atomic_store(&a->fault_capture_queued,capture_queued);
++        atomic_store(&a->fault_engine_input_depth,engine_depth);
+     }
+     if(!atomic_exchange(&a->failed,true)){
+         fprintf(stderr,"FreeDV audio fault %u, generation %llu\n",reason,(unsigned long long)a->generation);
+@@ -58,6 +58,9 @@ static void failure_at(fd_voice_audio *a,unsigned reason) {
+     }
+     fd_voice_audio_cancel(a);
+ }
++static void failure_at(fd_voice_audio *a,unsigned reason) {
++    failure_with_depth(a,reason,audio_freedv_capture_stats().queued_samples,fd_voice_observe(a->engine).input_depth);
++}
+ static void snapshot_locked(fd_voice_audio *a) {
+     a->snapshot=(fd_voice_audio_snapshot){.sampled_ms=now(),.generation=a->generation,
+         .cancelled=atomic_load(&a->cancelled),.failed=atomic_load(&a->failed),.finishing=a->finishing,
+@@ -90,7 +93,7 @@ static void *pump(void *arg) {
+         atomic_store(&a->microphone_peak,a->direction==FD_VOICE_TX && queued.input_samples>=a->rate/5?peak:0);
+         if(capture.capture_errors || capture.dropped_samples || capture.hole_samples)failure_at(a,FD_AUDIO_CAPTURE);
+         else if(capture.queued_samples!=UINT_MAX && (uint64_t)capture.queued_samples+queued.input_depth>a->rate/2)
+-            failure_at(a,FD_AUDIO_BACKLOG);
++            failure_with_depth(a,FD_AUDIO_BACKLOG,capture.queued_samples,queued.input_depth);
+         if(atomic_load(&a->cancelled))goto telemetry;
+         size_t submitted=n?fd_voice_submit(a->engine,a->generation,input,n):0;
+         if(submitted && a->taps.input)a->taps.input(a->taps.context,input,submitted);
+diff --git a/tools/freedv/Invoke-FreeDVBacklogProbe.ps1 b/tools/freedv/Invoke-FreeDVBacklogProbe.ps1
+new file mode 100644
+index 0000000..512f1cb
+--- /dev/null
++++ b/tools/freedv/Invoke-FreeDVBacklogProbe.ps1
+@@ -0,0 +1,37 @@
++param(
++    [string]$RadioIp = '192.168.100.62',
++    [string]$OutputDir
++)
++$ErrorActionPreference = 'Stop'
++if ($RadioIp -notmatch '^[a-zA-Z0-9][a-zA-Z0-9.-]*$') { throw 'Use an IPv4 address or hostname.' }
++$Manifest = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'probe-manifest.json') | ConvertFrom-Json
++$Helper = Join-Path $PSScriptRoot 'radio_retest.py'
++$Binary = Join-Path $PSScriptRoot 'freedv_voice_pulse_probe'
++foreach ($Check in @(@($Helper, $Manifest.helper_sha256), @($Binary, $Manifest.probe_sha256))) {
++    if ($Check[1] -notmatch '^[0-9a-f]{64}$' -or (Get-FileHash -LiteralPath $Check[0] -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Check[1]) {
++        throw 'Probe package hash mismatch. Nothing has been uploaded or run.'
++    }
++}
++if ($Manifest.expected_gui_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid target GUI identity.' }
++$Stamp = (Get-Date -Format yyyyMMdd-HHmmss) + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
++if (-not $OutputDir) { $OutputDir = Join-Path $PWD ('freedv-backlog-' + $Stamp) }
++if (Test-Path -LiteralPath $OutputDir) { throw 'Choose a new OutputDir; existing evidence is preserved.' }
++$Remote = '/tmp/freedv-retest-' + $Stamp
++& ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 "root@$RadioIp" "umask 077 && mkdir -p '$Remote/bundle'"
++if ($LASTEXITCODE -ne 0) { throw 'SSH failed. Use the existing Windows key and verified host record.' }
++& scp -O -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 $Helper $Binary "root@${RadioIp}:$Remote/"
++if ($LASTEXITCODE -ne 0) { throw 'Probe copy failed; no radio audio operation was requested.' }
++& ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$RadioIp" "chmod 700 '$Remote/freedv_voice_pulse_probe' && python3 '$Remote/radio_retest.py' probe --output '$Remote/bundle/probe' --probe-binary '$Remote/freedv_voice_pulse_probe' --gui-sha256 $($Manifest.expected_gui_sha256) --probe-sha256 $($Manifest.probe_sha256)"
++$ProbeExit = $LASTEXITCODE
++& ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "root@$RadioIp" "python3 '$Remote/radio_retest.py' collect --output '$Remote/bundle/collect'"
++$CollectExit = $LASTEXITCODE
++New-Item -ItemType Directory -Path $OutputDir | Out-Null
++& scp -O -r -o BatchMode=yes -o StrictHostKeyChecking=yes "root@${RadioIp}:$Remote/bundle" $OutputDir
++if ($LASTEXITCODE -ne 0) { throw "Copy failed. Evidence remains at ${RadioIp}:$Remote/bundle" }
++Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'probe-manifest.json') -Destination $OutputDir
++$Archive = "$OutputDir.zip"
++Compress-Archive -Path (Join-Path $OutputDir '*') -DestinationPath $Archive
++Get-FileHash -LiteralPath $Archive -Algorithm SHA256
++Write-Host "Saved: $Archive"
++Write-Host 'Stop here and return this ZIP. No manual RF tests are requested by this update.'
++if ($ProbeExit -ne 0 -or $CollectExit -ne 0) { Write-Warning 'Probe or collection did not pass. The failure evidence is included.' }
+diff --git a/tools/freedv/pulse_playback_probe.c b/tools/freedv/pulse_playback_probe.c
+new file mode 100644
+index 0000000..8a30e49
+--- /dev/null
++++ b/tools/freedv/pulse_playback_probe.c
+@@ -0,0 +1,41 @@
++/* Actual audio.c playback, private virtual PulseAudio only. No radio/codec. */
++#include "src/audio.c"
++#include <assert.h>
++#include <stdarg.h>
++void freedv_mode_device_fault(void){abort();}
++void _lv_log_add(lv_log_level_t level,const char *file,int line,const char *func,const char *fmt,...){
++ (void)level;(void)file;(void)line;(void)func;va_list a;va_start(a,fmt);vfprintf(stderr,fmt,a);va_end(a);fputc('\n',stderr);
++}
++static void report(audio_freedv_playback_t *p,unsigned turn,unsigned elapsed,uint64_t accepted){
++ pa_threaded_mainloop_lock(mloop);
++ pa_operation *op=pa_stream_update_timing_info(p->stream,NULL,NULL);if(op)pa_operation_unref(op);
++ const pa_timing_info *t=pa_stream_get_timing_info(p->stream);const pa_buffer_attr *b=pa_stream_get_buffer_attr(p->stream);
++ printf("{\"turn\":%u,\"ms\":%u,\"accepted\":%llu,\"writable\":%zu,\"corked\":%d,\"prebuf\":%u,\"tlength\":%u,\"minreq\":%u,\"underflows\":%llu,\"timing\":%s,\"playing\":%d,\"write_index\":%lld,\"read_index\":%lld,\"sink_usec\":%llu}\n",
++ turn,elapsed,(unsigned long long)accepted,pa_stream_writable_size(p->stream),pa_stream_is_corked(p->stream),b->prebuf,b->tlength,b->minreq,(unsigned long long)p->stats.generation_underflows,t?"true":"false",t?t->playing:-1,(long long)(t?t->write_index:0),(long long)(t?t->read_index:0),(unsigned long long)(t?t->sink_usec:0));
++ fflush(stdout);pa_threaded_mainloop_unlock(mloop);
++}
++int main(int argc,char **argv){
++ assert(argc==2 && getenv("PULSE_SERVER") && !strncmp(getenv("PULSE_SERVER"),"unix:/tmp/freedv-pulse-probe-",27));
++ bool trigger=!strcmp(argv[1],"trigger");play_device="freedv_probe_sink";
++ mloop=pa_threaded_mainloop_new();assert(!pa_threaded_mainloop_start(mloop));mlapi=pa_threaded_mainloop_get_api(mloop);context_connect();
++ audio_freedv_playback_t *p=audio_freedv_playback_open();assert(p);
++ for(unsigned turn=1;turn<=3;++turn){
++  assert(audio_freedv_playback_cork(p,true));assert(audio_freedv_playback_cancel(p));
++  unsigned start=audio_clock_ms();while(!audio_freedv_playback_quiescent(p)){assert(audio_clock_ms()-start<500);usleep(2000);}
++  assert(audio_freedv_playback_rearm(p,turn));assert(audio_freedv_playback_cork(p,false));
++  int16_t pcm[441]={0};uint64_t accepted=0;unsigned last=0;bool fired=false;start=audio_clock_ms();
++  while(audio_clock_ms()-start<1800){
++   unsigned elapsed=audio_clock_ms()-start;
++   /* Three modem blocks available from 200 ms; then fresh 120 ms blocks. */
++   uint64_t available=elapsed>=200?((elapsed-200)/120+3)*5292:0;
++   if(accepted<available){ssize_t n=audio_freedv_playback_submit_generation(p,turn,pcm,441);assert(n>=0);accepted+=n;}
++   if(trigger && elapsed>600 && !fired){pa_threaded_mainloop_lock(mloop);pa_operation *op=pa_stream_trigger(p->stream,NULL,NULL);assert(op);pa_operation_unref(op);pa_threaded_mainloop_unlock(mloop);fired=true;}
++   if(elapsed>=last+100){report(p,turn,elapsed,accepted);last=elapsed;}
++   usleep(2000);
++  }
++  assert(audio_freedv_playback_drain(p,turn));start=audio_clock_ms();
++  while(!audio_freedv_playback_drained(p,turn) && audio_clock_ms()-start<1500)usleep(2000);
++  printf("{\"turn\":%u,\"drained\":%d,\"accepted\":%llu}\n",turn,audio_freedv_playback_drained(p,turn),(unsigned long long)accepted);
++ }
++ audio_freedv_playback_close(p);pa_threaded_mainloop_stop(mloop);pa_threaded_mainloop_free(mloop);return 0;
++}
+diff --git a/tools/freedv/radio_retest.py b/tools/freedv/radio_retest.py
+index b7e6892..551b31d 100644
+--- a/tools/freedv/radio_retest.py
++++ b/tools/freedv/radio_retest.py
+@@ -88,8 +88,8 @@ def collect(out):
+             'skipped': skipped, 'listening': 'UNASSESSED', 'hardware_qualified': False}
+ 
+ 
+-def probe(out, expected_gui, expected_probe):
+-    binary = Path('/opt/freedv-benchmark/bin/freedv_voice_pulse_probe')
++def probe(out, expected_gui, expected_probe, probe_binary=None):
++    binary = Path(probe_binary) if probe_binary else Path('/opt/freedv-benchmark/bin/freedv_voice_pulse_probe')
+     manifest_path = Path('/usr/share/x6100/freedv/build-manifest.json')
+     if not binary.is_file() or not manifest_path.is_file() or not shutil.which('pulseaudio'):
+         return {'status': 'BLOCKED', 'reason': 'New candidate/probe/PulseAudio is missing'}
+@@ -107,9 +107,13 @@ def probe(out, expected_gui, expected_probe):
+     with tempfile.TemporaryDirectory(prefix='freedv-pulse-probe-', dir='/tmp') as temp:
+         private = Path(temp); (private/'config').mkdir()
+         conf = private/'default.pa'
++        # The default null sink renders a two-second block before any stream
++        # requests lower latency. Cold playback can then stall at tlength and
++        # trip the real engine's unchanged 500 ms backlog protection. The
++        # documented PA 16.1 norewinds option caps this virtual fixture at 50 ms.
+         conf.write_text('.fail\n'
+             f'load-module module-native-protocol-unix socket={private}/native auth-anonymous=1\n'
+-            'load-module module-null-sink sink_name=freedv_probe_sink rate=44100 channels=2\n'
++            'load-module module-null-sink sink_name=freedv_probe_sink rate=44100 channels=2 norewinds=1\n'
+             'load-module module-null-source source_name=freedv_probe_source rate=44100 channels=2\n'
+             'set-default-sink freedv_probe_sink\nset-default-source freedv_probe_source\n')
+         env = dict(os.environ, PULSE_SERVER=f'unix:{private}/native', PULSE_RUNTIME_PATH=str(private),
+@@ -124,6 +128,12 @@ def probe(out, expected_gui, expected_probe):
+                     time.sleep(.05)
+                 if server.poll() is not None or not (private/'native').exists():
+                     return {'status': 'BLOCKED', 'reason': 'Private PulseAudio could not start; see log'}
++                (out/'fixture.json').write_text(json.dumps({'sink_module': 'module-null-sink',
++                    'norewinds': True, 'maximum_block_ms': 50, 'sample_rate': 44100,
++                    'engine_backlog_limit_ms': 500, 'probe_binary': str(binary),
++                    'pulse_version': command(['pulseaudio', '--version']),
++                    'private_sinks': command(['pactl', 'list', 'sinks'], env=env),
++                    'private_sources': command(['pactl', 'list', 'sources'], env=env)}, indent=2)+'\n')
+                 with (out/'adapter.log').open('w') as testlog:
+                     try:
+                         test = subprocess.run([str(binary), str(out)], env=env, stdout=testlog,
+@@ -149,9 +159,10 @@ def main():
+     p.add_argument('action', choices=('collect', 'probe'))
+     p.add_argument('--output', type=Path, required=True)
+     p.add_argument('--gui-sha256'); p.add_argument('--probe-sha256')
++    p.add_argument('--probe-binary', type=Path, help='Explicit staged probe; never replaces the installed GUI or probe')
+     a = p.parse_args(); a.output.mkdir(parents=True, exist_ok=False)
+     try:
+-        result = collect(a.output) if a.action == 'collect' else probe(a.output, a.gui_sha256, a.probe_sha256)
++        result = collect(a.output) if a.action == 'collect' else probe(a.output, a.gui_sha256, a.probe_sha256, a.probe_binary)
+     except (OSError, ValueError, subprocess.SubprocessError) as e:
+         result = {'status': 'INCONCLUSIVE', 'reason': str(e), 'hardware_qualified': False}
+     (a.output/'result.json').write_text(json.dumps(result, indent=2)+'\n')
+diff --git a/tools/freedv/voice_audio_test.c b/tools/freedv/voice_audio_test.c
+index 4d444e5..c6cd5fc 100644
+--- a/tools/freedv/voice_audio_test.c
++++ b/tools/freedv/voice_audio_test.c
+@@ -93,6 +93,9 @@ int main(void){
+     failure_mode=3;fake_gen=0;a=fd_voice_audio_open(&profile);assert(a);fd_voice_audio_on_error(a,on_error,a);
+     assert(fd_voice_audio_fence(a) && fd_voice_audio_begin(a,FD_VOICE_RX,1));deadline=now()+1000;
+     while(!fd_voice_audio_failed(a)){assert(now()<deadline);pause_ms();}
++    assert(fd_voice_audio_fence(a));
++    assert(fd_voice_audio_snapshot_get(a,&fault) && fault.first_fault==FD_AUDIO_BACKLOG);
++    assert(fault.fault_capture_queued==10000 && fault.fault_engine_input_depth==14000);
+     fd_voice_audio_close(a);assert(atomic_load(&fault_callbacks)==2 && atomic_load(&closed)==2);
+     failure_mode=4;fake_gen=0;a=fd_voice_audio_open(&profile);assert(a);fd_voice_audio_on_error(a,on_error,a);
+     assert(fd_voice_audio_fence(a) && fd_voice_audio_begin(a,FD_VOICE_RX,1));deadline=now()+1000;
+diff --git a/tools/freedv/voice_pulse_probe.c b/tools/freedv/voice_pulse_probe.c
+index 0abf2ec..052d801 100644
+--- a/tools/freedv/voice_pulse_probe.c
++++ b/tools/freedv/voice_pulse_probe.c
+@@ -11,6 +11,7 @@ void freedv_mode_device_fault(void){fprintf(stderr,"PA context failed\n");abort(
+ void _lv_log_add(lv_log_level_t level,const char *file,int line,const char *func,const char *fmt,...){
+     (void)level;(void)file;(void)line;(void)func;va_list a;va_start(a,fmt);vfprintf(stderr,fmt,a);va_end(a);fputc('\n',stderr);
+ }
++static uint64_t process_cpu_ns(void){struct timespec t;assert(!clock_gettime(CLOCK_PROCESS_CPUTIME_ID,&t));return (uint64_t)t.tv_sec*1000000000u+t.tv_nsec;}
+ int main(int argc,char **argv){
+     assert(argc==2 && getenv("PULSE_SERVER"));
+     assert(!strncmp(getenv("PULSE_SERVER"),"unix:/tmp/freedv-pulse-probe-",27));
+@@ -34,18 +35,36 @@ int main(int argc,char **argv){
+             .generation=turn,.output_directory=dir,.persistent_slot=&retained};
+         fd_native_audio *a=fd_native_audio_prepare(&config,error,sizeof(error));assert(a);
+         assert(fd_native_audio_observe(a).prepared);assert(fd_native_audio_start(a));
+-        unsigned start=audio_clock_ms();
+-        while(!fd_native_audio_stop_requested(a)){assert(audio_clock_ms()-start<12000);usleep(2000);}
++        char trace_path[1100];snprintf(trace_path,sizeof(trace_path),"%s/trace.jsonl",dir);FILE *trace=fopen(trace_path,"w");assert(trace);
++        unsigned start=audio_clock_ms(),last_trace=0,trace_count=0;uint64_t cpu_start=process_cpu_ns();
++        while(!fd_native_audio_stop_requested(a)){
++            unsigned elapsed=audio_clock_ms()-start;assert(elapsed<12000);
++            if(elapsed>=last_trace+100 && trace_count<120){
++                fd_voice_audio_snapshot t;
++                if(fd_voice_audio_snapshot_get(retained,&t)){
++                    fprintf(trace,"{\"elapsed_ms\":%u,\"generation\":%llu,\"input_samples\":%llu,\"capture_queue\":%u,\"engine_input_depth\":%u,\"engine_output_depth\":%u,\"engine_output_samples_total\":%llu,\"device_accepted_samples\":%llu,\"speech_frames_total\":%llu,\"modem_blocks_total\":%llu,\"processing_ns_total\":%llu,\"queue_wait_ns_total\":%llu,\"scheduling_delay_ns_total\":%llu,\"process_cpu_ns\":%llu}\n",
++                        elapsed,(unsigned long long)t.generation,(unsigned long long)t.engine.input_samples,t.capture.queued_samples,t.engine.input_depth,t.engine.output_depth,
++                        (unsigned long long)t.engine.output_samples,(unsigned long long)t.playback.generation_accepted_samples,(unsigned long long)t.engine.speech_frames,
++                        (unsigned long long)t.engine.modem_blocks,(unsigned long long)t.engine.processing_ns,(unsigned long long)t.engine.queue_wait_ns,
++                        (unsigned long long)t.engine.scheduling_delay_ns,(unsigned long long)(process_cpu_ns()-cpu_start));
++                    ++trace_count;last_trace=elapsed;
++                }
++            }
++            usleep(2000);
++        }
++        assert(!fclose(trace));
+         assert(fd_native_audio_finish(a));fd_native_stats s=fd_native_audio_observe(a);
+         fd_voice_audio_snapshot snapshot;assert(fd_voice_audio_snapshot_get(retained,&snapshot));
+         fprintf(stderr,"TURN %u native_fail=%u adapter_fail=%u in=%llu out=%llu capture_queue=%u capture_holes=%u stream_failed=%u\n",
+             turn,s.failures,snapshot.failed,(unsigned long long)s.input_samples,(unsigned long long)s.output_samples,
+             snapshot.capture.queued_samples,snapshot.capture.hole_samples,snapshot.playback.stream_failed);
+         char report[1100];snprintf(report,sizeof(report),"%s/result.json",dir);FILE *f=fopen(report,"w");assert(f);
+-        fprintf(f,"{\"turn\":%u,\"failures\":%u,\"first_audio_fault\":%u,\"native_failure_line\":%u,\"input_samples\":%llu,\"output_samples\":%llu,\"capture_queue\":%u,\"capture_holes\":%u,\"engine_input_depth\":%u,\"flush_acknowledged\":%s,\"eoo\":%llu,\"rade_creations\":%u,\"scope\":\"private virtual devices; no RF or listening qualification\"}\n",
+-            turn,s.failures,s.persistent_fault,s.failure_line,(unsigned long long)s.input_samples,(unsigned long long)s.output_samples,
+-            snapshot.capture.queued_samples,snapshot.capture.hole_samples,snapshot.engine.input_depth,snapshot.playback.flush_acknowledged?"true":"false",
+-            (unsigned long long)s.persistent.eoo_count,s.persistent.rade_creations);assert(!fclose(f));
++        fprintf(f,"{\"turn\":%u,\"failures\":%u,\"first_audio_fault\":%u,\"fault_generation\":%llu,\"fault_monotonic_ms\":%llu,\"fault_capture_queue\":%u,\"fault_engine_input_depth\":%u,\"native_failure_line\":%u,\"input_samples\":%llu,\"output_samples\":%llu,\"capture_queue\":%u,\"capture_holes\":%u,\"engine_input_depth\":%u,\"engine_output_depth\":%u,\"engine_output_samples_total\":%llu,\"processing_ns_total\":%llu,\"queue_wait_ns_total\":%llu,\"scheduling_delay_ns_total\":%llu,\"process_cpu_ns\":%llu,\"elapsed_ms\":%u,\"trace_rows\":%u,\"flush_acknowledged\":%s,\"eoo\":%llu,\"rade_creations\":%u,\"scope\":\"private virtual devices; no RF or listening qualification\"}\n",
++            turn,s.failures,s.persistent_fault,(unsigned long long)s.persistent_fault_generation,(unsigned long long)s.persistent_fault_ms,s.fault_capture_queued,s.fault_engine_input_depth,
++            s.failure_line,(unsigned long long)s.input_samples,(unsigned long long)s.output_samples,snapshot.capture.queued_samples,snapshot.capture.hole_samples,
++            snapshot.engine.input_depth,snapshot.engine.output_depth,(unsigned long long)snapshot.engine.output_samples,(unsigned long long)snapshot.engine.processing_ns,
++            (unsigned long long)snapshot.engine.queue_wait_ns,(unsigned long long)snapshot.engine.scheduling_delay_ns,(unsigned long long)(process_cpu_ns()-cpu_start),
++            audio_clock_ms()-start,trace_count,snapshot.playback.flush_acknowledged?"true":"false",(unsigned long long)s.persistent.eoo_count,s.persistent.rade_creations);assert(!fclose(f));
+         if(s.failures){fd_native_audio_destroy(a);fd_voice_audio_close(retained);return 1;}
+         assert(s.persistent.finished);assert(s.persistent.eoo_count==turn);
+         assert(fd_native_audio_restore(a));fd_native_audio_destroy(a);usleep(300000);
