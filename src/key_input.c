@@ -180,10 +180,15 @@ static void usb_change_cb(void *s, lv_msg_t *msg) {
     }
 }
 
-void keyboard_init() {
+void keyboard_group_init(void) {
+    if (keyboard_group) return;
     keyboard_group = lv_group_create();
     /* The MFK stops at the first and last item of a page instead of jumping round */
     lv_group_set_wrap(keyboard_group, false);
+}
+
+void keyboard_init() {
+    keyboard_group_init();
     lv_msg_subscribe(MSG_USB_DEVICE_CHANGED, usb_change_cb, NULL);
 
     char *path = find_keyboard();

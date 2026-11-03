@@ -187,6 +187,7 @@ static void display_register(void) {
  * VOL, MFK (board.h) */
 static void inputs_open(void) {
 #if USE_SDL
+    keyboard_group_init();  /* SDL uses the same LVGL group without physical keyboard discovery */
     host_panel_inputs();    /* the PC's keyboard, instead of a USB one found by itself */
 #else
     keyboard_init();

@@ -89,6 +89,14 @@ int32_t hw_get_i(hw_param_t p) {
     return (p < HW_PARAM_COUNT && has_register(p)) ? reg_i[p] : 0;
 }
 
+bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route) {
+    if (!route) return false;
+    route->record = reg_i[HW_RECORD] != 0;
+    route->modem = reg_i[HW_MODEM] != 0;
+    route->ptt = reg_i[HW_PTT] != 0;
+    return true;
+}
+
 bool hw_set_i(hw_param_t p, int32_t v) {
     if (p >= HW_PARAM_COUNT) {
         fprintf(stderr, "hw_stub: hw_set_i(%d) is not a setting\n", p);

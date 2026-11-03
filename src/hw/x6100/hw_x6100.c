@@ -209,6 +209,12 @@ int32_t hw_get_i(hw_param_t p) {
     return reg < 0 ? 0 : (int32_t)x6100_control_get((x6100_cmd_enum_t)reg);
 }
 
+/* X6100's packed control layout has not been qualified for this diagnostic. */
+bool hw_get_commanded_audio_route(hw_commanded_audio_route_t *route) {
+    (void)route;
+    return false;
+}
+
 bool hw_set_i(hw_param_t p, int32_t v) {
     int reg = reg_of(p);
 

@@ -10,6 +10,8 @@ cmake_minimum_required(VERSION 3.23)
 # The GUI on this PC: an SDL window for the panel, the stub radio behind hw.h, the data in a
 # directory. host/build.sh configures, builds and runs it; see host/README.md
 option(HOST_BUILD "Build the GUI for this PC (SDL window, stub radio)" OFF)
+option(ENABLE_FREEDV_DIAGNOSTICS "Build experimental FreeDV diagnostic state support" OFF)
+set(X6200_CONTROL_INCLUDE_DIR "" CACHE PATH "X6200Control include directory for optional host diagnostic tests")
 set(HOST_DATA_DIR "${CMAKE_BINARY_DIR}/data" CACHE PATH "The host build's data directory (the radio's /mnt)")
 
 # All C code is C11
@@ -17,6 +19,27 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 project(x6100_gui)
+
+if(ENABLE_FREEDV_DIAGNOSTICS)
+        # This state prototype does not access the radio and is not a diagnostic UI.
+        add_library(freedv_diagnostic_state STATIC tools/freedv/diagnostic_state.c)
+        target_include_directories(freedv_diagnostic_state PUBLIC tools/freedv)
+        if(HOST_BUILD)
+                enable_testing()
+                add_executable(freedv_diagnostic_state_test tools/freedv/diagnostic_state_test.c)
+                target_compile_options(freedv_diagnostic_state_test PRIVATE -UNDEBUG)
+                target_link_libraries(freedv_diagnostic_state_test PRIVATE freedv_diagnostic_state)
+                add_test(NAME freedv_diagnostic_state COMMAND freedv_diagnostic_state_test)
+                if(X6200_CONTROL_INCLUDE_DIR)
+                        add_executable(freedv_x6200_route_test src/hw/x6200/hw_x6200.c
+                                       tools/freedv/x6200_route_snapshot_test.c)
+                        target_include_directories(freedv_x6200_route_test PRIVATE ${X6200_CONTROL_INCLUDE_DIR})
+                        target_compile_options(freedv_x6200_route_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+                        target_link_options(freedv_x6200_route_test PRIVATE -Wl,--gc-sections)
+                        add_test(NAME freedv_x6200_route_snapshot COMMAND freedv_x6200_route_test)
+                endif()
+        endif()
+endif()
 
 # Headers are included from the top: lv_conf.h, lvgl/, src/...
 include_directories(.)
