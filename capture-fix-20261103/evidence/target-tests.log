@@ -1,0 +1,10 @@
+Internal ctest changing into directory: /workspace/build/voice-capture-fix/host
+Test project /workspace/build/voice-capture-fix/host
+    Start  4: freedv_voice_audio
+1/2 Test  #4: freedv_voice_audio ...............   Passed   13.77 sec
+    Start 24: freedv_audio_capture
+2/2 Test #24: freedv_audio_capture .............   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =  13.79 sec
