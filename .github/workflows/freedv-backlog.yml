@@ -1,4 +1,4 @@
-name: Investigate actual FreeDV playback backpressure
+name: FreeDV retained capture regression
 on:
   push:
     branches: [investigate-freedv-backlog-20261103]
@@ -15,47 +15,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: backlog-20261103
       - run: sudo apt-get update -qq && sudo apt-get install -y pulseaudio libsamplerate0
-      - name: Reproduce original backlog and test corrected fixture with full engine
+      - name: Exercise isolated capture through long idle and legacy callback stalls
         run: |
           pulseaudio --version
           python3 backlog-20261103/run.py
-  publish:
-    needs: playback
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            backlog-20261103
-            probe-update-20261103
-      - name: Validate Windows wrapper including failure collection
-        shell: pwsh
-        run: ./backlog-20261103/test-wrapper.ps1
-      - name: Verify and package the staged ARM probe
-        run: |
-          cd probe-update-20261103
-          sha256sum -c SHA256SUMS
-          python3 - <<'PY'
-          from pathlib import Path
-          import zipfile,hashlib
-          out=Path('../freedv-backlog-probe-20261103.zip')
-          with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
-              for p in sorted(Path('.').iterdir()):
-                  if p.is_file():z.write(p,p.name)
-          with zipfile.ZipFile(out) as z:assert z.testzip() is None
-          Path('../BACKLOG-PROBE-SHA256SUMS').write_text(hashlib.sha256(out.read_bytes()).hexdigest()+'  '+out.name+'\n')
-          PY
-      - name: Publish the probe-only update
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag=freedv-backlog-probe-20261103
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo 'Release already exists; refusing replacement.'
-            exit 1
-          fi
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false --title 'FreeDV virtual backlog probe correction — no reflash' --notes-file probe-update-20261103/START-HERE.md freedv-backlog-probe-20261103.zip BACKLOG-PROBE-SHA256SUMS probe-update-20261103/START-HERE.md probe-update-20261103/probe-manifest.json
