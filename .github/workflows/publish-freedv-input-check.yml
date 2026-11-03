@@ -1,0 +1,51 @@
+name: Validate and publish FreeDV input capture check tools
+on:
+  push:
+    branches: [download-freedv-input-check-20261103]
+    paths: ['input-check-20261103/**', 'test-input-check.ps1', '.github/workflows/publish-freedv-input-check.yml']
+permissions:
+  contents: write
+jobs:
+  deliver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            input-check-20261103
+            test-input-check.ps1
+          sparse-checkout-cone-mode: false
+      - name: Validate Windows launcher and fail-closed preflight
+        shell: pwsh
+        run: ./test-input-check.ps1
+      - name: Test reference recorder and voice evidence assessment
+        run: |
+          python3 input-check-20261103/tools/test_capture_source_watch.py
+          python3 input-check-20261103/tools/test_radio_retest.py
+          cd input-check-20261103
+          sha256sum -c SHA256SUMS
+      - name: Package tools
+        run: |
+          python3 - <<'PY'
+          import zipfile,hashlib
+          from pathlib import Path
+          p=Path('input-check-20261103');zpath=Path('freedv-input-check-20261103.zip')
+          with zipfile.ZipFile(zpath,'w',zipfile.ZIP_DEFLATED) as z:
+              for f in sorted(p.rglob('*')):
+                  if f.is_file():z.write(f,f.relative_to(p).as_posix())
+          with zipfile.ZipFile(zpath) as z:assert z.testzip() is None
+          Path('DOWNLOAD-SHA256SUMS').write_text(hashlib.sha256(zpath.read_bytes()).hexdigest()+'  '+zpath.name+'\n')
+          PY
+      - name: Publish tools-only update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=freedv-input-check-20261103
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Refusing to replace an existing release.'
+            exit 1
+          fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false --title 'FreeDV input capture check — tools only, keep installed image' --notes-file input-check-20261103/START-HERE.md freedv-input-check-20261103.zip DOWNLOAD-SHA256SUMS input-check-20261103/START-HERE.md input-check-20261103/toolkit-manifest.json

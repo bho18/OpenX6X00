@@ -1,0 +1,13 @@
+{
+  "kind": "Input-route and capture-accounting tools; no firmware image",
+  "compatible_firmware_commit": "6976603018dcaed94cb2024d06f234efd9fe0c01",
+  "compatible_gui_sha256": "a40a54924cdb1e4fe449ce4c329a13a75ba257f4812f8ccdd4a9462f95be7abc",
+  "records_physical_input": true,
+  "controls_rf": false,
+  "changes_mixer_or_radio_settings": false,
+  "changes_keys_or_host_records": false,
+  "capture_seconds": 60,
+  "independent_source": "alsa_input.platform-sound.stereo-fallback",
+  "listening": "UNASSESSED",
+  "hardware_qualified": false
+}
