@@ -1,0 +1,41 @@
+name: Publish corrected Windows helper download
+on:
+  push:
+    branches: [download-freedv-route-review-20261104]
+    paths: ['.github/workflows/freedv-helper-download.yml']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/freedv
+      - name: Require the tested helper and passing Windows launch checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api repos/bho18/OpenX6X00/actions/runs/41756930547 --jq .conclusion)" = success
+          echo '99a281e9de3349049714f67a92a1cc0d80c162966a24f18a6221959ddc1ddb87  tools/freedv/Invoke-FreeDVAgent.ps1' | sha256sum -c -
+      - name: Package the single replacement script
+        run: |
+          mkdir helper-download
+          cp tools/freedv/Invoke-FreeDVAgent.ps1 helper-download/
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, zipfile
+          p=Path('helper-download')
+          with zipfile.ZipFile(p/'freedv-windows-helper.zip','w',compression=zipfile.ZIP_DEFLATED) as z:
+              z.writestr('Invoke-FreeDVAgent.ps1',(p/'Invoke-FreeDVAgent.ps1').read_bytes())
+          files=['Invoke-FreeDVAgent.ps1','freedv-windows-helper.zip']
+          (p/'windows-helper-SHA256SUMS.txt').write_text(''.join(hashlib.sha256((p/n).read_bytes()).hexdigest()+'  '+n+'\n' for n in files))
+          PY
+      - name: Attach helper downloads to the existing candidate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload freedv-route-review-20261104 --repo bho18/OpenX6X00 helper-download/Invoke-FreeDVAgent.ps1 helper-download/freedv-windows-helper.zip helper-download/windows-helper-SHA256SUMS.txt
