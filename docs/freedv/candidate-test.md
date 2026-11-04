@@ -1,6 +1,6 @@
 # X6200 FreeDV route review — one operating guide
 
-This guide belongs to **freedv-route-review-20261104**. It replaces the November 3 route-fix test instructions. The ZIP contains one complete flashable image, the Windows runner and this guide. This is an identified experimental candidate; physical microphone routing and a production FreeDV profile remain unqualified.
+This guide belongs to **freedv-route-review-20261104**. The Windows helper has a later launch correction: defaults are resolved after parameter binding, and commands below use a process-only execution-policy override. The radio image is unchanged. It replaces the November 3 route-fix test instructions. The ZIP contains one complete flashable image, the Windows runner and this guide. This is an identified experimental candidate; physical microphone routing and a production FreeDV profile remain unqualified.
 
 ## What the review established
 
@@ -23,11 +23,13 @@ Acquire and preflight were checked for hidden changes: successful acquisition sn
 1. Download this release's `x6200-freedv-route-review.zip` and `DOWNLOAD-SHA256SUMS.txt`. Verify the ZIP with `Get-FileHash -Algorithm SHA256`. Extract it and flash its single `.img` to the **candidate card**, using the imager's verification option. Keep the working `.2` card for recovery. The new image is the one under test; do not flash the working card or change baseband firmware.
 2. Boot with **both the radio-side PTT and hand-microphone PTT released**. Use the existing dummy load and attenuated SDR setup. Keep the same suitable test frequency as before and select **USB**. Before Acquire, ensure VOX is off. Freeze microphone preferences/gains, monitor level, filters and mixer for this comparison; do not independently write ALSA or radio registers.
 3. Extract all helpers beside `candidate-manifest.json`. Open Windows PowerShell in that directory. The local agent uses the existing SSH key and verified host record for `root@192.168.100.62`; web UI is `http://192.168.100.62/`. No authentication or global execution-policy changes are needed.
-4. Run:
+4. Run the commands below with `powershell.exe -NoProfile -ExecutionPolicy Bypass -File`. Windows may block the unsigned downloaded helper when invoked directly. This override applies only to the launched process and does not change saved execution policy. It does not override enforced Group Policy. If it is still blocked, preserve `Get-ExecutionPolicy -List` output for diagnosis; do not change machine policy.
+
+Run:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Preflight
-.\Invoke-FreeDVAgent.ps1 -Action SpeechFixture
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Preflight
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action SpeechFixture
 ```
 
 Preflight checks the installed GUI/build and stored modem fixture against this candidate and records source/mixer/input inventory. A failure is **BLOCKED**, with its reason. Do not substitute another build. `SpeechFixture` creates `numbered-speech.wav`: numbered phrases containing “Alpha begins. One two three four. Bravo ends.” Keep the original file and its hash. If speech synthesis is unavailable, use an existing 44.1 kHz mono PCM16 numbered-speech WAV with `-SpeechWav`; record that dependency and the exact fixture hash.
@@ -43,7 +45,7 @@ Open **APP → Modes → FreeDV test** on the radio and press **Acquire** locall
 In the first PowerShell window:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Stage -Case record-ordinary-zero -RepeatFive
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Stage -Case record-ordinary-zero -RepeatFive
 ```
 
 Require `STAGED`, and verify the radio shows **Ordinary recorder sequence / internal zero**, route **R1 M0 P0**, with mono capture and **Keep mixer**. This preserves the saved microphone selector and hand gain. It changes internal gain to zero as the ordinary recorder does. No MODEM/software PTT assertion is permitted in this batch.
@@ -51,7 +53,7 @@ Require `STAGED`, and verify the radio shows **Ordinary recorder sequence / inte
 In a second PowerShell window, in the same directory:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action CaptureWatch -DurationSeconds 150
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action CaptureWatch -DurationSeconds 150
 ```
 
 Keep that window open. It starts independent source capture in bounded stereo chunks and records its command output locally. Wait for the watcher’s `RECORDING` message (source PCM has arrived), with the acoustic fixture playing, then press **Run once on the radio**. Five eight-second recordings run, separated by twenty seconds after each restoration. Keep both PTT controls released. The source watcher captures preparation, the transitions and idle periods; case input WAVs cover the individual active recordings. Stereo here may already be downmixed by ALSA: it is not proof of two separate physical sources.
@@ -59,15 +61,15 @@ Keep that window open. It starts independent source capture in bounded stereo ch
 The local agent monitors the batch from the first window:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Status
-.\Invoke-FreeDVAgent.ps1 -Action Events
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Status
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Events
 ```
 
 On a fault, stop and preserve evidence; do not repeat an unchanged failure. After the five recordings **and** the watcher have finished:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Collect -OutputDir .\evidence-recorder-control
-.\Invoke-FreeDVAgent.ps1 -Action Assess
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Collect -OutputDir .\evidence-recorder-control
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Assess
 ```
 
 Collection hashes every transferred file and resumes by skipping verified copies. If interrupted, repeat Collect to the same folder. Collection is not test acceptance. Missing recordings, incomplete repetitions, changed files or mismatched identities must remain INCONCLUSIVE/FAIL rather than PASS. Keep the source-watch local log with the evidence. Do not publish these private recordings.
@@ -91,13 +93,13 @@ The available no-RF comparisons use the same Stage/CaptureWatch/Run/Collect proc
 Only after the ordinary baseline is repeatable, stage:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Stage -Case record-then-modem
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Stage -Case record-then-modem
 ```
 
 Keep the same USB frequency, saved microphone selector/gains, monitor, filters, mixer, fixture position and speaker volume. Start a new independent source recording in the second window:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action CaptureWatch -DurationSeconds 30
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action CaptureWatch -DurationSeconds 30
 ```
 
 Start the SDR recording before arming. Confirm `STAGED`, **Ordinary recording then MODEM only 8s** and **R1 M1 P0**. **Both physical PTT controls stay released. Press Arm → Run locally for this one transmission.** Browser automation may monitor but must not generate local input provenance.
@@ -107,8 +109,8 @@ The case applies the declared 1 W/VOX safety settings before the recording basel
 After natural completion, fresh RX and the watcher ending:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Collect -OutputDir .\evidence-record-then-modem
-.\Invoke-FreeDVAgent.ps1 -Action Assess
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Collect -OutputDir .\evidence-record-then-modem
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Assess
 ```
 
 Associate the original SDR WAV with the exact case directory, profile and source recording. Record whether numbered speech was present during the two-second preparation and throughout modem transmission. The stored waveform's decoded content differs from the acoustic microphone fixture: this permits detection of unwanted analog speech mixing. Listen for that fixture on RF and preserve the original recording; this single observation does not complete leakage qualification.
@@ -128,7 +130,7 @@ The local agent handles preflight/inventory, staging and acknowledgement, source
 If software delivery needs investigation, the short isolated ARM probe is available:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Probe -Turns 4 -SpeechWav .\numbered-speech.wav
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Probe -Turns 4 -SpeechWav .\numbered-speech.wav
 ```
 
 It uses a private virtual PulseAudio server and cannot qualify the physical microphone route. **It is optional here; 100 virtual lifecycles are not a gate to the microphone experiment.** Prior endurance results keep their original identities and limits in `software-verification.json`.
@@ -136,7 +138,7 @@ It uses a private virtual PulseAudio server and cannot qualify the physical micr
 Use local **Stop** on any unexpected behavior. The helper may also request cancellation:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Abort
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Invoke-FreeDVAgent.ps1" -Action Abort
 ```
 
 Abort cancels pending repetitions. Keep/release both physical controls, wait for fresh RX and restoration, then Close. A physical held PTT cannot be overridden by software. If recovery remains pending, preserve status/logs and use the working-card recovery path. Persisted preferences never resume TX.

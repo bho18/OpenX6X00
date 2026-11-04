@@ -72,3 +72,37 @@ jobs:
         run: |
           ./review-ci/Invoke-FreeDVAgent.ps1 -Action SpeechFixture
           if ((Get-Item review-ci/numbered-speech.wav).Length -lt 100000) { throw 'Speech fixture missing or too short' }
+      - name: Reproduce downloaded-script restriction and verify process-only launch
+        shell: powershell
+        run: |
+          $before = Get-ExecutionPolicy -List | ConvertTo-Json -Compress
+          Set-Content -LiteralPath review-ci/Invoke-FreeDVAgent.ps1 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+          $ErrorActionPreference = 'Continue'
+          $blocked = & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\review-ci\Invoke-FreeDVAgent.ps1 -Action SpeechFixture 2>&1 | Out-String
+          $blockedExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          if ($blockedExit -eq 0 -or $blocked -notmatch 'not digitally signed') { throw 'Downloaded unsigned-script failure was not reproduced' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\review-ci\Invoke-FreeDVAgent.ps1 -Action SpeechFixture
+          if ($LASTEXITCODE) { throw 'Process-only launch failed' }
+          $after = Get-ExecutionPolicy -List | ConvertTo-Json -Compress
+          if ($before -ne $after) { throw 'Parent or saved execution policy changed' }
+          if (!(Test-Path review-ci/numbered-speech.wav)) { throw 'Default fixture path did not resolve beside the helper' }
+          Write-Host 'PASS: downloaded unsigned script blocked under RemoteSigned, runs with child-process Bypass; parent/saved policies unchanged'
+      - name: Exercise direct File preflight from another directory
+        shell: powershell
+        run: |
+          $helper = (Resolve-Path review-ci/Invoke-FreeDVAgent.ps1).Path
+          $mockBin = Join-Path $env:RUNNER_TEMP 'freedv-ssh-mock'
+          New-Item -ItemType Directory -Force -Path $mockBin | Out-Null
+          Set-Content -Encoding Ascii -LiteralPath (Join-Path $mockBin 'ssh.cmd') -Value "@echo off`r`necho {`"status`":`"READY`"}`r`nexit /b 0"
+          Set-Content -Encoding Ascii -LiteralPath (Join-Path $mockBin 'scp.cmd') -Value "@echo off`r`nexit /b 0"
+          $savedPath = $env:PATH
+          $env:PATH = $mockBin + ';' + $env:PATH
+          Push-Location $env:RUNNER_TEMP
+          try {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper -Action Preflight
+            if ($LASTEXITCODE) { throw 'Direct -File preflight failed' }
+          } finally {
+            Pop-Location
+            $env:PATH = $savedPath
+          }

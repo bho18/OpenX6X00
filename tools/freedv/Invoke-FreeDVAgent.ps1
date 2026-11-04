@@ -1,17 +1,24 @@
 param(
  [Parameter(Mandatory=$true)][ValidateSet('Preflight','Stage','Status','Events','Abort','Collect','Assess','Probe','SpeechFixture','CaptureWatch')][string]$Action,
- [string]$SpeechWav=(Join-Path $PSScriptRoot 'numbered-speech.wav'),
+ [string]$SpeechWav,
  [ValidateRange(1,100)][int]$Turns=4,
  [ValidateRange(100,8000)][int]$DurationMs=8000,
  [switch]$Cycles,
  [ValidateRange(1,600)][int]$DurationSeconds=150,
  [string]$RadioIp='192.168.100.62',
- [string]$CandidateManifest=(Join-Path $PSScriptRoot 'candidate-manifest.json'),
+ [string]$CandidateManifest,
  [ValidateSet('record-hand-zero','record-hand-saved','record-ordinary-zero','record-ordinary-saved','modem-waveform','modem-prekey-gain','record-then-modem','live-speech','receive')][string]$Case='record-ordinary-zero',
  [switch]$RepeatFive,
- [string]$OutputDir=(Join-Path (Get-Location) 'freedv-route-results')
+ [string]$OutputDir
 )
 $ErrorActionPreference='Stop'
+# Resolve paths after parameter binding. Direct powershell.exe -File launches
+# can evaluate default expressions before PSScriptRoot is available.
+$scriptDirectory=[System.IO.Path]::GetDirectoryName($MyInvocation.MyCommand.Path)
+if([string]::IsNullOrWhiteSpace($scriptDirectory)){throw 'Cannot resolve the helper directory; invoke this saved script with -File'}
+if([string]::IsNullOrWhiteSpace($SpeechWav)){$SpeechWav=Join-Path $scriptDirectory 'numbered-speech.wav'}
+if([string]::IsNullOrWhiteSpace($CandidateManifest)){$CandidateManifest=Join-Path $scriptDirectory 'candidate-manifest.json'}
+if([string]::IsNullOrWhiteSpace($OutputDir)){$OutputDir=Join-Path (Get-Location).Path 'freedv-route-results'}
 if($Action -eq 'SpeechFixture'){
  Add-Type -AssemblyName System.Speech
  $speaker=New-Object System.Speech.Synthesis.SpeechSynthesizer
@@ -28,7 +35,7 @@ $remote='/tmp/freedv-agent-kit'
 & ssh @opts "root@$RadioIp" "umask 077 && mkdir -p $remote"
 if($LASTEXITCODE){throw 'SSH failed; existing keys and verified host records are required'}
 foreach($name in @('route_agent.py','radio_retest.py','capture_source_watch.py')){
- & scp -O @opts (Join-Path $PSScriptRoot $name) "root@${RadioIp}:$remote/$name"
+ & scp -O @opts (Join-Path $scriptDirectory $name) "root@${RadioIp}:$remote/$name"
  if($LASTEXITCODE){throw "Copy failed: $name"}
 }
 & scp -O @opts $CandidateManifest "root@${RadioIp}:$remote/candidate-manifest.json"
