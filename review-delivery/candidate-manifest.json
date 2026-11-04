@@ -1,0 +1,21 @@
+{
+  "firmware_commit": "725c9d294958def3633738d160873338c99917bb",
+  "source_tree_sha256": "3e8686322080d83dab0fad16ac879aabb28c886f6a1096c46b69e71e299da2ce",
+  "software_gates_passed": true,
+  "hardware_qualified": false,
+  "ready_for_guided_hardware_tests": true,
+  "candidate_kind": "persistent voice diagnostic spare-card image",
+  "normal_mode_qualified": false,
+  "host_verification_sha256": "8c461371da30da63b636757bfbcea737f584f887831e93f9e6c140ebe89f4f0c",
+  "gui_sha256": "aac58c9a441da877ea1b59671f5ab497687ba8654716b60683ca4b8ca5fd6396",
+  "runner_sha256": "8e67e736781f7498dd5a8fc833d9e453e460f95adcd2be99683cdc897fc8114f",
+  "rade_sha256": "9d04766b1743a4cc3ef575497273a0d6a993e1cc10731d1bc5bada04723e230d",
+  "modem_fixture_sha256": "0a5b202f2637ecd4ca78f2c2d2c4e17aff7d6ba12a07f9c612d8df9cbd26e034",
+  "web_wheel_sha256": "43eda02525491d79e5e6aeb663e8e21c9a0f30f0194c4b429f0d4ee23bf3351f",
+  "model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453",
+  "physical_hand_ptt_release": "UNSUPPORTED by pinned documented API; never inferred from aggregate TX",
+  "pulse_probe_sha256": "77647b9478e03651d09e3c777077aaab509fba464ccf23d34d92c1cec7386992",
+  "image_sha256": "ad70df8534ce670d101c4a791e546a591ebe4d6c90b4a59e4fcf81ce61b50b7c",
+  "signature_key_preserved": true,
+  "actual_image_abi": "PASS"
+}

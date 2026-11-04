@@ -1,111 +1,152 @@
-# X6200 FreeDV route investigation — current operating guide
+# X6200 FreeDV route review — one operating guide
 
-This candidate implements shared production/diagnostic audio routing and named microphone comparisons. It is an experimental diagnostic candidate. Ordinary FreeDV availability remains gated by hardware qualification and independent hand-PTT support.
+This guide belongs to **freedv-route-review-20261104**. It replaces the November 3 route-fix test instructions. The ZIP contains one complete flashable image, the Windows runner and this guide. This is an identified experimental candidate; physical microphone routing and a production FreeDV profile remain unqualified.
 
-Install the **new complete image** on the candidate card. Keep the working `.2` card as recovery. Extract the ZIP and write its single `.img` with verification. The working `.2` card is not the image under test. Boot with both PTT buttons released and the existing dummy load/attenuated SDR arrangement. Do not change the baseband firmware.
+## What the review established
 
-## What changed and what this test decides
+| Finding | Consequence for this candidate and test |
+| --- | --- |
+| The ordinary voice recorder enters with `IMIC=0`, then `RECORD=1`; it leaves hand gain and microphone selection untouched. Our previous purported reference also muted hand gain, rewrote selection and resent registers. | The reference now uses the ordinary recorder's hardware entry and exit operations. It records raw PCM; it does not reproduce the recorder's later bandpass/notch/MP3 processing. |
+| The old reference retained RECORD between repetitions. | The five baseline recordings now exercise real recorder stop/start cycles, with twenty seconds idle after restoration. Retained voice sessions remain a separate behavior. |
+| The GUI staging parser expected the wrong number of fields. The helper reported success before GUI acknowledgement. | Stage now requires a fresh, matching GUI acknowledgement with a unique request identity and the exact selected case/settings. An unacknowledged or changed selection must not be run. |
+| Cleanup rewrote mixer controls even under “Keep mixer”, and forced mono while retaining a stereo stream. | Unchanged mixer settings are left alone; capture format stays consistent until stream closure. Neither can silently change the repeated comparison. |
+| In the earlier USB evidence, independent-source and adapter samples matched exactly, including the missing-speech intervals. | Investigate the shared source/baseband route. Preserve the sample-loss correction and 500 ms backlog guard. Codec normalization is unchanged. This does not exclude loss upstream of both recordings. |
+| The old RF case reset gains and selection as it enabled MODEM. | A new `record-then-modem` case establishes ordinary recording first, retains it for two seconds, then adds MODEM for the stored-waveform transmission. The independent source watcher covers both sides of this transition. |
+| Playback could sleep after each small partial write while ready PCM remained queued. | Submit a bounded amount of already-produced PCM before waiting. No second-block startup gate, larger backlog allowance or new buffer request is introduced. Hardware underflow improvement still needs measurement. |
+| The control getter reads a software cache. Full-register resends are a required keepalive. | Trace individual writes and bulk resends separately. Cache match, transport success and observed RX are separate facts; none is a physical routing measurement. |
+| Existing digital-app transmission proves internal PCM delivery, not simultaneous usable microphone capture. The documented backend still lacks independent hand-PTT release observation. | Investigate capture directly. Keep production exposure gated; neither tone transmission nor aggregate TX supplies these missing capabilities. |
 
-The firmware's voice-message recorder suppresses the internal microphone gain; the earlier FreeDV diagnostic restored both gains. Diagnostic and production activation now share the same driver: mute inputs, select the route, confirm transport, then admit the hand microphone. Ordinary preferences return on Close, with RECORD restored before microphone gains. A retained stereo stream now refuses a change to mono instead of silently discarding every sample. The capture-loss protection remains in place.
+Acquire and preflight were checked for hidden changes: successful acquisition snapshots state and reserves ownership; preflight inventories devices and hashes binaries. Neither applies a microphone route. Shared route operations also do not make all diagnostic settings identical to a future production profile: production adds explicit filter, AGC and processing overrides. Those remain separate qualification work.
 
-The first question is whether the ordinary recording convention repeatedly captures the external acoustic speech. The second is whether introducing MODEM removes that capture. RF delivery, old tone cases and speaker demonstrations are not repeated as prerequisites.
+## Install and prepare once
 
-## Preparation by the local agent
-
-Use this directory's `Invoke-FreeDVAgent.ps1`, its Python helpers and `candidate-manifest.json`. Use existing SSH authentication and strict host checking for `root@192.168.100.62`; the browser is `http://192.168.100.62/`. Do not change keys, host records, execution policy, mixer controls or services independently.
+1. Download this release's `x6200-freedv-route-review.zip` and `DOWNLOAD-SHA256SUMS.txt`. Verify the ZIP with `Get-FileHash -Algorithm SHA256`. Extract it and flash its single `.img` to the **candidate card**, using the imager's verification option. Keep the working `.2` card for recovery. The new image is the one under test; do not flash the working card or change baseband firmware.
+2. Boot with **both the radio-side PTT and hand-microphone PTT released**. Use the existing dummy load and attenuated SDR setup. Keep the same suitable test frequency as before and select **USB**. Before Acquire, ensure VOX is off. Freeze microphone preferences/gains, monitor level, filters and mixer for this comparison; do not independently write ALSA or radio registers.
+3. Extract all helpers beside `candidate-manifest.json`. Open Windows PowerShell in that directory. The local agent uses the existing SSH key and verified host record for `root@192.168.100.62`; web UI is `http://192.168.100.62/`. No authentication or global execution-policy changes are needed.
+4. Run:
 
 ```powershell
 .\Invoke-FreeDVAgent.ps1 -Action Preflight
 .\Invoke-FreeDVAgent.ps1 -Action SpeechFixture
 ```
 
-The second command creates `numbered-speech.wav` using Windows speech synthesis. Retain its hash and the original file. Position a PC speaker near the **hand microphone**, at a fixed ordinary speaking level. Replay that WAV continuously during microphone cases. The fixture is acoustic input to the normal hand microphone; it does not provide remote microphone/PTT support.
+Preflight checks the installed GUI/build and stored modem fixture against this candidate and records source/mixer/input inventory. A failure is **BLOCKED**, with its reason. Do not substitute another build. `SpeechFixture` creates `numbered-speech.wav`: numbered phrases containing “Alpha begins. One two three four. Bravo ends.” Keep the original file and its hash. If speech synthesis is unavailable, use an existing 44.1 kHz mono PCM16 numbered-speech WAV with `-SpeechWav`; record that dependency and the exact fixture hash.
 
-The agent inventories input devices, source channels, mixer controls and installed identity. Report any missing prerequisite as BLOCKED. It must never reinterpret aggregate TX as independent hand-PTT release.
+Position a PC speaker near the **hand microphone**, at a fixed normal speech level. Play the WAV on repeat. Leave its position and volume unchanged across comparisons. This supplies repeatable acoustic speech, avoiding repeated manual speaking. The test does not use remote microphone or remote PTT.
 
-Open **APP → Modes → FreeDV test** locally and press **Acquire**. Leave the frequency and USB profile fixed. Both physical PTT controls remain **released throughout every test below**, including RF, unless a later specifically named physical-PTT case replaces that instruction. Run/Arm refers to the front-panel diagnostic controls, not either PTT button.
+Open **APP → Modes → FreeDV test** on the radio and press **Acquire** locally. Keep USB and frequency fixed. No old speaker-tone, RF-tone or virtual lifecycle batch is a prerequisite.
 
-## First batch: capture without RF
+**PTT instruction for every test in this guide: leave BOTH physical PTT buttons released for the entire test, including RF.** Local Arm and Run are the diagnostic screen controls. Do not press either PTT to help the test. A physical held-PTT experiment would require a separately labelled procedure.
 
-The agent stages the existing voice-recorder convention:
+## First test: a faithful recorder control, without RF
+
+In the first PowerShell window:
 
 ```powershell
 .\Invoke-FreeDVAgent.ps1 -Action Stage -Case record-ordinary-zero -RepeatFive
 ```
 
-After staging, verify the radio shows **Record ordinary mic / internal zero** and R1 M0 P0. Start continuous independent source recording before local Run. The agent uses the staged helper and expected GUI hash:
+Require `STAGED`, and verify the radio shows **Ordinary recorder sequence / internal zero**, route **R1 M0 P0**, with mono capture and **Keep mixer**. This preserves the saved microphone selector and hand gain. It changes internal gain to zero as the ordinary recorder does. No MODEM/software PTT assertion is permitted in this batch.
 
-```text
-python3 /tmp/freedv-agent-kit/capture_source_watch.py --gui-sha256 <candidate gui_sha256> --channels 2 --chunks --seconds 150
+In a second PowerShell window, in the same directory:
+
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action CaptureWatch -DurationSeconds 150
 ```
 
-Run that command in a separate SSH process, with stdout/stderr retained. The GUI remains running. It records the physical PA source in ten-second stereo WAV chunks; it sends no radio, playback or mixer commands. These channels may already be mixed by ALSA, so stereo alone does not prove physical separation.
+Keep that window open. It starts independent source capture in bounded stereo chunks and records its command output locally. Wait for the watcher’s `RECORDING` message (source PCM has arrived), with the acoustic fixture playing, then press **Run once on the radio**. Five eight-second recordings run, separated by twenty seconds after each restoration. Keep both PTT controls released. The source watcher captures preparation, the transitions and idle periods; case input WAVs cover the individual active recordings. Stereo here may already be downmixed by ALSA: it is not proof of two separate physical sources.
 
-Press **Run once locally**. Five eight-second recordings run with approximately twenty seconds between them. This batch cannot enable MODEM or software PTT. Keep the acoustic fixture playing and both PTT buttons released. No speaking or button choreography is needed. Stop the batch on a displayed fault; do not retry it.
-
-The agent polls and collects:
+The local agent monitors the batch from the first window:
 
 ```powershell
 .\Invoke-FreeDVAgent.ps1 -Action Status
 .\Invoke-FreeDVAgent.ps1 -Action Events
-.\Invoke-FreeDVAgent.ps1 -Action Collect -OutputDir .\evidence-record-ordinary-zero
+```
+
+On a fault, stop and preserve evidence; do not repeat an unchanged failure. After the five recordings **and** the watcher have finished:
+
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action Collect -OutputDir .\evidence-recorder-control
 .\Invoke-FreeDVAgent.ps1 -Action Assess
 ```
 
-Collection is incremental and verifies every transferred file against its transfer manifest. Repeat Collect after interrupted transfer. Preserve originals. Collect only after all five cases and the independent watcher finish; an active file changing during collection is an incomplete collection, not PASS. Exported `control-trace.jsonl` describes requested/cached commands and transport results, not physical register readback.
+Collection hashes every transferred file and resumes by skipping verified copies. If interrupted, repeat Collect to the same folder. Collection is not test acceptance. Missing recordings, incomplete repetitions, changed files or mismatched identities must remain INCONCLUSIVE/FAIL rather than PASS. Keep the source-watch local log with the evidence. Do not publish these private recordings.
 
-Listen to one numbered capture and inspect all five for fixture presence, flat intervals, sample continuity and restoration. Do not count a single spike or hum as usable speech. Activity remains INCONCLUSIVE until listening identifies the phrase and its first/last words.
+Listen to the captured input, and assess all five for sustained numbered speech and flat intervals. Record the recognisable phrase numbers, first/last audible words, reviewer, file names and hashes. A spike, hum, nonzero samples or a mechanical “complete” result does not establish intelligibility. Compare the independent source and case input at the same intervals before assigning a cause.
 
-## The next batch is selected by that result
+## Choose the next test from the result
 
-- If ordinary/zero captures reliably, compare **record-ordinary-saved** using the same five-run procedure. This changes only internal mic gain.
-- If the gain comparison matters, compare **record-hand-zero** against ordinary/zero. This changes microphone selection while keeping the internal gain zero.
-- Use **record-hand-saved** only when needed to reconstruct the previous diagnostic convention.
-- If the first turn succeeds and a later turn fails, inspect the intervening command/resend/restore trace before another batch. Keep the selected profile and streams retained. Do not return to automatic microphone selection between ordinary persistent voice turns.
-- If the independent source has the fixture but the adapter does not, investigate sample/channel delivery. If both lose it, investigate the common route/source boundary. Do not change RADE normalization to repair missing input.
-- If ordinary recording also fails, investigate that firmware microphone path first. Do not proceed to RF.
+| Result | Next action |
+| --- | --- |
+| All five ordinary-recorder captures contain intelligible speech | Proceed to the new recording-to-MODEM comparison below. Do not automatically run all gain/selector combinations. |
+| First recording works, later recording fails | Compare the stop/start, idle keepalive and source audio around the first loss. Return that evidence before another candidate; do not rerun the same five cases. |
+| Ordinary recorder loses speech in both source and adapter recordings | Investigate the common microphone/source/baseband boundary. No RF or RADE test can repair absent input. Stop this batch. |
+| Source contains speech but adapter input does not | Reproduce the exact saved PCM through the stream/channel delivery path. This is an automated software investigation. |
+| A reliable ordinary baseline differs from the previous shared-route result | Use only the relevant one-variable comparison below to isolate the difference. |
 
-Each condition needs its own staged batch and one local Run. Change nothing else. Collect and verify evidence between batches. If temporary storage becomes insufficient, stop; transfer and verify completed evidence before removing only those identified remote test copies. Do not delete originals on Windows or unrelated radio logs.
+The available no-RF comparisons use the same Stage/CaptureWatch/Run/Collect procedure: `record-ordinary-saved` changes only internal gain relative to ordinary-zero; `record-hand-zero` changes only microphone selector relative to ordinary-zero; `record-hand-saved` combines the saved internal gain with explicit hand selection and is only needed to reconstruct that previous condition. Each uses its own five-run batch and evidence folder. The agent should explain which observed difference warrants a particular comparison before staging it. Stop after two failed targeted corrections to the same signature and return to the command/audio evidence.
 
-## Introduce modem transmission after capture succeeds
+## Second test: add MODEM to established recording
 
-The local agent stages:
+Only after the ordinary baseline is repeatable, stage:
 
 ```powershell
-.\Invoke-FreeDVAgent.ps1 -Action Stage -Case modem-waveform
+.\Invoke-FreeDVAgent.ps1 -Action Stage -Case record-then-modem
 ```
 
-Start the acoustic fixture, continuous independent source capture and SDR recording before Arm. Verify **Known RADE waveform TX 8s**, R1 M1 P0, hand microphone, existing mono and saved mixer. The diagnostic requests 1 W and preserves protections. Press **Arm → Run locally for this transmission**. Both physical PTT controls stay released. The stored waveform avoids live encoder workload while testing whether MODEM changes microphone admission.
+Keep the same USB frequency, saved microphone selector/gains, monitor, filters, mixer, fixture position and speaker volume. Start a new independent source recording in the second window:
 
-After natural completion and fresh RX, collect immediately. Associate this case with its SDR recording. Stop on any fault; do not rerun an unchanged failure.
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action CaptureWatch -DurationSeconds 30
+```
 
-- Capture survives MODEM: stage `live-speech` for one eight-second locally armed turn with the same fixture and profile.
-- Capture disappears at MODEM activation: stage `modem-prekey-gain` for one separately armed comparison, which changes only whether the shared driver raises the hand gain before or after keying. Capture source and SDR throughout. Compare the control traces and source recordings. Return that evidence before issuing another candidate; no USB-DIG or tone sweep.
-- Intelligible capture but poor local decode: replay that exact capture through fresh/retained engines and the pinned reference.
-- Good local decode but poor SDR decode: inspect measured carrier offset, waveform alignment, clipping and discontinuities. Keep original SDR recordings unchanged; corrections are derived analysis copies.
+Start the SDR recording before arming. Confirm `STAGED`, **Ordinary recording then MODEM only 8s** and **R1 M1 P0**. **Both physical PTT controls stay released. Press Arm → Run locally for this one transmission.** Browser automation may monitor but must not generate local input provenance.
 
-After two targeted corrections fail against the same signature, suspend manual repeats and investigate the unresolved firmware behavior from preserved evidence.
+The case applies the declared 1 W/VOX safety settings before the recording baseline, starts ordinary recording, waits at least two seconds with fresh RX, then enables MODEM and sends eight seconds of stored RADE waveform. Stop/protection cancels preparation as well as transmission. This case uses the saved microphone selector; it does not silently force Hand, mute/re-enable the microphones or substitute live encoding at the MODEM edge. The required full-register keepalive remains active and is traced.
 
-## Automated tests without RF
+After natural completion, fresh RX and the watcher ending:
 
-The speech probe runs actual ARM processing and retained audio streams on a **private virtual PulseAudio server**, with a separate speech source and output sink:
+```powershell
+.\Invoke-FreeDVAgent.ps1 -Action Collect -OutputDir .\evidence-record-then-modem
+.\Invoke-FreeDVAgent.ps1 -Action Assess
+```
+
+Associate the original SDR WAV with the exact case directory, profile and source recording. Record whether numbered speech was present during the two-second preparation and throughout modem transmission. The stored waveform's decoded content differs from the acoustic microphone fixture: this permits detection of unwanted analog speech mixing. Listen for that fixture on RF and preserve the original recording; this single observation does not complete leakage qualification.
+
+- **Speech survives the MODEM edge:** stage `live-speech`, start another 30-second watcher and SDR recording, then perform one separately armed eight-second turn. This uses the existing shared production-style activation sequence, so compare its command trace with the successful recording-to-MODEM case. Keep both PTTs released. Collect immediately.
+- **Speech disappears when MODEM is introduced:** stop. We now have an isolated command boundary and continuous source recording. Return those files for firmware/baseband investigation; do not run a USB-DIG sweep or another unchanged RF attempt.
+- **Stored-waveform case works, live-speech case loses capture:** investigate the differing activation sequence using the traces. Do not assume encoder load is the cause when raw input disappears.
+- **Captured speech is intelligible but local decode is poor:** replay that exact capture through fresh and retained engines and the pinned reference, automatically.
+- **Local decode is intelligible but SDR decode is poor:** analyze carrier offset, continuity, clipping and filtering from these recordings first. Preserve originals; offset-corrected audio is a derived artifact.
+
+The older `modem-waveform` and `modem-prekey-gain` cases remain available for a specifically justified transition comparison. They are not the initial MODEM-isolation test and are not required in this sequence.
+
+## Local-agent assignment and recovery
+
+The local agent handles preflight/inventory, staging and acknowledgement, source recording, status/events, collection integrity, analysis and one result ledger. The operator positions the acoustic speaker, presses local Run/Arm, performs listening assessment and supplies the SDR recording. No camera is needed. No second process may issue raw I2C/radio writes while the GUI owns its command cache.
+
+If software delivery needs investigation, the short isolated ARM probe is available:
 
 ```powershell
 .\Invoke-FreeDVAgent.ps1 -Action Probe -Turns 4 -SpeechWav .\numbered-speech.wav
 ```
 
-Start with four turns. Increase to 100 only after the short run passes and storage preflight permits retaining every output. These results do not qualify the physical microphone route or intelligibility. Existing engine tools additionally exercise 100 TX/RX turns, 100 lifecycles and valid modem RX; distinguish paced physical execution from accelerated host results.
+It uses a private virtual PulseAudio server and cannot qualify the physical microphone route. **It is optional here; 100 virtual lifecycles are not a gate to the microphone experiment.** Prior endurance results keep their original identities and limits in `software-verification.json`.
 
-## Stop, recovery and results
-
-Local **Stop** is always available. The agent can also request cancellation:
+Use local **Stop** on any unexpected behavior. The helper may also request cancellation:
 
 ```powershell
 .\Invoke-FreeDVAgent.ps1 -Action Abort
 ```
 
-Abort clears pending recording repetitions. It cannot force RX while a physical PTT remains held. Release both physical controls, wait for fresh RX/restoration, then Close. If recovery remains pending, preserve the status/logs and use the working card recovery path. Persisted settings never resume active TX.
+Abort cancels pending repetitions. Keep/release both physical controls, wait for fresh RX and restoration, then Close. A physical held PTT cannot be overridden by software. If recovery remains pending, preserve status/logs and use the working-card recovery path. Persisted preferences never resume TX.
 
-Current independent hand-PTT release remains unsupported by the pinned documented control API. Normal APP-mode exposure stays gated. Later acceptance requires both physical controls, twenty successful speech turns, controlled RF reception while the speaker plays, both official-GUI directions and the conversation. A transmitting peer/RF source is needed for receive qualification. Independent RF timing and the historical 70% processing-margin failure remain open gates.
+Return one private evidence folder with: installed and helper identities; requested and GUI-accepted stage; completed repetition count; first failure; continuous source/case-input comparison; control-trace findings; SDR association; listening assessment with hashes; and the next justified action. A successful file transfer is COLLECTED, never an audio PASS.
 
-The local agent should return one verified private evidence folder and a concise result: identities, completed cases, first failure, input/source comparison, control trace findings, listening assessment and the next named action. COLLECTED means retrieved; it never means accepted.
+## Current result ledger and limits
+
+`candidate-manifest.json` identifies the exact image, source, GUI, engine, models and modem fixture. `software-verification.json` identifies current regression/build checks and retained earlier evidence separately. `delivery-verification.json` records complete-image reconstruction and ZIP/image integrity.
+
+The new tests address demonstrated defects in our implementation and experimental controls. They do not establish the baseband mechanism that intermittently removes speech. Hardware route repeatability, the playback-underflow correction on the radio, independent hand-PTT release, intelligibility and RF/speaker independence remain unproven. The production mode stays gated.
+
+After the common capture problem is resolved, complete matched USB/USB-DIG profiles, actual-application turns and both physical controls, bidirectional official-GUI interoperability and controlled RF reception while decoded speech plays. The receive-only SDR cannot supply that receive signal. The independent 500 ms RF-off measurement and historical 70% processing-margin failure retain their separate open/failed status. Earlier successful tests remain usable only within their original scope; no repetitive basic matrix is requested here.

@@ -1,0 +1,18 @@
+Internal ctest changing into directory: /workspace/build/voice-route-fix/host
+Test project /workspace/build/voice-route-fix/host
+    Start  1: freedv_retest_collection
+1/6 Test  #1: freedv_retest_collection .........   Passed    0.36 sec
+    Start  2: freedv_capture_source_watch
+2/6 Test  #2: freedv_capture_source_watch ......   Passed    0.92 sec
+    Start  5: freedv_agent_protocol
+3/6 Test  #5: freedv_agent_protocol ............   Passed    0.00 sec
+    Start  6: freedv_route_trace
+4/6 Test  #6: freedv_route_trace ...............   Passed    0.00 sec
+    Start  7: freedv_route_agent
+5/6 Test  #7: freedv_route_agent ...............   Passed    0.10 sec
+    Start 17: freedv_native_coordinator
+6/6 Test #17: freedv_native_coordinator ........   Passed    0.14 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =   1.53 sec

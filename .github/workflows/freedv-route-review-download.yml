@@ -1,0 +1,46 @@
+name: Publish complete FreeDV route test image
+on:
+  push:
+    branches: [download-freedv-route-review-20261104]
+    paths: ['review-delivery/**', '.github/workflows/freedv-route-review-download.yml']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: review-delivery
+      - name: Require completed audio and Windows software checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api repos/bho18/OpenX6X00/actions/runs/41749288227 --jq .conclusion)" = success
+      - name: Reconstruct and verify the complete image and source archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y zstd
+          mkdir baseline
+          gh release download freedv-route-fix-20261103 --repo bho18/OpenX6X00 --pattern x6200-freedv-route-fix.zip --dir baseline
+          echo 'c936a0c7aa86ede2d62e9c2169a83b7f2bab1adb236db732eda02b2d7601f550  baseline/x6200-freedv-route-fix.zip' | sha256sum -c -
+          unzip -q baseline/x6200-freedv-route-fix.zip x6200-freedv-route-fix.img candidate-source.tar.xz -d baseline
+          python3 review-delivery/prepare-release.py --base baseline/x6200-freedv-route-fix.img --base-source baseline/candidate-source.tar.xz --input review-delivery --output final
+      - name: Publish the verified experimental candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.txt <<'EOF'
+          Reviewed X6200 diagnostic candidate. Download the ZIP and extract its one complete flashable .img. Keep the working .2 card for recovery.
+
+          START-HERE.md is the single current guide, including findings, exact commands, PTT instructions, conditional next tests and local-agent assignment. Start with five unkeyed ordinary-recorder cycles. Only after intelligible repeatable capture, run the new ordinary-recording-to-MODEM comparison. Both physical PTT buttons remain released. Every RF transmission requires local Arm then Run.
+
+          Corrects the recorder reference and stop/start cycle, staging parser and acknowledgement, unnecessary mixer writes, retained-stereo cleanup, bounded playback submission and evidence completeness checks. No repeat of old tone/basic tests or 100 virtual lifecycles is required.
+
+          Software checks: 36 host checks; 41 helper tests; normal/diagnostic X6200 and full X6100 builds; actual ARM processing under QEMU; Windows runner and actual speech-fixture generation; four retained speech turns on real host PulseAudio. The one-block playback fixture still reports an early underflow notification; its emitted-waveform significance remains unassessed. No physical capture, intelligibility or RF qualification claim is made. Earlier endurance evidence retains its original source identity.
+          EOF
+          gh release create freedv-route-review-20261104 --repo bho18/OpenX6X00 --prerelease --target "$GITHUB_SHA" --title 'X6200 FreeDV reviewed routing candidate — November 4, 2026 UTC' --notes-file release-notes.txt final/x6200-freedv-route-review.zip final/DOWNLOAD-SHA256SUMS.txt final/START-HERE.md final/candidate-manifest.json final/software-verification.json final/delivery-verification.json
