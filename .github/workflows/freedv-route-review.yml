@@ -1,0 +1,74 @@
+name: FreeDV reviewed-route candidate checks
+on:
+  push:
+    branches: [download-freedv-route-review-20261104]
+    paths: ['review-ci/**', '.github/workflows/freedv-route-review.yml']
+permissions:
+  contents: read
+jobs:
+  pulse:
+    if: "!contains(github.event.head_commit.message, '[windows-only]')"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: review-ci
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ef4c85d4e95e76536af74ca64c2d1d14c8ce02d2
+          path: reference
+          persist-credentials: false
+          sparse-checkout: backlog-20261103
+      - run: sudo apt-get update -qq && sudo apt-get install -y pulseaudio libsamplerate0
+      - run: python3 review-ci/run.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: freedv-route-software-results
+          path: |
+            review-ci/summary.json
+            review-ci/**/probe.log
+            review-ci/**/result.json
+            review-ci/**/playback.log
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: review-ci
+      - shell: pwsh
+        run: |
+          $errors=$null; $tokens=$null
+          [System.Management.Automation.Language.Parser]::ParseFile("$pwd/review-ci/Invoke-FreeDVAgent.ps1",[ref]$tokens,[ref]$errors) | Out-Null
+          if($errors.Count){$errors | Format-List; exit 1}
+          function global:ssh { $global:LASTEXITCODE=0; '{"status":"READY"}' }
+          function global:scp { $global:LASTEXITCODE=0 }
+          '{"gui_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","pulse_probe_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' | Set-Content review-ci/candidate-manifest.json
+          ./review-ci/Invoke-FreeDVAgent.ps1 -Action Preflight -CandidateManifest review-ci/candidate-manifest.json
+          ./review-ci/Invoke-FreeDVAgent.ps1 -Action Stage -Case record-ordinary-zero -RepeatFive -CandidateManifest review-ci/candidate-manifest.json
+          ./review-ci/Invoke-FreeDVAgent.ps1 -Action Stage -Case record-then-modem -CandidateManifest review-ci/candidate-manifest.json
+          ./review-ci/Invoke-FreeDVAgent.ps1 -Action CaptureWatch -DurationSeconds 1 -CandidateManifest review-ci/candidate-manifest.json
+          ./review-ci/Invoke-FreeDVAgent.ps1 -Action Abort -CandidateManifest review-ci/candidate-manifest.json
+          $global:downloads=0
+          function global:scp {
+            $global:LASTEXITCODE=0
+            $destination=$args[-1]
+            $source=$args[-2]
+            if($source -like '*:/tmp/freedv-agent-results/transfer-manifest.json'){
+              $hash=[Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('fixture'))).ToLowerInvariant()
+              @{ 'radio/tmp/fixture.txt'=$hash } | ConvertTo-Json | Set-Content -LiteralPath $destination
+            }elseif($source -like '*:/tmp/freedv-agent-results/radio/tmp/fixture.txt'){
+              [IO.File]::WriteAllText($destination,'fixture');$global:downloads++
+            }
+          }
+          ./review-ci/Invoke-FreeDVAgent.ps1 -Action Collect -CandidateManifest review-ci/candidate-manifest.json -OutputDir verified-transfer
+          ./review-ci/Invoke-FreeDVAgent.ps1 -Action Collect -CandidateManifest review-ci/candidate-manifest.json -OutputDir verified-transfer
+          if($global:downloads -ne 1){throw 'Verified chunks were unnecessarily downloaded again'}
+      - name: Generate the actual Windows acoustic fixture
+        shell: powershell
+        run: |
+          ./review-ci/Invoke-FreeDVAgent.ps1 -Action SpeechFixture
+          if ((Get-Item review-ci/numbered-speech.wav).Length -lt 100000) { throw 'Speech fixture missing or too short' }
