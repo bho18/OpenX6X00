@@ -125,6 +125,8 @@ The older `modem-waveform` and `modem-prekey-gain` cases remain available for a 
 
 ## Local-agent assignment and recovery
 
+For local Codex, use the [complete agent assignment](https://github.com/bho18/OpenX6X00/releases/download/freedv-route-review-20261104/LOCAL-AGENT-PROMPT.txt). It assigns the terminal, fixture playback, concurrent recording, monitoring and evidence work to the agent; the operator supplies physical controls and listening.
+
 The local agent handles preflight/inventory, staging and acknowledgement, source recording, status/events, collection integrity, analysis and one result ledger. The operator positions the acoustic speaker, presses local Run/Arm, performs listening assessment and supplies the SDR recording. No camera is needed. No second process may issue raw I2C/radio writes while the GUI owns its command cache.
 
 If software delivery needs investigation, the short isolated ARM probe is available:

@@ -1,0 +1,23 @@
+name: Publish current local-agent assignment
+on:
+  push:
+    branches: [download-freedv-route-review-20261104]
+    paths: ['docs/freedv/LOCAL-CODEX-TASK.md', '.github/workflows/freedv-agent-handoff.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: docs/freedv
+      - name: Attach the current agent assignment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp docs/freedv/LOCAL-CODEX-TASK.md LOCAL-AGENT-PROMPT.txt
+          sha256sum LOCAL-AGENT-PROMPT.txt > LOCAL-AGENT-PROMPT-SHA256.txt
+          gh release upload freedv-route-review-20261104 --repo bho18/OpenX6X00 LOCAL-AGENT-PROMPT.txt LOCAL-AGENT-PROMPT-SHA256.txt
