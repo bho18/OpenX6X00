@@ -148,8 +148,9 @@ def parse_pulse(text, kind):
             fields.get('Name', '').endswith('.monitor') or
             properties.get('device.class') == 'monitor' or
             monitor_of.lower() not in ('', 'n/a', 'none')))
-        alsa_driver = (properties.get('device.api') == 'alsa' or
-                       fields.get('Driver', '').startswith('module-alsa-'))
+        # Remap/virtual sources can inherit their master's ALSA properties.
+        # Require the owning ALSA module, not just device.api/alsa.card tags.
+        alsa_driver = fields.get('Driver', '').startswith('module-alsa-')
         physical = (bool(fields.get('Name', '').strip()) and alsa_driver and
                     properties.get('device.class', 'sound') == 'sound' and not monitor)
         result.append({'name': fields.get('Name'), 'alsa_card': int(card) if card.isdigit() else None,

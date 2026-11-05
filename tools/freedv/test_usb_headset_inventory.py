@@ -66,7 +66,7 @@ class AssessmentTests(unittest.TestCase):
         self.assertTrue(any('ALSA capture exists' in s for s in inactive['usb_audio_cards'][0]['limitations']))
 
     def test_virtual_source_is_not_physical_usb_microphone(self):
-        source = inventory.parse_pulse(pulse_block('Source', 'remapped', 1, api='pulseaudio',
+        source = inventory.parse_pulse(pulse_block('Source', 'remapped', 1, api='alsa',
                                                   driver='module-remap-source.c'), 'Source')
         sink = inventory.parse_pulse(pulse_block('Sink', 'alsa_output.usb_headset', 1), 'Sink')
         result = inventory.assess([usb_card(1)], [pcm(1, 1, 1)], source, sink)
