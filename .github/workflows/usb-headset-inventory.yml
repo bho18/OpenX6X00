@@ -19,7 +19,8 @@ jobs:
       - name: Check PCM streams and endpoint loss on private virtual devices
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -O2 tools/freedv/usb_headset_pcm.c -lpulse -o /tmp/usb_headset_pcm
-          python tools/freedv/test_usb_headset_pcm.py /tmp/usb_headset_pcm
+          gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared tools/freedv/test_usb_headset_drop_drain.c -lpulse -ldl -o /tmp/drop-drain.so
+          TEST_PULSE_DROP_DRAIN_ACK_SO=/tmp/drop-drain.so python tools/freedv/test_usb_headset_pcm.py /tmp/usb_headset_pcm
   windows-runner:
     runs-on: windows-latest
     steps:

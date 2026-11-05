@@ -69,6 +69,42 @@ def main():
                 report = json.loads((root / 'success.json').read_text())
                 assert report['captured_bytes'] == 3 * 88200 and report['drained']
                 assert report['dont_move'] and report['sink'] == ear and report['holes'] == 0
+                process = subprocess.Popen([str(binary), '-', ear, '-', str(play),
+                    str(root / 'playback-only.json'), '0'], env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = process.communicate(timeout=15)
+                assert process.returncode == 0, (stderr, (root / 'playback-only.json').read_text())
+                report = json.loads((root / 'playback-only.json').read_text())
+                assert report['captured_bytes'] == 0 and report['drained'] and report['playback_bytes'] == play.stat().st_size
+                assert report['phase'] == 'complete' and report['playback_prebuffer_bytes'] > 0
+                # Exercise EOF below the prebuffer threshold after an idle/suspend
+                # transition: draining must release the short tail, not wait for
+                # another write to fill the buffer.
+                pactl('suspend-sink', ear, '1')
+                pactl('suspend-sink', ear, '0')
+                short = root / 'short.raw'
+                short.write_bytes(b'\x10\x00' * 441)
+                process = subprocess.Popen([str(binary), '-', ear, '-', str(short),
+                    str(root / 'short-tail.json'), '0'], env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = process.communicate(timeout=10)
+                assert process.returncode == 0, (stderr, (root / 'short-tail.json').read_text())
+                report = json.loads((root / 'short-tail.json').read_text())
+                assert report['drained'] and report['playback_bytes'] == short.stat().st_size
+                if os.environ.get('TEST_PULSE_DROP_DRAIN_ACK_SO'):
+                    # Playback is real; the test interposer withholds only the
+                    # callback, reproducing the returned client's observation.
+                    stalled_env = dict(env, LD_PRELOAD=os.environ['TEST_PULSE_DROP_DRAIN_ACK_SO'])
+                    process = subprocess.Popen([str(binary), '-', ear, '-', str(short),
+                        str(root / 'missing-drain.json'), '0'], env=stalled_env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    stdout, stderr = process.communicate(timeout=10)
+                    report = json.loads((root / 'missing-drain.json').read_text())
+                    assert process.returncode == 1 and report['phase'] == 'drain', (stderr, report)
+                    assert report['playback_bytes'] == short.stat().st_size and not report['drained']
+                    assert not report['ok'] and report['fault'] == 'Audio operation deadline exceeded'
+                    assert report['timing_valid'] and report['drain_wait_ms'] >= 5000
+                    print('PASS: missing drain callback remains a failure with EOF timing diagnostics.')
                 for name, module in [('lost_mic', source), ('lost_sink', sink)]:
                     process = start(name, 3)
                     time.sleep(.7)
@@ -84,7 +120,7 @@ def main():
                 bad = subprocess.run([str(binary), 'alsa_input.platform-sound', ear,
                     str(root / 'bad.raw'), str(play), str(root / 'bad.json'), '1'], env=env)
                 assert bad.returncode == 2 and not (root / 'bad.raw').exists()
-                print('PASS: real Pulse duplex, exact capture length, source/sink removal with rescue module present, radio-name rejection. Virtual devices only.')
+                print('PASS: real Pulse duplex, playback-only, short EOF after suspend/resume, source/sink removal with rescue module present, radio-name rejection. Virtual devices only.')
             finally:
                 server.terminate()
                 server.wait(timeout=5)

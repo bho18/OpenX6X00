@@ -63,7 +63,7 @@ state is normal. These findings establish a duplex candidate, not actual
 microphone, listening, latency or RF success. The device's unique serial is
 retained only in private inventory/results, not hardcoded in published source.
 
-The next kit is `usb-headset-validation-20261105.1.zip`. It runs on the existing
+The next kit is `usb-headset-validation-20261105.2.zip`. It runs on the existing
 `.2` image; no replacement image is required. Its bounded campaign:
 
 1. Rechecks the exact GUI, installed actual-codec runner/library, USB ancestry,
@@ -71,10 +71,10 @@ The next kit is `usb-headset-validation-20261105.1.zip`. It runs on the existing
 2. Captures 12 seconds of microphone speech while playing three quiet markers
    through the headset. Both streams use their full USB names and
    `PA_STREAM_DONT_MOVE`; endpoint loss stops the test with partial evidence.
-3. Replays the original capture, then feeds that exact recording through the
+3. Feeds that exact recording through the
    installed speech encoder, RADE modem and decoder. It checks actual nonzero
    speech/modem/synchronized/synthesis work and one end-of-over event.
-4. Replays decoded speech and collects operator listening notes. Original,
+4. Replays original and decoded speech and collects operator listening notes. Original,
    modem, decoded PCM/WAV, buffer/callback statistics and engine counters stay
    together in one evidence ZIP, including diagnostics if a stage fails.
 
@@ -101,12 +101,47 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-UsbHeadsetValid
 
 Keep the Loop110 connected and its headset powered and paired. Leave the radio
 in RX and every PTT released. At GO, speak the displayed phrase for 12 seconds
-and listen for three beeps while speaking. Then compare original and decoded
-playback. Processing can take up to three minutes. Record whether both contain
+and listen for three beeps while speaking. Wait for codec processing, then compare
+original and decoded playback. Processing can take up to three minutes. Record whether both contain
 the first/last words, are intelligible, have dropouts, and whether any sound came
 from the radio speaker. Return the printed `usb-headset-validation-results-*.zip`;
 it includes your voice recording. Strict known-host SSH is retained from previous
 runs. No password or trust-bypass option is added.
+
+### First returned audio campaign and revised helper
+
+The `20261105.1` campaign captured exactly 529,200 mono client samples (12 s)
+while submitting the complete marker stream. Its capture/playback phase drained
+successfully in 12.063 s with no reported holes, capture overflows or pre-EOF
+playback underruns. The operator heard all three markers while speaking.
+The longest observed capture callback gap was 61 ms, not an acoustic latency
+measurement. The recording contains nonzero audio; listening remains
+necessary to characterize intelligibility and dropouts.
+
+The subsequent original-file replay submitted all 1,058,400 bytes but timed out
+at 17.003 s without a drain acknowledgement. There was no recorded endpoint
+failure or pre-EOF underrun. The operator heard understandable speech with
+dropouts. These observations do not establish whether those dropouts were in
+capture, playback, or the wireless link, or why the server withheld completion.
+The old helper did not retain EOF underrun counts or server timing indexes.
+
+The revised helper uses automatic nonzero prebuffering for finite files, retires
+the write callback at EOF before requesting drain (following PulseAudio's file
+player), and records the phase, prebuffer, EOF underruns, timing indexes, sink
+latency estimate and suspension state. It still requires drain acknowledgement;
+neither a timeout nor an estimated playback position becomes a pass. The change
+has passed virtual PulseAudio playback-only, short-tail, duplex and endpoint-loss
+checks on the host and the ARM helper under emulation. It has not yet been
+verified against the reported Loop110 completion stall.
+
+Codec processing now precedes replay, so a playback completion fault preserves
+actual-codec results. Separately, the returned capture was processed with the
+matching image's ARM runner and RADE library under emulation: 1,200 speech
+frames, 202 modem blocks, one EOO, 98 synchronized blocks, 97 synthesis blocks,
+and zero engine failures. The decoded file contains 511,064 samples (about
+11.589 s). This verifies offline processing of this input, not on-radio CPU
+margin, word completeness, headset playback or RF behavior. User recordings
+and decoded audio are retained privately, not published in the helper kit.
 
 ### Earlier inventory procedure
 

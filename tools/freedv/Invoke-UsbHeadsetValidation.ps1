@@ -34,7 +34,7 @@ Write-Host 'USB headset audio + recorded actual-codec validation. No radio/PTT c
 Write-Host 'Use the current .2 image. Keep the Loop110 connected and the headset powered and paired.'
 Write-Host 'Leave the radio in RX and all PTT buttons released. Start at comfortable headset volume.'
 Write-Host 'Speak after GO for 12 seconds; listen for three quiet beeps while speaking.'
-Write-Host 'Then listen to ORIGINAL speech, wait for processing, and listen to DECODED speech.'
+Write-Host 'After capture, wait for codec processing, then listen to ORIGINAL and DECODED speech.'
 Write-Host 'The evidence ZIP contains your microphone recording. Do not unplug during this test.'
 try {
  Read-Host 'Press Enter when ready' | Out-Null

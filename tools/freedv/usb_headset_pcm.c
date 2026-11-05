@@ -18,10 +18,14 @@ static pa_stream *input, *output;
 static FILE *capture, *playback;
 static const char *source, *sink, *fault="";
 static size_t captured, written, target, play_bytes;
-static unsigned holes, overflows, underflows, pending;
+static unsigned holes, overflows, underflows, eof_underflows, pending;
 static int drained, active;
-static uint64_t start, first_capture, last_capture, max_gap;
-static uint32_t capture_fragment, playback_target;
+static uint64_t start, first_capture, last_capture, max_gap, submitted_end, drain_started;
+static uint32_t capture_fragment, playback_target, playback_prebuffer;
+static const char *phase="connect";
+static int timing_valid, timing_pending, suspended;
+static int64_t read_index, write_index, underflow_index=-1;
+static uint64_t sink_latency;
 static uint64_t ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000; }
 static void fail(const char *why) { if(!*fault)fault=why; }
 static int name_ok(const char *name,const char *prefix) {
@@ -41,7 +45,11 @@ static void stream_state(pa_stream *s,void *unused) {
     else if(!PA_STREAM_IS_GOOD(state))fail("USB stream failed or disappeared");
 }
 static void overflow(pa_stream *s,void *unused) { (void)s;(void)unused; ++overflows; fail("Capture overflow"); }
-static void underflow(pa_stream *s,void *unused) { (void)s;(void)unused; if(active && written<play_bytes){++underflows;fail("Playback underrun before end of file");} }
+static void underflow(pa_stream *s,void *unused) {
+    (void)unused; underflow_index=pa_stream_get_underflow_index(s);
+    if(active && written<play_bytes){++underflows;fail("Playback underrun before end of file");}
+    else if(active)++eof_underflows;
+}
 static void read_pcm(pa_stream *s,size_t requested,void *unused) {
     (void)requested;(void)unused; const void *data; size_t bytes;
     if(pa_stream_peek(s,&data,&bytes)<0){fail("Capture peek failed");return;}
@@ -69,6 +77,13 @@ static void write_pcm(pa_stream *s,size_t requested,void *unused) {
 }
 static void operation_done(pa_stream *s,int success,void *unused) { (void)s;(void)unused; if(!success)fail("Uncork rejected"); --pending; }
 static void drain_done(pa_stream *s,int success,void *unused) { (void)s;(void)unused; if(!success)fail("Drain failed"); else drained=1; }
+static void timing_done(pa_stream *s,int success,void *unused) {
+    (void)unused;timing_pending=0;
+    const pa_timing_info *t=success?pa_stream_get_timing_info(s):NULL;
+    if(t && !t->read_index_corrupt && !t->write_index_corrupt){
+        timing_valid=1;read_index=t->read_index;write_index=t->write_index;sink_latency=t->sink_usec;
+    }
+}
 static int pump(uint64_t deadline) {
     int result=0; if(ms()>deadline){fail("Audio operation deadline exceeded");return 0;}
     if(pa_mainloop_iterate(loop,0,&result)<0)fail("Pulse mainloop failed");
@@ -93,13 +108,17 @@ int main(int argc,char **argv) {
     while(pa_context_get_state(context)!=PA_CONTEXT_READY && pump(deadline)){}
     if(*fault)goto finish;
     pa_sample_spec spec={PA_SAMPLE_S16LE,44100,1};
-    pa_buffer_attr attr={.maxlength=17640,.tlength=8820,.prebuf=0,.minreq=1764,.fragsize=1764};
+    /* These are finite file streams. With prebuf=0 the server may advance its
+     * read index into silence past EOF. Use normal automatic prebuffering,
+     * prime while corked, and explicitly retire the producer before draining,
+     * as PulseAudio's file player does. A missing drain ACK still fails. */
+    pa_buffer_attr attr={.maxlength=17640,.tlength=8820,.prebuf=(uint32_t)-1,.minreq=1764,.fragsize=1764};
     output=pa_stream_new(context,"USB validation playback",&spec,NULL);
     if(!output){fail("Playback allocation failed");goto finish;}
     pa_stream_set_state_callback(output,stream_state,NULL);pa_stream_set_moved_callback(output,binding,NULL);
     pa_stream_set_underflow_callback(output,underflow,NULL);pa_stream_set_write_callback(output,write_pcm,NULL);
     pa_cvolume volume;pa_cvolume_set(&volume,1,PA_VOLUME_NORM/2);
-    pa_stream_flags_t flags=PA_STREAM_START_CORKED|PA_STREAM_ADJUST_LATENCY|PA_STREAM_DONT_MOVE;
+    pa_stream_flags_t flags=PA_STREAM_START_CORKED|PA_STREAM_ADJUST_LATENCY|PA_STREAM_DONT_MOVE|PA_STREAM_AUTO_TIMING_UPDATE;
     if(pa_stream_connect_playback(output,sink,&attr,flags,&volume,NULL)<0){fail("Named USB sink unavailable");goto finish;}
     if(seconds){
         input=pa_stream_new(context,"USB validation capture",&spec,NULL);
@@ -111,18 +130,39 @@ int main(int argc,char **argv) {
     deadline=ms()+5000;
     while((pa_stream_get_state(output)!=PA_STREAM_READY || (input && pa_stream_get_state(input)!=PA_STREAM_READY)) && pump(deadline)){}
     if(*fault)goto finish;
-    const pa_buffer_attr *actual=pa_stream_get_buffer_attr(output);if(actual)playback_target=actual->tlength;
+    const pa_buffer_attr *actual=pa_stream_get_buffer_attr(output);
+    if(actual){playback_target=actual->tlength;playback_prebuffer=actual->prebuf;}
     if(input){actual=pa_stream_get_buffer_attr(input);if(actual)capture_fragment=actual->fragsize;}
     write_pcm(output,pa_stream_writable_size(output),NULL);
     if(*fault)goto finish;
-    start=ms();active=1;pending=input?2:1;
+    start=ms();active=1;phase="transfer";pending=input?2:1;
     pa_operation *op=pa_stream_cork(output,0,operation_done,NULL);if(op)pa_operation_unref(op);else fail("Playback uncork failed");
     if(input){op=pa_stream_cork(input,0,operation_done,NULL);if(op)pa_operation_unref(op);else fail("Capture uncork failed");}
     deadline=start+5000+1000*(seconds+(play_bytes+88199)/88200);
     while((pending || captured<target || written<play_bytes) && pump(deadline)){}
-    if(!*fault){op=pa_stream_drain(output,drain_done,NULL);if(op)pa_operation_unref(op);else fail("Drain request failed");}
+    if(!*fault){
+        submitted_end=ms();phase="drain";drain_started=ms();
+        pa_stream_set_write_callback(output,NULL,NULL);
+        op=pa_stream_drain(output,drain_done,NULL);if(op)pa_operation_unref(op);else fail("Drain request failed");
+    }
     while(!drained && pump(deadline)){}
+    if(drained && !*fault)phase="complete";
 finish:
+    /* Preserve a bounded server timing snapshot even when the drain times out.
+     * Observing indexes is diagnostic only; it never substitutes for drain ACK. */
+    if(output && pa_stream_get_state(output)==PA_STREAM_READY && pa_context_get_state(context)==PA_CONTEXT_READY){
+        suspended=pa_stream_is_suspended(output);timing_pending=1;
+        pa_operation *timing_op=pa_stream_update_timing_info(output,timing_done,NULL);
+        if(timing_op){
+            uint64_t until=ms()+250;
+            while(timing_pending && ms()<until){
+                int code=0;if(pa_mainloop_iterate(loop,0,&code)<0)break;
+                struct timespec pause={0,1000000};nanosleep(&pause,NULL);
+            }
+            if(timing_pending)pa_operation_cancel(timing_op);
+            pa_operation_unref(timing_op);
+        }
+    }
     active=0;
     if(input){pa_stream_set_state_callback(input,NULL,NULL);pa_stream_disconnect(input);pa_stream_unref(input);}
     if(output){pa_stream_set_state_callback(output,NULL,NULL);pa_stream_disconnect(output);pa_stream_unref(output);}
@@ -133,10 +173,15 @@ finish:
     fprintf(report,"{\"schema\":\"x6200.usb-pcm.v1\",\"ok\":%s,\"fault\":\"%s\",\"source\":\"%s\",\"sink\":\"%s\","
         "\"client_rate\":44100,\"client_channels\":1,\"dont_move\":true,\"captured_bytes\":%zu,\"playback_bytes\":%zu,"
         "\"drained\":%s,\"holes\":%u,\"overflows\":%u,\"underflows\":%u,\"capture_fragment_bytes\":%u,\"playback_target_bytes\":%u,"
-        "\"elapsed_ms\":%llu,\"first_capture_ms\":%llu,\"max_capture_gap_ms\":%llu,\"rf_tested\":false}\n",
+        "\"elapsed_ms\":%llu,\"first_capture_ms\":%llu,\"max_capture_gap_ms\":%llu,\"rf_tested\":false,"
+        "\"phase\":\"%s\",\"eof_underflows\":%u,\"playback_prebuffer_bytes\":%u,\"submitted_end_ms\":%llu,\"drain_wait_ms\":%llu,"
+        "\"timing_valid\":%s,\"read_index\":%lld,\"write_index\":%lld,\"underflow_index\":%lld,\"sink_latency_usec\":%llu,\"suspended\":%d}\n",
         *fault?"false":"true",fault,source,sink,captured,written,drained?"true":"false",holes,overflows,underflows,
         capture_fragment,playback_target,(unsigned long long)(start?ms()-start:0),
-        (unsigned long long)(first_capture?first_capture-start:0),(unsigned long long)max_gap);
+        (unsigned long long)(first_capture?first_capture-start:0),(unsigned long long)max_gap,
+        phase,eof_underflows,playback_prebuffer,(unsigned long long)(submitted_end?submitted_end-start:0),
+        (unsigned long long)(drain_started?ms()-drain_started:0),timing_valid?"true":"false",
+        (long long)read_index,(long long)write_index,(long long)underflow_index,(unsigned long long)sink_latency,suspended);
     if(fclose(report))return 1;
     if(*fault){fprintf(stderr,"%s\n",fault);return 1;}
     return 0;

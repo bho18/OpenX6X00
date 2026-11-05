@@ -68,7 +68,7 @@ class ValidationTest(unittest.TestCase):
 
     def test_campaign_completion_and_midstage_failure(self):
         # Exercise campaign orchestration and evidence, not a substitute for PCM/codec tests.
-        for fail_stage in (None, 'decoded-playback'):
+        for fail_stage in (None, 'original-playback', 'decoded-playback'):
             with self.subTest(fail_stage=fail_stage), tempfile.TemporaryDirectory() as temp:
                 out = Path(temp)
                 helper = out / 'usb_headset_pcm'
@@ -94,7 +94,9 @@ class ValidationTest(unittest.TestCase):
                      patch.object(subject, 'collect', return_value=inventory()), \
                      patch.object(subject.time, 'sleep'), patch.object(subject, 'run_logged', side_effect=run):
                     report = subject.validate(out, helper)
-                self.assertEqual(called, ['duplex', 'original-playback', 'codec', 'decoded-playback'])
+                expected = ['duplex', 'codec', 'original-playback', 'decoded-playback']
+                self.assertEqual(called, expected[:3] if fail_stage == 'original-playback' else expected)
+                self.assertIn('recorded_codec_roundtrip', report['stages_completed'])
                 self.assertEqual(report['status'], 'BLOCKED' if fail_stage else 'COMPLETED_LISTENING_REVIEW_REQUIRED')
                 self.assertFalse(report['live_codec_tested'])
                 self.assertEqual(report['intelligibility'], 'UNASSESSED')

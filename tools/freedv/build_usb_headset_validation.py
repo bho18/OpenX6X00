@@ -24,7 +24,7 @@ def main():
              'Invoke-UsbHeadsetValidation.ps1', 'usb_headset_pcm.c')}
     files['usb_headset_pcm'] = args.pcm_helper
     manifest = {'schema': 'x6200.usb-headset-validation-kit.v1',
-                'version': '20261105.1', 'pcm_helper_sha256': digest(args.pcm_helper),
+                'version': '20261105.2', 'pcm_helper_sha256': digest(args.pcm_helper),
                 'files': {name: digest(path) for name, path in files.items()},
                 'rf_commands': False, 'image_required': 'freedv-native-development-20261105.2',
                 'scope': 'USB PCM duplex and recorded actual-codec round trip; listening required.'}

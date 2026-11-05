@@ -137,7 +137,7 @@ def validate(output, helper):
         for i in (3, 2, 1):
             print(i, flush=True)
             time.sleep(1)
-        print('GO — speak now.', flush=True)
+        print('GO - speak now.', flush=True)
         run_logged([helper, source, sink, original, tones, output / 'duplex.json', SECONDS],
                    output, 'duplex', 45)
         check_pcm(json.loads((output / 'duplex.json').read_text()), source, sink, SECONDS * RATE * 2)
@@ -146,11 +146,6 @@ def validate(output, helper):
         if result['capture']['rms'] < 30:
             raise ValueError('Microphone capture is silent or extremely quiet; codec test withheld.')
         result['stages_completed'].append('usb_duplex_capture')
-        print('Capture complete. Playing ORIGINAL microphone speech in the USB headset.', flush=True)
-        run_logged([helper, '-', sink, '-', original, output / 'original-playback.json', 0],
-                   output, 'original-playback', 40)
-        check_pcm(json.loads((output / 'original-playback.json').read_text()), '-', sink, 0)
-        result['stages_completed'].append('original_playback')
         # A file-based actual-codec round trip; deliberately not described as live.
         print('Running actual installed speech encoder, modem and decoder. Allow up to three minutes.', flush=True)
         codec = output / 'codec'
@@ -168,6 +163,11 @@ def validate(output, helper):
         if result['decoded']['rms'] < 30:
             raise ValueError('Decoded output is silent or extremely quiet; inspect retained files.')
         result['stages_completed'].append('recorded_codec_roundtrip')
+        print('Codec complete. Playing ORIGINAL microphone speech in the USB headset.', flush=True)
+        run_logged([helper, '-', sink, '-', original, output / 'original-playback.json', 0],
+                   output, 'original-playback', 40)
+        check_pcm(json.loads((output / 'original-playback.json').read_text()), '-', sink, 0)
+        result['stages_completed'].append('original_playback')
         print('Playing DECODED speech in the USB headset. Compare words, start and end with the original.', flush=True)
         run_logged([helper, '-', sink, '-', decoded, output / 'decoded-playback.json', 0],
                    output, 'decoded-playback', 45)
