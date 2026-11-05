@@ -86,6 +86,7 @@ endif()
 if(HOST_BUILD AND ENABLE_FREEDV_NATIVE_CODEC AND ENABLE_FREEDV_USB_TEST)
         add_executable(freedv_usb_audio_test tools/freedv/usb_audio_integration_test.c src/freedv/usb_audio.c)
         target_compile_options(freedv_usb_audio_test PRIVATE -UNDEBUG)
+        target_include_directories(freedv_usb_audio_test PRIVATE ${FREEDV_SAMPLERATE_INCLUDE_DIR})
         target_link_libraries(freedv_usb_audio_test PRIVATE freedv_native_codec pulse)
 endif()
 

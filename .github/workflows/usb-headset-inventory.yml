@@ -18,7 +18,7 @@ jobs:
           python tools/freedv/test_usb_half_duplex.py
           python tools/freedv/test_usb_rf_evidence.py
       - name: Install private PulseAudio test dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpulse-dev pulseaudio pulseaudio-utils
+        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils
       - name: Check PCM streams and endpoint loss on private virtual devices
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -O2 tools/freedv/usb_headset_pcm.c -lpulse -o /tmp/usb_headset_pcm

@@ -18,7 +18,7 @@ guarantee. Settings are temporary and restored on normal Exit.
    leakage signal, or use a properly attenuated RF coupler. Never connect the
    transmitter output directly to an SDR input. Avoid SDR overload/clipping.
 4. Select an appropriate permitted HF test frequency before opening FreeDV.
-   Disable split, TX shift, RIT, XIT and transverter offsets. Close other radio
+   Disable ATU for the dummy load, split, TX shift, RIT, XIT and transverter offsets. Close other radio
    apps/recorders and TCI control clients. Tuning is locked while USB mode owns
    the radio. The mode temporarily selects USB-DIG and 100..3100 Hz RX filtering.
 5. Set the SDR to the same dial frequency in **USB** with approximately
@@ -81,9 +81,9 @@ averaged to mono with no normalization. The original WAV stays in the bundle.
 
 The mode retains four explicitly bound streams: radio demodulated RX capture,
 radio modem playback, USB microphone capture and USB decoded-speech playback.
-One 48 kHz codec alternates directions. Pulse converts the radio endpoints to/from
-their 44.1 kHz hardware boundary and the microphone from its 16 kHz hardware
-rate; USB earphones use 48 kHz. Ordinary GUI playback is corked/flushed during
+One 48 kHz codec alternates directions. Two retained SRC instances explicitly
+convert the radio streams to/from a fixed 44.1 kHz client boundary. Pulse converts
+the USB microphone from 16 kHz; USB earphones use 48 kHz. Ordinary GUI playback is corked/flushed during
 ownership, RECORD remains clear, and MODEM is the stock TX source. Modem PCM is
 trimmed to one quarter amplitude before mono sink duplication for conservative
 initial drive. The `modem.wav` tap is before that trim, not an RF measurement.
