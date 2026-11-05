@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source": "Verified corresponding-source package from original SDK codec release",
+  "package_manifest_sha256": "9b69ec850d9de2da245bb8254eb3b80624fff73c5cc64495ff88e2bf9a877066",
+  "rade_candidate_files": {
+    "src/CMakeLists.txt": "84fe4af4422c162e75ef9db070b6b6506dfbaae56673dfea4e34627e29201617",
+    "src/rade_api.c": "1527255e957ee442ea84fe43fce10f6d9b2aa7a97760338a0e480ae320799153",
+    "src/rade_api.h": "aa2d3e9d941dc96b0623873f6c8bd626d9155ef048dca92350b5d3930571ddeb",
+    "src/rade_acq_parallel.c": "5c321cc22da80822d9b8fb44e7054c312e38e36add403df522ae314101d2c31a",
+    "src/rade_acq_parallel.h": "0fca50a412c1efe6cef805e6c327c3546766edd27ee308fc1d618acbde0262d9"
+  },
+  "opus_model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453",
+  "local_opus_zip_sha256": "0b401c8bf0d78cd3520380b6034c60773ead0628c36fcf008798d987a38b718c",
+  "native_neon": false,
+  "parallel_acquisition": true,
+  "hardware_accessed": false
+}

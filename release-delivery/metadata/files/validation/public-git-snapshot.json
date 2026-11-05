@@ -1,0 +1,9 @@
+{
+  "public_repository": "/workspace/build/github-publication-20261105/public-source/OpenX6X00",
+  "public_source_commit": "1a2aad375dadc8a14f2b12c6c939b369cc30004d",
+  "original_build_source_commit": "dd42af45012b2b31da4c0fc2d876581052bb817b",
+  "retained_regular_files": 1803,
+  "retained_git_blobs_identical": true,
+  "lvgl_gitlink": "ad032d84eba1baa1173e91a95af11e551e0b805e",
+  "private_ancestry_published": false
+}

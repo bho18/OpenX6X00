@@ -1,0 +1,5 @@
+-- Checking for module 'libgps'
+--   Package 'libgps', required by 'virtual:world', not found
+-- Configuring done (0.3s)
+-- Generating done (0.1s)
+-- Build files have been written to: /workspace/build/x6200-native-host-integrated

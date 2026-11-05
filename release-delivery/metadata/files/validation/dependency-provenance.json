@@ -1,0 +1,105 @@
+{
+  "status": "PASS",
+  "scope": "Reverified unchanged pinned dependency source/model and SDK identities; historical measurements retain their original source and are not rerun here",
+  "original_codec_firmware_commit": "21df019884da3e8cdc1b4521a4b4f8a51ca210e1",
+  "original_codec_manifest_sha256": "9b69ec850d9de2da245bb8254eb3b80624fff73c5cc64495ff88e2bf9a877066",
+  "corresponding_source_archive_sha256": "24338776c90050316104de49ffcaf7abcd3ccde5a6da5b096cc6d087fe1ad365",
+  "rade_candidate_source_files": {
+    "src/CMakeLists.txt": "84fe4af4422c162e75ef9db070b6b6506dfbaae56673dfea4e34627e29201617",
+    "src/rade_api.c": "1527255e957ee442ea84fe43fce10f6d9b2aa7a97760338a0e480ae320799153",
+    "src/rade_api.h": "aa2d3e9d941dc96b0623873f6c8bd626d9155ef048dca92350b5d3930571ddeb",
+    "src/rade_acq_parallel.c": "5c321cc22da80822d9b8fb44e7054c312e38e36add403df522ae314101d2c31a",
+    "src/rade_acq_parallel.h": "0fca50a412c1efe6cef805e6c327c3546766edd27ee308fc1d618acbde0262d9"
+  },
+  "opus_model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453",
+  "opus_configuration_sha256": "251ca684246f27e378dab22a56611495687308f0ffde3090683d4f697ee305ff",
+  "sdk_recovery": {
+    "schema_version": 1,
+    "repository": "bho18/OpenX6X00",
+    "run_id": 40417980169,
+    "artifact_id": 12701486870,
+    "artifact_sha256": "0fdfdd2bc9f67cda6137a8adb8e60e829b2055db2506f1184cf8c3b924311b01",
+    "sdk_archive_sha256": "bc253744032e1acfbb219fb22d07d3ec8024269da84dc02404048fc365a0b528",
+    "target_sysroot_symlink_normalizations": [
+      {
+        "member": "arm-buildroot-linux-gnueabihf_sdk-buildroot/arm-buildroot-linux-gnueabihf/sysroot/sbin/udevadm",
+        "original": "/usr/bin/udevadm",
+        "relative_target": "../usr/bin/udevadm"
+      },
+      {
+        "member": "arm-buildroot-linux-gnueabihf_sdk-buildroot/bin/fw_setenv",
+        "original": "/home/runner/work/OpenX6X00/OpenX6X00/AetherX6200Buildroot/build/host/bin/fw_printenv",
+        "relative_target": "fw_printenv"
+      },
+      {
+        "member": "arm-buildroot-linux-gnueabihf_sdk-buildroot/share/gettext",
+        "original": "/home/runner/work/OpenX6X00/OpenX6X00/AetherX6200Buildroot/build/host/share/gettext-tiny",
+        "relative_target": "gettext-tiny"
+      }
+    ],
+    "baseline_image_sha256": "a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab",
+    "buildroot_commit": "8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3",
+    "buildroot_submodule": "cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f",
+    "baseline_firmware_commit": "fd7f0bba70c0c8f8854219b6422600cbd428a6dc",
+    "compiler_version": "arm-buildroot-linux-gnueabihf-gcc.br_real (Buildroot -gcc34b5b2) 12.3.0",
+    "compiler_sha256_after_relocation": "6408373cac38a08d5a31fbb8877545c5693f440985747c98da77149a63833d1e",
+    "sdk_ne10_library_sha256": "b82c9a9fa7540c199ca3781abf40f3ebce599d61493a5a8df8b1046b16626808",
+    "sdk": "/workspace/build/native-sdk-recovery/recovered-ready/sdk/arm-buildroot-linux-gnueabihf_sdk-buildroot",
+    "sysroot": "/workspace/build/native-sdk-recovery/recovered-ready/sdk/arm-buildroot-linux-gnueabihf_sdk-buildroot/arm-buildroot-linux-gnueabihf/sysroot",
+    "baseline_image": "/workspace/build/x6200-native-baseline/OpenX6X00-x6200-local-sdcard.img"
+  },
+  "pinned_host_dependencies": {
+    "gdyuldin-lvgl-ad032d84eba1baa1173e91a95af11e551e0b805e": {
+      "archive_sha256": "33f9ce18f047850fb3d7e3af37b18a5b2477b68663fd5522aaedf26df0b4cb98",
+      "commit": "ad032d84eba1baa1173e91a95af11e551e0b805e"
+    },
+    "jgaeddert-liquid-dsp-3b8a6f07ba6780b7a3d4be148461257515d183ad": {
+      "archive_sha256": "28b962bd5cf27ec728c3d8a1254d5905b9b4696c9e704709adc9d5ebfa277363",
+      "commit": "3b8a6f07ba6780b7a3d4be148461257515d183ad"
+    },
+    "gdyuldin-ft8_lib-73b0db861dc41c7ca9f3dedc73ee148daa06dd0e": {
+      "archive_sha256": "1fa4ebb8df26bd1b9a150ea91249c003b62c90fde21d8b3cfc41cfba6710fb27",
+      "commit": "73b0db861dc41c7ca9f3dedc73ee148daa06dd0e"
+    }
+  },
+  "host_codec_build": {
+    "schema_version": 1,
+    "status": "PASS",
+    "scope": "Native codec dependency build and upstream V1 text smoke only; application integration is untested",
+    "hardware_qualified": false,
+    "paths": {
+      "FREEDV_RADE_SOURCE": "/workspace/build/x6200-native-host-codec/sources/rade_c/src",
+      "FREEDV_OPUS_BUILD": "/workspace/build/x6200-native-host-codec/rade_c/build_opus-prefix/src/build_opus",
+      "FREEDV_RADE_LIBRARY": "/workspace/build/x6200-native-host-codec/rade_c/src/librade.so.0.1",
+      "FREEDV_OPUS_LIBRARY": "/workspace/build/x6200-native-host-codec/rade_c/build_opus-prefix/src/build_opus/.libs/libopus.a",
+      "FREEDV_SAMPLERATE_LIBRARY": "/workspace/build/x6200-native-host-codec/samplerate/src/libsamplerate.a",
+      "FREEDV_SAMPLERATE_INCLUDE_DIR": "/workspace/build/x6200-native-host-codec/sources/libsamplerate-0.2.2/include"
+    },
+    "compiler": "cc (Debian 14.2.0-19) 14.2.0",
+    "cmake_build_type": "RelWithDebInfo",
+    "rade_acq_parallel": true,
+    "rade_acq_neon": false,
+    "hashes": {
+      "rade_c/src/librade.so.0.1": "6eb87d6a123defd3522c2d36ffe0acecf4984469a3f4212f905fdf4b2a28ff45",
+      "rade_c/build_opus-prefix/src/build_opus/.libs/libopus.a": "c082a43c8db937ad1b87344570bd7ec1cdec403098488dbee185f7e5969653b6",
+      "samplerate/src/libsamplerate.a": "712247f79bb164efa55686f1f1be311f7a4c1c7b71286550bc7e05abc3039c23",
+      "rade_c/build_opus-prefix/src/build_opus/config.h": "8437bd6d75adc4d5faadff9a09eb155313fd96ed429e618041d373add778cc07",
+      "rade_c/CMakeCache.txt": "e12029ef0d4cd07ab0b585c98a130cee38655de0a0bca60dad92f8937512e330",
+      "source-provenance.json": "603c435fbbaf0e4cf936ae0fc6d4fb0b9bc8a615af5a599fdbe51747ca1104c3"
+    },
+    "upstream_v1_text": {
+      "status": "PASS",
+      "stdout": "rade_v1_text_test: 6 test cases\n  [PASS]  set='VK2DVZ'  got='VK2DVZ'  len=6\n  [PASS]  set='W1AW'  got='W1AW'  len=4\n  [PASS]  set='KG5SWP'  got='KG5SWP'  len=6\n  [PASS]  set='VK4RGG1'  got='VK4RGG1'  len=7\n  [PASS]  set='AA1ZZZZZ'  got='AA1ZZZZZ'  len=8\n  [PASS]  set='A'  got='A'  len=1\n\nPASS (6/6)\n",
+      "stderr": "rade_open: model_file=dummy (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\n"
+    }
+  },
+  "x6100_control": {
+    "repository": "gdyuldin/X6100Control",
+    "commit": "1426f56ef6759dc1c90cb76478c6e524e08c5c94",
+    "archive_sha256": "4eeb662a6f787ac2242cba47467ebca9c4ad3e6616055b388b2707b02fe43f1c",
+    "scope": "pinned compatibility source fetched from GitHub; separate SDK-built library; no X6100 hardware claim"
+  },
+  "hardware_qualified": false,
+  "original_sdk_recovery_record_sha256": "c163dcfe446734052e82c06471a842376e2d5ecc11da5e0ca10206e18b929830",
+  "baseline_archive_sha256": "0fdfdd2bc9f67cda6137a8adb8e60e829b2055db2506f1184cf8c3b924311b01"
+}

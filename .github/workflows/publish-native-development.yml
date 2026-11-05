@@ -1,0 +1,54 @@
+name: Publish verified X6200 native development image
+on:
+  push:
+    branches: [publish/freedv-native-development-20261105]
+    paths: ['release-delivery/**', '.github/workflows/publish-native-development.yml']
+permissions:
+  contents: write
+concurrency:
+  group: x6200-native-development-20261105-publication
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Require the intended unpublished release
+        run: |
+          gh api repos/bho18/OpenX6X00/releases/434793318 > "$RUNNER_TEMP/release.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = json.loads((Path(os.environ['RUNNER_TEMP']) / 'release.json').read_text())
+          if (release['id'] != 434793318 or release['draft'] is not True or
+              release['tag_name'] != 'freedv-native-development-20261105' or
+              release['target_commitish'] != '1a2aad375dadc8a14f2b12c6c939b369cc30004d'):
+              raise SystemExit('Refusing a changed or already published release')
+          PY
+      - name: Obtain the pinned baseline
+        run: |
+          command -v zstd || { sudo apt-get update -qq && sudo apt-get install -y zstd; }
+          mkdir baseline
+          gh release download freedv-native-diagnostics-20261028.2 --repo bho18/OpenX6X00 --pattern x6200-freedv-baseline.zip --dir baseline
+      - name: Reconstruct and verify the original image and delivery
+        run: |
+          python3 release-delivery/reconstruct-image.py --baseline-zip baseline/x6200-freedv-baseline.zip --input release-delivery --work reconstruction
+          python3 release-delivery/reconstruct-release.py --image reconstruction/x6200-native-development.img --source . --input release-delivery/metadata --output final
+      - name: Upload and verify the draft assets
+        run: |
+          gh release upload freedv-native-development-20261105 --repo bho18/OpenX6X00 \
+            final/x6200-native-development-windows.zip \
+            final/x6200-native-development.img.xz \
+            final/x6200-native-development-public-source.tar.xz \
+            final/PUBLICATION-MANIFEST.json \
+            final/RECONSTRUCTION.json \
+            final/DOWNLOAD-SHA256SUMS.txt
+          python3 release-delivery/verify-upload.py final
+      - name: Publish the verified development prerelease
+        run: |
+          gh release edit freedv-native-development-20261105 --repo bho18/OpenX6X00 --draft=false --prerelease --latest=false --notes-file release-delivery/release-notes.md

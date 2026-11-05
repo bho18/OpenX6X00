@@ -1,0 +1,2 @@
+PASS: full fixture-to-mocked-playback adapter sync=30 features=29 accepted=151208 output=151208
+PASS: unkeyed prepare silence, partial output accounting, explicit flush acknowledgement, deferred mixer restore and injected worker failure

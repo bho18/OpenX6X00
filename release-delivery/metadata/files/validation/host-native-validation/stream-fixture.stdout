@@ -1,0 +1,1 @@
+PASS: synchronized full streaming RX through FARGAN/resampling; blocks=49 sync=46 features=45 output=235880 nonzero=235683; hardware_qualified=false

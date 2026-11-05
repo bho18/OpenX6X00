@@ -1,0 +1,23 @@
+{
+  "firmware_commit": "dd42af45012b2b31da4c0fc2d876581052bb817b",
+  "source_tree_sha256": "31fbdbfa9dd7e2f9aea7b26d331899a15239bab2edd6a13b0993035742265043",
+  "software_gates_passed": true,
+  "hardware_qualified": false,
+  "ready_for_guided_hardware_tests": false,
+  "candidate_kind": "native half-duplex development spare-card image",
+  "hardware_status": "BLOCKED",
+  "validation_scope": "Software and image integrity passed; native RX/TX requires the unresolved hardware audio/PTT contract",
+  "normal_mode_qualified": false,
+  "host_verification_sha256": "8f6ec66ac236189d8129a1eb6b9c834d0cf71061a315c50d0ea806a19072dbe8",
+  "gui_sha256": "aa8128e4d25cce34b8a369185236fe4387e8ddfc21a4667c8cdb04a3d642c61f",
+  "runner_sha256": "03e3e5d4490e6a733b0854b15005bd6af304655439a616ee3b988546d7fe9856",
+  "rade_sha256": "9d04766b1743a4cc3ef575497273a0d6a993e1cc10731d1bc5bada04723e230d",
+  "modem_fixture_sha256": "0a5b202f2637ecd4ca78f2c2d2c4e17aff7d6ba12a07f9c612d8df9cbd26e034",
+  "web_wheel_sha256": "0e7bd72c52e6f891d286a45ae00bdbc0bceb44b52d10a457c27d213b8905a435",
+  "model_sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453",
+  "physical_hand_ptt_release": "UNSUPPORTED by pinned documented API; never inferred from aggregate TX",
+  "pulse_probe_sha256": "95fd0c987a14f207a36c78c613aac4ce019311ca6d913e804bc5300bae6ceda4",
+  "image_sha256": "86d9106dd91319c7ab4ad007f5795d6e900b6f203e26cc6ca10583cfe81bf43e",
+  "signature_key_preserved": true,
+  "actual_image_abi": "PASS"
+}

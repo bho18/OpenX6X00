@@ -1,0 +1,122 @@
+{
+  "status": "PASS",
+  "source_commit": "dd42af45012b2b31da4c0fc2d876581052bb817b",
+  "source_tree_sha256": "31fbdbfa9dd7e2f9aea7b26d331899a15239bab2edd6a13b0993035742265043",
+  "hardware_qualified": false,
+  "host_simulated": true,
+  "scope": "Full host native-validation GUI compilation, simulated transport smoke, targeted codec correctness; no physical hardware",
+  "commands": [
+    [
+      "cmake",
+      "-S",
+      "/workspace/x6200-native-development",
+      "-B",
+      "/workspace/build/x6200-native-host-integrated",
+      "-G",
+      "Ninja",
+      "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+      "-DHOST_BUILD=ON",
+      "-DENABLE_FREEDV_DIAGNOSTICS=ON",
+      "-DENABLE_FREEDV_NATIVE_CODEC=ON",
+      "-DENABLE_FREEDV_VOICE=ON",
+      "-DENABLE_FREEDV_NATIVE_VALIDATION=ON",
+      "-DFREEDV_HOST_TEST_PROFILE=ON",
+      "-DFREEDV_BUILD_ID=host-native-validation-dd42af45012b",
+      "-DFREEDV_RADE_SOURCE=/workspace/build/x6200-native-host-codec/sources/rade_c/src",
+      "-DFREEDV_OPUS_BUILD=/workspace/build/x6200-native-host-codec/rade_c/build_opus-prefix/src/build_opus",
+      "-DFREEDV_RADE_LIBRARY=/workspace/build/x6200-native-host-codec/rade_c/src/librade.so.0.1",
+      "-DFREEDV_OPUS_LIBRARY=/workspace/build/x6200-native-host-codec/rade_c/build_opus-prefix/src/build_opus/.libs/libopus.a",
+      "-DFREEDV_SAMPLERATE_LIBRARY=/workspace/build/x6200-native-host-codec/samplerate/src/libsamplerate.a",
+      "-DFREEDV_SAMPLERATE_INCLUDE_DIR=/workspace/build/x6200-native-host-codec/sources/libsamplerate-0.2.2/include"
+    ],
+    [
+      "cmake",
+      "--build",
+      "/workspace/build/x6200-native-host-integrated",
+      "--target",
+      "x6100_gui",
+      "params_sqlite",
+      "freedv_voice_engine_test",
+      "freedv_native_audio_codec_adapter_test",
+      "freedv_native_stream_test",
+      "freedv_native_stream_fixture_test",
+      "freedv_voice_runner",
+      "-j",
+      "2"
+    ],
+    [
+      "/workspace/build/x6200-native-host-integrated/freedv_voice_engine_test",
+      "--turns",
+      "3"
+    ],
+    [
+      "/workspace/build/x6200-native-host-integrated/freedv_native_stream_test",
+      "--unpaced"
+    ],
+    [
+      "/workspace/build/x6200-native-host-integrated/freedv_native_stream_fixture_test",
+      "/workspace/build/migration-codec-release/package/freedv-benchmark/fixtures/rade-modem.raw"
+    ],
+    [
+      "/workspace/build/x6200-native-host-integrated/freedv_native_audio_codec_adapter_test",
+      "/workspace/build/migration-codec-release/package/freedv-benchmark/fixtures/rade-modem.raw"
+    ]
+  ],
+  "checks": {
+    "voice-engine": {
+      "status": "PASS",
+      "stdout": "PASS: 3 synthetic alternating turns x 1 lifecycles, rate=8000; speech assessment INCONCLUSIVE\n"
+    },
+    "native-stream": {
+      "status": "PASS",
+      "stdout": "PASS: full bounded RADE TX/RX, three acquisition participants, turn generations, abort and backlog failure\n"
+    },
+    "stream-fixture": {
+      "status": "PASS",
+      "stdout": "PASS: synchronized full streaming RX through FARGAN/resampling; blocks=49 sync=46 features=45 output=235880 nonzero=235683; hardware_qualified=false\n"
+    },
+    "codec-adapter": {
+      "status": "PASS",
+      "stdout": "PASS: full fixture-to-mocked-playback adapter sync=30 features=29 accepted=151208 output=151208\nPASS: unkeyed prepare silence, partial output accounting, explicit flush acknowledgement, deferred mixer restore and injected worker failure\n"
+    }
+  },
+  "gui_smoke": {
+    "status": "PASS",
+    "observations": [
+      "geometry",
+      "greeting",
+      "ping",
+      "screen",
+      "state"
+    ],
+    "state": {
+      "freq": 14100000,
+      "mode": 2,
+      "flo": 100,
+      "fhi": 2900,
+      "agc": 3,
+      "pre": 0,
+      "att": 0,
+      "nb": 0,
+      "nr": 0,
+      "sql": 0,
+      "rfg": 63,
+      "vol": 30,
+      "pwr": 5.0,
+      "step": 500,
+      "zoom": 1,
+      "vfo": 0,
+      "atu": 0,
+      "bat": -1,
+      "tx": 0,
+      "lock": 0
+    },
+    "diagnostic_panel": {
+      "status": "not requested"
+    }
+  },
+  "validation_entry_exercised": false,
+  "gui_sha256": "75be084bc1bab4cd9b0532d0727c5cad9e2a9e0d1d6091ae9e06d6d95ca2a098",
+  "cmake_cache_sha256": "f7c852e4fb3e33128dfba19e1cb3200e41a0187ee4662cb7327a503a6d1cf208",
+  "codec_manifest_sha256": "c5b172bf3a5ea8733de5d5f82f7beeb4d24d9e2e7bd0b96e7f7425c82789a679"
+}
