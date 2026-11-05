@@ -23,7 +23,13 @@ int main(int argc,char **argv){
     fd_usb_audio_arm(a,true);
     atomic_store(&f.delay,300);atomic_store(&f.pressed,true);wait_state(a,FD_USB_START,5000);pause_ms(50);
     atomic_store(&f.pressed,false);atomic_fetch_add(&f.release,1);wait_state(a,FD_USB_RX,5000);assert(!atomic_load(&f.keyed));assert(atomic_load(&f.keys)==1);atomic_store(&f.delay,0);pause_ms(100);
-    atomic_store(&f.pressed,true);wait_state(a,FD_USB_TX,5000);puts("TX_ACTIVE");fflush(stdout);
+    /* The hardware trace spent ~400 ms in START. Keep the microphone live
+     * through a longer TX acknowledgement: no pre-admission speech may queue. */
+    atomic_store(&f.delay,650);atomic_store(&f.pressed,true);wait_state(a,FD_USB_START,5000);pause_ms(300);
+    fd_usb_snapshot starting=fd_usb_audio_snapshot(a);
+    assert(starting.state==FD_USB_START && !starting.fault);
+    assert(starting.input_queue==0 && starting.engine.input_depth==0);
+    wait_state(a,FD_USB_TX,5000);atomic_store(&f.delay,0);puts("TX_ACTIVE");fflush(stdout);
     if(argc==3){
         if(!strcmp(argv[2],"--stall")){atomic_store(&f.stall,true);pause_ms(700);assert(!atomic_load(&f.keyed));atomic_store(&f.stall,false);}
         uint64_t until=ms()+10000;while(!fd_usb_audio_snapshot(a).stopped && ms()<until)pause_ms(5);

@@ -50,7 +50,10 @@ static void read_pcm(pa_stream *s,size_t requested,void *p){
         if(!data || bytes%2){++a->holes;failed(a,U_DEVICE);}else{
             if(s==a->mic)a->mic_last=now_ms();else a->rx_last=now_ms();
             unsigned st=atomic_load(&a->state);
-            if(s==a->mic && (st==FD_USB_TX || (st==FD_USB_START && atomic_load(&a->tx_at))))push(a,&a->capture,data,(unsigned)bytes/2);
+            /* START can include slow route writes and TX telemetry. Drain and
+             * discard microphone input until TX is confirmed; START has no
+             * encoder consumer and must not accumulate pre-admission speech. */
+            if(s==a->mic && st==FD_USB_TX)push(a,&a->capture,data,(unsigned)bytes/2);
             if(s==a->rx && st==FD_USB_RX)push(a,&a->radio_capture,data,(unsigned)bytes/2);
         }
         if(pa_stream_drop(s)<0){failed(a,U_DEVICE);return;}
@@ -137,10 +140,11 @@ static void *run(void *p){
                 a->permit_press=false;a->release=in.release;state(a,FD_USB_START);atomic_store(&a->tx_at,now);
                 if(!fence(a,FD_VOICE_TX) || atomic_load(&a->stop) || !a->c.control.observe(a->c.control.context,&in) || !in.pressed || in.release!=a->release){a->c.control.clear(a->c.control.context,false);if(!atomic_load(&a->stop)){if(!fence(a,FD_VOICE_RX))failed(a,U_ENGINE);state(a,FD_USB_RX);}continue;}
                 if(!a->c.control.key(a->c.control.context,a->release)){failed(a,U_KEY);break;}
+                a->phase_at=now_ms(); /* acknowledgement budget starts after the key write */
             }
         }else if(st==FD_USB_START && atomic_load(&a->tx_at)){
             if(!in.pressed || in.release!=a->release){a->c.control.clear(a->c.control.context,false);a->rx_sequence=in.sequence;if(!fence(a,FD_VOICE_RX))failed(a,U_ENGINE);state(a,FD_USB_START);atomic_store(&a->tx_at,0);/* await RX below */}
-            else if(in.rf_tx){if(!stream_op(a,a->modem,false,0)){failed(a,U_DEVICE);break;}state(a,FD_USB_TX);}
+            else if(in.rf_tx){if(!stream_op(a,a->mic,true,0) || !stream_op(a,a->modem,false,0)){failed(a,U_DEVICE);break;}state(a,FD_USB_TX);}
             else if(now_ms()-a->phase_at>750){failed(a,U_KEY);break;}
             if(!atomic_load(&a->tx_at) && !in.rf_tx && in.sequence>a->rx_sequence){state(a,FD_USB_RX);a->permit_press=false;}
         }else if(st==FD_USB_TX){

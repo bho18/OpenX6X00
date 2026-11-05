@@ -37,6 +37,8 @@ guarantee. Settings are temporary and restored on normal Exit.
    panel PTT, wait for **Transmitting**, and speak for about eight seconds:
    "RF test turn one. One two three four five. The quick brown fox jumps over
    the lazy dog. End RF test turn one."
+   Microphone input before **Transmitting** is discarded while the radio route
+   and TX acknowledgement settle; do not begin speaking during that transition.
 4. Release PTT. The display should pass through finishing the modem tail and
    return to **Receiving**, with radio TX ending. Allow three seconds after
    release; if TX persists, select Stop. If it still persists, switch the radio
@@ -76,6 +78,10 @@ diagnostics only; that does not count as RF speech verification. If the GUI
 faults before TX, collect its stopped trace rather than rerunning or changing
 gains blindly. WAV accepts PCM16 mono/stereo at 8, 44.1 or 48 kHz; stereo is
 averaged to mono with no normalization. The original WAV stays in the bundle.
+Rejected WAVs and decoder errors report **BLOCKED**, while preserving session
+diagnostics and input WAVs up to 16 MiB. A GUI audio fault is also a blocker;
+remaining stopped until Exit and a new session is intentional. Do not repeatedly
+press PTT to restart a faulted session.
 
 ## Scope and implementation
 

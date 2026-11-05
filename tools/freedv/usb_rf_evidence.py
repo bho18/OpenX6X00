@@ -21,7 +21,8 @@ def read_sdr(path):
     with wave.open(str(path), 'rb') as wav:
         channels, width, rate, frames = wav.getnchannels(), wav.getsampwidth(), wav.getframerate(), wav.getnframes()
         if channels not in (1, 2) or width != 2 or rate not in (8000, 44100, 48000) or not 0 < frames <= rate * 30:
-            raise ValueError('SDR input must be 1..30 seconds of PCM16 mono/stereo at 8, 44.1 or 48 kHz. Record demodulated USB audio, not IQ.')
+            raise ValueError(f'SDR WAV has {channels} channels, {width * 8}-bit samples, {rate} Hz and {frames / rate:.3f} seconds. '
+                             'Use up to 30 seconds of PCM16 mono/stereo at 8, 44.1 or 48 kHz; record demodulated USB audio, not IQ.')
         raw = wav.readframes(frames)
         if len(raw) != frames * channels * 2:
             raise ValueError('Truncated SDR WAV')
@@ -70,6 +71,7 @@ def collect_evidence(output, manifest, sdr=None):
         if not rows:
             raise ValueError('GUI trace is empty; session preparation did not complete.')
         result['last_gui_state'] = rows[-1]
+        result['gui_session_fault'] = rows[-1].get('fault', 0)
         for name in ('mic', 'radio-rx', 'modem', 'decoded'):
             path = Path(str(prefix) + '-' + name + '.raw')
             if path.exists():
@@ -78,6 +80,13 @@ def collect_evidence(output, manifest, sdr=None):
                 wrap(path.read_bytes(), output / (name + '.wav'))
         result['status'] = 'COLLECTED_NO_SDR_RECORDING'
         if sdr:
+            result['sdr_file'] = dict(bytes=sdr.stat().st_size, sha256=sha256(sdr))
+            if sdr.stat().st_size <= 16 * 1024 * 1024:
+                shutil.copy2(sdr, output / 'sdr-usb-audio.wav')
+            else:
+                with sdr.open('rb') as source:
+                    (output / 'sdr-header.bin').write_bytes(source.read(4096))
+                raise ValueError('SDR file exceeds the 16 MiB evidence bound; header and SHA256 retained. Export a short demodulated-audio WAV.')
             from usb_half_duplex import stream_process
             runner = Path('/opt/freedv-benchmark/bin/freedv_voice_runner')
             if sha256(runner) != manifest['runner_sha256']:
@@ -85,7 +94,6 @@ def collect_evidence(output, manifest, sdr=None):
             if sha256(Path('/opt/freedv-benchmark/lib/librade.so.0.1')) != manifest['rade_sha256']:
                 raise ValueError('Installed RADE library mismatch.')
             raw, metadata = read_sdr(sdr)
-            shutil.copy2(sdr, output / 'sdr-usb-audio.wav')
             result['sdr_input'] = metadata
             # The existing runner loops RX fixtures. Pad to the declared length
             # so it never wraps to the beginning of this off-air recording.
@@ -106,7 +114,10 @@ def collect_evidence(output, manifest, sdr=None):
             result['decoded_pcm_sha256'] = sha256(raw_decoded)
             raw_decoded.unlink()  # WAV is lossless; avoid duplicating audio in upload.
             result.update(status='RF_RECORDING_DECODED_LISTENING_REQUIRED', rf_recording_decoded=True)
+        if result['gui_session_fault'] > 1:
+            raise ValueError(f"GUI session stopped with fault {result['gui_session_fault']}; evidence retained for review.")
     except (OSError, ValueError, KeyError, EOFError, wave.Error, subprocess.SubprocessError) as error:
+        result['status'] = 'BLOCKED'
         result['reason'] = str(error)
         print('STOP: ' + str(error), flush=True)
     finally:
