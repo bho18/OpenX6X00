@@ -4,6 +4,7 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('ptt runner '+[guid]::NewGuid().ToSt
 New-Item -ItemType Directory -Path $root | Out-Null
 Copy-Item (Join-Path $PSScriptRoot 'Invoke-MicPttInputWatch.ps1') $root
 Copy-Item (Join-Path $PSScriptRoot 'mic_ptt_input_watch.py') $root
+Copy-Item (Join-Path $PSScriptRoot 'mic_status_snapshot.py') $root
 $global:mockCalls=@()
 $global:mockPrompts=0
 function global:ssh { $global:mockCalls+=($args -join ' '); Write-Output 'synthetic read-only observation'; $global:LASTEXITCODE=0 }
@@ -29,6 +30,17 @@ try {
  if(!(Test-Path (Join-Path $out 'synthetic-radio-output/result.json'))){throw 'Radio evidence missing'}
  if($global:mockCalls.Count -ne 3){throw 'Unexpected SSH command count'}
  foreach($c in $global:mockCalls){if($c -notmatch 'python3 -u /tmp/mic-ptt-input-watch-[a-f0-9]+.py --(check-only|output)'){throw 'Unexpected remote operation'}}
+ $global:mockCalls=@()
+ & (Join-Path $root 'Invoke-MicPttInputWatch.ps1') -Wide -CheckOnly
+ if($global:mockCalls.Count -ne 2 -or $global:mockCalls[-1] -notmatch '--check-only --wide'){
+  throw 'Wide prerequisite check was not used'
+ }
+ $global:mockPrompts=0
+ & (Join-Path $root 'Invoke-MicPttInputWatch.ps1') -Wide
+ if($global:mockCalls[-1] -notmatch '--output /tmp/mic-ptt-input-results-[a-f0-9]+ --wide'){
+  throw 'Wide status sampling was omitted'
+ }
+ if(@(Get-ChildItem $root -Filter '*.zip').Count -ne 2){throw 'Wide evidence ZIP missing'}
  'PASS: prerequisite-only and full runner flow, paths with spaces, notes, evidence ZIP; mocked SSH only'
 } finally {
  Remove-Item Function:\ssh,Function:\scp,Function:\Read-Host

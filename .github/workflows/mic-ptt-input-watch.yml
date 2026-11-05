@@ -12,6 +12,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Check fragmented events and incomplete observations without a radio
         run: python tools/freedv/test_mic_ptt_input_watch.py
+      - name: Check pinned status memory reads, relocation and process restart rejection
+        run: python tools/freedv/test_mic_status_snapshot.py
   windows-runner:
     runs-on: windows-latest
     steps:

@@ -1,4 +1,4 @@
-param([string]$RadioIp='192.168.4.210', [switch]$CheckOnly)
+param([string]$RadioIp='192.168.4.210', [switch]$CheckOnly, [switch]$Wide)
 $ErrorActionPreference='Stop'
 $kitDir=Split-Path -Parent $MyInvocation.MyCommand.Path
 $python=Join-Path $kitDir 'mic_ptt_input_watch.py'
@@ -9,7 +9,20 @@ $token=[guid]::NewGuid().ToString('N')
 $remoteScript="/tmp/mic-ptt-input-watch-$token.py"
 & scp -O @opts $python "root@${RadioIp}:$remoteScript"
 if($LASTEXITCODE){throw 'Script copy failed'}
-& ssh @opts "root@$RadioIp" "python3 -u $remoteScript --check-only"
+$wideArg=''
+if($Wide){
+ $wideArg=' --wide'
+ # Use a private directory so concurrent helper runs cannot replace imports.
+ $remoteDir="/tmp/mic-ptt-wide-kit-$token"
+ & ssh @opts "root@$RadioIp" "umask 077 && mkdir $remoteDir"
+ if($LASTEXITCODE){throw 'Remote helper directory creation failed'}
+ foreach($name in @('mic_status_snapshot.py','mic_ptt_input_watch.py')){
+  & scp -O @opts (Join-Path $kitDir $name) "root@${RadioIp}:$remoteDir/$name"
+  if($LASTEXITCODE){throw "Copy failed: $name"}
+ }
+ $remoteScript="$remoteDir/mic_ptt_input_watch.py"
+}
+& ssh @opts "root@$RadioIp" "python3 -u $remoteScript --check-only$wideArg"
 if($LASTEXITCODE){throw 'Read-only prerequisite check failed; no press test started'}
 if($CheckOnly){return}
 Write-Host 'This observes ordinary PTT and DOES NOT inhibit RF.'
@@ -23,13 +36,13 @@ $remoteOut="/tmp/mic-ptt-input-results-$token"
 $savedPreference=$ErrorActionPreference
 try {
  $ErrorActionPreference='Continue'
- & ssh @opts "root@$RadioIp" "python3 -u $remoteScript --output $remoteOut" 2>&1 |
+ & ssh @opts "root@$RadioIp" "python3 -u $remoteScript --output $remoteOut$wideArg" 2>&1 |
   Tee-Object -FilePath (Join-Path $evidence 'console.txt')
  $observationExit=$LASTEXITCODE
 } finally {$ErrorActionPreference=$savedPreference}
 $observationExit | Set-Content -Encoding Ascii -LiteralPath (Join-Path $evidence 'observation-exit-code.txt')
 Write-Host 'Release both PTT controls now. Confirm the radio returned to receive.'
-$notes=Read-Host 'For panel, mic first, mic second: did the TX indicator follow each press/release? Note missed prompts or unexpected behavior'
+$notes=Read-Host 'Did each PTT press/release follow the TX indicator? For a wide run, did mic UP/DOWN work? Note missed prompts or unexpected behavior'
 $notes | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $evidence 'operator-notes.txt')
 & scp -O -r @opts "root@${RadioIp}:$remoteOut" $evidence
 $copyExit=$LASTEXITCODE
