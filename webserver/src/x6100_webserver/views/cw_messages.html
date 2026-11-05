@@ -1,0 +1,90 @@
+% rebase('base.html', title='CW messages')
+<h2><svg class="i"><use href="#i-cw"/></svg>CW messages</h2>
+<p class="sub">The messages of MSG &rarr; CW on the radio, sent with TX or as a beacon. Up to 64 characters each. A row is saved with its own Save, or all at once; a deleted message can be brought back for twenty seconds.</p>
+
+<section class="dp-card">
+<div class="dp-head"><span class="dp-ico"><svg class="i"><use href="#i-cw"/></svg></span><div><h3>Messages</h3><p>Up to 64 characters each</p></div><div class="dp-x"><button id="add" class="primary"><svg class="i"><use href="#i-plus"/></svg>Add</button></div></div>
+<div class="dp-body tbl">
+<div class="table-wrap">
+<table id="messages">
+  <thead>
+    <tr><th>Message</th><th></th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+</div>
+<div class="actions"><span class="status" id="status"></span></div>
+</div>
+</section>
+
+<script src="/static/js/edit_flow.js?v=2"></script>
+<script>
+let max = 64;
+const body = $("#messages>tbody");
+EditFlow.effect($("#messages").closest(".dp-card").find("h3"), "the next time MSG → CW opens on the radio");
+
+var showStatus = function(text, error=false) {
+  const el = $("#status");
+  el.toggleClass("error", error);
+  el.html('<span class="dot"></span>').append(document.createTextNode(text));
+}
+
+var button = function(cls, icon, title) {
+  return $("<button class='action'>").addClass(cls).attr("title", title).append($("<i>").addClass(icon));
+}
+
+/* type url payload, then done(list) with the radio's list, one request at a time (EditFlow.ajax); on an
+ * error the row of the save tk (EditFlow.submit) says why and keeps its text */
+var call = function(type, url, payload, tk, done) {
+  EditFlow.ajax(body, {
+    url: url, type: type, data: payload ? JSON.stringify(payload) : undefined,
+    contentType: "application/json; charset=utf-8", dataType: "json", timeout: X6100_WAIT_MS,
+    success: function(r) { done(r); },
+    error: function(xhr, why) {
+      const msg = x6100FailText(xhr, why);
+      if (tk) EditFlow.failed(tk, msg); else showStatus(msg, true);
+    }
+  });
+}
+
+// m.id is null for a new, not yet saved message
+var messageRow = function(m) {
+  const row = $("<tr>").attr("data-key", m.id === null ? "" : String(m.id));
+  const text = $("<input class='name' autocomplete='off' pattern='[ -~]*'>").attr("maxlength", max).val(m.text || "").css("width", "100%");
+  row.append($("<td>").css("width", "100%").append(text));
+  const actions = $("<td class='action-cell'>").appendTo(row);
+  const save = function() {
+    const tk = EditFlow.submit(row); if (!tk) return;
+    const d = {text: text.val()};
+    if (m.id === null) call("POST", "/api/cw_messages", d, tk, function(r) { EditFlow.saved(tk, function() { row.remove(); const rows = render(r), last = r.messages[r.messages.length - 1]; return last && rows[String(last.id)]; }); });
+    else call("PUT", "/api/cw_messages/" + m.id, d, tk, function(r) { EditFlow.saved(tk, function() { return render(r)[String(m.id)]; }); });
+  };
+  actions.append(button("save", "si-disk", "Save").on("click", save));
+  actions.append(" ", button("remove", "si-trash", "Delete").on("click", function() {
+    if (m.id === null) { row.remove(); EditFlow.tools(null, body); return; }
+    if (!EditFlow.confirmDelete('the message "' + m.text + '"', "It is gone from MSG → CW on the radio.")) return;
+    call("DELETE", "/api/cw_messages/" + m.id, null, null, function(r) {
+      render(r);
+      EditFlow.undo($("#status"), 'Deleted "' + m.text + '".', function() {
+        call("POST", "/api/cw_messages", {text: m.text}, null, function(r2) { render(r2); showStatus("Brought back (at the end of the list)"); });
+      });
+    });
+  }));
+  EditFlow.watch(row, save);
+  if (m.id === null) EditFlow.state(row, "unsaved");
+  return row;
+}
+
+var render = function(data) {
+  max = data.max;
+  return EditFlow.rebuild(body, function() { body.empty(); data.messages.forEach(function(m) { body.append(messageRow(m)); }); });
+}
+
+$("#add").on("click", function() {
+  const row = messageRow({id: null, text: ""});
+  body.append(row);
+  row.find("input").focus();
+});
+
+$.get('/api/cw_messages', {}, render);
+</script>

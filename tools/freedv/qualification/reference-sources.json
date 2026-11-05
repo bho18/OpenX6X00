@@ -1,0 +1,30 @@
+{
+  "rade": {
+    "file": "freedv-rade_c-c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9.tar.gz",
+    "sha256": "bc89be47a141cca9da1e8cc73e1de9b6e96f05984fda5c30056760d69ba23bff",
+    "commit": "c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9",
+    "repository": "freedv/rade_c"
+  },
+  "gui": {
+    "file": "freedv-freedv-gui-a2d5365fbbb651be67959d47c351573f9374d5e0.tar.gz",
+    "sha256": "ca3c083fc54ec5e6266560492576a8e08d970ffd51ca40875236cca19fade58c",
+    "commit": "a2d5365fbbb651be67959d47c351573f9374d5e0",
+    "repository": "freedv/freedv-gui"
+  },
+  "backend": {
+    "file": "freedv-freedv-backend-884503f9463bd723aeae35dc5bf8ee75896d9406.tar.gz",
+    "sha256": "fa268cc4e26c3ff6adb1b78baa78ad19c3d106dd53fa9fc5636c8f386346288e",
+    "commit": "884503f9463bd723aeae35dc5bf8ee75896d9406",
+    "repository": "freedv/freedv-backend"
+  },
+  "opus": {
+    "file": "xiph-opus-940d4e5af64351ca8ba8390df3f555484c567fbb.zip",
+    "sha256": "20e37f9079ac2b80e3235cd8ce2547829e147bf44a2f5dd28a888fa3e9c24341",
+    "commit": "940d4e5af64351ca8ba8390df3f555484c567fbb",
+    "repository": "xiph/opus"
+  },
+  "model": {
+    "file": "opus_data-4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453.tar.gz",
+    "sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453"
+  }
+}

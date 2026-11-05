@@ -1,0 +1,364 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+#define _POSIX_C_SOURCE 200809L
+#include "session_controller.h"
+#include <assert.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <time.h>
+#include <stdatomic.h>
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t changed;
+    bool owned, busy, quiescent, allowed, start_ok, clear_ok, restore_ok;
+    bool software_tx, route_changed, audio_pending, refuse_release;
+    fd_observation observed;
+    bool abort_observe;
+    fd_stop_reason abort_reason;
+    unsigned starts, clears, restores, releases, observations;
+    int last_case;
+} fake;
+static bool acquire(void *arg, bool *quiet, fd_observation *observed) {
+    fake *f = arg; pthread_mutex_lock(&f->mutex);
+    bool ok = !f->busy && !f->owned;
+    if (ok) { f->owned = true; *quiet = f->quiescent; *observed = f->observed; }
+    pthread_mutex_unlock(&f->mutex); return ok;
+}
+static bool release(void *arg) {
+    fake *f = arg; pthread_mutex_lock(&f->mutex);
+    if(f->refuse_release) { pthread_mutex_unlock(&f->mutex); return false; }
+    assert(f->owned && !f->software_tx && !f->route_changed);
+    f->owned = false; ++f->releases;
+    pthread_mutex_unlock(&f->mutex); return true;
+}
+static bool observe(void *arg, fd_observation *observed) {
+    fake *f = arg; pthread_mutex_lock(&f->mutex); *observed = f->observed;
+    ++f->observations; pthread_cond_broadcast(&f->changed);
+    bool alive = !f->abort_observe;
+    pthread_mutex_unlock(&f->mutex); return alive;
+}
+static fd_stop_reason abort_reason(void *arg) {
+    fake *f=arg;pthread_mutex_lock(&f->mutex);fd_stop_reason reason=f->abort_reason;pthread_mutex_unlock(&f->mutex);return reason;
+}
+static bool permitted(void *arg) {
+    fake *f = arg; pthread_mutex_lock(&f->mutex); bool ok = f->allowed;
+    pthread_mutex_unlock(&f->mutex); return ok;
+}
+static bool start(void *arg, const fd_case *selected) {
+    int which = selected->matrix_case;
+    fake *f = arg; pthread_mutex_lock(&f->mutex);
+    assert(f->owned); ++f->starts; f->last_case = which;
+    if (which >= 0) { f->software_tx = selected->kind != FD_CASE_RX_PLAYBACK; f->route_changed = true; }
+    bool ok = f->start_ok;
+    pthread_mutex_unlock(&f->mutex); return ok;
+}
+static bool quiesce(void *arg, uint64_t *sequence) {
+    fake *f = arg; pthread_mutex_lock(&f->mutex);
+    assert(f->owned); ++f->clears;
+    bool ok = f->clear_ok;
+    if (ok) { f->software_tx = false; *sequence = f->observed.sequence; }
+    pthread_cond_broadcast(&f->changed);
+    pthread_mutex_unlock(&f->mutex); return ok;
+}
+static bool restore(void *arg, uint64_t clear_sequence) {
+    fake *f = arg; pthread_mutex_lock(&f->mutex);
+    bool ok = f->owned && !f->software_tx && f->restore_ok && f->observed.known && f->observed.fresh &&
+              !f->observed.tx && f->observed.sequence > clear_sequence;
+    if (ok) { f->route_changed = false; ++f->restores; pthread_cond_broadcast(&f->changed); }
+    pthread_mutex_unlock(&f->mutex); return ok;
+}
+static void set_observed(fake *f, bool known, bool fresh, bool tx, uint64_t seq) {
+    pthread_mutex_lock(&f->mutex); f->observed = (fd_observation){known, fresh, tx, seq}; pthread_mutex_unlock(&f->mutex);
+}
+static void wait_for_clear(fake *f, unsigned count) {
+    struct timespec limit; assert(!clock_gettime(CLOCK_REALTIME, &limit)); limit.tv_sec += 5;
+    pthread_mutex_lock(&f->mutex);
+    while (f->clears < count) assert(!pthread_cond_timedwait(&f->changed, &f->mutex, &limit));
+    pthread_mutex_unlock(&f->mutex);
+}
+static bool audio_quiet(void *arg) {
+    fake *f = arg; pthread_mutex_lock(&f->mutex); bool ok = !f->audio_pending;
+    pthread_mutex_unlock(&f->mutex); return ok;
+}
+static void wait_for_observation(fake *f, unsigned count) {
+    struct timespec limit; assert(!clock_gettime(CLOCK_REALTIME, &limit)); limit.tv_sec += 5;
+    pthread_mutex_lock(&f->mutex);
+    while (f->observations < count) assert(!pthread_cond_timedwait(&f->changed, &f->mutex, &limit));
+    pthread_mutex_unlock(&f->mutex);
+}
+static bool wait_restore(fd_controller *c) {
+    for (unsigned i = 0; i < 2500; ++i) {
+        if (fd_controller_poll_restore(c)) return true;
+        struct timespec delay = {0, 2000000}; nanosleep(&delay, NULL);
+    }
+    return false;
+}
+/* Hold the watchdog in its callback-return tail, after the production callback
+ * has dropped controller.mutex but before watchdog.executing is retired. This
+ * deterministically exposes the READY/rearm race instead of hoping for a
+ * scheduler preemption in a stress loop. */
+static struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t changed;
+    freedv_watchdog_expired_fn production;
+    bool arrived, allow_return;
+} callback_tail = {.mutex=PTHREAD_MUTEX_INITIALIZER,.changed=PTHREAD_COND_INITIALIZER};
+static void paused_timeout_callback(void *context,freedv_watchdog_reason reason) {
+    callback_tail.production(context,reason);
+    pthread_mutex_lock(&callback_tail.mutex);
+    callback_tail.arrived=true;pthread_cond_broadcast(&callback_tail.changed);
+    while(!callback_tail.allow_return)pthread_cond_wait(&callback_tail.changed,&callback_tail.mutex);
+    pthread_mutex_unlock(&callback_tail.mutex);
+}
+static struct { fd_controller *controller; atomic_bool finished; bool result; } restore_poll;
+static void *restore_from_thread(void *unused) {
+    (void)unused;restore_poll.result=fd_controller_poll_restore(restore_poll.controller);
+    atomic_store(&restore_poll.finished,true);return NULL;
+}
+static void verify_timeout_retirement(void) {
+    fake f={.mutex=PTHREAD_MUTEX_INITIALIZER,.changed=PTHREAD_COND_INITIALIZER,
+        .quiescent=true,.allowed=true,.start_ok=true,.clear_ok=true,.restore_ok=true,
+        .observed={true,true,false,1}};
+    fd_controller_backend backend={acquire,release,observe,permitted,start,quiesce,audio_quiet,restore,abort_reason};
+    fd_controller c;assert(fd_controller_init(&c,&backend,&f));
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_matrix(&c,FD_R1_M0_P0)&&fd_controller_arm(&c,true));
+    pthread_mutex_lock(&c.watchdog.mutex);
+    callback_tail.production=c.watchdog.expired;c.watchdog.expired=paused_timeout_callback;
+    pthread_mutex_unlock(&c.watchdog.mutex);
+    assert(fd_controller_run(&c,1,25));
+    struct timespec limit;assert(!clock_gettime(CLOCK_REALTIME,&limit));limit.tv_sec+=5;
+    pthread_mutex_lock(&callback_tail.mutex);
+    while(!callback_tail.arrived)assert(!pthread_cond_timedwait(&callback_tail.changed,&callback_tail.mutex,&limit));
+    pthread_mutex_unlock(&callback_tail.mutex);
+    set_observed(&f,true,true,false,2);
+    restore_poll.controller=&c;atomic_init(&restore_poll.finished,false);
+    pthread_t poll;assert(!pthread_create(&poll,NULL,restore_from_thread,NULL));
+    pthread_mutex_lock(&f.mutex);
+    while(!f.restores)assert(!pthread_cond_timedwait(&f.changed,&f.mutex,&limit));
+    pthread_mutex_unlock(&f.mutex);
+    fd_session state;assert(fd_controller_status(&c,&state));
+    assert(state.state==FD_RESTORE&&!atomic_load(&restore_poll.finished));
+    pthread_mutex_lock(&callback_tail.mutex);callback_tail.allow_return=true;pthread_cond_broadcast(&callback_tail.changed);pthread_mutex_unlock(&callback_tail.mutex);
+    assert(!pthread_join(poll,NULL));assert(restore_poll.result);
+    assert(fd_controller_status(&c,&state)&&state.state==FD_READY);
+    pthread_mutex_lock(&c.watchdog.mutex);
+    assert(!c.watchdog.executing&&!c.watchdog.armed);c.watchdog.expired=callback_tail.production;
+    pthread_mutex_unlock(&c.watchdog.mutex);
+    assert(fd_controller_release(&c)&&fd_controller_acquire(&c));
+    assert(fd_controller_select_passive_rx(&c)&&fd_controller_run(&c,2,120000));
+    assert(fd_controller_stop(&c));set_observed(&f,true,true,false,3);
+    assert(fd_controller_poll_restore(&c)&&fd_controller_release(&c)&&fd_controller_close(&c));
+    pthread_cond_destroy(&f.changed);pthread_mutex_destroy(&f.mutex);
+    pthread_cond_destroy(&callback_tail.changed);pthread_mutex_destroy(&callback_tail.mutex);
+}
+int main(void) {
+    verify_timeout_retirement();
+    fake f = {.mutex=PTHREAD_MUTEX_INITIALIZER, .changed=PTHREAD_COND_INITIALIZER,
+              .quiescent=true, .allowed=true, .start_ok=true, .clear_ok=true, .restore_ok=true,
+              .observed={true, true, false, 1}};
+    fd_controller_backend backend = {acquire, release, observe, permitted, start, quiesce, audio_quiet, restore, abort_reason};
+    fd_controller c;
+    assert(!fd_controller_init(&c, NULL, &f));
+    assert(fd_controller_init(&c, &backend, &f));
+    f.busy = true; assert(!fd_controller_acquire(&c)); f.busy = false;
+    f.quiescent = false; assert(!fd_controller_acquire(&c)); f.quiescent = true;
+    set_observed(&f, false, false, false, 0); assert(!fd_controller_acquire(&c));
+    set_observed(&f, true, false, false, 1); assert(!fd_controller_acquire(&c));
+    set_observed(&f, true, true, true, 1); assert(!fd_controller_acquire(&c));
+    set_observed(&f, true, true, false, 2); assert(fd_controller_acquire(&c));
+    assert(!fd_controller_close(&c));
+    assert(!fd_controller_run(&c, 10, 10000)); /* no selection */
+    assert(fd_controller_select_matrix(&c, FD_R1_M0_P1));
+    assert(!f.starts && !f.software_tx); /* selection cannot key */
+    assert(!fd_controller_run(&c, 10, 10000)); /* no arm */
+    assert(!fd_controller_arm(&c, false));
+    assert(fd_controller_arm(&c, true));
+    f.allowed = false; assert(!fd_controller_run(&c, 10, 10000)); f.allowed = true;
+    set_observed(&f, true, true, true, 3); assert(!fd_controller_run(&c, 10, 10000));
+    set_observed(&f, true, true, false, 4);
+    assert(!fd_controller_run(&c, 10, 10001));
+    assert(fd_controller_run(&c, 10, 10000));
+    assert(f.starts == 1 && f.software_tx && f.last_case == FD_R1_M0_P1);
+    set_observed(&f, true, true, true, 5); /* hardware PTT remains held */
+    pthread_mutex_lock(&f.mutex); f.clear_ok = false; pthread_mutex_unlock(&f.mutex);
+    assert(!fd_controller_stop(&c));
+    assert(!fd_controller_release(&c));
+    pthread_mutex_lock(&f.mutex); f.clear_ok = true; pthread_mutex_unlock(&f.mutex);
+    assert(!fd_controller_poll_restore(&c));
+    assert(!f.software_tx && f.route_changed && f.restores == 0);
+    set_observed(&f, true, false, false, 6); assert(!fd_controller_poll_restore(&c));
+    set_observed(&f, true, true, false, 5); assert(!fd_controller_poll_restore(&c)); /* not post-clear */
+    set_observed(&f, true, true, false, 6);
+    f.restore_ok = false;
+    assert(!fd_controller_poll_restore(&c)); /* failed restore requires another clear and newer packet */
+    f.restore_ok = true;
+    assert(!fd_controller_poll_restore(&c));
+    set_observed(&f, true, true, false, 7);
+    assert(fd_controller_poll_restore(&c));
+    assert(!f.route_changed && f.restores == 1);
+    assert(fd_controller_release(&c));
+
+    /* A failed start may have changed the route: it must clear before restore. */
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_matrix(&c, FD_R0_M1_P0) && fd_controller_arm(&c, true));
+    f.start_ok = false;
+    assert(!fd_controller_run(&c, 20, 10000));
+    assert(!f.software_tx && f.route_changed && !fd_controller_release(&c));
+    set_observed(&f, true, true, false, 8);
+    assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
+    f.start_ok = true;
+
+    /* Timer expiry independently calls quiesce; it never assumes TX is RX. */
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_matrix(&c, FD_R0_M0_P0) && fd_controller_arm(&c, true));
+    unsigned clear_before = f.clears;
+    assert(fd_controller_run(&c, 30, 25));
+    wait_for_clear(&f, clear_before + 1);
+    fd_session stopped;assert(fd_controller_status(&c,&stopped)&&stopped.stop_reason==FD_STOP_TIMEOUT);
+    assert(!fd_controller_poll_restore(&c));
+    set_observed(&f, true, true, false, 9);
+    assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
+    /* A receive route needs a completed monitored probe and local confirmation. */
+    assert(fd_controller_acquire(&c));
+    assert(!fd_controller_select_rx_playback(&c, FD_R1_M0_P0));
+    assert(!fd_controller_confirm_rx_route(&c, FD_R1_M0_P0, true));
+    assert(fd_controller_select_matrix(&c, FD_R1_M0_P0));
+    assert(fd_controller_arm(&c, true));
+    assert(fd_controller_run(&c, 40, 10000));
+    set_observed(&f, true, true, false, 10);
+    pthread_mutex_lock(&f.mutex); unsigned observations = f.observations; pthread_mutex_unlock(&f.mutex);
+    wait_for_observation(&f, observations + 1);
+    assert(fd_controller_stop(&c));
+    set_observed(&f, true, true, false, 11);
+    f.audio_pending = true;
+    assert(!fd_controller_poll_restore(&c)); /* command clear and RX do not imply a flushed sink */
+    f.audio_pending = false;
+    assert(fd_controller_poll_restore(&c));
+    assert(!fd_controller_confirm_rx_route(&c, FD_R1_M0_P0, false));
+    assert(!fd_controller_confirm_rx_route(&c, FD_R0_M0_P0, true));
+    assert(fd_controller_confirm_rx_route(&c, FD_R1_M0_P0, true));
+    assert(fd_controller_select_rx_playback(&c, FD_R1_M0_P0));
+    assert(!fd_controller_arm(&c, true));
+    assert(fd_controller_run(&c, 50, 120000)); /* no relaxation of RF case limit */
+    pthread_mutex_lock(&f.mutex); clear_before = f.clears; pthread_mutex_unlock(&f.mutex);
+    set_observed(&f, true, true, true, 12);
+    wait_for_clear(&f, clear_before + 1); /* unexpected TX aborts without GUI polling */
+    assert(!fd_controller_release(&c));
+    assert(!fd_controller_poll_restore(&c));
+    (void)fd_controller_stop(&c); /* cancelling may still be true; first cause must remain unchanged */
+    assert(fd_controller_status(&c,&stopped)&&stopped.stop_reason==FD_STOP_UNEXPECTED_TX);
+    set_observed(&f, true, true, false, 13);
+    assert(wait_restore(&c) && fd_controller_release(&c));
+    assert(fd_controller_acquire(&c));
+    assert(!fd_controller_select_rx_playback(&c, FD_R1_M0_P0)); /* qualification never persists */
+    assert(fd_controller_select_passive_rx(&c));
+    assert(fd_controller_run(&c, 55, 120000)); /* monitor abort cancelled the prior timer */
+    assert(fd_controller_stop(&c));
+    set_observed(&f, true, true, false, 14);
+    assert(fd_controller_poll_restore(&c));
+    assert(fd_controller_select_mic_tx(&c, FD_R1_M1_P1));
+    assert(fd_controller_arm(&c, true));
+    assert(!fd_controller_run(&c, 60, 10001));
+    assert(fd_controller_stop(&c));
+    set_observed(&f, true, true, false, 15);
+    assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
+    /* Preparation is cancellable before Arm/Run, and physical PTT changing
+     * during it must retain ownership until a later RX packet. */
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_passive_rx(&c));
+    assert(fd_controller_begin_prepare(&c));
+    fd_session preparing;
+    assert(fd_controller_status(&c,&preparing) && preparing.state==FD_PREPARING);
+    assert(!fd_controller_select_matrix(&c,FD_R0_M0_P0));
+    assert(!fd_controller_release(&c));
+    set_observed(&f,true,true,true,16);
+    assert(!fd_controller_finish_prepare(&c));
+    assert(!fd_controller_release(&c));
+    set_observed(&f,true,true,false,17);
+    assert(fd_controller_poll_restore(&c));
+    f.refuse_release=true;
+    assert(!fd_controller_release(&c));
+    assert(fd_controller_status(&c,&preparing) && preparing.state==FD_WAIT_RX && f.owned);
+    f.refuse_release=false;
+    set_observed(&f,true,true,false,18);
+    assert(fd_controller_poll_restore(&c));
+    assert(fd_controller_release(&c));
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_passive_rx(&c));
+    assert(fd_controller_begin_prepare(&c) && fd_controller_finish_prepare(&c));
+    assert(!fd_controller_release(&c)); /* prepared resources require Stop even before Run */
+    assert(fd_controller_stop(&c));
+    set_observed(&f,true,true,false,19);
+    assert(fd_controller_poll_restore(&c) && fd_controller_release(&c));
+    /* Clearing retries belong to the independent monitor, not the disk/GUI
+     * coordinator. Simulate a failed first clear and make no restore polls. */
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_matrix(&c,FD_R1_M1_P1)&&fd_controller_arm(&c,true));
+    pthread_mutex_lock(&f.mutex);f.clear_ok=false;clear_before=f.clears;pthread_mutex_unlock(&f.mutex);
+    assert(fd_controller_run(&c,100,25));
+    wait_for_clear(&f,clear_before+1);
+    pthread_mutex_lock(&f.mutex);f.clear_ok=true;clear_before=f.clears;pthread_mutex_unlock(&f.mutex);
+    wait_for_clear(&f,clear_before+1);
+    assert(fd_controller_status(&c,&stopped)&&stopped.software_cleared&&stopped.stop_reason==FD_STOP_TIMEOUT);
+    set_observed(&f,true,true,false,20);
+    assert(fd_controller_poll_restore(&c)&&fd_controller_release(&c));
+    /* Stop liveness is independent of physical RX status. Benign stop requests
+     * with a fresh packet must not erase a completed unkeyed routing probe. */
+    const struct { fd_stop_reason cause; bool known, fresh, tx, qualifies; } endings[] = {
+        {FD_STOP_OPERATOR,true,true,false,true},
+        {FD_STOP_NATURAL,true,true,false,true},
+        {FD_STOP_CLOSE,true,true,false,true},
+        {FD_STOP_AUDIO,true,true,false,false},
+        {FD_STOP_OBSERVATION,true,true,false,false},
+        {FD_STOP_EVIDENCE,true,true,false,false},
+        {FD_STOP_TIMER_ERROR,true,true,false,false},
+        {FD_STOP_NONE,true,true,false,false},
+        {FD_STOP_OPERATOR,false,true,false,false},
+        {FD_STOP_OPERATOR,true,false,false,false},
+        {FD_STOP_CLOSE,true,true,true,false},
+    };
+    uint64_t sequence=30;
+    for(unsigned i=0;i<sizeof(endings)/sizeof(endings[0]);++i) {
+        set_observed(&f,true,true,false,sequence++);
+        assert(fd_controller_acquire(&c));
+        assert(fd_controller_select_matrix(&c,FD_R1_M0_P0)&&fd_controller_arm(&c,true));
+        assert(fd_controller_run(&c,200+i,10000));
+        pthread_mutex_lock(&f.mutex);
+        clear_before=f.clears;
+        f.observed=(fd_observation){endings[i].known,endings[i].fresh,endings[i].tx,sequence++};
+        f.abort_observe=true;f.abort_reason=endings[i].cause;
+        pthread_mutex_unlock(&f.mutex);
+        if(endings[i].cause==FD_STOP_OPERATOR || endings[i].cause==FD_STOP_CLOSE)
+            (void)fd_controller_stop_with_reason(&c,endings[i].cause);
+        wait_for_clear(&f,clear_before+1);
+        pthread_mutex_lock(&f.mutex);f.abort_observe=false;pthread_mutex_unlock(&f.mutex);
+        set_observed(&f,true,true,false,sequence++);
+        assert(wait_restore(&c));
+        assert(fd_controller_confirm_rx_route(&c,FD_R1_M0_P0,true)==endings[i].qualifies);
+        assert(fd_controller_release(&c));
+    }
+    /* A normal bounded probe may finish on its watchdog instead of its audio
+     * worker. Preserve physical RX proof for that existing success path too. */
+    set_observed(&f,true,true,false,sequence++);
+    assert(fd_controller_acquire(&c));
+    assert(fd_controller_select_matrix(&c,FD_R1_M0_P0)&&fd_controller_arm(&c,true));
+    pthread_mutex_lock(&f.mutex);clear_before=f.clears;pthread_mutex_unlock(&f.mutex);
+    assert(fd_controller_run(&c,300,25));
+    set_observed(&f,true,true,false,sequence++);
+    wait_for_clear(&f,clear_before+1);
+    set_observed(&f,true,true,false,sequence++);
+    assert(wait_restore(&c)&&fd_controller_confirm_rx_route(&c,FD_R1_M0_P0,true));
+    assert(fd_controller_select_matrix(&c,FD_R0_M1_P0)&&fd_controller_begin_prepare(&c));
+    assert(fd_controller_status(&c,&stopped)&&stopped.stop_reason==FD_STOP_NONE);
+    set_observed(&f,true,true,true,sequence++);
+    assert(!fd_controller_finish_prepare(&c));
+    assert(fd_controller_status(&c,&stopped)&&stopped.stop_reason==FD_STOP_PREPARATION_FAILED);
+    set_observed(&f,true,true,false,sequence++);
+    assert(wait_restore(&c));
+    assert(!fd_controller_confirm_rx_route(&c,FD_R0_M1_P0,true));
+    assert(fd_controller_release(&c));
+    assert(fd_controller_close(&c));
+    pthread_cond_destroy(&f.changed); pthread_mutex_destroy(&f.mutex);
+    puts("PASS: mocked session acquisition, arm, stop, timeout and post-clear restore");
+}

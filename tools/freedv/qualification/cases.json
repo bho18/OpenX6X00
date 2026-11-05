@@ -1,0 +1,1831 @@
+{
+  "schema_version": 1,
+  "baseline": "21df019884da3e8cdc1b4521a4b4f8a51ca210e1",
+  "cases": [
+    {
+      "id": "engine-synthetic",
+      "family": "engine",
+      "title": "Persistent synthetic regression",
+      "criteria": "100 alternating synthetic turns; one live codec set/four SRCs/two workers; one EOO per turn; stale generations rejected. Does not satisfy speech gate.",
+      "measurements": [
+        "turns",
+        "lifetimes"
+      ],
+      "recordings": [
+        "runner_stdout",
+        "runner_stderr"
+      ],
+      "procedure": "Run freedv_voice_engine_test --turns 100 at 8 kHz.",
+      "equipment": [
+        "reference_computer",
+        "pinned_codecs_models"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "development",
+      "ctest": "^freedv_voice_engine$"
+    },
+    {
+      "id": "session-lifecycle",
+      "family": "integration",
+      "title": "Session lifecycle and recovery",
+      "criteria": "100 enter/exit cycles; RX retune; overlapping PTT; drain repress; stale observations; held exit; preparation cancellation.",
+      "measurements": [
+        "cycles"
+      ],
+      "recordings": [
+        "runner_stdout",
+        "runner_stderr"
+      ],
+      "procedure": "Run the actual session coordinator against deterministic radio/device hooks.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "development",
+      "ctest": "^freedv_voice_session$"
+    },
+    {
+      "id": "device-playback",
+      "family": "integration",
+      "title": "Reusable production PulseAudio lifecycle",
+      "criteria": "Partial writes, delayed/failed flush/drain, generation rejection, repeated rearm, one stream; cancellation independent of PA lock.",
+      "measurements": [
+        "writes",
+        "streams",
+        "callbacks"
+      ],
+      "recordings": [
+        "runner_stdout",
+        "runner_stderr"
+      ],
+      "procedure": "Run the production audio.c mock-driver tests.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "development",
+      "ctest": "^freedv_(audio_playback|voice_audio|audio_capture)$"
+    },
+    {
+      "id": "diagnostic-regression",
+      "family": "integration",
+      "title": "Retained diagnostic controls",
+      "criteria": "All original diagnostic CTests pass; ownership, watchdog and recovery retain behavior.",
+      "measurements": [
+        "tests"
+      ],
+      "recordings": [
+        "runner_stdout",
+        "runner_stderr"
+      ],
+      "procedure": "Run diagnostic CTests excluding new voice tests.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "development",
+      "ctest": "^freedv_(native_coordinator|native_radio_backend|native_audio_adapter|audio_stereo|writer_preferences|capture_dispatch|session_controller|wav_capture|capture_ring|audio_capture|packet_tx|stub_snapshot|watchdog|control_lease|diagnostic_state|x6200_route|input_fence|front_input|remote_input_fence)$"
+    },
+    {
+      "id": "engine-numbered-turns",
+      "family": "engine",
+      "title": "100 distinguishable speech turns",
+      "criteria": "100 retained-context alternating turns; intelligible first/last words and turn identity; no stale speech, duplicate EOO, queue/resource growth; retained output.",
+      "measurements": [
+        "turn_count",
+        "turn_identities",
+        "queue_high_water",
+        "resource_counts",
+        "eoo_counts"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "engine_stats"
+      ],
+      "procedure": "Run freedv_voice_runner --speech-list numbered-files.txt --turns 100 --rate RATE --output OUTPUT. Retain every original/modem/decoded turn, convert to declared WAV without changing rate, and record per-turn listening assessments. See integration-cases.md.",
+      "equipment": [
+        "reference_computer",
+        "pinned_codecs_models",
+        "numbered_speech"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "engine",
+      "listening": true
+    },
+    {
+      "id": "engine-lifetimes",
+      "family": "engine",
+      "title": "100 real engine/device lifetimes",
+      "criteria": "100 entry/exit cycles; codec, resampler, stream, worker, descriptor counts return to baseline; ordinary turns create none.",
+      "measurements": [
+        "cycle_count",
+        "codec_counts",
+        "resampler_counts",
+        "stream_counts",
+        "thread_counts",
+        "fd_counts",
+        "rss"
+      ],
+      "recordings": [
+        "engine_stats",
+        "device_stats"
+      ],
+      "procedure": "Run freedv_voice_engine_test --turns 1 --cycles 100 --rate 44100, then qualification/host_mode.py --build HOST --output NEW --turns 100 --cycles 100. Retain /proc resource counts and stream IDs; physical device lifetime qualification remains separate.",
+      "equipment": [
+        "reference_computer",
+        "pinned_codecs_models"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "engine"
+    },
+    {
+      "id": "engine-valid-rx",
+      "family": "engine",
+      "title": "Ten minutes valid modem receive",
+      "criteria": "Valid synchronized RX exercises FARGAN beyond old telemetry limit; interruptions/reacquisition; no audio termination from telemetry exhaustion.",
+      "measurements": [
+        "duration_seconds",
+        "sync_blocks",
+        "synthesis_blocks",
+        "reacquisitions",
+        "loss",
+        "underflows",
+        "backlog",
+        "telemetry"
+      ],
+      "recordings": [
+        "modem_input",
+        "decoded_speech",
+        "engine_stats"
+      ],
+      "procedure": "Run freedv_voice_runner --rx pinned-modem-s16le.raw --seconds 600 --rate 8000 --output NEW. Record fixture repetitions/EOO/outages, acquisitions, synchronized and synthesis blocks, counters and decoded output. Follow integration-cases.md.",
+      "equipment": [
+        "reference_computer",
+        "pinned_codecs_models"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "engine"
+    },
+    {
+      "id": "cold-warm-idle",
+      "family": "integration",
+      "title": "Cold, warm and idle turns",
+      "criteria": "Cold entry, warm subsequent turn and after idle all preserve first/last words and context lifetimes.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Follow integration-cases.md: cold entry preserving both VFO frequencies, subsequent turns, then 60 s RX idle and another numbered turn. Retain first-block/release timings and listening.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "short-mid-frame",
+      "family": "integration",
+      "title": "Short tap and mid-frame release",
+      "criteria": "Accepted speech including <200 ms is finalized; only final partial frame padded; one EOO and 200 ms silence; release does not truncate accepted input.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Run ctest -R freedv_voice_engine, freedv_voice_audio and freedv_voice_session; in the assembled candidate release at 20/90/150/230 ms and mid-modem-frame using numbered speech. Retain accepted-sample/EOO/tail accounting and recordings.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "fading",
+      "family": "integration",
+      "title": "Ordinary fading",
+      "criteria": "Reacquisition without receiver recreation; decoder initialization and normalization match pinned reference.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Follow integration-cases.md: interrupt identified modem input for 0.2/1/5 s, restore it and repeat during speaker playback; log sync loss/reacquisition and unchanged receiver creation counts. Hardware claims require a transmitting RF source.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "engine-failures",
+      "family": "integration",
+      "title": "Engine failure injection",
+      "criteria": "Queue saturation, encoder/decoder/synthesis failure report fault; Stop during preparation/backpressure bypasses codec progress; bounded queues.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Run ctest -R freedv_voice_faults and freedv_voice_session. Test-only hooks inject encoder, decoder and synthesis failures into the actual engine; assert bounded saturated queues and Stop during blocked finish/preparation. Attach assembled-app recovery observations.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "device-failures",
+      "family": "integration",
+      "title": "Production adapter failure injection",
+      "criteria": "Partial writes, delayed callbacks, capture holes/errors, failed drain and cancellation cannot deliver stale audio or recreate streams per turn.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Run ctest -R freedv_voice_audio, freedv_audio_playback and freedv_audio_capture. Exercise delayed/partial writes, failed drain/flush, capture errors, and cancellation racing rearm; then run host_mode.py for real PA stream lifecycles.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "timeout",
+      "family": "integration",
+      "title": "Timeout and release lockout",
+      "criteria": "Default 180 seconds and bounds 30..600 persist; timeout clears software TX independently and requires all sources to release; stale queued presses invalidated.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Run ctest -R freedv_voice_timeout for the real 30 s timeout and both-source release lockout; session tests cover 30..600 s limits and an independently stalled 1.5 s drain. Repeat both physical sources on the candidate per integration-cases.md.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "ownership",
+      "family": "integration",
+      "title": "Ownership/tuning guard integration",
+      "criteria": "Local RX frequency, band, VFO, volume and permitted receive controls work; all TX/drain/recovery tuning rejected before settings/hardware mutation; CAT/TCI/web, memories and hardware writes covered.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Run ctest -R freedv_voice_radio and freedv_voice_writer, then host_mode.py. RX tune/band/VFO/memory/volume; try each again during TX/drain/recovery and through CAT/TCI/web; verify settings and hardware before/after.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "competing-apps",
+      "family": "integration",
+      "title": "Competing apps and remote TX",
+      "criteria": "Audio apps, independent/remote TX rejected while owned; diagnostics retain stricter ownership.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Follow integration-cases.md: attempt recorder/digital-audio apps, CAT/TCI/browser TX and direct control writes in RX/TX/drain/recovery. Run freedv_voice_radio and freedv_voice_writer tests; no competing path may mutate settings or key.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "mode-replacement",
+      "family": "integration",
+      "title": "Asynchronous mode replacement",
+      "criteria": "Destination app opening, generic destruction and restoration wait for shutdown; no old app-memory frequency restored.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Run host_mode.py: request Modes while TX/PTT holds, verify EXITING retains ownership, release PTT and verify destination opening only after OFF. Repeat generic close, Stop during preparation/drain, and another app shortcut.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "restore-contexts",
+      "family": "integration",
+      "title": "SSB/DIGI and VFO restoration",
+      "criteria": "Snapshot every touched VFO/mode context with deliberately different saved SSB/DIGI settings; restore owned overrides preserving current frequency/VFO/permitted receive changes.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Run freedv_voice_radio and host_mode.py; follow integration-cases.md with deliberately different saved USB/DIGI and A/B settings, RX band/VFO changes, volume changes and held exit/restart. Compare DB and cached commands without restoring entry frequency.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "preferences",
+      "family": "integration",
+      "title": "Preferences and bookmarks",
+      "criteria": "Action126/type6 stable; 17 GUI HF seeds; edits/deletions preserved; bookmark changes frequency only; USB/USB-DIG storage cannot bypass profile; ordinary mic preferences retained; persisted TX never resumes.",
+      "measurements": [
+        "cases",
+        "observed_behavior",
+        "resource_counts"
+      ],
+      "recordings": [
+        "event_log",
+        "settings_before",
+        "settings_after"
+      ],
+      "procedure": "Run freedv_voice_bookmarks and freedv_voice_radio; edit/add/delete/duplicate bookmarks in native UI and web editor. Check action 126/type 6, 17 seeds, stored USB/USB-DIG modes ignored on recall, timeout limits, mic preferences and persisted TX never resumed.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "native-to-gui-8000-cold",
+      "family": "gui",
+      "title": "native-to-gui 8000 Hz cold",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "native-to-gui-8000-warm",
+      "family": "gui",
+      "title": "native-to-gui 8000 Hz warm",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "native-to-gui-44100-cold",
+      "family": "gui",
+      "title": "native-to-gui 44100 Hz cold",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "native-to-gui-44100-warm",
+      "family": "gui",
+      "title": "native-to-gui 44100 Hz warm",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "native-to-gui-48000-cold",
+      "family": "gui",
+      "title": "native-to-gui 48000 Hz cold",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "native-to-gui-48000-warm",
+      "family": "gui",
+      "title": "native-to-gui 48000 Hz warm",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "gui-to-native-8000-cold",
+      "family": "gui",
+      "title": "gui-to-native 8000 Hz cold",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "gui-to-native-8000-warm",
+      "family": "gui",
+      "title": "gui-to-native 8000 Hz warm",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "gui-to-native-44100-cold",
+      "family": "gui",
+      "title": "gui-to-native 44100 Hz cold",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "gui-to-native-44100-warm",
+      "family": "gui",
+      "title": "gui-to-native 44100 Hz warm",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "gui-to-native-48000-cold",
+      "family": "gui",
+      "title": "gui-to-native 48000 Hz cold",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "gui-to-native-48000-warm",
+      "family": "gui",
+      "title": "gui-to-native 48000 Hz warm",
+      "criteria": "Complete pinned GUI plus separately identified installed official release; RADE V1, upper-sideband; intelligible numbered phrases, first/last words; synchronization/nonzero output alone insufficient.",
+      "measurements": [
+        "gui_identity",
+        "installed_release_identity",
+        "backend_identity",
+        "opus_identity",
+        "model_hashes",
+        "audio_settings",
+        "sync",
+        "turn_identity"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "decoded_speech",
+        "gui_log"
+      ],
+      "procedure": "Follow official-gui.md. Use complete official GUI in the indicated direction/rate; retain original, waveform and decoded PCM; reviewer records phrases/first/last words and hashes.",
+      "equipment": [
+        "reference_computer",
+        "pinned_complete_gui",
+        "numbered_speech",
+        "installed_official_gui_release"
+      ],
+      "tools": [
+        "cmake",
+        "gcc",
+        "python3",
+        "sox",
+        "ffmpeg",
+        "wx-config",
+        "pkg-config"
+      ],
+      "scope": "gui",
+      "listening": true
+    },
+    {
+      "id": "build-normal-x6200",
+      "family": "image",
+      "title": "normal-x6200 build/image",
+      "criteria": "Full application links and ABI closure passes with matching SDK; actual image/assets/ELFs validated; preserve baseband/updater signature enforcement. Missing images are BLOCKED.",
+      "measurements": [
+        "source_identity",
+        "binary_identity",
+        "sdk_identity",
+        "model_identity",
+        "image_identity",
+        "checks"
+      ],
+      "recordings": [
+        "build_log",
+        "manifest",
+        "validation_report"
+      ],
+      "procedure": "Use tools/freedv/build_native_images.py and prepare_native_image.py workflow. X6100 requires full application, not backend-only compile.",
+      "equipment": [
+        "matching_sdk",
+        "candidate_image",
+        "recovery_path"
+      ],
+      "tools": [
+        "cmake",
+        "python3",
+        "mke2fs",
+        "e2fsck",
+        "debugfs",
+        "qemu-arm"
+      ],
+      "scope": "image"
+    },
+    {
+      "id": "build-diagnostic-x6200",
+      "family": "image",
+      "title": "diagnostic-x6200 build/image",
+      "criteria": "Full application links and ABI closure passes with matching SDK; actual image/assets/ELFs validated; preserve baseband/updater signature enforcement. Missing images are BLOCKED.",
+      "measurements": [
+        "source_identity",
+        "binary_identity",
+        "sdk_identity",
+        "model_identity",
+        "image_identity",
+        "checks"
+      ],
+      "recordings": [
+        "build_log",
+        "manifest",
+        "validation_report"
+      ],
+      "procedure": "Use tools/freedv/build_native_images.py and prepare_native_image.py workflow. X6100 requires full application, not backend-only compile.",
+      "equipment": [
+        "matching_sdk",
+        "candidate_image",
+        "recovery_path"
+      ],
+      "tools": [
+        "cmake",
+        "python3",
+        "mke2fs",
+        "e2fsck",
+        "debugfs",
+        "qemu-arm"
+      ],
+      "scope": "image"
+    },
+    {
+      "id": "build-full-x6100",
+      "family": "image",
+      "title": "full-x6100 build/image",
+      "criteria": "Full application links and ABI closure passes with matching SDK; actual image/assets/ELFs validated; preserve baseband/updater signature enforcement. Missing images are BLOCKED.",
+      "measurements": [
+        "source_identity",
+        "binary_identity",
+        "sdk_identity",
+        "model_identity",
+        "image_identity",
+        "checks"
+      ],
+      "recordings": [
+        "build_log",
+        "manifest",
+        "validation_report"
+      ],
+      "procedure": "Use tools/freedv/build_native_images.py and prepare_native_image.py workflow. X6100 requires full application, not backend-only compile.",
+      "equipment": [
+        "matching_sdk",
+        "candidate_image",
+        "recovery_path"
+      ],
+      "tools": [
+        "cmake",
+        "python3",
+        "mke2fs",
+        "e2fsck",
+        "debugfs",
+        "qemu-arm"
+      ],
+      "scope": "image"
+    },
+    {
+      "id": "build-actual-image",
+      "family": "image",
+      "title": "actual-image build/image",
+      "criteria": "Full application links and ABI closure passes with matching SDK; actual image/assets/ELFs validated; preserve baseband/updater signature enforcement. Missing images are BLOCKED.",
+      "measurements": [
+        "source_identity",
+        "binary_identity",
+        "sdk_identity",
+        "model_identity",
+        "image_identity",
+        "checks"
+      ],
+      "recordings": [
+        "build_log",
+        "manifest",
+        "validation_report"
+      ],
+      "procedure": "Use tools/freedv/build_native_images.py and prepare_native_image.py workflow. X6100 requires full application, not backend-only compile.",
+      "equipment": [
+        "matching_sdk",
+        "candidate_image",
+        "recovery_path"
+      ],
+      "tools": [
+        "cmake",
+        "python3",
+        "mke2fs",
+        "e2fsck",
+        "debugfs",
+        "qemu-arm"
+      ],
+      "scope": "image"
+    },
+    {
+      "id": "sanitizers",
+      "family": "integration",
+      "title": "Sanitizer limitations",
+      "criteria": "Record ASan/UBSan/TSan results and unsupported runtime accurately; no unsupported check counted as PASS.",
+      "measurements": [
+        "configuration",
+        "results",
+        "limitations"
+      ],
+      "recordings": [
+        "sanitizer_log"
+      ],
+      "procedure": "Build supported sanitizer targets and report failures versus unavailable runtime separately.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "cmake",
+        "ctest",
+        "python3"
+      ],
+      "scope": "integration"
+    },
+    {
+      "id": "usb-waveform",
+      "family": "hardware",
+      "title": "USB waveform",
+      "criteria": "Known native modem waveform reaches RF with fidelity; begin at 1 W; preserve cap/protections. Match frequency/waveform/~3kHz/filter/AGC/processing/gains/mixer/route/device/channel/power/SDR on same image; read back effective SSB/DIGI groups.",
+      "measurements": [
+        "effective_settings",
+        "route_identity",
+        "device_identity",
+        "buffer_grants",
+        "fidelity",
+        "drive",
+        "power",
+        "bandwidth"
+      ],
+      "recordings": [
+        "modem_output",
+        "rf_iq",
+        "rf_demod"
+      ],
+      "procedure": "Follow matched-profiles.md with local diagnostic arming; maximum 10 second RF diagnostic cases. Record failed/inconclusive routes separately; never combine profile halves.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "usb-hand-mic",
+      "family": "hardware",
+      "title": "USB hand-mic",
+      "criteria": "Usable hand-mic capture concurrently with modem RF; no direct analog speech leakage; first/last-frame transitions covered. Match frequency/waveform/~3kHz/filter/AGC/processing/gains/mixer/route/device/channel/power/SDR on same image; read back effective SSB/DIGI groups.",
+      "measurements": [
+        "effective_settings",
+        "route_identity",
+        "device_identity",
+        "buffer_grants",
+        "mic_level",
+        "analog_leakage",
+        "simultaneous_capture"
+      ],
+      "recordings": [
+        "original_speech",
+        "raw_capture",
+        "rf_iq",
+        "rf_demod"
+      ],
+      "procedure": "Follow matched-profiles.md with local diagnostic arming; maximum 10 second RF diagnostic cases. Record failed/inconclusive routes separately; never combine profile halves.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "usb-speaker-rx",
+      "family": "hardware",
+      "title": "USB speaker-rx",
+      "criteria": "Identifiable external RF survives local decoded-speaker playback; compare off/on, speaker levels and supported mixer alternatives; raw capture identifies external RF separately. Match frequency/waveform/~3kHz/filter/AGC/processing/gains/mixer/route/device/channel/power/SDR on same image; read back effective SSB/DIGI groups.",
+      "measurements": [
+        "effective_settings",
+        "route_identity",
+        "device_identity",
+        "buffer_grants",
+        "external_signal_identity",
+        "feedback_contamination",
+        "receive_survival",
+        "speaker_levels"
+      ],
+      "recordings": [
+        "rf_input",
+        "raw_capture",
+        "local_playback",
+        "decoded_speech"
+      ],
+      "procedure": "Follow matched-profiles.md with local diagnostic arming; maximum 10 second RF diagnostic cases. Record failed/inconclusive routes separately; never combine profile halves.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer",
+        "transmitting_peer_or_rf_source"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "usb-physical-ptt",
+      "family": "hardware",
+      "title": "USB physical-ptt",
+      "criteria": "Independently valid radio and hand-mic press/hold/release while software MODEM active; no aggregate-TX inference or guessed register bits; no analog leakage. Match frequency/waveform/~3kHz/filter/AGC/processing/gains/mixer/route/device/channel/power/SDR on same image; read back effective SSB/DIGI groups.",
+      "measurements": [
+        "effective_settings",
+        "route_identity",
+        "device_identity",
+        "buffer_grants",
+        "radio_ptt",
+        "hand_ptt_release",
+        "overlap",
+        "analog_leakage",
+        "held_health"
+      ],
+      "recordings": [
+        "control_event_video",
+        "rf_iq",
+        "rf_demod",
+        "raw_capture"
+      ],
+      "procedure": "Follow matched-profiles.md with local diagnostic arming; maximum 10 second RF diagnostic cases. Record failed/inconclusive routes separately; never combine profile halves.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "usb-dig-waveform",
+      "family": "hardware",
+      "title": "USB-DIG waveform",
+      "criteria": "Known native modem waveform reaches RF with fidelity; begin at 1 W; preserve cap/protections. Match frequency/waveform/~3kHz/filter/AGC/processing/gains/mixer/route/device/channel/power/SDR on same image; read back effective SSB/DIGI groups.",
+      "measurements": [
+        "effective_settings",
+        "route_identity",
+        "device_identity",
+        "buffer_grants",
+        "fidelity",
+        "drive",
+        "power",
+        "bandwidth"
+      ],
+      "recordings": [
+        "modem_output",
+        "rf_iq",
+        "rf_demod"
+      ],
+      "procedure": "Follow matched-profiles.md with local diagnostic arming; maximum 10 second RF diagnostic cases. Record failed/inconclusive routes separately; never combine profile halves.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "usb-dig-hand-mic",
+      "family": "hardware",
+      "title": "USB-DIG hand-mic",
+      "criteria": "Usable hand-mic capture concurrently with modem RF; no direct analog speech leakage; first/last-frame transitions covered. Match frequency/waveform/~3kHz/filter/AGC/processing/gains/mixer/route/device/channel/power/SDR on same image; read back effective SSB/DIGI groups.",
+      "measurements": [
+        "effective_settings",
+        "route_identity",
+        "device_identity",
+        "buffer_grants",
+        "mic_level",
+        "analog_leakage",
+        "simultaneous_capture"
+      ],
+      "recordings": [
+        "original_speech",
+        "raw_capture",
+        "rf_iq",
+        "rf_demod"
+      ],
+      "procedure": "Follow matched-profiles.md with local diagnostic arming; maximum 10 second RF diagnostic cases. Record failed/inconclusive routes separately; never combine profile halves.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "usb-dig-speaker-rx",
+      "family": "hardware",
+      "title": "USB-DIG speaker-rx",
+      "criteria": "Identifiable external RF survives local decoded-speaker playback; compare off/on, speaker levels and supported mixer alternatives; raw capture identifies external RF separately. Match frequency/waveform/~3kHz/filter/AGC/processing/gains/mixer/route/device/channel/power/SDR on same image; read back effective SSB/DIGI groups.",
+      "measurements": [
+        "effective_settings",
+        "route_identity",
+        "device_identity",
+        "buffer_grants",
+        "external_signal_identity",
+        "feedback_contamination",
+        "receive_survival",
+        "speaker_levels"
+      ],
+      "recordings": [
+        "rf_input",
+        "raw_capture",
+        "local_playback",
+        "decoded_speech"
+      ],
+      "procedure": "Follow matched-profiles.md with local diagnostic arming; maximum 10 second RF diagnostic cases. Record failed/inconclusive routes separately; never combine profile halves.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer",
+        "transmitting_peer_or_rf_source"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "usb-dig-physical-ptt",
+      "family": "hardware",
+      "title": "USB-DIG physical-ptt",
+      "criteria": "Independently valid radio and hand-mic press/hold/release while software MODEM active; no aggregate-TX inference or guessed register bits; no analog leakage. Match frequency/waveform/~3kHz/filter/AGC/processing/gains/mixer/route/device/channel/power/SDR on same image; read back effective SSB/DIGI groups.",
+      "measurements": [
+        "effective_settings",
+        "route_identity",
+        "device_identity",
+        "buffer_grants",
+        "radio_ptt",
+        "hand_ptt_release",
+        "overlap",
+        "analog_leakage",
+        "held_health"
+      ],
+      "recordings": [
+        "control_event_video",
+        "rf_iq",
+        "rf_demod",
+        "raw_capture"
+      ],
+      "procedure": "Follow matched-profiles.md with local diagnostic arming; maximum 10 second RF diagnostic cases. Record failed/inconclusive routes separately; never combine profile halves.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "live-fixed",
+      "family": "hardware",
+      "title": "Fixed versus live RF",
+      "criteria": "Repeat fixed waveform and live microphone comparisons on candidate; no unexplained loss/stale speech/in-speech underflows or sustained backlog.",
+      "measurements": [
+        "fidelity",
+        "underflows",
+        "loss"
+      ],
+      "recordings": [
+        "original_speech",
+        "modem_output",
+        "rf_iq",
+        "rf_demod"
+      ],
+      "procedure": "Follow matched-profiles.md and operating-guide.md; keep raw evidence and independent listening assessment.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "live-two-minutes",
+      "family": "hardware",
+      "title": "Two minute live-path measurement",
+      "criteria": "Measure two minutes under normal GUI/waterfall load; record cold/warm first block, PTT-valid modem, release-RX, acquisition, CPU/RSS and backlog. Historical 70% margin failure remains distinct.",
+      "measurements": [
+        "duration_seconds",
+        "first_block",
+        "ptt_modem",
+        "release_rx",
+        "acquisition",
+        "underflows",
+        "backlog",
+        "cpu",
+        "rss"
+      ],
+      "recordings": [
+        "original_speech",
+        "decoded_speech",
+        "rf_iq",
+        "rf_demod",
+        "resource_log"
+      ],
+      "procedure": "Follow matched-profiles.md and operating-guide.md; keep raw evidence and independent listening assessment.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "conversation",
+      "family": "hardware",
+      "title": "Ten turn conversation",
+      "criteria": "Ten turns in approximately 5..10 minutes; intelligible bidirectional speech, beginning/end content, no stale speech or resource growth.",
+      "measurements": [
+        "duration_seconds",
+        "turn_count",
+        "first_last_words",
+        "underflows",
+        "backlog",
+        "cpu",
+        "rss"
+      ],
+      "recordings": [
+        "original_speech",
+        "decoded_speech",
+        "rf_iq",
+        "rf_demod"
+      ],
+      "procedure": "Follow matched-profiles.md and operating-guide.md; keep raw evidence and independent listening assessment.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer",
+        "transmitting_peer_or_rf_source"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware",
+      "listening": true
+    },
+    {
+      "id": "physical-recovery",
+      "family": "hardware",
+      "title": "Physical PTT and restart recovery",
+      "criteria": "Both controls, overlap, timeout, Stop, held/released restart; software TX cleared at startup; analog restoration waits for fresh RX and independent releases; held/unknown shown.",
+      "measurements": [
+        "radio_ptt",
+        "hand_ptt",
+        "overlap",
+        "timeout",
+        "stop",
+        "restart",
+        "restoration"
+      ],
+      "recordings": [
+        "control_event_video",
+        "rf_iq",
+        "rf_demod",
+        "event_log"
+      ],
+      "procedure": "Follow matched-profiles.md and operating-guide.md; keep raw evidence and independent listening assessment.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware"
+    },
+    {
+      "id": "final-rf-rx",
+      "family": "hardware",
+      "title": "Final controlled RF receive",
+      "criteria": "GUI-originated controlled external RF decodes while X6200 speaker operates. Receive-only SDR cannot supply this input.",
+      "measurements": [
+        "signal_identity",
+        "receive_survival",
+        "feedback",
+        "gui_identity"
+      ],
+      "recordings": [
+        "rf_input",
+        "raw_capture",
+        "local_playback",
+        "decoded_speech"
+      ],
+      "procedure": "Follow matched-profiles.md and operating-guide.md; keep raw evidence and independent listening assessment.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer",
+        "transmitting_peer_or_rf_source"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware",
+      "listening": true
+    },
+    {
+      "id": "final-rf-tx",
+      "family": "hardware",
+      "title": "Final RF transmit",
+      "criteria": "X6200 live hand speech received/decoded by complete official GUI through RF, intelligible first/last words.",
+      "measurements": [
+        "gui_identity",
+        "signal_identity",
+        "first_last_words"
+      ],
+      "recordings": [
+        "original_speech",
+        "rf_iq",
+        "rf_demod",
+        "decoded_speech"
+      ],
+      "procedure": "Follow matched-profiles.md and operating-guide.md; keep raw evidence and independent listening assessment.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "working_card_preserved",
+        "candidate_card",
+        "recovery_path",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "reference_computer"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware",
+      "listening": true
+    },
+    {
+      "id": "abort-rf-timing",
+      "family": "hardware",
+      "title": "Software abort to actual RF off",
+      "criteria": "Conservative physical event-to-RF cessation upper bound, including uncertainty, <=500 ms. Software timestamps alone cannot pass. Held physical PTT measured separately.",
+      "measurements": [
+        "method",
+        "event_definition",
+        "recording_delays",
+        "resolution",
+        "uncertainty_basis",
+        "setup_validation_sha256",
+        "event_artifact_sha256",
+        "rf_artifact_sha256",
+        "interval_ms",
+        "uncertainty_ms",
+        "physically_held_ptt"
+      ],
+      "recordings": [
+        "control_event_video",
+        "rf_iq",
+        "timing_setup_validation"
+      ],
+      "procedure": "Follow timing.md. Use validated correlated video/IQ only if it bounds the entire initiating-event to RF interval; otherwise synchronized trigger/RF-envelope instrumentation.",
+      "equipment": [
+        "x6200",
+        "hand_microphone",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "event_rf_correlation_setup"
+      ],
+      "tools": [
+        "python3",
+        "sox",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "scope": "hardware",
+      "timing": true
+    },
+    {
+      "id": "tool-accounting",
+      "family": "tools",
+      "title": "Sample-accounting analysis self-test",
+      "criteria": "Known gaps, delays, clipping and discontinuities detected with fixture-proven accuracy; counts refer to expected reference and clock boundaries.",
+      "measurements": [
+        "known_input",
+        "expected",
+        "actual",
+        "limitations"
+      ],
+      "recordings": [
+        "tool_validation_report"
+      ],
+      "procedure": "Run test_kit.py plus analysis fixtures; hardware setup requires actual equipment report.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "python3"
+      ],
+      "scope": "tools"
+    },
+    {
+      "id": "tool-collector",
+      "family": "tools",
+      "title": "Collector negative tests",
+      "criteria": "Mismatched builds/profiles, missing recordings and incomplete runs rejected; intelligibility unassessed until listening review.",
+      "measurements": [
+        "known_input",
+        "expected",
+        "actual",
+        "limitations"
+      ],
+      "recordings": [
+        "tool_validation_report"
+      ],
+      "procedure": "Run test_kit.py plus analysis fixtures; hardware setup requires actual equipment report.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "python3"
+      ],
+      "scope": "tools"
+    },
+    {
+      "id": "tool-rehearsal",
+      "family": "tools",
+      "title": "End-to-end evidence rehearsal",
+      "criteria": "Preflight/run/collect/assess completed on rehearsal bundle; marked rehearsal and never radio qualification.",
+      "measurements": [
+        "known_input",
+        "expected",
+        "actual",
+        "limitations"
+      ],
+      "recordings": [
+        "tool_validation_report"
+      ],
+      "procedure": "Run test_kit.py plus analysis fixtures; hardware setup requires actual equipment report.",
+      "equipment": [
+        "reference_computer"
+      ],
+      "tools": [
+        "python3"
+      ],
+      "scope": "tools"
+    },
+    {
+      "id": "tool-hardware-setup",
+      "family": "tools",
+      "title": "Actual hardware RF/timing setup validation",
+      "criteria": "Verify timing and RF fixture methods on actual equipment; operator intervals and unverified uncertainty alone insufficient.",
+      "measurements": [
+        "known_input",
+        "expected",
+        "actual",
+        "limitations"
+      ],
+      "recordings": [
+        "tool_validation_report"
+      ],
+      "procedure": "Validate the actual dummy-load/attenuation/SDR and event/RF timing setup using known signals and correlated triggers on the actual equipment; follow timing.md and matched-profiles.md. Record calibration, delays, uncertainties, fixture identities and hashes. Software self-tests cannot pass this gate.",
+      "equipment": [
+        "reference_computer",
+        "x6200",
+        "hand_microphone",
+        "dummy_load",
+        "rf_attenuation",
+        "receive_sdr",
+        "transmitting_peer_or_rf_source",
+        "event_rf_correlation_setup"
+      ],
+      "tools": [
+        "python3"
+      ],
+      "scope": "tools"
+    }
+  ]
+}

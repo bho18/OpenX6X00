@@ -1,0 +1,184 @@
+% rebase('base.html', title='Memories')
+<h2><svg class="i"><use href="#i-bookmark"/></svg>Memories</h2>
+<p class="sub">MEM slots are the radio's MEM 1-9 buttons (hold to save, tap to load). Channels are the named list in APP → Channels. A row is saved with its own Save, or all at once; a cleared slot or a deleted channel can be brought back for twenty seconds.</p>
+
+<section class="dp-card">
+<div class="dp-head"><span class="dp-ico"><svg class="i"><use href="#i-bookmark"/></svg></span><div><h3>MEM slots</h3><p>The MEM 1-9 buttons: hold to save, tap to load</p></div></div>
+<div class="dp-body tbl">
+<div class="table-wrap">
+<table id="slots">
+  <thead>
+    <tr><th>#</th><th class="freq">Freq, MHz</th><th>Mode</th><th>AGC</th><th>PRE</th><th>ATT</th><th></th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+</div>
+<div class="actions"><span class="status" id="status_slots"></span></div>
+</div>
+</section>
+
+<section class="dp-card">
+<div class="dp-head"><span class="dp-ico"><svg class="i"><use href="#i-list"/></svg></span><div><h3>Channels</h3><p>The named list in APP → Channels</p></div><div class="dp-x"><button id="add" class="primary"><svg class="i"><use href="#i-plus"/></svg>Add</button></div></div>
+<div class="dp-body tbl">
+<div class="table-wrap">
+<table id="channels">
+  <thead>
+    <tr><th>Name</th><th class="freq">Freq, MHz</th><th>Mode</th><th>AGC</th><th>PRE</th><th>ATT</th><th></th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+</div>
+<div class="actions"><span class="status" id="status_channels"></span></div>
+</div>
+</section>
+
+<script src="/static/js/edit_flow.js?v=2"></script>
+<script>
+// Same names as x6100_mode_t / x6100_agc_t
+const MODES = ["LSB", "LSB-D", "USB", "USB-D", "CW", "CWR", "AM", "NFM", "SAM", "WFM"];
+const AGCS = ["OFF", "SLOW", "FAST", "AUTO"];
+let max = 100;
+const slotsBody = $("#slots>tbody"), chBody = $("#channels>tbody");
+EditFlow.effect($("#slots").closest(".dp-card").find("h3"), "at the next tap of the MEM button");
+EditFlow.effect($("#channels").closest(".dp-card").find("h3"), "on the radio within a few seconds, unless APP → Channels is open there");
+
+var showStatus = function(kind, text, error=false) {
+  const el = $("#status_" + kind);
+  el.toggleClass("error", error);
+  el.html('<span class="dot"></span>').append(document.createTextNode(text));
+}
+
+var select = function(values, current) {
+  const el = $("<select>");
+  values.forEach(function(v) { el.append($("<option>").text(v).prop("selected", v == current)); });
+  return el;
+}
+
+var button = function(cls, icon, title) {
+  return $("<button class='action'>").addClass(cls).attr("title", title).append($("<i>").addClass(icon));
+}
+
+// Row with editable fields; d.frequency is Hz or null
+var makeRow = function(d, named) {
+  const row = $("<tr>");
+  const cell = function(el) { row.append($("<td>").append(el)); return el; };
+  if (named) cell($("<input class='name' maxlength='31' pattern='[ -~]*' autocomplete='off'>").val(d.name));
+  else row.append($("<td>").text(d.id));
+  // Shown in MHz, at least 3 decimals and up to 6, so 14,074,500 Hz reads 14.0745 (audit A13)
+  const shown = d.frequency ? (d.frequency / 1e6).toFixed(6).replace(/(\.\d{3}\d*?)0+$/, "$1") : "";
+  cell($("<input class='freq' type='number' step='any' min='0.5' max='56'>").val(shown).data({hz: d.frequency, shown: shown}));
+  row.children().last().addClass("freq_cell");
+  cell(select(MODES, d.mode || "USB").addClass("mode"));
+  cell(select(AGCS, d.agc || "AUTO").addClass("agc"));
+  cell($("<input class='pre' type='checkbox'>").prop("checked", !!d.pre));
+  cell($("<input class='att' type='checkbox'>").prop("checked", !!d.att));
+  return row;
+}
+
+var readRow = function(row, named) {
+  // The hertz as they were unless the field was edited: a saved name or mode never rounds the frequency
+  const fi = row.find(".freq"), fv = fi.val();
+  const d = {
+    frequency: fv === fi.data("shown") && fi.data("hz") ? fi.data("hz") : Math.round(parseFloat(fv) * 1e6),
+    mode: row.find(".mode").val(), agc: row.find(".agc").val(),
+    pre: row.find(".pre").prop("checked"), att: row.find(".att").prop("checked"),
+  };
+  if (named) d.name = row.find(".name").val();
+  return d;
+}
+
+/* type url payload, then done(list), one request of the table at a time (EditFlow.ajax); on an error the
+ * row of the save tk (EditFlow.submit) says why and keeps what was typed */
+var call = function(kind, type, url, payload, tk, done) {
+  EditFlow.ajax(kind === "slots" ? slotsBody : chBody, {
+    url: url, type: type, data: payload ? JSON.stringify(payload) : undefined,
+    contentType: "application/json; charset=utf-8", dataType: "json", timeout: X6100_WAIT_MS,
+    success: function(r) { done(r); },
+    error: function(xhr, why) {
+      const msg = x6100FailText(xhr, why);
+      if (tk) EditFlow.failed(tk, msg); else showStatus(kind, msg, true);
+    }
+  });
+}
+
+var slotText = function(s) { return "MEM " + s.id + (s.frequency ? " (" + (s.frequency / 1e6).toFixed(3) + " MHz " + s.mode + ")" : ""); }
+
+var renderSlots = function(data) {
+  return EditFlow.rebuild(slotsBody, function() {
+    slotsBody.empty();
+    data.slots.forEach(function(s) {
+      const row = makeRow(s, false).attr("data-key", String(s.id));
+      const actions = $("<td class='action-cell'>").appendTo(row);
+      const save = function() {
+        const tk = EditFlow.submit(row); if (!tk) return;
+        call("slots", "PUT", "/api/memories/" + s.id, readRow(row, false), tk, function(r) { EditFlow.saved(tk, function() { return renderSlots(r)[String(s.id)]; }); });
+      };
+      actions.append(button("save", "si-disk", "Save").on("click", save));
+      actions.append(" ", button("remove", "si-trash", "Clear").prop("disabled", !s.frequency).on("click", function() {
+        if (!EditFlow.confirmDelete(slotText(s), "The MEM " + s.id + " button then holds nothing.")) return;
+        call("slots", "DELETE", "/api/memories/" + s.id, null, null, function(r) {
+          renderSlots(r);
+          EditFlow.undo($("#status_slots"), "Cleared " + slotText(s) + ".", function() {
+            call("slots", "PUT", "/api/memories/" + s.id, {frequency: s.frequency, mode: s.mode, agc: s.agc, pre: s.pre, att: s.att}, null, function(r2) { renderSlots(r2); showStatus("slots", "Brought back"); });
+          });
+        });
+      }));
+      EditFlow.watch(row, save);
+      slotsBody.append(row);
+    });
+  });
+}
+
+var renderChannels = function(data) {
+  max = data.max;
+  return EditFlow.rebuild(chBody, function() { chBody.empty(); data.channels.forEach(function(c, i) { chBody.append(channelRow(c, i, data.channels.length)); }); });
+}
+
+var chanText = function(c) { return '"' + c.name + '" (' + (c.frequency / 1e6).toFixed(3) + " MHz " + c.mode + ")"; }
+
+// i is null for a new, not yet saved channel. The row's key is what names the channel on the radio,
+// not its place: a delete above it moves it without losing its draft
+var channelRow = function(c, i, n) {
+  const row = makeRow(c, true).attr("data-key", i === null ? "" : c.name + "|" + c.frequency + "|" + c.mode);
+  const actions = $("<td class='action-cell'>").appendTo(row);
+  const move = function(to) { call("channels", "POST", "/api/channels/" + i + "/move", {to: to}, null, renderChannels); };
+  if (i !== null) {
+    actions.append(button("up", "", "Up").text("↑").prop("disabled", i == 0).on("click", function() { move(i - 1); }));
+    actions.append(" ", button("down", "", "Down").text("↓").prop("disabled", i == n - 1).on("click", function() { move(i + 1); }));
+  }
+  const save = function() {
+    const tk = EditFlow.submit(row); if (!tk) return;
+    const d = readRow(row, true);
+    if (i === null) call("channels", "POST", "/api/channels", d, tk, function(r) { EditFlow.saved(tk, function() { row.remove(); return renderChannels(r)[d.name.trim() + "|" + d.frequency + "|" + d.mode]; }); });
+    else call("channels", "PUT", "/api/channels/" + i, d, tk, function(r) { EditFlow.saved(tk, function() { return renderChannels(r)[d.name + "|" + d.frequency + "|" + d.mode]; }); });
+  };
+  actions.append(" ", button("save", "si-disk", "Save").on("click", save));
+  actions.append(" ", button("remove", "si-trash", "Delete").on("click", function() {
+    if (i === null) { row.remove(); EditFlow.tools(null, chBody); return; }
+    if (!EditFlow.confirmDelete("the channel " + chanText(c), "It is gone from APP → Channels on the radio.")) return;
+    call("channels", "DELETE", "/api/channels/" + i, null, null, function(r) {
+      renderChannels(r);
+      EditFlow.undo($("#status_channels"), "Deleted " + chanText(c) + ".", function() {
+        call("channels", "POST", "/api/channels", {name: c.name, frequency: c.frequency, mode: c.mode, agc: c.agc, pre: c.pre, att: c.att}, null, function(r2) {
+          const back = r2.channels.length - 1;
+          if (back > i) call("channels", "POST", "/api/channels/" + back + "/move", {to: i}, null, function(r3) { renderChannels(r3); showStatus("channels", "Brought back"); });
+          else { renderChannels(r2); showStatus("channels", "Brought back"); }
+        });
+      });
+    });
+  }));
+  EditFlow.watch(row, save);
+  if (i === null) EditFlow.state(row, "unsaved");
+  return row;
+}
+
+$("#add").on("click", function() {
+  if (chBody.children("tr").length >= max) return showStatus("channels", "At most " + max + " channels", true);
+  const row = channelRow({name: ""}, null, 0);
+  chBody.append(row);
+  row.find("input").first().focus();
+});
+
+$.get('/api/memories', {}, renderSlots);
+$.get('/api/channels', {}, renderChannels);
+</script>

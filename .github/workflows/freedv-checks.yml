@@ -1,0 +1,365 @@
+name: FreeDV feasibility checks
+
+on:
+  pull_request:
+  push:
+    branches: [feature/freedv-x6200, experiment/freedv-integration]
+
+permissions:
+  contents: read
+
+jobs:
+  native-windows-evidence:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify Windows collection without radio access
+        shell: powershell
+        run: tools/freedv/test_native_collection.ps1
+  benchmark-timing:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Distinguish workload execution from timing assessment
+        run: python3 tools/freedv/test_run_benchmarks.py
+      - name: Verify native evidence integrity and separate hardware gates
+        run: python3 tools/freedv/test_native_session.py
+      - name: Check short remaining-work suite integrity and failure collection
+        run: python3 tools/freedv/test_short_validation.py
+      - name: Validate limited-format offline profile decoding
+        run: python3 tools/freedv/test_decode_rade_profile.py
+      - name: Validate SDK stage-accounting checks
+        run: python3 tools/freedv/test_validate_rade_stage.py
+      - name: Check experimental pipeline collection and evidence validation
+        run: python3 tools/freedv/test_pipeline_collection.py
+      - name: Check acquisition worker collection, evidence and SDK gates
+        run: |
+          set -eu
+          python3 tools/freedv/test_parallel_package.py
+          python3 tools/freedv/test_acquisition_evidence.py
+          python3 tools/freedv/test_acquisition_collection.py
+          python3 tools/freedv/test_validate_rade_parallel_sdk.py
+      - name: Check existing-package acquisition follow-up collection
+        run: python3 tools/freedv/test_acquisition_endurance.py
+      - name: Check continuous fixture and sustained speech collection
+        run: |
+          set -eu
+          python3 tools/freedv/test_long_sync_fixture.py
+          python3 tools/freedv/test_long_sync_benchmark.py
+      - name: Verify frozen RADE receive fixture
+        run: python3 tools/freedv/test_pinned_rade_fixture.py
+  prototype:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
+      - name: Check out pinned X6200 control headers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: gdyuldin/X6200Control
+          ref: 0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8
+          path: x6200-control-reference
+      - name: Compile and run prototype checks
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "::error::Prototype check failed while running: $BASH_COMMAND"' ERR
+          cc -std=c11 -Wall -Wextra -Werror tools/freedv/diagnostic_state.c \
+            tools/freedv/diagnostic_state_test.c -o /tmp/freedv-state-test
+          /tmp/freedv-state-test
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -ffunction-sections -fdata-sections \
+            -I. -Ix6200-control-reference/include src/hw/x6200/hw_x6200.c \
+            tools/freedv/x6200_route_snapshot_test.c -Wl,--gc-sections -Wl,--wrap=dlsym \
+            -o /tmp/freedv-route-test
+          /tmp/freedv-route-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/capture_ring.c \
+            tools/freedv/capture_ring_test.c -o /tmp/freedv-capture-ring-test
+          /tmp/freedv-capture-ring-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/packet_tx.c \
+            tools/freedv/packet_tx_test.c -o /tmp/freedv-packet-tx-test
+          /tmp/freedv-packet-tx-test
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -ffunction-sections -fdata-sections \
+            -I. src/hw/stub/hw_stub.c tools/freedv/stub_snapshot_test.c -Wl,--gc-sections -lm -o /tmp/freedv-stub-test
+          /tmp/freedv-stub-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread -I. src/freedv/watchdog.c \
+            tools/freedv/watchdog_test.c -o /tmp/freedv-watchdog-test
+          /tmp/freedv-watchdog-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread -I. -Itools/freedv \
+            tools/freedv/diagnostic_state.c src/freedv/watchdog.c tools/freedv/session_controller.c \
+            tools/freedv/session_controller_test.c -o /tmp/freedv-session-controller-test
+          /tmp/freedv-session-controller-test
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -pthread -I. \
+            src/freedv/wav_capture.c tools/freedv/wav_capture_test.c -Wl,--wrap=fwrite -o /tmp/freedv-wav-test
+          /tmp/freedv-wav-test
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 -pthread -I. \
+            src/control_owner.c src/freedv/writer_gate.c tools/freedv/control_lease_test.c -o /tmp/freedv-control-lease-test
+          /tmp/freedv-control-lease-test
+          python3 -m py_compile tools/freedv/inventory.py tools/freedv/reference_benchmark.py
+          python3 -m json.tool tools/freedv/sources.json > /dev/null
+          PULSE_SERVER=unix:/tmp/freedv-no-pulse python3 tools/freedv/inventory.py --output /tmp/freedv-inventory.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/freedv-inventory.json') as f: inventory = json.load(f)
+          assert inventory['schema_version'] == 2 and inventory['radio_hardware_tested'] is False
+          assert inventory['firmware']['baseband_version'] is None
+          assert 'alsa_mixers' in inventory['audio'] and 'thermal_zones' in inventory
+          print('PASS: inventory distinguishes missing observations from hardware results')
+          PY
+
+  x6100-backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out pinned X6100 control headers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: gdyuldin/X6100Control
+          ref: 1426f56ef6759dc1c90cb76478c6e524e08c5c94
+          path: x6100-control-reference
+      - name: Compile X6100 backend with diagnostics enabled
+        run: |
+          set -eu
+          cmake -S x6100-control-reference -B /tmp/x6100-control-config -DAETHER_X6100CTRL_USE_LTO=OFF
+          cc -std=c11 -Wall -Wextra -Werror -DENABLE_FREEDV_DIAGNOSTICS=1 \
+            -I. -Ix6100-control-reference/include -I/tmp/x6100-control-config/include \
+            -c src/hw/x6100/hw_x6100.c -o /tmp/x6100-backend.o
+
+  codec2-prototype:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check out pinned Codec2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: drowe67/codec2
+          ref: 310777b1c6f1af0bc7c72f5b32f80f6fd9136962
+          path: codec2-reference
+      - name: Build and exercise 700E timing prototype
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsamplerate0-dev sox
+          cmake -S codec2-reference -B /tmp/codec2-build -DCMAKE_BUILD_TYPE=Release -DUNITTEST=OFF -DLPCNET=OFF
+          cmake --build /tmp/codec2-build --target freedv_tx -j 2
+          cc -std=c11 -Wall -Wextra -Werror -Icodec2-reference/src tools/freedv/codec2_frame_bench.c \
+            -L/tmp/codec2-build/src -lcodec2 -lsamplerate -lm -o /tmp/codec2-frame-bench
+          export LD_LIBRARY_PATH=/tmp/codec2-build/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+          /tmp/codec2-build/src/freedv_tx 700E codec2-reference/raw/ve9qrp_10s.raw /tmp/700e-modem.raw
+          /tmp/codec2-frame-bench tx codec2-reference/raw/ve9qrp_10s.raw 1 unpaced resample 1 > /tmp/tx.json
+          /tmp/codec2-frame-bench rx /tmp/700e-modem.raw 3 unpaced resample 1 > /tmp/rx.json
+          /tmp/codec2-frame-bench tx codec2-reference/raw/ve9qrp_10s.raw 1 paced resample 1 > /tmp/paced.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/tx.json') as f: tx = json.load(f)
+          with open('/tmp/rx.json') as f: rx = json.load(f)
+          with open('/tmp/paced.json') as f: paced = json.load(f)
+          assert tx['frames'] > 0 and tx['output_samples'] > 0
+          assert rx['frames'] > 0 and rx['sync_frames'] > 0
+          assert tx['resampling_included'] and rx['resampled_output_samples'] > 0
+          assert tx['warmup_audio_seconds'] >= 1 and rx['deadline_misses'] is None
+          assert paced['warmup_audio_seconds'] >= 1 and 0 <= paced['deadline_misses'] <= paced['frames']
+          assert not tx['full_pipeline_qualified'] and not rx['radio_io']
+          print('PASS: 700E TX and synchronized RX benchmark outputs')
+          PY
+          python3 tools/freedv/collect_benchmark.py --mode 700E --benchmark /tmp/codec2-frame-bench \
+            --fixture codec2-reference/raw/ve9qrp_10s.raw --direction tx --seconds 1 --pacing paced \
+            --warmup 1 --sample-interval 1 --output /tmp/freedv-collected-700e
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          p = Path('/tmp/freedv-collected-700e')
+          m = json.loads((p/'manifest.json').read_text())
+          r = json.loads((p/'result.json').read_text())
+          e = json.loads((p/'events.json').read_text())
+          s = [json.loads(line) for line in (p/'resources.jsonl').read_text().splitlines()]
+          assert m['fixture_sha256'] == hashlib.sha256(Path('codec2-reference/raw/ve9qrp_10s.raw').read_bytes()).hexdigest()
+          assert not m['automatic_upload'] and not m['hardware_routing_tested']
+          assert r['mode'] == '700E' and r['direction'] == 'tx' and not r['radio_io']
+          assert len(s) >= 1 and e[-1]['return_code'] == 0
+          print('PASS: benchmark collection retains fingerprints, resource samples and events')
+          PY
+
+          python3 tools/freedv/make_700e_fixture.py --tx /tmp/codec2-build/src/freedv_tx \
+            --speech codec2-reference/raw/ve9qrp_10s.raw --output /tmp/freedv-fixture-a
+          python3 tools/freedv/make_700e_fixture.py --tx /tmp/codec2-build/src/freedv_tx \
+            --speech codec2-reference/raw/ve9qrp_10s.raw --output /tmp/freedv-fixture-b
+          python3 - <<'PY'
+          import json
+          with open('/tmp/freedv-fixture-a/manifest.json') as f: a = json.load(f)
+          with open('/tmp/freedv-fixture-b/manifest.json') as f: b = json.load(f)
+          assert a['modem_8000_sha256'] == b['modem_8000_sha256']
+          assert a['modem_44100_wav_sha256'] == b['modem_44100_wav_sha256']
+          assert not a['radio_control'] and not a['transmitter_provenance_verified']
+          print('PASS: deterministic 700E waveform generation')
+          PY
+
+  rade-prototype:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # The stage comparison uses an exact historical source.
+      - name: Check out pinned RADE
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: freedv/rade_c
+          ref: c8a3dc156045cae2cd251e1a4be0c304c9ddf2f9
+          path: rade-reference
+      - name: Build RADE V1 reference and exercise streaming prototype
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake autoconf automake libtool pkg-config libsamplerate0-dev
+          cmake -S rade-reference -B /tmp/rade-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/rade-build --target rade_tx_wav -j 2
+          opus_dir=/tmp/rade-build/build_opus-prefix/src/build_opus
+          git show cd6a672311e85a68feb97f24f65653a29791b1e0:tools/freedv/rade_frame_bench.c > /tmp/rade-frame-bench-baseline.c
+          printf '%s\n' 'c9756bd241fc409bab7c04753d99dd69267c87efff4153e0f3c5761fe8f4827d  /tmp/rade-frame-bench-baseline.c' | sha256sum -c -
+          build_benchmark() {
+            cc -O2 -g -std=c11 -Wall -Wextra -Werror -Wno-error=cpp \
+              -include "$opus_dir/config.h" \
+              -Irade-reference/src -I"$opus_dir/dnn" -I"$opus_dir/celt" -I"$opus_dir/include" -I"$opus_dir" \
+              "$1" "${@:3}" -L/tmp/rade-build/src -lrade "$opus_dir/.libs/libopus.a" \
+              -lsamplerate -lm -Wl,-rpath,/tmp/rade-build/src -o "$2"
+          }
+          build_benchmark /tmp/rade-frame-bench-baseline.c /tmp/rade-frame-bench-baseline
+          build_benchmark tools/freedv/rade_frame_bench.c /tmp/rade-frame-bench
+          python3 tools/freedv/test_rade_frame_bench.py --benchmark /tmp/rade-frame-bench \
+            --tx /tmp/rade-build/src/rade_tx_wav --speech rade-reference/input_sample.wav \
+            --stage-baseline /tmp/rade-frame-bench-baseline
+          build_benchmark tools/freedv/rade_pipeline_bench.c /tmp/rade-pipeline-bench -pthread
+          python3 - <<'PYFIXTURE'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools/freedv')
+          from build_benchmark_package import copy_rade_modem_fixture
+          fixtures = Path('/tmp/rade-pipeline-fixtures')
+          fixtures.mkdir()
+          copy_rade_modem_fixture(Path.cwd(), fixtures)
+          (fixtures / 'silence.raw').write_bytes(bytes(16000))
+          PYFIXTURE
+          python3 tools/freedv/test_rade_pipeline.py --binary /tmp/rade-pipeline-bench \
+            --fixtures /tmp/rade-pipeline-fixtures --original-stage-binary /tmp/rade-frame-bench \
+            --output /tmp/rade-pipeline-tests
+
+  host-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out firmware and pinned LVGL
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
+      - name: Check out pinned X6200 control headers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gdyuldin/X6200Control
+          ref: 0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8
+          path: host-control-reference
+      - name: Install host dependencies
+        run: |
+          set -eu
+          timeout --kill-after=10s 4m sudo apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+          timeout --kill-after=10s 12m sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get \
+            -o Acquire::Retries=1 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 \
+            -o Dpkg::Use-Pty=0 install -y --no-install-recommends build-essential cmake ninja-build autoconf automake \
+            libtool pkg-config sqlite3 libsqlite3-dev libsdl2-dev libdrm-dev libxkbcommon-dev libnm-dev \
+            libdbus-glib-1-dev libpng-dev libjpeg-dev libsndfile1-dev libudev-dev libpulse-dev \
+            libasound2-dev libfftw3-dev libboost-dev pulseaudio tesseract-ocr python3-pil
+      - name: Prepare pinned host dependencies
+        run: |
+          set -eu
+          mkdir -p build-host/deps/src build-host/deps/include
+          ln -s /usr/include/boost build-host/deps/include/boost
+          git clone --depth 1 --branch v1.4.0 https://github.com/jgaeddert/liquid-dsp.git build-host/deps/src/liquid-dsp
+          test "$(git -C build-host/deps/src/liquid-dsp rev-parse HEAD)" = 3b8a6f07ba6780b7a3d4be148461257515d183ad
+          git clone https://github.com/gdyuldin/ft8_lib.git build-host/deps/src/ft8_lib
+          git -C build-host/deps/src/ft8_lib checkout --detach 73b0db861dc41c7ca9f3dedc73ee148daa06dd0e
+      - name: Build host simulator with diagnostics disabled
+        run: timeout --kill-after=10s 12m host/build.sh build
+      - name: Exercise both host configurations
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "::error::Host check failed while running: $BASH_COMMAND"; tail -40 "$RUNNER_TEMP/freedv-gui.log" || true' ERR
+          export SDL_VIDEODRIVER=dummy
+          export SDL_NO_SIGNAL_HANDLERS=1
+          python3 tools/freedv/test_stop_host_process.py
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/freedv-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          gui_pid=
+          pulse_pid=
+          stop_process() {
+            local process_pid=$1 status=0
+            # Success proves exit via pidfd before the shell reaps its child.
+            # Explicitly return on failure even when called inside an if/trap.
+            if ! python3 tools/freedv/stop_host_process.py "$process_pid"; then return 1; fi
+            wait "$process_pid" || status=$?
+            case "$status" in
+              0|137|143) return 0 ;;
+              *) echo "::error::Host child exited unexpectedly with status $status"; return "$status" ;;
+            esac
+          }
+          cleanup() {
+            local status=$? stopped=0 process_pid
+            trap - EXIT
+            for process_pid in "$gui_pid" "$pulse_pid"; do
+              [ -n "$process_pid" ] || continue
+              stopped=0
+              stop_process "$process_pid" || stopped=$?
+              if [ "$status" -eq 0 ] && [ "$stopped" -ne 0 ]; then status=$stopped; fi
+            done
+            exit "$status"
+          }
+          trap cleanup EXIT
+          pulseaudio --daemonize=no --exit-idle-time=-1 > "$RUNNER_TEMP/freedv-pulse.log" 2>&1 &
+          pulse_pid=$!
+          ready=0
+          for i in $(seq 1 30); do
+            if timeout --kill-after=2s 3s pactl list short sinks >/dev/null 2>&1; then ready=1; break; fi
+            kill -0 "$pulse_pid" || { cat "$RUNNER_TEMP/freedv-pulse.log"; exit 1; }
+            sleep 1
+          done
+          test "$ready" = 1
+          start_gui() {
+            build-host/src/x6100_gui > "$RUNNER_TEMP/freedv-gui.log" 2>&1 &
+            gui_pid=$!
+            ready=0
+            for i in $(seq 1 60); do
+              if python3 -c 'import socket; s=socket.create_connection(("127.0.0.1",50002),timeout=1); s.close()' 2>/dev/null; then ready=1; break; fi
+              kill -0 "$gui_pid" || { cat "$RUNNER_TEMP/freedv-gui.log"; exit 1; }
+              sleep 1
+            done
+            test "$ready" = 1
+          }
+          echo "::notice title=Host UI phase::Exercise diagnostics-disabled GUI"
+          start_gui
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py --output "$RUNNER_TEMP/freedv-ui-off"
+          echo "::notice title=Host UI phase::Stop first GUI"
+          stop_process "$gui_pid"
+          gui_pid=
+          echo "::notice title=Host UI phase::Configure and build diagnostics-enabled GUI"
+          timeout --kill-after=10s 2m cmake -S . -B build-host -G Ninja -DHOST_BUILD=ON -DENABLE_FREEDV_DIAGNOSTICS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DX6200_CONTROL_INCLUDE_DIR="$GITHUB_WORKSPACE/host-control-reference/include"
+          timeout --kill-after=10s 12m cmake --build build-host --parallel 2
+          echo "::notice title=Host UI phase::Run diagnostic CTests"
+          timeout --kill-after=10s 5m ctest --test-dir build-host -R '^freedv_' --timeout 60 --output-on-failure
+          echo "::notice title=Host UI phase::Exercise diagnostics-enabled GUI"
+          start_gui
+          timeout --kill-after=5s 90s python3 -u tools/freedv/host_ui_check.py --snapshot --output "$RUNNER_TEMP/freedv-ui-on"
+      - name: Preserve actual simulator UI evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: freedv-host-ui-evidence
+          path: |
+            ${{ runner.temp }}/freedv-ui-off/
+            ${{ runner.temp }}/freedv-ui-on/
+            ${{ runner.temp }}/freedv-gui.log
+            ${{ runner.temp }}/freedv-pulse.log
+          if-no-files-found: warn
+          retention-days: 14

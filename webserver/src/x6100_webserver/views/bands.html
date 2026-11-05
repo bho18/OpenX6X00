@@ -1,0 +1,43 @@
+% rebase("base.html", title="Bands editor")
+<h2><svg class="i"><use href="#i-bands"/></svg>Bands</h2>
+<p class="sub">Band edges and default modes shown on the radio. Active bands are reached with the band up/down buttons.
+The radio skips a band it cannot tune: 4m, 2m and 70cm only come with a transverter (Settings &gt; General) or, on the
+X6200, the WR12 (Settings &gt; General, or Display here); 2m and 70cm with the WR12 are to receive only.
+A TX shift (kHz, 0 off) makes the radio transmit that far from where it listens, in split: an FM repeater's input,
+a QO-100 station's IF; only on a band the radio transmits on, and only where the whole band, shifted, still does.</p>
+
+<section class="dp-card">
+<div class="dp-head"><span class="dp-ico"><svg class="i"><use href="#i-bands"/></svg></span><div><h3>Band list</h3><p>Name, edges, default mode, TX shift and the Active flag</p></div><div class="dp-x"><button id="add_band" class="primary"><svg class="i"><use href="#i-plus"/></svg>Add band</button></div></div>
+<div class="dp-body tbl">
+<div class="table-wrap">
+<table id="band_list">
+  <thead><tr><th>Name</th><th class="freq">Start, MHz</th><th class="freq">Stop, MHz</th><th>Mode</th><th class="freq">TX shift, kHz</th><th>Active</th><th></th></tr></thead>
+  <tbody></tbody></table>
+</div>
+<div class="actions"><span class="status"></span></div>
+</div>
+</section>
+
+<script src="/static/js/edit_flow.js?v=2"></script>
+<script src="/static/js/list_editor.js?v=4"></script>
+<script>
+listEditor({
+  table: "#band_list", add: "#add_band", url: "/api/bands",
+  columns: [
+    {show: b => b.name, edit: b => $("<input type='text'>").val(b.name)},
+    {cls: "freq_cell", show: b => mhzText(b.start_freq), edit: b => mhzInput(b.start_freq)},
+    {cls: "freq_cell", show: b => mhzText(b.stop_freq), edit: b => mhzInput(b.stop_freq)},
+    {show: b => modeTag(b.params.vfoa_mode), edit: b => choice(mode_map, b.params.vfoa_mode)},
+    {cls: "freq_cell", show: b => b.params.tx_shift ? (b.params.tx_shift > 0 ? "+" : "") + b.params.tx_shift / 1000 : "",
+     edit: b => $("<input type='number' step='1' min='-10000' max='10000'>").val((b.params.tx_shift || 0) / 1000)},
+    {show: b => $("<i>").addClass(b.type ? "si-check-square" : "si-square"),
+     edit: b => $("<input type='checkbox'>").prop("checked", !!b.type)},
+  ],
+  read: ([name, start, stop, mode, shift, active]) => ({name: name.val(), start_freq: mhzToHz(start), stop_freq: mhzToHz(stop),
+                                                        params: {vfoa_mode: Number(mode.val()), tx_shift: Math.round(Number(shift.val()) * 1000)},
+                                                        type: Number(active.prop("checked"))}),
+  blank: () => ({id: null, name: "New", start_freq: 14000000, stop_freq: 14350000, params: {vfoa_mode: 2}, type: 1}),
+  what: b => 'the band "' + b.name + '"',
+  effect: "at the next band key or knob turn into the band",
+});
+</script>

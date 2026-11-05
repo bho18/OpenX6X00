@@ -1,0 +1,39 @@
+file(GLOB APP_CFG_SOURCES
+    "*.cpp"
+    "*.c"
+)
+
+add_library(cfg STATIC ${APP_CFG_SOURCES})
+if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
+    if(ENABLE_FREEDV_DIAGNOSTICS)
+        target_compile_definitions(cfg PUBLIC ENABLE_FREEDV_DIAGNOSTICS=1)
+    endif()
+    if(ENABLE_FREEDV_VOICE)
+        target_compile_definitions(cfg PUBLIC ENABLE_FREEDV_VOICE=1)
+    endif()
+    target_link_libraries(cfg PUBLIC freedv_writer_gate)
+endif()
+
+target_include_directories(cfg PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/lvgl
+)
+
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(SQLITE3 QUIET IMPORTED_TARGET sqlite3)
+else()
+    find_library(SQLITE3_LIBRARY sqlite3)
+endif()
+
+if(SQLITE3_FOUND)
+    target_link_libraries(cfg PUBLIC PkgConfig::SQLITE3)
+else()
+    target_include_directories(cfg PUBLIC ${SQLITE3_INCLUDE_DIRS})
+    target_link_libraries(cfg PUBLIC ${SQLITE3_LIBRARY})
+endif()
+
+target_link_libraries(cfg PUBLIC Threads::Threads lvgl)
