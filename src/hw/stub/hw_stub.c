@@ -281,17 +281,21 @@ void hw_flow_restart(void) {
  * atomic snapshot cannot combine a new pressed level with an old counter. */
 static atomic_uint_fast64_t test_ptt[2];
 static atomic_uint_fast64_t test_ptt_sequence;
+/* Changes to either raw source share the release admission boundary. Reading
+ * two independently changing levels cannot prove both were released at once. */
+static pthread_mutex_t native_mutex=PTHREAD_MUTEX_INITIALIZER;
 void hw_stub_ptt_set(hw_ptt_source_t source, bool pressed) {
     if(source<HW_PTT_SOURCE_RADIO || source>HW_PTT_SOURCE_HAND)return;
+    pthread_mutex_lock(&native_mutex);
     uint_fast64_t old=atomic_load(&test_ptt[source]),next;
     do {
         next=(old&~(uint_fast64_t)1)|(pressed?1u:0u);
         if(!pressed && (old&1u))next+=2;
     } while(!atomic_compare_exchange_weak(&test_ptt[source],&old,next));
+    pthread_mutex_unlock(&native_mutex);
 }
 /* Explicit simulation of a separate device lease; no ordinary command cache
  * is promoted to an applied acknowledgement. observe never renews the lease. */
-static pthread_mutex_t native_mutex=PTHREAD_MUTEX_INITIALIZER;
 static hw_native_voice_state_t native_state={.valid=true,.boot_id=1,
     .applied_route=HW_NATIVE_ROUTE_QUIET,.contract_id="host-native-v2",
     .physical_keying_inhibited=true,.autonomous_tx_inhibited=true,

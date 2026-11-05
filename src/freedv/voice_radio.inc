@@ -85,7 +85,9 @@ static void voice_native_fail(void) {
     atomic_store(&voice_radio.control_failed,true);atomic_store(&voice_radio.recovery_required,true);
 }
 bool radio_voice_control_recovery_required(void) { return atomic_load(&voice_radio.recovery_required); }
-static bool voice_native_healthy(void) {
+/* Caller holds control_mutex across the observation and comparison, so a
+ * successful concurrent route change cannot invalidate this same snapshot. */
+static bool voice_native_healthy_locked(void) {
     hw_native_voice_state_t s={0};
     if(atomic_load(&voice_radio.control_failed))return false;
     if(!voice_native_read(&s) || !voice_native_state_valid(&s)){
@@ -98,6 +100,11 @@ static bool voice_native_healthy(void) {
         s.applied_route==atomic_load(&voice_radio.pending_route);
     if(!applied && !pending && !atomic_load(&voice_radio.control_releasing))voice_native_fail();
     return applied || pending;
+}
+static bool voice_native_healthy(void) {
+    pthread_mutex_lock(&voice_radio.control_mutex);
+    bool ok=voice_native_healthy_locked();
+    pthread_mutex_unlock(&voice_radio.control_mutex);return ok;
 }
 static bool voice_native_ack(const char *operation,uint64_t generation,hw_native_voice_route_t route,
         uint64_t after_sequence,uint64_t requested_ms,bool requested) {
@@ -140,7 +147,7 @@ static bool voice_maintain(void *unused) {
      * by GUI observations, audio callbacks, or unrelated control traffic. */
     pthread_mutex_lock(&voice_radio.control_mutex);
     hw_native_voice_state_t before={0};uint64_t token=atomic_load(&voice_radio.lease_token);
-    bool ok=voice_native_read(&before) && voice_native_state_valid(&before) && voice_native_healthy();
+    bool ok=voice_native_read(&before) && voice_native_state_valid(&before) && voice_native_healthy_locked();
     hw_native_voice_state_t after={0};uint64_t requested_ms=get_time();
     if(ok && requested_ms>=atomic_load(&voice_radio.renew_after_ms)){
         ok=hw_native_voice_renew(token) && voice_native_read(&after) && voice_native_state_valid(&after) &&
@@ -396,8 +403,12 @@ static bool voice_claim(const fd_qualified_profile *p,bool validation) {
         /* Never release an unacknowledged MCU inhibit. Its independent expiry
          * remains responsible for fail-closed behavior; no renewals follow. */
         if(baseline && random)(void)hw_native_voice_apply(token,1,HW_NATIVE_ROUTE_QUIET);
-        radio_lock();hw_set_i(HW_MODEM,false);hw_set_i(HW_PTT,false);(void)ctl_freedv_release(true);radio_unlock();
-        atomic_store(&voice_radio.owned,false);atomic_store(&voice_radio.lease_token,0);
+        radio_lock();hw_set_i(HW_MODEM,false);hw_set_i(HW_PTT,false);
+        bool released=ctl_freedv_release(true);radio_unlock();
+        /* A concurrent non-RX state can refuse Linux reservation release.
+         * Retain tracked ownership and the recovery latch in that case; never
+         * pretend ordinary control was restored or renew the failed lease. */
+        if(released){atomic_store(&voice_radio.owned,false);atomic_store(&voice_radio.lease_token,0);}
         if(voice_radio.keypad_fd>=0){close(voice_radio.keypad_fd);voice_radio.keypad_fd=-1;}
         return false;
     }
@@ -462,8 +473,8 @@ typedef struct {
     bool rejected;
 } voice_tx_admission;
 /* This guard also runs under the audio admission lock. It reads independent
- * observations only: no radio writes or audio calls; control-state sampling
- * uses a short observation mutex, never the control request mutex. Once
+ * observations only: no radio writes or audio calls. Its bounded control
+ * observation is serialized against route changes. Once
  * any held source releases, this attempt stays rejected even after a re-press.
  * A backend must retain physical edges to detect pulses between observations. */
 static bool voice_tx_admit(void *context) {

@@ -31,7 +31,7 @@ bool hw_native_voice_renew(uint64_t);
 bool hw_native_voice_release(uint64_t);
 hw_native_voice_capabilities_t hw_native_voice_capabilities(void);
 static unsigned native_fault,removed_capabilities,native_tx_requests;
-static bool inject_native,inject_acquire,release_press,renew_no_apply;
+static bool inject_native,inject_acquire,release_press,renew_no_apply,claim_tx_race;
 static atomic_bool pause_native_read,native_read_paused;
 static hw_native_voice_state_t last_native_read,old_native_ack;
 hw_native_voice_capabilities_t test_native_capabilities(void) {
@@ -72,6 +72,7 @@ bool test_native_apply(uint64_t token,uint64_t generation,hw_native_voice_route_
 }
 bool test_native_acquire(uint64_t token) {
     old_native_ack=last_native_read;
+    if(claim_tx_race)atomic_store(&state,RADIO_TX);
     bool ok=hw_native_voice_acquire(token);inject_native=inject_acquire;return ok;
 }
 bool test_native_renew(uint64_t token) { return renew_no_apply?true:hw_native_voice_renew(token); }
@@ -189,11 +190,29 @@ static fd_qualified_profile test_profile(void){return(fd_qualified_profile){.nat
 struct route_race {uint64_t epoch;bool result;};
 static void *racing_tx(void *context){struct route_race *r=context;r->result=voice_native_apply(HW_NATIVE_ROUTE_TX,r->epoch);return NULL;}
 static void *racing_clear(void *context){fd_voice_driver *d=context;d->emergency_clear(d->context);return NULL;}
+static atomic_bool concurrent_stop,concurrent_failed;
+static void *handoff_ptt(void *unused){
+    (void)unused;
+    while(!atomic_load(&concurrent_stop)){
+        /* At least one source is held throughout every handoff. */
+        hw_stub_ptt_set(HW_PTT_SOURCE_RADIO,true);
+        hw_stub_ptt_set(HW_PTT_SOURCE_HAND,false);
+        hw_stub_ptt_set(HW_PTT_SOURCE_HAND,true);
+        hw_stub_ptt_set(HW_PTT_SOURCE_RADIO,false);
+    }
+    return NULL;
+}
+static void *observe_route_changes(void *unused){
+    (void)unused;
+    while(!atomic_load(&concurrent_stop))
+        if(!voice_native_healthy()){atomic_store(&concurrent_failed,true);break;}
+    return NULL;
+}
 static void contract_failure_cases(void){
     /* Each deliberately unrecoverable control fault lives in a separate
      * process: the real driver must not silently reset its recovery latch. */
     fflush(NULL);
-    for(unsigned scenario=1;scenario<=22;++scenario){
+    for(unsigned scenario=1;scenario<=25;++scenario){
         pid_t child=fork();assert(child>=0);
         if(!child){
             fd_voice_driver d=radio_voice_driver();fd_qualified_profile p=test_profile();atomic_bool cancel=false;
@@ -203,6 +222,13 @@ static void contract_failure_cases(void){
                 assert(!d.prepare(d.context,&p,&cancel));
                 assert(!fd_writer_voice_owned() && !atomic_load(&voice_radio.owned) && voice_radio.keypad_fd<0);
                 assert(radio_voice_control_recovery_required() && !radio_voice_supported(&p));
+            }else if(scenario==24){
+                native_fault=1;inject_acquire=true;claim_tx_race=true;
+                assert(!d.prepare(d.context,&p,&cancel));
+                /* A non-RX state refuses reservation release: retain tracked
+                 * ownership and require recovery, never silently strand it. */
+                assert(fd_writer_voice_owned() && atomic_load(&voice_radio.owned));
+                assert(radio_voice_control_recovery_required() && !d.close(d.context));
             }else if(scenario==22){
                 bad_hand_ptt=1;assert(!d.prepare(d.context,&p,&cancel));
                 assert(!fd_writer_voice_owned() && !radio_voice_control_recovery_required());
@@ -244,6 +270,28 @@ static void contract_failure_cases(void){
                     atomic_store(&native_read_paused,false);pthread_join(tx,NULL);pthread_join(clear,NULL);
                     assert(!race.result && native_tx_requests==before && !snapshot().route.modem && !snapshot().route.ptt);
                     hw_native_voice_state_t quiet;assert(hw_native_voice_observe(&quiet) && quiet.applied_route==HW_NATIVE_ROUTE_QUIET);
+                }else if(scenario==23){
+                    d.emergency_clear(d.context);
+                    uint64_t token=atomic_load(&voice_radio.lease_token);
+                    hw_stub_ptt_set(HW_PTT_SOURCE_HAND,true);
+                    pthread_t input;assert(!pthread_create(&input,NULL,handoff_ptt,NULL));
+                    for(unsigned i=0;i<10000;++i){
+                        assert(!hw_native_voice_release(token));
+                        if(!(i%100))assert(hw_native_voice_renew(token));
+                    }
+                    atomic_store(&concurrent_stop,true);pthread_join(input,NULL);
+                    hw_stub_ptt_set(HW_PTT_SOURCE_RADIO,false);hw_stub_ptt_set(HW_PTT_SOURCE_HAND,false);
+                    assert(hw_native_voice_release(token));
+                }else if(scenario==25){
+                    uint64_t epoch=atomic_load(&voice_radio.epoch);
+                    pthread_t observer;assert(!pthread_create(&observer,NULL,observe_route_changes,NULL));
+                    for(unsigned i=0;i<500;++i){
+                        assert(voice_native_apply(HW_NATIVE_ROUTE_QUIET,epoch));
+                        assert(voice_native_apply(HW_NATIVE_ROUTE_RX,epoch));
+                        assert(d.maintain(d.context));
+                    }
+                    atomic_store(&concurrent_stop,true);pthread_join(observer,NULL);
+                    assert(!atomic_load(&concurrent_failed) && !radio_voice_control_recovery_required());
                 }
             }
             _exit(0);
@@ -251,7 +299,7 @@ static void contract_failure_cases(void){
         int status;assert(waitpid(child,&status,0)==child);
         if(!WIFEXITED(status) || WEXITSTATUS(status)!=0){fprintf(stderr,"native contract scenario %u failed\n",scenario);assert(0);}
     }
-    puts("PASS: native contract rejects cached/stale/mismatched ACKs, lost inhibit, unknown PTT and expired/false-renewed leases; claim failure cleans Linux resources; TX cannot overtake QUIET; release-time physical press retains inhibit");
+    puts("PASS: native contract rejects invalid ACKs and leases; failed claims retain truthful ownership; TX cannot overtake QUIET; coherent PTT release and concurrent route observations preserve the control contract");
 }
 int main(void){
     ctl_init();assert(hw_init());hw_start();observed(false);
