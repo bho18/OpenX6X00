@@ -73,6 +73,9 @@ def main():
                 test.wait(timeout=60)
             print((root / 'test.log').read_text())
             assert test.returncode == 0, 'Four-stream test failed; see retained evidence'
+            rows=[json.loads(line) for line in (root/'result/session.jsonl').read_text().splitlines()]
+            assert rows[-1]['state'] in (5,6) and not rows[-1]['rf_tx'], 'Final stopped/RX evidence missing'
+            assert rows[-1]['fault'] == (11 if '--stall' in mode else 2 if '--disconnect' in mode else 1), rows[-1]
             recorder.terminate();recorder.wait(timeout=5);recorder=None;recording.close()
             runner=os.environ.get('USB_RF_REFERENCE_RUNNER')
             if runner and not mode:
