@@ -6,11 +6,79 @@
 #define FREEDV_HOST_TEST_PROFILE 1
 #define FREEDV_BUILD_ID "radio-binding-test"
 #define hw_ptt_observe test_hw_ptt_observe
+#define hw_native_voice_observe test_native_observe
+#define hw_native_voice_apply test_native_apply
+#define hw_native_voice_acquire test_native_acquire
+#define hw_native_voice_renew test_native_renew
+#define hw_native_voice_release test_native_release
+#define hw_native_voice_capabilities test_native_capabilities
 #include "src/radio.c"
 #undef hw_ptt_observe
+#undef hw_native_voice_observe
+#undef hw_native_voice_apply
+#undef hw_native_voice_acquire
+#undef hw_native_voice_renew
+#undef hw_native_voice_release
+#undef hw_native_voice_capabilities
 #include <assert.h>
 #include <sys/file.h>
+#include <sys/wait.h>
 bool hw_ptt_observe(hw_ptt_source_t,hw_ptt_observation_t *);
+bool hw_native_voice_observe(hw_native_voice_state_t *);
+bool hw_native_voice_apply(uint64_t,uint64_t,hw_native_voice_route_t);
+bool hw_native_voice_acquire(uint64_t);
+bool hw_native_voice_renew(uint64_t);
+bool hw_native_voice_release(uint64_t);
+hw_native_voice_capabilities_t hw_native_voice_capabilities(void);
+static unsigned native_fault,removed_capabilities,native_tx_requests;
+static bool inject_native,inject_acquire,release_press,renew_no_apply;
+static atomic_bool pause_native_read,native_read_paused;
+static hw_native_voice_state_t last_native_read,old_native_ack;
+hw_native_voice_capabilities_t test_native_capabilities(void) {
+    hw_native_voice_capabilities_t c=hw_native_voice_capabilities();c.supported&=~removed_capabilities;return c;
+}
+bool test_native_observe(hw_native_voice_state_t *out) {
+    if(atomic_exchange(&pause_native_read,false)){
+        atomic_store(&native_read_paused,true);
+        while(atomic_load(&native_read_paused))usleep(1000);
+    }
+    bool ok=hw_native_voice_observe(out);
+    if(ok && inject_native)switch(native_fault){
+    case 1:*out=old_native_ack;break; /* transport accepted, only cached old state */
+    case 2:--out->route_generation;break;
+    case 3:out->monotonic_ms-=HW_NATIVE_ACK_MAX_AGE_MS+1;break;
+    case 4:++out->lease_token;break;
+    case 5:++out->boot_id;break;
+    case 6:out->contract_id="unmatched MCU contract";break;
+    case 7:out->physical_keying_inhibited=false;break;
+    case 8:out->autonomous_tx_inhibited=false;break;
+    case 9:out->direct_mic_rf_inhibited=false;break;
+    case 10:out->raw_rx_speaker_inhibited=false;break;
+    case 11:out->lease_deadline_ms=get_time();break;
+    case 12:out->monotonic_ms=get_time()+1000;break;
+    case 13:out->sequence=old_native_ack.sequence;break; /* changed payload, same sequence */
+    case 14:out->valid=false;break;
+    case 15:out->monotonic_ms=old_native_ack.monotonic_ms-1;break;
+    case 16:out->sequence=old_native_ack.sequence-1;break;
+    default:break;
+    }
+    last_native_read=*out;return ok;
+}
+bool test_native_apply(uint64_t token,uint64_t generation,hw_native_voice_route_t route) {
+    old_native_ack=last_native_read;
+    bool ok=hw_native_voice_apply(token,generation,route);
+    if(route==HW_NATIVE_ROUTE_TX)++native_tx_requests;
+    inject_native=native_fault!=0;return ok;
+}
+bool test_native_acquire(uint64_t token) {
+    old_native_ack=last_native_read;
+    bool ok=hw_native_voice_acquire(token);inject_native=inject_acquire;return ok;
+}
+bool test_native_renew(uint64_t token) { return renew_no_apply?true:hw_native_voice_renew(token); }
+bool test_native_release(uint64_t token) {
+    if(release_press)hw_stub_ptt_set(HW_PTT_SOURCE_HAND,true);
+    return hw_native_voice_release(token);
+}
 static unsigned bad_hand_ptt,hand_observations,release_at_observation;
 bool test_hw_ptt_observe(hw_ptt_source_t source,hw_ptt_observation_t *out){
     if(source==HW_PTT_SOURCE_HAND && ++hand_observations==release_at_observation)hw_stub_ptt_set(source,false);
@@ -111,42 +179,112 @@ static bool start_turn(const fd_voice_driver *driver,uint64_t generation){
     return driver->begin_transmit(driver->context,generation,&admission);
 }
 static hw_freedv_cached_snapshot_t snapshot(void){hw_freedv_cached_snapshot_t s;assert(hw_get_freedv_cached_snapshot(&s));return s;}
-static fd_qualified_profile test_profile(void){return(fd_qualified_profile){
+static fd_qualified_profile test_profile(void){return(fd_qualified_profile){.native_contract_id="host-native-v2",.rx_audio={1,1},.tx_audio={1,1},
     .id="binding fixture only",.hardware="host",.build_id=FREEDV_BUILD_ID,.baseband="stub",.control_version="stub",
     .evidence_sha256="0000000000000000000000000000000000000000000000000000000000000000",
     .local_mode=FD_PROFILE_USB_DIG,.upper_sideband=true,.sample_rate=44100,.capture_device="fake",.playback_device="fake",.mixer="fake",
     .rx_route=FD_ROUTE_RECORD,.tx_route=FD_ROUTE_MODEM|FD_ROUTE_PTT,.rx_low_hz=100,.rx_high_hz=3100,.tx_low_hz=100,.tx_high_hz=3100,.rx2_low_hz=0,.rx2_high_hz=3300,
     .agc=radio_agc_auto,.mic_gain=22,.line_gain=19,.monitor_gain=0,.power_tenths_watt=10,
     .fixed_tx_filter_attested=true,.fixed_eq_bypass_attested=true,.capabilities=FD_CAP_ALL,.complete_pass=true};}
+struct route_race {uint64_t epoch;bool result;};
+static void *racing_tx(void *context){struct route_race *r=context;r->result=voice_native_apply(HW_NATIVE_ROUTE_TX,r->epoch);return NULL;}
+static void *racing_clear(void *context){fd_voice_driver *d=context;d->emergency_clear(d->context);return NULL;}
+static void contract_failure_cases(void){
+    /* Each deliberately unrecoverable control fault lives in a separate
+     * process: the real driver must not silently reset its recovery latch. */
+    fflush(NULL);
+    for(unsigned scenario=1;scenario<=22;++scenario){
+        pid_t child=fork();assert(child>=0);
+        if(!child){
+            fd_voice_driver d=radio_voice_driver();fd_qualified_profile p=test_profile();atomic_bool cancel=false;
+            observed(false);hw_stub_ptt_set(HW_PTT_SOURCE_HAND,false);hw_stub_ptt_set(HW_PTT_SOURCE_RADIO,false);
+            if(scenario<=16){
+                native_fault=scenario;inject_acquire=true;
+                assert(!d.prepare(d.context,&p,&cancel));
+                assert(!fd_writer_voice_owned() && !atomic_load(&voice_radio.owned) && voice_radio.keypad_fd<0);
+                assert(radio_voice_control_recovery_required() && !radio_voice_supported(&p));
+            }else if(scenario==22){
+                bad_hand_ptt=1;assert(!d.prepare(d.context,&p,&cancel));
+                assert(!fd_writer_voice_owned() && !radio_voice_control_recovery_required());
+            }else{
+                assert(d.prepare(d.context,&p,&cancel));
+                assert(d.receive(d.context,1));
+                if(scenario==17){
+                    native_fault=2;assert(!d.receive(d.context,2));
+                    assert(radio_voice_control_recovery_required());
+                    uint64_t requests=atomic_load(&voice_radio.route_request);
+                    for(unsigned i=0;i<3;++i)assert(d.maintain(d.context) && !d.restore(d.context) && !d.close(d.context));
+                    assert(atomic_load(&voice_radio.route_request)==requests && fd_writer_voice_owned());
+                }else if(scenario==18){
+                    hw_stub_ptt_set(HW_PTT_SOURCE_HAND,true);observed(false);
+                    assert(start_turn(&d,2) && d.transmit(d.context,2,&cancel));
+                    hw_native_voice_state_t before,after;assert(hw_native_voice_observe(&before));
+                    usleep((HW_NATIVE_LEASE_MAX_MS+20)*1000);
+                    assert(hw_native_voice_observe(&after) && !after.lease_token && after.applied_route==HW_NATIVE_ROUTE_QUIET);
+                    assert(after.physical_keying_inhibited && after.autonomous_tx_inhibited && !snapshot().route.modem && !snapshot().route.ptt);
+                    assert(!d.maintain(d.context) && d.maintain(d.context) && radio_voice_control_recovery_required());
+                    assert(!d.restore(d.context) && !d.close(d.context));
+                }else if(scenario==19){
+                    usleep(550000);renew_no_apply=true;
+                    assert(!d.maintain(d.context) && radio_voice_control_recovery_required());
+                }else if(scenario==20){
+                    d.emergency_clear(d.context);observed(false);assert(!d.restore(d.context));observed(false);assert(d.restore(d.context));
+                    release_press=true;assert(!d.close(d.context) && fd_writer_voice_owned() && !radio_voice_control_recovery_required());
+                    hw_native_voice_state_t held;assert(hw_native_voice_observe(&held) && held.lease_token && held.physical_keying_inhibited);
+                    release_press=false;hw_stub_ptt_set(HW_PTT_SOURCE_HAND,false);observed(false);
+                    assert(d.close(d.context) && !fd_writer_voice_owned());
+                }else if(scenario==21){
+                    hw_stub_ptt_set(HW_PTT_SOURCE_HAND,true);observed(false);assert(start_turn(&d,2));
+                    unsigned before=native_tx_requests;pthread_t tx,clear;
+                    struct route_race race={atomic_load(&voice_radio.epoch),true};
+                    atomic_store(&pause_native_read,true);assert(!pthread_create(&tx,NULL,racing_tx,&race));
+                    while(!atomic_load(&native_read_paused))usleep(1000);
+                    assert(!pthread_create(&clear,NULL,racing_clear,&d));
+                    while(!atomic_load(&voice_radio.cancelled))usleep(1000);
+                    atomic_store(&native_read_paused,false);pthread_join(tx,NULL);pthread_join(clear,NULL);
+                    assert(!race.result && native_tx_requests==before && !snapshot().route.modem && !snapshot().route.ptt);
+                    hw_native_voice_state_t quiet;assert(hw_native_voice_observe(&quiet) && quiet.applied_route==HW_NATIVE_ROUTE_QUIET);
+                }
+            }
+            _exit(0);
+        }
+        int status;assert(waitpid(child,&status,0)==child);
+        if(!WIFEXITED(status) || WEXITSTATUS(status)!=0){fprintf(stderr,"native contract scenario %u failed\n",scenario);assert(0);}
+    }
+    puts("PASS: native contract rejects cached/stale/mismatched ACKs, lost inhibit, unknown PTT and expired/false-renewed leases; claim failure cleans Linux resources; TX cannot overtake QUIET; release-time physical press retains inhibit");
+}
 int main(void){
     ctl_init();assert(hw_init());hw_start();observed(false);
     hw_set_i(HW_HMIC,31);hw_set_i(HW_IMIC,17);hw_set_i(HW_MIC,radio_mic_auto);hw_set_i(HW_VOX,1);
     hw_set_i(HW_RECORD,0);hw_set_i(HW_LINE_IN,7);hw_set_i(HW_LINE_OUT,9);hw_set_i(HW_MONI,15);hw_set_f(HW_TXPWR_F,5);
     hw_vfo_set_freq(RADIO_VFO_A,frequency);hw_vfo_set_mode(RADIO_VFO_A,radio_mode_lsb);hw_vfo_set_mode(RADIO_VFO_B,radio_mode_usb_dig);
     fd_qualified_profile p=test_profile();assert(radio_voice_supported(&p));
+    removed_capabilities=HW_NATIVE_APPLIED_ROUTE_ACK;assert(!radio_voice_supported(&p));
+    removed_capabilities=HW_NATIVE_FAIL_CLOSED_LEASE;assert(!radio_voice_supported(&p));removed_capabilities=0;
+    p.native_contract_id="unmatched";assert(!radio_voice_supported(&p));p.native_contract_id="host-native-v2";
     p.fixed_eq_bypass_attested=false;assert(!radio_voice_supported(&p));p.fixed_eq_bypass_attested=true;
     p.capabilities&=~FD_CAP_HAND_PTT_RELEASE;assert(!radio_voice_supported(&p));p.capabilities=FD_CAP_ALL;
     fd_voice_driver d=radio_voice_driver();atomic_bool cancel=false;
     assert(d.prepare(d.context,&p,&cancel));assert(fd_writer_voice_owned());
     assert(!fd_writer_enter());assert(!ctl_claim(CTL_TCI,1,"remote",true));
-    hw_freedv_cached_snapshot_t before=snapshot();assert(!before.hand_mic_gain && !before.internal_mic_gain && !before.route.ptt);
+    hw_freedv_cached_snapshot_t before=snapshot();assert(before.hand_mic_gain==31 && before.internal_mic_gain==17 && !before.route.record && !before.route.ptt);
     /* Both settings and raw hardware entry points reject independent writers. */
     param_i_set(cfg_band_id,99);assert(cfg_band_id_value==7);
     hw_vfo_set_freq(RADIO_VFO_A,7000000);hw_set_i(HW_PTT,true);hw_set_i(HW_HMIC,99);
-    assert(snapshot().vfo_a_hz==frequency && !snapshot().route.ptt && !snapshot().hand_mic_gain);
+    assert(snapshot().vfo_a_hz==frequency && !snapshot().route.ptt && snapshot().hand_mic_gain==31);
     assert(d.fence(d.context) && d.receive(d.context,1));
     assert(hw_vfo_mode_matches(RADIO_VFO_A,radio_mode_usb_dig));
     assert(hw_get_i(HW_IF_SHIFT_HZ)==0 && cfg_band_if_shift_value==80);
     uint64_t gen=1;
     for(unsigned turn=0;turn<100;++turn){
-        hw_stub_ptt_set(HW_PTT_SOURCE_HAND,true);observed(true); /* Physical key may precede software key. */
+        hw_stub_ptt_set(HW_PTT_SOURCE_HAND,true);observed(true); /* Aggregate observation is independent of raw physical level. */
         assert(start_turn(&d,++gen) && d.fence(d.context) && d.transmit(d.context,gen,&cancel));
         assert(snapshot().route.modem && snapshot().hand_mic_gain==22);
         hw_stub_ptt_set(HW_PTT_SOURCE_HAND,false);
         fd_voice_observation observation;radio_voice_observation(&observation);
         assert(observation.ptt[1].valid && !observation.ptt[1].pressed && observation.tx);
         assert(d.finish(d.context,gen) && d.drained(d.context)==1);
-        d.emergency_clear(d.context);assert(!snapshot().route.modem && !snapshot().route.ptt && !snapshot().hand_mic_gain);
+        d.emergency_clear(d.context);assert(!snapshot().route.modem && !snapshot().route.ptt && snapshot().hand_mic_gain==22);
         observed(false);assert(d.fence(d.context) && d.receive(d.context,++gen));
         assert(audio_opens==1 && !audio_closes);
     }
@@ -190,7 +328,7 @@ int main(void){
     hw_stub_ptt_set(HW_PTT_SOURCE_HAND,true);observed(true);
     assert(start_turn(&d,++gen) && d.fence(d.context) && d.transmit(d.context,gen,&cancel));
     assert(audio_failure);audio_failure(audio_failure_context);
-    assert(!snapshot().route.modem && !snapshot().route.ptt && !snapshot().hand_mic_gain);
+    assert(!snapshot().route.modem && !snapshot().route.ptt && snapshot().hand_mic_gain==22);
     assert(!d.receive(d.context,++gen)); /* device faults cannot silently reopen RX */
     hw_stub_ptt_set(HW_PTT_SOURCE_HAND,false);observed(false);
     /* Exit holds ownership while either physical control is held, then waits
@@ -228,4 +366,5 @@ int main(void){
     assert(!d.restore(d.context));observed(false);assert(d.restore(d.context));
     assert(d.close(d.context) && !fd_writer_voice_owned());
     puts("PASS: unqualified candidate uses native binding; identities, authority and held-at-entry stay enforced");
+    contract_failure_cases();
 }

@@ -140,6 +140,9 @@ def main():
     if ne10.is_file(): paths['FREEDV_NE10_LIBRARY']=ne10
     record={'firmware_commit':revision,'upstream_application_baseline':APP_BASELINE,'application_version':version,
             'software_gates_passed':True,'hardware_qualified':False,'baseline_recovery':recovery,
+            'ready_for_guided_hardware_tests':False,'hardware_status':'BLOCKED',
+            'validation_scope':'Offline software/image gates only; no native hardware contract or RF qualification',
+            'legacy_route_gain_experiments':'WITHDRAWN on X6200',
             'host_gates_sha256':sha(a.host_gates),'host_codec_gates_sha256':sha(a.host_codec_gates),'codec_gates_sha256':sha(a.codec_gates),
             'source_manifest_sha256':sha(ROOT/'tools/freedv/sources.json'),
             'model_sha256':metadata['opus_model_sha256']}

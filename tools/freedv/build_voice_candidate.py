@@ -119,9 +119,11 @@ def main():
     model=json.loads((ROOT/'tools/freedv/qualification/reference-sources.json').read_text())['model']['sha256']
     record={'firmware_commit':revision,'source_tree_sha256':verification['source_tree_sha256'],
             'software_gates_passed':True,'hardware_qualified':False,'ready_for_guided_hardware_tests':False,
-            'candidate_kind':'native half-duplex development spare-card image',
+            'candidate_kind':'report-informed native half-duplex development spare-card image',
             'hardware_status':'BLOCKED',
-            'validation_scope':'Software and image integrity passed; native RX/TX requires the unresolved hardware audio/PTT contract',
+            'validation_scope':'Software and image integrity passed; native RX/TX remains blocked by the incomplete live hardware audio/PTT contract',
+            'legacy_route_gain_experiments':'WITHDRAWN on X6200',
+            'receive_only_mapping_ui':False,
             'normal_mode_qualified':False,'host_verification_sha256':sha(a.verification),
             'gui_sha256':sha(a.gui),'runner_sha256':sha(a.runner),'rade_sha256':sha(a.rade),
             'modem_fixture_sha256':sha(package/'fixtures/rade-continuous.raw'),

@@ -7,10 +7,11 @@ bool fd_profile_candidate_valid(const fd_qualified_profile *p, const char *hw, c
         strcmp(p->hardware, hw) || strcmp(p->build_id, build) ||
         (p->capabilities & ~FD_CAP_ALL) || !p->upper_sideband ||
         (p->local_mode != FD_PROFILE_USB && p->local_mode != FD_PROFILE_USB_DIG) ||
-        !present(p->id) || !present(p->baseband) || !present(p->control_version) ||
+        !present(p->id) || !present(p->baseband) || !present(p->control_version) || !present(p->native_contract_id) ||
         !present(p->capture_device) || !present(p->playback_device) || !present(p->mixer) ||
         (p->sample_rate != 8000 && p->sample_rate != 44100 && p->sample_rate != 48000) ||
-        p->capture_channel > 3 || p->rx_low_hz < 0 || p->tx_low_hz < 0 ||
+        !fd_profile_audio_map_valid(p->rx_audio) || !fd_profile_audio_map_valid(p->tx_audio) ||
+        p->rx_low_hz < 0 || p->tx_low_hz < 0 ||
         p->rx_high_hz <= p->rx_low_hz || p->tx_high_hz <= p->tx_low_hz ||
         p->rx2_low_hz<0 || p->rx2_high_hz<p->rx2_low_hz ||
         p->agc<0 || p->agc>3 || (p->rx_route & ~FD_ROUTE_RECORD) || (p->tx_route & ~7u) ||

@@ -90,7 +90,43 @@ int main(void) {
     hw_set_i(HW_RXVOL,30); hw_set_i(HW_MONI,12); hw_set_i(HW_LINE_IN,9); hw_set_i(HW_LINE_OUT,10);
     hw_set_i(HW_VOX,1); hw_set_i(HW_SPMODE,1); hw_set_f(HW_TXPWR_F,5.0f);
     fd_radio_session s={0}; fd_observation o;
-    /* Startup is responsive while a held physical PTT prevents analog restore. */
+#if defined(BOARD_X6200) || defined(ENABLE_FREEDV_NATIVE_VALIDATION)
+    {
+    test_write_count=test_resends=0;
+    freedv_startup_begin();
+    assert(!radio_freedv_startup_waiting());
+    assert(test_write_count==2 && test_writes[0].parameter==HW_MODEM &&
+        test_writes[1].parameter==HW_PTT && !test_writes[0].value && !test_writes[1].value);
+    freedv_initial_subscribe((Subject *)cfg_hmic,on_change_i,(void *)HW_HMIC);
+    freedv_initial_subscribe((Subject *)cfg_imic,on_change_i,(void *)HW_IMIC);
+    freedv_initial_subscribe((Subject *)cfg_vox_on,on_change_i,(void *)HW_VOX);
+    freedv_initial_subscribe(NULL,on_pwr_change,NULL);
+    freedv_startup_seal();
+    assert(fd_writer_enter());fd_writer_exit();
+    hw_freedv_cached_snapshot_t startup; snapshot(&startup);
+    assert(startup.hand_mic_gain==28 && startup.internal_mic_gain==17 && startup.vox_enabled &&
+        startup.requested_power_tenths_watt==50 && !startup.route.record);
+    observed(false);test_write_count=test_resends=0;
+    assert(!radio_freedv_session_acquire(&s,&o) && s.last_error==FD_RADIO_UNSUPPORTED);
+    assert(!radio_freedv_session_tx_permitted(&s));
+    assert(!radio_freedv_session_record_prepare(&s));
+    for(unsigned bits=0;bits<8;++bits){
+        fd_case selected={FD_CASE_ROUTE,bits};
+        assert(!radio_freedv_session_apply(&s,&selected,radio_mic_handle));
+    }
+    assert(!test_write_count && !test_resends && !s.owned);
+    radio_set_ptt(true);snapshot(&startup);assert(startup.route.ptt);
+    radio_set_ptt(false);snapshot(&startup);assert(!startup.route.ptt);
+    test_write_count=test_resends=0;
+    play_mode_apply(AUDIO_PLAY_VOICE_REC);play_mode_apply(AUDIO_PLAY_OFF);
+    assert(test_write_count==5 && test_writes[0].parameter==HW_IMIC && test_writes[1].parameter==HW_RECORD &&
+        test_writes[2].parameter==HW_RECORD && test_writes[3].parameter==HW_HMIC &&
+        test_writes[4].parameter==HW_IMIC && !test_resends);
+    puts("PASS: native development startup preserves conventional controls; all legacy diagnostic routes reject without keying or route writes");
+    return 0;
+    }
+#endif
+    /* Legacy startup waits for status but does not claim gain-zero isolation. */
     freedv_startup_begin();
     radio_set_ptt(true); /* startup also blocks keying before the writer gate is sealed */
     freedv_initial_subscribe((Subject *)cfg_hmic,on_change_i,(void *)HW_HMIC);
@@ -99,11 +135,11 @@ int main(void) {
     freedv_initial_subscribe(NULL,on_pwr_change,NULL);
     assert(radio_freedv_startup_waiting());
     hw_freedv_cached_snapshot_t preliminary; snapshot(&preliminary);
-    assert(!preliminary.hand_mic_gain && !preliminary.internal_mic_gain && !preliminary.vox_enabled && !preliminary.route.ptt);
+    assert(preliminary.hand_mic_gain==28 && preliminary.internal_mic_gain==17 && preliminary.vox_enabled && !preliminary.route.ptt && !preliminary.route.record);
     freedv_startup_seal();
     assert(!fd_writer_enter());
     hw_freedv_cached_snapshot_t startup; snapshot(&startup);
-    assert(!startup.hand_mic_gain && !startup.internal_mic_gain && startup.requested_power_tenths_watt==0);
+    assert(startup.hand_mic_gain==28 && startup.internal_mic_gain==17 && startup.requested_power_tenths_watt==50);
     assert(!radio_freedv_session_acquire(&s,&o));
     observed(true); pack->tx=true; freedv_startup_packet(); assert(!scheduled);
     freedv_startup_restore_cb(NULL); assert(radio_freedv_startup_waiting());
@@ -152,7 +188,7 @@ int main(void) {
     assert(!radio_freedv_session_release(&s));
     observed(true); uint64_t sequence;
     assert(radio_freedv_session_clear(&s,&sequence));
-    snapshot(&after); assert(!after.route.modem && !after.route.ptt && !after.hand_mic_gain && !after.internal_mic_gain);
+    snapshot(&after); assert(!after.route.modem && !after.route.ptt && after.hand_mic_gain==before.hand_mic_gain && !after.internal_mic_gain);
     assert(!radio_freedv_session_restore(&s,sequence)); /* hardware PTT independently held */
     assert(!radio_freedv_session_release(&s));
     observed(false); test_time+=251; assert(!radio_freedv_session_restore(&s,sequence));
@@ -175,9 +211,10 @@ int main(void) {
     assert(!radio_freedv_session_clear(&s,&sequence));
     test_transport_failure=false;
     assert(radio_freedv_session_clear(&s,&sequence)); observed(false);
+    hw_set_i(HW_HMIC,99);
     test_ignored_setting=HW_HMIC;
     assert(!radio_freedv_session_restore(&s,sequence) && !s.readback_match && s.owned);
-    snapshot(&after); assert(!after.hand_mic_gain && !after.internal_mic_gain && !after.vox_enabled);
+    snapshot(&after); assert(after.hand_mic_gain==99 && !after.route.modem && !after.route.ptt);
     assert(!radio_freedv_session_release(&s));
     test_ignored_setting=-1;
     assert(radio_freedv_session_clear(&s,&sequence)); observed(false);
@@ -250,12 +287,12 @@ int main(void) {
     assert(radio_freedv_session_clear(&s,&sequence));observed(false);hw_set_i(HW_HMIC,99);
     assert(!radio_freedv_session_restore(&s,sequence) && !s.recorder_stop_exact);
     assert(radio_freedv_session_restore(&s,sequence) && radio_freedv_session_release(&s));
-    /* A physical TX observation abandons the exact baseline and uses the
-     * existing mute/unkey/wait-for-new-RX recovery. */
+    /* A physical TX observation abandons the exact baseline and requests
+     * software-key clear, then waits for a new RX packet before restoration. */
     assert(radio_freedv_session_acquire(&s,&o));s.capture_policy=3;
     assert(radio_freedv_session_apply(&s,&chosen,radio_mic_handle));observed(true);
     assert(radio_freedv_session_clear(&s,&sequence) && !s.recorder_stop_exact);
-    snapshot(&after);assert(!after.hand_mic_gain && !after.internal_mic_gain && !after.route.modem && !after.route.ptt);
+    snapshot(&after);assert(after.hand_mic_gain==28 && !after.internal_mic_gain && !after.route.modem && !after.route.ptt);
     assert(!radio_freedv_session_restore(&s,sequence));observed(false);
     assert(radio_freedv_session_restore(&s,sequence) && radio_freedv_session_release(&s));
     /* VOX is a prerequisite, never an unreported setup mutation in the

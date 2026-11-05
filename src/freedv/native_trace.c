@@ -9,10 +9,17 @@
 #define TRACE_ROWS 2048
 typedef struct {
     uint64_t ns;
-    enum { TRANSITION, COMMAND, AUDIO } kind;
+    enum { TRANSITION, COMMAND, AUDIO, CONTROL } kind;
     union {
         struct {fd_voice_status s; fd_voice_observation o;} transition;
         struct {uint64_t generation; bool modem,ptt;} command;
+        struct {
+            char operation[32], contract_id[128];
+            uint64_t lease_token, generation;
+            hw_native_voice_route_t requested_route;
+            bool observation_present;
+            hw_native_voice_state_t observed;
+        } control;
         fd_native_audio_trace audio;
     } data;
 } row;
@@ -23,7 +30,9 @@ static uint64_t session_id,last_audio_ns;
 static bool active,simulation,have_status;
 static fd_voice_status previous_status;
 static fd_voice_observation previous_observation;
-static char identity[5][128];
+static char identity[6][128];
+static fd_profile_audio_map rx_audio, tx_audio;
+static unsigned sample_rate;
 
 static uint64_t clock_ns(void) {
     struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);
@@ -39,8 +48,10 @@ void fd_native_trace_begin(const fd_qualified_profile *p,bool simulated) {
     count=discarded=0;last_audio_ns=0;have_status=false;simulation=simulated;
     uint64_t stamp=clock_ns();session_id=stamp>session_id?stamp:session_id+1;
     const char *fields[]={p?p->id:NULL,p?p->hardware:NULL,p?p->build_id:NULL,
-        p?p->baseband:NULL,p?p->control_version:NULL};
-    for(unsigned i=0;i<5;++i)snprintf(identity[i],sizeof(identity[i]),"%s",fields[i]?fields[i]:"");
+        p?p->baseband:NULL,p?p->control_version:NULL,p?p->native_contract_id:NULL};
+    for(unsigned i=0;i<6;++i)snprintf(identity[i],sizeof(identity[i]),"%s",fields[i]?fields[i]:"");
+    rx_audio=p?p->rx_audio:(fd_profile_audio_map){0};
+    tx_audio=p?p->tx_audio:(fd_profile_audio_map){0};sample_rate=p?p->sample_rate:0;
     active=true;pthread_mutex_unlock(&lock);
 }
 static bool same_state(const fd_voice_status *s,const fd_voice_observation *o) {
@@ -53,7 +64,9 @@ static bool same_state(const fd_voice_status *s,const fd_voice_observation *o) {
        o->protection!=previous_observation.protection || o->device_error!=previous_observation.device_error)return false;
     for(unsigned i=0;i<FD_PTT_SOURCES;++i)
         if(s->ptt_unknown[i]!=previous_status.ptt_unknown[i] ||
-           s->ptt_held[i]!=previous_status.ptt_held[i])return false;
+           s->ptt_held[i]!=previous_status.ptt_held[i] ||
+           o->ptt[i].valid!=previous_observation.ptt[i].valid ||
+           o->ptt[i].release_sequence!=previous_observation.ptt[i].release_sequence)return false;
     return true;
 }
 void fd_native_trace_note(const fd_voice_status *s,const fd_voice_observation *o) {
@@ -68,6 +81,22 @@ void fd_native_trace_note(const fd_voice_status *s,const fd_voice_observation *o
 void fd_native_trace_command(uint64_t generation,bool modem,bool ptt) {
     pthread_mutex_lock(&lock);row *r=next_row();
     if(r){r->kind=COMMAND;r->data.command.generation=generation;r->data.command.modem=modem;r->data.command.ptt=ptt;}
+    pthread_mutex_unlock(&lock);
+}
+void fd_native_trace_control(const char *operation,uint64_t lease_token,uint64_t generation,
+        hw_native_voice_route_t requested_route,const hw_native_voice_state_t *observed) {
+    pthread_mutex_lock(&lock);row *r=next_row();
+    if(r){
+        r->kind=CONTROL;
+        snprintf(r->data.control.operation,sizeof(r->data.control.operation),"%s",operation?operation:"");
+        r->data.control.lease_token=lease_token;r->data.control.generation=generation;
+        r->data.control.requested_route=requested_route;r->data.control.observation_present=observed!=NULL;
+        if(observed){
+            r->data.control.observed=*observed;
+            snprintf(r->data.control.contract_id,sizeof(r->data.control.contract_id),"%s",observed->contract_id?observed->contract_id:"");
+            r->data.control.observed.contract_id=NULL; /* no borrowed pointer in retained evidence */
+        }
+    }
     pthread_mutex_unlock(&lock);
 }
 void fd_native_trace_audio(const fd_native_audio_trace *a) {
@@ -92,15 +121,25 @@ static void quoted(FILE *out,const char *value) {
 bool fd_native_trace_export(FILE *out) {
     if(!out)return false;
     row *copy=malloc(sizeof(rows));if(!copy)return false;
-    char ids[5][128];unsigned n,lost;uint64_t id;bool simulated,started;
+    char ids[6][128];unsigned n,lost,rate;uint64_t id;bool simulated,started;
+    fd_profile_audio_map rx,tx;
     pthread_mutex_lock(&lock);n=count;lost=discarded;id=session_id;simulated=simulation;started=active;
-    memcpy(copy,rows,n*sizeof(*copy));memcpy(ids,identity,sizeof(ids));pthread_mutex_unlock(&lock);
+    memcpy(copy,rows,n*sizeof(*copy));memcpy(ids,identity,sizeof(ids));
+    rx=rx_audio;tx=tx_audio;rate=sample_rate;pthread_mutex_unlock(&lock);
     if(!started){free(copy);return false;}
     fprintf(out,"{\"schema\":1,\"kind\":\"native_session\",\"session_id\":\"%llu\",\"simulation\":%s,\"profile\":",(unsigned long long)id,boolean(simulated));
     quoted(out,ids[0]);fputs(",\"hardware\":",out);quoted(out,ids[1]);
     fputs(",\"build_id\":",out);quoted(out,ids[2]);fputs(",\"baseband\":",out);quoted(out,ids[3]);
     fputs(",\"control_version\":",out);quoted(out,ids[4]);
-    fputs(",\"physical_rf_evidence\":false,\"hardware_qualified\":false}\n",out);
+    fputs(",\"native_contract_id\":",out);quoted(out,ids[5]);
+    fprintf(out,",\"audio_slots\":{\"sample_rate\":%u,\"rx\":{\"capture\":%u,\"playback\":%u},"
+                "\"tx\":{\"capture\":%u,\"playback\":%u},\"physical_endpoint_mapping_proven\":false}",
+                rate,rx.capture_channel,rx.playback_channel,tx.capture_channel,tx.playback_channel);
+    fputs(",\"physical_rf_evidence\":false,\"hardware_qualified\":false,"
+          "\"observation_semantics\":{\"software_tx_command\":\"requested\","
+          "\"aggregate_tx\":\"baseband_aggregate_telemetry\","
+          "\"aggregate_tx_proves_rf_off\":false,\"aggregate_tx_proves_ptt_release\":false,"
+          "\"host_cache_proves_route_applied\":false,\"i2c_presence_proves_native_lease\":false}}\n",out);
     for(unsigned i=0;i<n;++i){
         row *r=&copy[i];fprintf(out,"{\"monotonic_ns\":%llu,",(unsigned long long)r->ns);
         if(r->kind==TRANSITION){
@@ -116,10 +155,31 @@ bool fd_native_trace_export(FILE *out) {
                     (unsigned long long)o->ptt[j].sequence,(unsigned long long)o->ptt[j].monotonic_ms,(unsigned long long)o->ptt[j].release_sequence);
             fputs("]",out);
         }else if(r->kind==COMMAND){
-            fprintf(out,"\"kind\":\"software_tx_command\",\"generation\":%llu,\"modem\":%s,\"ptt\":%s,\"physical_readback\":false",
+            fprintf(out,"\"kind\":\"software_tx_command\",\"generation\":%llu,\"modem\":%s,\"ptt\":%s,\"physical_readback\":false,\"applied_acknowledgement\":false",
                 (unsigned long long)r->data.command.generation,boolean(r->data.command.modem),boolean(r->data.command.ptt));
+        }else if(r->kind==CONTROL){
+            fputs("\"kind\":\"native_control\",\"operation\":",out);quoted(out,r->data.control.operation);
+            fprintf(out,",\"requested\":{\"lease_token\":%llu,\"generation\":%llu,\"route\":%u},"
+                        "\"physical_rf_evidence\":false,\"applied_state\":",
+                        (unsigned long long)r->data.control.lease_token,
+                        (unsigned long long)r->data.control.generation,r->data.control.requested_route);
+            if(!r->data.control.observation_present)fputs("null",out);
+            else{
+                hw_native_voice_state_t *a=&r->data.control.observed;
+                fprintf(out,"{\"valid\":%s,\"boot_id\":%llu,\"sequence\":%llu,\"stamp_ms\":%llu,"
+                            "\"lease_token\":%llu,\"lease_deadline_ms\":%llu,\"generation\":%llu,\"route\":%u,"
+                            "\"physical_keying_inhibited\":%s,\"autonomous_tx_inhibited\":%s,\"direct_mic_rf_inhibited\":%s,"
+                            "\"raw_rx_speaker_inhibited\":%s,\"contract_id\":",
+                            boolean(a->valid),(unsigned long long)a->boot_id,(unsigned long long)a->sequence,
+                            (unsigned long long)a->monotonic_ms,(unsigned long long)a->lease_token,
+                            (unsigned long long)a->lease_deadline_ms,(unsigned long long)a->route_generation,
+                            a->applied_route,boolean(a->physical_keying_inhibited),boolean(a->autonomous_tx_inhibited),boolean(a->direct_mic_rf_inhibited),
+                            boolean(a->raw_rx_speaker_inhibited));
+                quoted(out,r->data.control.contract_id);fputc('}',out);
+            }
         }else{
             fd_native_audio_trace *a=&r->data.audio;
+            fprintf(out,"\"capture_channel\":%u,\"playback_channel\":%u,",a->capture_channel,a->playback_channel);
             fprintf(out,"\"adapter_instance\":%llu,\"engine_instance\":%llu,\"capture_instance\":%llu,\"playback_instance\":%llu,",
                 (unsigned long long)a->adapter_instance,(unsigned long long)a->engine_instance,
                 (unsigned long long)a->capture_instance,(unsigned long long)a->playback_instance);

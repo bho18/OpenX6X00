@@ -21,7 +21,7 @@ struct fd_voice_session {
     uint64_t edge_sequence[FD_PTT_SOURCES], invalid_sequence[FD_PTT_SOURCES];
     bool held[FD_PTT_SOURCES], released[FD_PTT_SOURCES];
     bool shutdown, enter, retune, prepared, recovery, exit_unsafe;
-    bool bench_pending;
+    bool bench_pending, maintenance_failed;
     unsigned validation_limit;
     uint64_t grant_sequence[FD_PTT_SOURCES];
     fd_voice_tuning requested_tuning;
@@ -67,7 +67,8 @@ static void invalidate(fd_voice_session *s) {
     }
 }
 static void fault(fd_voice_session *s, fd_abort_reason reason) {
-    /* No coordinator mutex, codec progress or device drain precedes RF clear. */
+    /* No coordinator mutex, codec progress or device drain precedes the
+     * independent clear request; applied state and physical RF are separate. */
     atomic_store(&s->cancel,true);
     s->driver.emergency_clear(s->driver.context);
     freedv_watchdog_cancel(&s->watchdog);
@@ -162,6 +163,9 @@ static void *coordinate(void *arg) {
         }
         unsigned abort=atomic_exchange(&s->abort,FD_ABORT_NONE);
         if(abort)fault(s,(fd_abort_reason)abort);
+        if(s->driver.maintain && !s->maintenance_failed && !s->driver.maintain(ctx)){
+            s->maintenance_failed=true;fault(s,FD_ABORT_DEVICE);
+        }
         bool good=health(s);
         pthread_mutex_lock(&s->lock);
         fd_voice_state state=s->status.state; bool leaving=atomic_load(&s->leave);
@@ -188,7 +192,7 @@ static void *coordinate(void *arg) {
             }
             if(!clear || !released) {
                 /* Restoration can have completed between polls. A newly held
-                 * or unknown control remutes analog routing immediately and
+                 * or unknown control requests the independent clear again and
                  * starts another fresh-RX fence before any further restore. */
                 if(leaving && !s->exit_unsafe){
                     s->driver.emergency_clear(ctx);
@@ -285,7 +289,7 @@ static bool enter_session(fd_voice_session *s,const fd_qualified_profile *p,fd_v
     if(!s || tuning.frequency<=0 || tuning.vfo>1)return false;
     pthread_mutex_lock(&s->lock);bool ok=s->status.state==FD_VS_OFF && !s->enter;
     if(ok){s->profile=p;s->status=(fd_voice_status){.state=FD_VS_PREPARING,.timeout_seconds=timeout,.tuning=tuning,.generation=s->status.generation,.validation=validation};
-        s->validation_limit=limit;bench_clear(s);memset(s->grant_sequence,0,sizeof(s->grant_sequence));
+        s->validation_limit=limit;s->maintenance_failed=false;bench_clear(s);memset(s->grant_sequence,0,sizeof(s->grant_sequence));
         memset(&s->hardware,0,sizeof(s->hardware));memset(s->edge_sequence,0,sizeof(s->edge_sequence));memset(s->invalid_sequence,0,sizeof(s->invalid_sequence));
         memset(s->held,0,sizeof(s->held));memset(s->released,0,sizeof(s->released));
         s->enter=true;atomic_store(&s->active,true);s->retune=false;s->recovery=false;atomic_store(&s->leave,false);atomic_store(&s->cancel,false);wake(s);}

@@ -194,7 +194,7 @@ static bool prepare_persistent(fd_native_audio *a,char *error,size_t size) {
 #if defined(FREEDV_HOST_TEST_PROFILE) || defined(HOST_BUILD)
         candidate.capture_device="@default-source@";candidate.playback_device="@default-sink@";candidate.mixer="host-default";
 #endif
-        *a->config.persistent_slot=fd_voice_audio_open(&candidate);
+        *a->config.persistent_slot=fd_voice_audio_open_diagnostic(&candidate);
     }
     a->persistent=*a->config.persistent_slot;
     if(a->persistent && fd_voice_audio_failed(a->persistent)){

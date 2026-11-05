@@ -11,9 +11,11 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <linux/input.h>
+#include <sys/random.h>
 
 typedef struct {
-    pthread_mutex_t audio_mutex;
+    pthread_mutex_t audio_mutex, control_mutex, observation_mutex;
+    hw_native_voice_state_t last_control_observation;
     fd_voice_audio *audio;
     audio_freedv_mixer_snapshot_t *mixer;
     const fd_qualified_profile *profile;
@@ -27,6 +29,10 @@ typedef struct {
     atomic_uint_fast64_t radio_ptt_sequence;
     atomic_uint_fast64_t release_epoch;
     atomic_uint startup_abort_reason;
+    atomic_bool control_failed, control_pending, recovery_required, control_releasing;
+    atomic_uint_fast64_t lease_token, boot_id, route_generation, route_request;
+    atomic_uint_fast64_t pending_generation, renew_after_ms;
+    atomic_uint applied_route, pending_route;
     fd_voice_observation starting_observation;
     uint64_t starting_generation, starting_epoch, starting_release_epoch;
     bool starting_valid;
@@ -35,9 +41,119 @@ typedef struct {
     struct { int32_t band, mode_a, mode_b, filter_low, filter_high; unsigned vfo; } contexts[64];
     unsigned context_count, context_discarded;
 } voice_radio_context;
-static voice_radio_context voice_radio={.audio_mutex=PTHREAD_MUTEX_INITIALIZER,.keypad_fd=-1};
+static voice_radio_context voice_radio={.audio_mutex=PTHREAD_MUTEX_INITIALIZER,
+    .control_mutex=PTHREAD_MUTEX_INITIALIZER,.observation_mutex=PTHREAD_MUTEX_INITIALIZER,.keypad_fd=-1};
 
 static void voice_pause(void) { struct timespec t={0,5000000};nanosleep(&t,NULL); }
+/* Serialize observations so an older concurrent reply cannot overwrite the
+ * sequence/payload fence. No writes or lease renewals occur here. */
+static bool voice_native_read(hw_native_voice_state_t *s) {
+    pthread_mutex_lock(&voice_radio.observation_mutex);
+    bool ok=hw_native_voice_observe(s);uint64_t time=get_time();
+    hw_native_voice_state_t *old=&voice_radio.last_control_observation;
+    ok=ok && s->valid && s->boot_id && s->sequence && s->monotonic_ms &&
+        s->monotonic_ms<=time && time-s->monotonic_ms<=HW_NATIVE_ACK_MAX_AGE_MS;
+    if(ok && old->valid && old->boot_id==s->boot_id){
+        ok=s->sequence>=old->sequence && s->monotonic_ms>=old->monotonic_ms;
+        if(ok && s->sequence==old->sequence)ok=s->monotonic_ms==old->monotonic_ms &&
+            s->lease_token==old->lease_token && s->lease_deadline_ms==old->lease_deadline_ms &&
+            s->route_generation==old->route_generation && s->applied_route==old->applied_route &&
+            s->physical_keying_inhibited==old->physical_keying_inhibited &&
+            s->autonomous_tx_inhibited==old->autonomous_tx_inhibited &&
+            s->direct_mic_rf_inhibited==old->direct_mic_rf_inhibited &&
+            s->raw_rx_speaker_inhibited==old->raw_rx_speaker_inhibited &&
+            s->contract_id && old->contract_id && !strcmp(s->contract_id,old->contract_id);
+    }
+    if(ok)*old=*s;
+    pthread_mutex_unlock(&voice_radio.observation_mutex);return ok;
+}
+/* Every accepted state is an MCU-applied acknowledgement, never a cached
+ * command. The stock backends implement none of this protocol and stay blocked. */
+static bool voice_native_state_valid(const hw_native_voice_state_t *s) {
+    uint64_t time=get_time();const fd_qualified_profile *p=voice_radio.profile;
+    return s && p && p->native_contract_id && s->valid && s->contract_id &&
+        !strcmp(s->contract_id,p->native_contract_id) && s->boot_id &&
+        s->boot_id==atomic_load(&voice_radio.boot_id) && s->sequence && s->monotonic_ms &&
+        s->monotonic_ms<=time && time-s->monotonic_ms<=HW_NATIVE_ACK_MAX_AGE_MS &&
+        s->lease_token && s->lease_token==atomic_load(&voice_radio.lease_token) &&
+        s->lease_deadline_ms>time && s->lease_deadline_ms>s->monotonic_ms &&
+        s->lease_deadline_ms-s->monotonic_ms<=HW_NATIVE_LEASE_MAX_MS &&
+        s->physical_keying_inhibited && s->autonomous_tx_inhibited &&
+        s->direct_mic_rf_inhibited && s->raw_rx_speaker_inhibited;
+}
+static void voice_native_fail(void) {
+    atomic_store(&voice_radio.control_failed,true);atomic_store(&voice_radio.recovery_required,true);
+}
+bool radio_voice_control_recovery_required(void) { return atomic_load(&voice_radio.recovery_required); }
+static bool voice_native_healthy(void) {
+    hw_native_voice_state_t s={0};
+    if(atomic_load(&voice_radio.control_failed))return false;
+    if(!voice_native_read(&s) || !voice_native_state_valid(&s)){
+        if(!atomic_load(&voice_radio.control_releasing))voice_native_fail();return false;
+    }
+    bool applied=s.route_generation==atomic_load(&voice_radio.route_generation) &&
+        s.applied_route==atomic_load(&voice_radio.applied_route);
+    bool pending=atomic_load(&voice_radio.control_pending) &&
+        s.route_generation==atomic_load(&voice_radio.pending_generation) &&
+        s.applied_route==atomic_load(&voice_radio.pending_route);
+    if(!applied && !pending && !atomic_load(&voice_radio.control_releasing))voice_native_fail();
+    return applied || pending;
+}
+static bool voice_native_ack(const char *operation,uint64_t generation,hw_native_voice_route_t route,
+        uint64_t after_sequence,uint64_t requested_ms,bool requested) {
+    hw_native_voice_state_t s={0};
+    bool read=voice_native_read(&s);
+    bool ok=requested && read && voice_native_state_valid(&s) && s.sequence>after_sequence &&
+        s.monotonic_ms>=requested_ms && s.route_generation==generation && s.applied_route==route;
+    fd_native_trace_control(ok?operation:"ack_rejected",atomic_load(&voice_radio.lease_token),generation,route,read?&s:NULL);
+    if(ok){atomic_store(&voice_radio.route_generation,generation);atomic_store(&voice_radio.applied_route,route);
+        if(!generation)atomic_store(&voice_radio.renew_after_ms,s.monotonic_ms+(s.lease_deadline_ms-s.monotonic_ms)/2);}
+    else voice_native_fail();
+    atomic_store(&voice_radio.control_pending,false);
+    return ok;
+}
+static bool voice_native_apply(hw_native_voice_route_t route,uint64_t expected_epoch) {
+    pthread_mutex_lock(&voice_radio.control_mutex);
+    uint64_t token=atomic_load(&voice_radio.lease_token);
+    hw_native_voice_state_t before={0};bool observed=voice_native_read(&before);
+    bool ok=token && (route==HW_NATIVE_ROUTE_QUIET ||
+        (observed && voice_native_state_valid(&before) && !atomic_load(&voice_radio.control_failed) &&
+         !atomic_load(&voice_radio.cancelled) && expected_epoch==atomic_load(&voice_radio.epoch)));
+    if(ok){
+        uint64_t generation=atomic_fetch_add(&voice_radio.route_request,1)+1,requested_ms=get_time();
+        atomic_store(&voice_radio.pending_generation,generation);atomic_store(&voice_radio.pending_route,route);
+        atomic_store(&voice_radio.control_pending,true);
+        fd_native_trace_control("route_request",token,generation,route,NULL);
+        /* QUIET and TX share this ordering lock. A clear latches cancellation
+         * before waiting; a superseded TX can never allocate a later request
+         * after the clear's QUIET acknowledgement. */
+        ok=(route==HW_NATIVE_ROUTE_QUIET || (!atomic_load(&voice_radio.cancelled) &&
+            expected_epoch==atomic_load(&voice_radio.epoch))) && hw_native_voice_apply(token,generation,route);
+        ok=voice_native_ack("route_applied",generation,route,observed?before.sequence:0,requested_ms,ok);
+    }
+    pthread_mutex_unlock(&voice_radio.control_mutex);return ok;
+}
+static bool voice_maintain(void *unused) {
+    (void)unused;
+    if(!atomic_load(&voice_radio.owned) || atomic_load(&voice_radio.control_failed))return true;
+    /* Only the coordinator renews; a stalled coordinator cannot be kept alive
+     * by GUI observations, audio callbacks, or unrelated control traffic. */
+    pthread_mutex_lock(&voice_radio.control_mutex);
+    hw_native_voice_state_t before={0};uint64_t token=atomic_load(&voice_radio.lease_token);
+    bool ok=voice_native_read(&before) && voice_native_state_valid(&before) && voice_native_healthy();
+    hw_native_voice_state_t after={0};uint64_t requested_ms=get_time();
+    if(ok && requested_ms>=atomic_load(&voice_radio.renew_after_ms)){
+        ok=hw_native_voice_renew(token) && voice_native_read(&after) && voice_native_state_valid(&after) &&
+            after.sequence>before.sequence && after.monotonic_ms>=requested_ms &&
+            after.lease_deadline_ms>before.lease_deadline_ms &&
+            after.route_generation==before.route_generation && after.applied_route==before.applied_route;
+        if(ok)atomic_store(&voice_radio.renew_after_ms,after.monotonic_ms+(after.lease_deadline_ms-after.monotonic_ms)/2);
+    }
+    if(!ok){voice_native_fail();
+        fd_native_trace_control("lease_renew_failed",token,atomic_load(&voice_radio.route_generation),
+            (hw_native_voice_route_t)atomic_load(&voice_radio.applied_route),&after);}
+    pthread_mutex_unlock(&voice_radio.control_mutex);return ok;
+}
 static bool voice_physical_ptt(hw_ptt_source_t source,hw_ptt_observation_t *o) {
 #ifdef FREEDV_HOST_TEST_PROFILE
     return hw_ptt_observe(source,o);
@@ -103,7 +219,10 @@ static bool voice_profile_supported(const fd_qualified_profile *p,bool productio
 #else
     if(strcmp(p->control_version,FREEDV_CONTROL_ID))return false;
 #endif
-    if(!(hw_independent_ptt_sources() & (1u<<HW_PTT_SOURCE_HAND)))return false;
+    hw_native_voice_capabilities_t contract=hw_native_voice_capabilities();
+    if(!(hw_independent_ptt_sources() & (1u<<HW_PTT_SOURCE_HAND)) ||
+       !hw_native_voice_has(contract,HW_NATIVE_CONTROL) || !contract.contract_id ||
+       strcmp(p->native_contract_id,contract.contract_id))return false;
 #if defined(BOARD_X6200) && !defined(FREEDV_HOST_TEST_PROFILE)
     /* This backend exposes one RX filter and no IF-shift command. Do not claim
      * shared X6100-only setters applied a second bank or a baseband IF offset. */
@@ -120,7 +239,7 @@ static bool voice_profile_supported(const fd_qualified_profile *p,bool productio
 #endif
 }
 bool radio_voice_supported(const fd_qualified_profile *p) {
-    return voice_profile_supported(p,true) &&
+    return !radio_voice_control_recovery_required() && voice_profile_supported(p,true) &&
         hw_native_voice_has(hw_native_voice_capabilities(),HW_NATIVE_ALL);
 }
 const fd_qualified_profile *radio_voice_validation_profile(void) {
@@ -128,6 +247,7 @@ const fd_qualified_profile *radio_voice_validation_profile(void) {
     /* Explicit virtual route fixture, never compiled into a radio candidate. */
     static const fd_qualified_profile p={.id="Native validation: SIMULATION ONLY",
         .hardware="host",.build_id=FREEDV_BUILD_ID,.baseband="stub",.control_version="stub",
+        .native_contract_id="host-native-v2",.rx_audio={1,1},.tx_audio={1,1},
         .local_mode=FD_PROFILE_USB_DIG,.upper_sideband=true,
         .capture_device="@default-source@",.playback_device="@default-sink@",.mixer="host-default",
         .sample_rate=AUDIO_CAPTURE_RATE,.capture_channel=0,.rx_route=FD_ROUTE_RECORD,
@@ -149,7 +269,7 @@ bool radio_voice_validation_status(const fd_qualified_profile *p,fd_validation_a
     if(reason)*reason=NULL;
 #if defined(ENABLE_FREEDV_NATIVE_VALIDATION) || defined(FREEDV_HOST_TEST_PROFILE)
     hw_native_voice_capabilities_t caps=hw_native_voice_capabilities();
-    const char *blocked=NULL;
+    const char *blocked=radio_voice_control_recovery_required()?"BLOCKED: native control lost; device recovery required; RF-off unverified":NULL;
     unsigned sources=hw_independent_ptt_sources();
 #ifndef FREEDV_HOST_TEST_PROFILE
     sources|=1u<<HW_PTT_SOURCE_RADIO; /* opened/checked independently on claim */
@@ -159,6 +279,10 @@ bool radio_voice_validation_status(const fd_qualified_profile *p,fd_validation_a
         blocked="BLOCKED: independent hand PTT is unavailable; baseband keying ownership is unestablished";
     if(!blocked && !hw_native_voice_has(caps,HW_NATIVE_KEYING_OWNERSHIP))
         blocked="BLOCKED: native control of physical keying is unestablished";
+    if(!blocked && !hw_native_voice_has(caps,HW_NATIVE_APPLIED_ROUTE_ACK))
+        blocked="BLOCKED: no versioned applied-route acknowledgement; command cache is not applied state";
+    if(!blocked && !hw_native_voice_has(caps,HW_NATIVE_FAIL_CLOSED_LEASE))
+        blocked="BLOCKED: no independent fail-closed native lease/inhibit protocol";
     if(!blocked && !p)blocked="BLOCKED: no reviewed native audio route and mixer profile for this baseband";
     if(!blocked && !voice_profile_supported(p,false))blocked="BLOCKED: candidate identity, endpoint or settings do not match this radio";
     if(blocked){if(reason)*reason=blocked;return false;}
@@ -176,7 +300,7 @@ bool radio_voice_validation_status(const fd_qualified_profile *p,fd_validation_a
     (void)p;if(reason)*reason="Native validation is not included in this build";return false;
 #endif
 }
-static bool voice_profile_locked(bool transmit) {
+static bool voice_profile_locked(void) {
     const fd_qualified_profile *p=voice_radio.profile;
     radio_vfo_t vfo=(radio_vfo_t)param_i_get(cfg_band_current_vfo);
     radio_mode_t mode=p->local_mode==FD_PROFILE_USB_DIG?radio_mode_usb_dig:radio_mode_usb;
@@ -207,44 +331,37 @@ static bool voice_profile_locked(bool transmit) {
     hw_set_i(HW_NR,false);hw_set_i(HW_NB,false);hw_set_i(HW_DNF,false);hw_set_i(HW_DNF_AUTO,false);
     hw_set_i(HW_VOX,false);hw_set_i(HW_KEY_TRAIN,true);
     hw_set_i(HW_RIT,0);hw_set_i(HW_XIT,0);
-    hw_set_i(HW_MIC,radio_mic_handle);hw_set_i(HW_IMIC,0);hw_set_i(HW_HMIC,0);
+    /* Configure actual capture gains under the acknowledged native inhibit.
+     * Zero is an ordinary PGA setting, never the source of isolation. */
+    hw_set_i(HW_MIC,radio_mic_handle);hw_set_i(HW_HMIC,p->mic_gain);hw_set_i(HW_IMIC,0);
     hw_set_i(HW_LINE_IN,p->line_gain);hw_set_i(HW_LINE_OUT,p->line_out_gain);hw_set_i(HW_MONI,p->monitor_gain);
     hw_set_f(HW_TXPWR_F,p->power_tenths_watt/10.f);
-    hw_set_i(HW_RECORD,((transmit?p->tx_route:p->rx_route)&FD_ROUTE_RECORD)!=0);
-    hw_freedv_cached_snapshot_t readback;
-    if(!hw_get_freedv_cached_snapshot(&readback) || !hw_vfo_mode_matches(vfo,mode) ||
-        readback.rx_filter_low_hz!=p->rx_low_hz || readback.rx_filter_high_hz!=p->rx_high_hz ||
+    hw_freedv_cached_snapshot_t command_cache;
+    if(!hw_get_freedv_cached_snapshot(&command_cache) || !hw_vfo_mode_matches(vfo,mode) ||
+        command_cache.rx_filter_low_hz!=p->rx_low_hz || command_cache.rx_filter_high_hz!=p->rx_high_hz ||
 #ifdef FREEDV_HOST_TEST_PROFILE
         hw_get_i(HW_FILTER2_LOW)!=p->rx2_low_hz || hw_get_i(HW_FILTER2_HIGH)!=p->rx2_high_hz ||
 #endif
-        readback.microphone!=radio_mic_handle || readback.hand_mic_gain!=0 ||
-        readback.internal_mic_gain || readback.vox_enabled || readback.line_in!=p->line_gain || readback.line_out!=p->line_out_gain ||
-        readback.monitor_level!=p->monitor_gain || readback.requested_power_tenths_watt!=p->power_tenths_watt)return false;
-    if(!transmit){
-        fd_route_settings route={radio_mic_handle,0,0,(p->rx_route&FD_ROUTE_RECORD)!=0,false,false};
-        return fd_route_activate(&route);
-    }
+        command_cache.microphone!=radio_mic_handle || command_cache.hand_mic_gain!=p->mic_gain ||
+        command_cache.internal_mic_gain!=0 || command_cache.vox_enabled || command_cache.line_in!=p->line_gain || command_cache.line_out!=p->line_out_gain ||
+        command_cache.monitor_level!=p->monitor_gain || command_cache.requested_power_tenths_watt!=p->power_tenths_watt)return false;
+    /* This comparison checks only intended commands; the subsequent native
+     * route acknowledgement is the separate effective-configuration gate. */
     return hw_resend_all();
 }
 static void voice_clear(void *unused) {
     (void)unused;
     if(!atomic_load(&voice_radio.owned))return;
     atomic_store(&voice_radio.cancelled,true);atomic_fetch_add(&voice_radio.epoch,1);
+    /* Independent native QUIET request and software-unkey request precede
+     * audio waits. Neither cached gains nor RECORD=true can establish quiet. */
+    (void)voice_native_apply(HW_NATIVE_ROUTE_QUIET,0);
+    radio_lock();hw_set_i(HW_MODEM,false);hw_set_i(HW_PTT,false);hw_pin_set(HW_PIN_MORSE_KEY,false);
+    fd_native_trace_command(0,false,false);atomic_store(&modem_on,false);morse_on=false;
+    voice_radio.restored=false;radio_unlock();
     pthread_mutex_lock(&voice_radio.audio_mutex);
     if(voice_radio.audio)fd_voice_audio_cancel(voice_radio.audio);
     pthread_mutex_unlock(&voice_radio.audio_mutex);
-    radio_lock();
-    /* Safe-off writes are admitted even if an unrelated callback is winding
-     * down. No codec, PA operation, disk or GUI join precedes software unkey. */
-    fd_route_stop();hw_pin_set(HW_PIN_MORSE_KEY,false);
-    fd_native_trace_command(0,false,false);
-    atomic_store(&modem_on,false);morse_on=false;
-    if(fd_writer_voice_begin()){
-        hw_set_i(HW_HMIC,0);hw_set_i(HW_IMIC,0);hw_set_i(HW_VOX,false);hw_set_i(HW_RECORD,true);
-        (void)hw_resend_all();fd_writer_voice_end();
-    }
-    voice_radio.restored=false;
-    radio_unlock();
 }
 static bool voice_claim(const fd_qualified_profile *p,bool validation) {
     if(!(validation?radio_voice_validation_status(p,NULL,NULL):radio_voice_supported(p)) ||
@@ -262,9 +379,33 @@ static bool voice_claim(const fd_qualified_profile *p,bool validation) {
     radio_unlock();
     if(!acquired && voice_radio.keypad_fd>=0){close(voice_radio.keypad_fd);voice_radio.keypad_fd=-1;}
     if(!acquired)return false;
-    voice_clear(NULL);
+    pthread_mutex_lock(&voice_radio.control_mutex);
+    hw_native_voice_state_t before={0};uint64_t time=0,token=0;
+    bool baseline=voice_native_read(&before) && before.contract_id &&
+        !strcmp(before.contract_id,p->native_contract_id) && !before.lease_token;
+    bool random=getrandom(&token,sizeof(token),GRND_NONBLOCK)==sizeof(token) && token;
+    atomic_store(&voice_radio.lease_token,token);atomic_store(&voice_radio.boot_id,before.boot_id);
+    atomic_store(&voice_radio.route_request,0);atomic_store(&voice_radio.control_failed,false);
+    atomic_store(&voice_radio.pending_generation,0);atomic_store(&voice_radio.pending_route,HW_NATIVE_ROUTE_QUIET);
+    atomic_store(&voice_radio.control_pending,true);time=get_time();
+    fd_native_trace_control("lease_acquire_request",token,0,HW_NATIVE_ROUTE_QUIET,NULL);
+    bool native=baseline && random && hw_native_voice_acquire(token);
+    native=voice_native_ack("lease_acquired",0,HW_NATIVE_ROUTE_QUIET,before.sequence,time,native);
+    pthread_mutex_unlock(&voice_radio.control_mutex);
+    if(!native){
+        /* Never release an unacknowledged MCU inhibit. Its independent expiry
+         * remains responsible for fail-closed behavior; no renewals follow. */
+        if(baseline && random)(void)hw_native_voice_apply(token,1,HW_NATIVE_ROUTE_QUIET);
+        radio_lock();hw_set_i(HW_MODEM,false);hw_set_i(HW_PTT,false);(void)ctl_freedv_release(true);radio_unlock();
+        atomic_store(&voice_radio.owned,false);atomic_store(&voice_radio.lease_token,0);
+        if(voice_radio.keypad_fd>=0){close(voice_radio.keypad_fd);voice_radio.keypad_fd=-1;}
+        return false;
+    }
+    /* acquire already acknowledged QUIET. Do not create a second fallible
+     * request before returning ownership to a coordinator that can close it. */
+    atomic_store(&voice_radio.cancelled,true);
     voice_radio.swr_at_entry=radio_swr_trips();voice_radio.errors_at_entry=atomic_load(&freedv_base_errors);
-    return true;
+    return !atomic_load(&voice_radio.control_failed);
 }
 bool radio_voice_claim(const fd_qualified_profile *p) {return voice_claim(p,false);}
 bool radio_voice_claim_validation(const fd_qualified_profile *p,const fd_validation_admission *admission) {
@@ -281,7 +422,10 @@ static void voice_audio_failure(void *context) {
 static bool voice_prepare(void *unused,const fd_qualified_profile *p,const atomic_bool *cancel) {
     (void)unused;
     if(!atomic_load(&voice_radio.owned) && !radio_voice_claim(p))return false;
-    if(p!=voice_radio.profile || atomic_load(cancel))return false;
+    if(p!=voice_radio.profile || atomic_load(cancel) || !voice_native_healthy())return false;
+    hw_native_voice_state_t initial={0};
+    if(voice_native_read(&initial))fd_native_trace_control("lease_at_prepare",initial.lease_token,
+        initial.route_generation,initial.applied_route,&initial);
     if(voice_radio.validation && !radio_voice_validation_status(p,NULL,NULL))return false;
     atomic_store(&voice_radio.cancelled,false);atomic_store(&voice_radio.failed,false);
     voice_radio.mixer=audio_freedv_mixer_snapshot();
@@ -295,7 +439,7 @@ static bool voice_prepare(void *unused,const fd_qualified_profile *p,const atomi
     bool cancelled=atomic_load(cancel) || atomic_load(&voice_radio.cancelled);
     if(audio && cancelled)fd_voice_audio_cancel(audio);
     pthread_mutex_unlock(&voice_radio.audio_mutex);
-    return audio && !cancelled;
+    return audio && !cancelled && voice_native_healthy();
 }
 static bool voice_fence(void *unused) {
     (void)unused;return !voice_radio.audio || fd_voice_audio_fence(voice_radio.audio);
@@ -303,10 +447,13 @@ static bool voice_fence(void *unused) {
 static bool voice_receive(void *unused,uint64_t generation) {
     (void)unused;
     if(!atomic_load(&voice_radio.owned) || atomic_load(&voice_radio.failed) || !voice_radio.audio)return false;
+    uint64_t epoch=atomic_load(&voice_radio.epoch);
     radio_lock();bool ok=fd_writer_voice_begin();
-    if(ok){atomic_store(&voice_radio.cancelled,false);ok=voice_profile_locked(false);fd_writer_voice_end();}
+    if(ok){atomic_store(&voice_radio.cancelled,false);ok=voice_profile_locked() && voice_native_apply(HW_NATIVE_ROUTE_RX,epoch);fd_writer_voice_end();}
     radio_unlock();
-    return ok && fd_voice_audio_begin(voice_radio.audio,FD_VOICE_RX,generation);
+    ok=ok && fd_voice_audio_begin(voice_radio.audio,FD_VOICE_RX,generation) &&
+        voice_native_healthy() && epoch==atomic_load(&voice_radio.epoch) && !atomic_load(&voice_radio.cancelled);
+    if(!ok)voice_clear(NULL);return ok;
 }
 typedef struct {
     const atomic_bool *cancel;
@@ -315,14 +462,15 @@ typedef struct {
     bool rejected;
 } voice_tx_admission;
 /* This guard also runs under the audio admission lock. It reads independent
- * observations only: no radio writes, audio calls or lock acquisitions. Once
+ * observations only: no radio writes or audio calls; control-state sampling
+ * uses a short observation mutex, never the control request mutex. Once
  * any held source releases, this attempt stays rejected even after a re-press.
  * A backend must retain physical edges to detect pulses between observations. */
 static bool voice_tx_admit(void *context) {
     voice_tx_admission *a=context;
     if(a->rejected)return false;
     fd_abort_reason reason=FD_ABORT_NONE;
-    bool ok=atomic_load(&voice_radio.owned) && !atomic_load(a->cancel) &&
+    bool ok=atomic_load(&voice_radio.owned) && voice_native_healthy() && !atomic_load(a->cancel) &&
         !atomic_load(&voice_radio.cancelled) && a->epoch==atomic_load(&voice_radio.epoch);
     if(a->release_epoch!=atomic_load(&voice_radio.release_epoch)){ok=false;reason=FD_ABORT_START_RELEASE;}
     fd_voice_observation o;radio_voice_observation(&o);uint64_t time=get_time();
@@ -404,14 +552,10 @@ static bool voice_transmit(void *unused,uint64_t generation,const atomic_bool *c
     bool ok=(state==RADIO_RX || state==RADIO_TX) && cfg_is_tx_freq(cparam_i_get(cfg_fg_freq)) &&
         voice_tx_admit(&admission) && fd_writer_voice_begin();
     if(ok){
-        ok=voice_profile_locked(true);
+        ok=voice_profile_locked();
         if(ok && voice_tx_admit(&admission)){
-            fd_route_settings route={radio_mic_handle,voice_radio.profile->mic_gain,0,
-                (voice_radio.profile->tx_route&FD_ROUTE_RECORD)!=0,
-                (voice_radio.profile->tx_route&FD_ROUTE_MODEM)!=0,
-                (voice_radio.profile->tx_route&FD_ROUTE_PTT)!=0};
-            ok=fd_route_activate_guarded(&route,voice_tx_admit,&admission);
-            if(ok){atomic_store(&modem_on,route.modem);fd_native_trace_command(generation,route.modem,route.ptt);}
+            ok=voice_native_apply(HW_NATIVE_ROUTE_TX,admission.epoch) && voice_tx_admit(&admission);
+            if(ok){atomic_store(&modem_on,true);fd_native_trace_command(generation,true,true);}
         }else ok=false;
         fd_writer_voice_end();
     }
@@ -419,7 +563,7 @@ static bool voice_transmit(void *unused,uint64_t generation,const atomic_bool *c
     /* The qualified route may not supply microphone capture before keying.
      * Admission and the 200 ms reserve start at the post-key capture boundary. */
     if(ok)ok=fd_voice_audio_begin_guarded(voice_radio.audio,FD_VOICE_TX,generation,voice_tx_admit,&admission);
-    if(atomic_load(cancel) || atomic_load(&voice_radio.cancelled))ok=false;
+    if(atomic_load(cancel) || atomic_load(&voice_radio.cancelled) || !voice_tx_admit(&admission))ok=false;
     if(!ok)voice_clear(NULL);
     return ok;
 }
@@ -475,7 +619,8 @@ static void voice_restore_on_gui(void *arg) {
 static bool voice_restore(void *unused) {
     (void)unused;
     if(!atomic_load(&voice_radio.owned))return true;
-    if(!voice_radio.snapshot_valid)return false;
+    if(!voice_radio.snapshot_valid || !voice_native_healthy() ||
+        atomic_load(&voice_radio.applied_route)!=HW_NATIVE_ROUTE_QUIET)return false;
     fd_voice_observation o;
     if(!voice_released_rx(&o)){voice_clear(NULL);return false;}
     if(!voice_radio.restored){
@@ -487,6 +632,9 @@ static bool voice_restore(void *unused) {
 }
 static bool voice_close(void *unused) {
     (void)unused;
+    /* Unknown applied state/expired authority requires device recovery. Keep
+     * the application lease and do not repeatedly restore, clear, or renew. */
+    if(atomic_load(&voice_radio.owned) && radio_voice_control_recovery_required())return false;
     pthread_mutex_lock(&voice_radio.audio_mutex);fd_voice_audio *audio=voice_radio.audio;voice_radio.audio=NULL;pthread_mutex_unlock(&voice_radio.audio_mutex);
     if(audio)fd_voice_audio_close(audio);
     if(atomic_load(&voice_radio.owned)){
@@ -494,9 +642,32 @@ static bool voice_close(void *unused) {
         if(!voice_radio.restored || !voice_released_rx(&o)){voice_clear(NULL);return false;}
         if(voice_radio.main_quiet){if(!audio_freedv_main_quiet(false))return false;voice_radio.main_quiet=false;}
         if(!voice_released_rx(&o)){voice_clear(NULL);return false;}
-        radio_lock();bool released=ctl_freedv_release(true);radio_unlock();
+        hw_native_voice_state_t before={0},after={0};
+        if(!voice_native_read(&before) || !voice_native_state_valid(&before) ||
+            before.applied_route!=HW_NATIVE_ROUTE_QUIET)return false;
+        uint64_t token=atomic_load(&voice_radio.lease_token),requested_ms=get_time();
+        fd_native_trace_control("lease_release_request",token,before.route_generation,HW_NATIVE_ROUTE_QUIET,NULL);
+        pthread_mutex_lock(&voice_radio.control_mutex);atomic_store(&voice_radio.control_releasing,true);
+        bool requested=hw_native_voice_release(token),observed=voice_native_read(&after);
+        bool released=requested && observed && after.valid &&
+            after.contract_id && !strcmp(after.contract_id,voice_radio.profile->native_contract_id) &&
+            after.boot_id==before.boot_id && after.sequence>before.sequence &&
+            after.monotonic_ms>=requested_ms && after.monotonic_ms<=get_time() && !after.lease_token &&
+            after.applied_route==HW_NATIVE_ROUTE_QUIET;
+        fd_native_trace_control(released?"lease_released":"lease_release_rejected",token,
+            before.route_generation,HW_NATIVE_ROUTE_QUIET,&after);
+        if(!released){
+            /* A lease release may be atomically refused because a physical
+             * control was pressed after our last poll. Retain the lease. */
+            bool refused=!requested && observed && voice_native_state_valid(&after) &&
+                after.applied_route==HW_NATIVE_ROUTE_QUIET && after.route_generation==before.route_generation;
+            atomic_store(&voice_radio.control_releasing,false);pthread_mutex_unlock(&voice_radio.control_mutex);
+            if(!refused)voice_native_fail();return false;
+        }
+        atomic_store(&voice_radio.lease_token,0);pthread_mutex_unlock(&voice_radio.control_mutex);
+        radio_lock();released=ctl_freedv_release(true);radio_unlock();
         if(!released)return false;
-        atomic_store(&voice_radio.owned,false);
+        atomic_store(&voice_radio.owned,false);atomic_store(&voice_radio.control_releasing,false);
     }
     if(voice_radio.mixer){audio_freedv_mixer_snapshot_free(voice_radio.mixer);voice_radio.mixer=NULL;}
     if(voice_radio.keypad_fd>=0){close(voice_radio.keypad_fd);voice_radio.keypad_fd=-1;}
@@ -504,6 +675,7 @@ static bool voice_close(void *unused) {
 }
 static bool voice_observe(void *unused,fd_voice_observation *o,bool *sync,bool *mic) {
     (void)unused;radio_voice_observation(o);
+    if(atomic_load(&voice_radio.owned) && !voice_native_healthy())o->device_error=true;
     pthread_mutex_lock(&voice_radio.audio_mutex);
     if(voice_radio.audio){fd_voice_stats s=fd_voice_audio_observe(voice_radio.audio);*sync=s.synchronized;*mic=fd_voice_audio_microphone_active(voice_radio.audio);if(fd_voice_audio_failed(voice_radio.audio))o->device_error=true;}
     pthread_mutex_unlock(&voice_radio.audio_mutex);
@@ -538,7 +710,11 @@ fd_voice_driver radio_voice_driver(void) {
     voice_radio.snapshot_valid=false;voice_radio.main_quiet=false;atomic_store(&voice_radio.restored,false);voice_radio.context_count=voice_radio.context_discarded=0;
     atomic_store(&voice_radio.cancelled,false);atomic_store(&voice_radio.failed,false);
     voice_radio.starting_valid=false;voice_radio.starting_generation=0;
+    pthread_mutex_lock(&voice_radio.observation_mutex);voice_radio.last_control_observation=(hw_native_voice_state_t){0};pthread_mutex_unlock(&voice_radio.observation_mutex);
+    atomic_store(&voice_radio.lease_token,0);atomic_store(&voice_radio.boot_id,0);
+    atomic_store(&voice_radio.control_failed,false);atomic_store(&voice_radio.control_pending,false);
+    atomic_store(&voice_radio.applied_route,HW_NATIVE_ROUTE_NONE);atomic_store(&voice_radio.route_generation,0);
     return (fd_voice_driver){.context=&voice_radio,.prepare=voice_prepare,.fence=voice_fence,.receive=voice_receive,.transmit=voice_transmit,
         .finish=voice_finish,.drained=voice_drained,.emergency_clear=voice_clear,.retune=voice_retune,.restore=voice_restore,.close=voice_close,.observe=voice_observe,
-        .startup_abort_reason=voice_startup_abort_reason,.begin_transmit=voice_begin_transmit};
+        .startup_abort_reason=voice_startup_abort_reason,.begin_transmit=voice_begin_transmit,.maintain=voice_maintain};
 }

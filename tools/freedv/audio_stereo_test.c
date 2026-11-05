@@ -8,8 +8,8 @@
 #include "src/audio.c"
 #include <assert.h>
 
-static int token_loop, token_context, token_capture, token_stereo, token_network, token_mixer, token_elems[3];
-static unsigned locks, disconnects, dsp_sample_count, mixer_writes;
+static int token_loop, token_context, token_capture, token_stereo, token_voice, token_network, token_mixer, token_elems[3];
+static unsigned locks, disconnects, dsp_sample_count, mixer_writes, stream_creations;
 static const void *peek_data;
 static size_t peek_bytes;
 static char selected_elem[64];
@@ -28,15 +28,23 @@ pa_channel_map *pa_channel_map_init_stereo(pa_channel_map *map) {
     return map;
 }
 pa_stream *pa_stream_new(pa_context *c, const char *name, const pa_sample_spec *spec, const pa_channel_map *map) {
-    (void)name; assert(c == ctx && locks == 1);
-    if (spec->channels == 2) { assert(map && map->channels == 2); return (pa_stream *)&token_stereo; }
+    assert(c == ctx && locks == 1);++stream_creations;
+    if (spec->channels == 2) {
+        assert(map && map->channels == 2 && map->map[0]==PA_CHANNEL_POSITION_FRONT_LEFT && map->map[1]==PA_CHANNEL_POSITION_FRONT_RIGHT);
+        return !strcmp(name,"FreeDV voice capture") ? (pa_stream *)&token_voice : (pa_stream *)&token_stereo;
+    }
     assert(spec->channels == 1 && !map); return (pa_stream *)&token_network;
 }
 void pa_stream_set_state_callback(pa_stream *s, pa_stream_notify_cb_t cb, void *arg) { (void)s; (void)cb; assert(!arg && locks == 1); }
 void pa_stream_set_read_callback(pa_stream *s, pa_stream_request_cb_t cb, void *arg) { (void)s; (void)cb; assert(!arg && locks == 1); }
 int pa_stream_connect_record(pa_stream *s, const char *device, const pa_buffer_attr *attr, pa_stream_flags_t flags) {
-    (void)device; (void)flags; assert(s == (pa_stream *)&token_stereo && locks == 1);
-    assert(attr->fragsize == 1764 && attr->maxlength == 35280); return 0;
+    (void)device;assert((s == (pa_stream *)&token_stereo || s == (pa_stream *)&token_voice) && locks == 1);
+    assert(flags&PA_STREAM_NO_REMIX_CHANNELS);
+    assert(attr->fragsize == 1764 && attr->maxlength == (s==(pa_stream *)&token_voice ? 176400u : 35280u));return 0;
+}
+const pa_buffer_attr *pa_stream_get_buffer_attr(pa_stream *s){
+    static const pa_buffer_attr attr={.maxlength=176400,.fragsize=1764};
+    assert(s==(pa_stream *)&token_voice && locks==1);return &attr;
 }
 int pa_stream_connect_playback(pa_stream *s, const char *device, const pa_buffer_attr *attr, pa_stream_flags_t flags,
                                const pa_cvolume *volume, pa_stream *sync) {
@@ -150,8 +158,26 @@ int main(void) {
     assert(audio_play_lowlat_begin() && audio_freedv_other_audio_busy());
     audio_play_lowlat_end(); assert(!audio_freedv_other_audio_busy());
     assert(!locks);
-    voice_capture=(pa_stream *)1;voice_capture_channels=2;
+    assert(audio_freedv_capture_configure(1,NULL));unsigned retired=disconnects;
+    assert(diagnostic_stereo && audio_freedv_voice_capture_open());
+    assert(!diagnostic_stereo && disconnects==retired+1);
+    unsigned opened=stream_creations;pa_stream *retained=voice_capture;
     assert(!audio_freedv_capture_configure(0,NULL));
-    voice_capture=NULL;
-    puts("PASS: retained format changes rejected; stereo separation, raw evidence, mixer alternatives, exact restoration and ordinary-stream exclusion");
+    for(unsigned turn=1;turn<=20;++turn){
+        unsigned channel=turn%2 ? 1 : 2;
+        assert(audio_freedv_capture_configure(channel,NULL) && audio_freedv_capture_begin());
+        assert(!audio_freedv_capture_configure(3-channel,NULL));
+        int16_t waveform[]={(int16_t)turn,(int16_t)-turn,(int16_t)(turn+100),(int16_t)-(turn+100),INT16_MIN,INT16_MAX};
+        peek_data=waveform;peek_bytes=sizeof(waveform);voice_capture_read(voice_capture,0,NULL);
+        assert(audio_freedv_capture_read(mono,8)==3);
+        for(unsigned i=0;i<3;++i)assert(mono[i]==waveform[2*i+channel-1]);
+        assert(audio_freedv_capture_read_stereo(raw,8)==3 && !memcmp(raw,waveform,sizeof(waveform)));
+        /* Leave old samples queued; the next turn must admit only its own
+         * selected channel after capture begin resets the generation rings. */
+        voice_capture_read(voice_capture,0,NULL);audio_freedv_capture_end();
+        assert(stream_creations==opened && voice_capture==retained && !audio_freedv_capture_stats().dropped_samples);
+    }
+    audio_freedv_voice_capture_close();assert(audio_freedv_capture_configure(0,NULL));
+    assert(!locks);
+    puts("PASS: retained stereo RX/TX channel switches discard old PCM; explicit no-remix maps, raw evidence, mixer restoration and ordinary-stream exclusion");
 }

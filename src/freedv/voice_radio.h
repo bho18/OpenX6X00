@@ -5,9 +5,11 @@
 /* radio.c owns all baseband writes and protections. Settings remain ordinary
  * preferences; profile overrides are applied to hardware only while owned. */
 fd_voice_driver radio_voice_driver(void);
-/* GUI entry claims and mutes routing before asynchronous codec preparation. */
+/* GUI entry requires an applied native QUIET/lease acknowledgement before
+ * asynchronous codec preparation; neither cache echoes nor gain 0 establish it. */
 bool radio_voice_claim(const fd_qualified_profile *);
 bool radio_voice_supported(const fd_qualified_profile *);
+bool radio_voice_control_recovery_required(void);
 const fd_qualified_profile *radio_voice_validation_profile(void);
 bool radio_voice_validation_status(const fd_qualified_profile *, fd_validation_admission *, const char **reason);
 bool radio_voice_claim_validation(const fd_qualified_profile *, const fd_validation_admission *);

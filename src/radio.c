@@ -1360,10 +1360,11 @@ static void battery_startup_log(const bat_watch_t *w, const hw_pack_t *p) {
 
 static swr_guard_t swr_guard;
 static atomic_uint swr_trips;
-static atomic_bool swr_trip_queued;     /* a trip's job waits in the queue: one stops TX, more add nothing */
+static atomic_bool swr_trip_queued;     /* one queued software-key clear request is sufficient */
 
-/* SWR protection, on the GUI thread: what the GUI keys lets go (a PTT held on the radio or the
- * mic, VOX and the radio's own keyer are the base's: they may key again) */
+/* SWR response, on the GUI thread: request release of GUI key sources.
+ * Physical PTT, VOX and the baseband keyer are independent; this is not an
+ * acknowledged global inhibit and does not establish RF-off. */
 static void swr_trip_cb(void *arg) {
     atomic_store(&swr_trip_queued, false);  /* out of the queue: a trip from now on is posted again */
     atomic_fetch_add(&swr_trips, 1);    /* before the modem bit drops: whoever sees it gone can tell why */
@@ -1372,8 +1373,8 @@ static void swr_trip_cb(void *arg) {
     dialog_msg_voice_ptt_pressed();
 #ifdef ENABLE_FREEDV_CONTROL
     if (!fd_writer_enter()) {
-        /* Protection bypass: an exclusive diagnostic lease must never suppress
-         * SWR unkeying. Do not restore ordinary analog routing while TX holds. */
+        /* Protection bypass: an exclusive diagnostic lease must not suppress
+         * the software-key clear request. Leave ordinary routing unchanged. */
         atomic_store(&modem_on, false);
         morse_on = false;
         radio_lock();
@@ -1390,7 +1391,7 @@ static void swr_trip_cb(void *arg) {
         fd_writer_exit();
     }
 #endif
-    msg_schedule_text_fmt("TX stopped: SWR %.1f", *(float *)arg);
+    msg_schedule_text_fmt("SWR %.1f: software TX clear requested", *(float *)arg);
 }
 
 int radio_get_battery() {
@@ -1740,7 +1741,7 @@ bool radio_freedv_startup_waiting(void) { return atomic_load(&freedv_startup_pen
 const char *radio_freedv_error_string(fd_radio_error error) {
     static const char *const messages[] = {
         "OK", "Another radio/audio session is active", "Fresh RX status required",
-        "Diagnostic snapshot is unsupported", "Saved tuning or route contract changed",
+        "Legacy route diagnostics are unsupported in this build", "Saved tuning or route contract changed",
         "TX frequency, mode or protection guard refused", "Control transport resend failed",
         "Cached restoration comparison failed", "Invalid diagnostic arguments",
         "Startup recovery: release microphone PTT and wait for RX"
@@ -1793,6 +1794,7 @@ static bool freedv_transport(fd_radio_session *s) {
 bool radio_freedv_session_acquire(fd_radio_session *s, fd_observation *o) {
     if (!s || !o || s->owned) return false;
     memset(s, 0, sizeof(*s));
+    if (!fd_route_experiments_enabled()) { s->last_error = FD_RADIO_UNSUPPORTED; return false; }
     if (radio_freedv_startup_waiting()) { s->last_error = FD_RADIO_STARTUP; return false; }
     /* Every getter used by freedv_busy is atomic; recheck after reservation
      * still closes an application-start race without unsynchronized reads. */
@@ -1827,7 +1829,7 @@ bool radio_freedv_session_acquire(fd_radio_session *s, fd_observation *o) {
 static bool freedv_tx_permitted_locked(fd_radio_session *s) {
     fd_observation o;
     hw_freedv_cached_snapshot_t current;
-    if (!s || freedv_owner != s || !s->owned || !s->ready || radio_freedv_startup_waiting() ||
+    if (!fd_route_experiments_enabled() || !s || freedv_owner != s || !s->owned || !s->ready || radio_freedv_startup_waiting() ||
         !freedv_observe_locked(&o) || !freedv_rx(&o) || state != RADIO_RX ||
         s->swr_trips_at_acquire != radio_swr_trips() ||
         s->base_errors_at_acquire != atomic_load(&freedv_base_errors) ||
@@ -1842,6 +1844,7 @@ bool radio_freedv_session_tx_permitted(fd_radio_session *s) {
 }
 bool radio_freedv_session_record_prepare(fd_radio_session *s) {
     if (!s) return false;
+    if (!fd_route_experiments_enabled()) { s->last_error = FD_RADIO_UNSUPPORTED; return false; }
     radio_lock();
     hw_freedv_cached_snapshot_t current;
     uint32_t mode = s->saved.active_vfo ? s->saved.backend_mode_b : s->saved.backend_mode_a;
@@ -1863,6 +1866,7 @@ bool radio_freedv_session_record_prepare(fd_radio_session *s) {
     radio_unlock();return ok;
 }
 bool radio_freedv_session_apply(fd_radio_session *s, const fd_case *selected, radio_mic_sel_t mic) {
+    if (!fd_route_experiments_enabled()) { if(s)s->last_error=FD_RADIO_UNSUPPORTED; return false; }
     if (!s || !selected || (mic != radio_mic_builtin && mic != radio_mic_handle)) return false;
     radio_lock();
     fd_observation o;
@@ -1983,9 +1987,8 @@ bool radio_freedv_session_clear(fd_radio_session *s, uint64_t *sequence) {
         }
     }
     s->recorder_stop_exact = false;
-    /* Request minimum mic gains and VOX off before MODEM clearing can expose
-     * analog audio. Actual leakage is a hardware measurement; software still
-     * cannot override held physical PTT. */
+    /* Clear software key requests only. This does not mute analog speech or
+     * override held physical PTT, and is not proof that RF has stopped. */
     fd_route_trace_note("stop",-1,0,0,true);
     fd_route_stop();
     s->route_applied = true;
@@ -2025,11 +2028,9 @@ bool radio_freedv_session_restore(fd_radio_session *s, uint64_t clear_sequence) 
         ++s->restoration_failures;
         if (ok) s->last_error=FD_RADIO_READBACK;
         s->recorder_stop_exact=false;
-        /* A partial restoration must not leave analog/VOX audio active while
-         * ownership is held for retry. These are stop-only changes; no tuning
-         * or persistent settings are rewritten. */
-        hw_set_i(HW_HMIC,0); hw_set_i(HW_IMIC,0); hw_set_i(HW_VOX,false);
-        hw_set_i(HW_MODEM,false); hw_set_i(HW_PTT,false);
+        /* Retain ownership for retry and request software-key clear. No
+         * available gain/VOX write establishes a physical microphone mute. */
+        fd_route_stop();
         s->route_applied=true; s->restoration_complete=false;
     }
     radio_unlock(); return ok && s->readback_match;
@@ -2069,8 +2070,7 @@ static void freedv_protection_trip(void) {
     radio_lock();
     if (freedv_owner && freedv_owner->case_active && !freedv_owner->software_cleared) {
         atomic_fetch_add(&swr_trips, 1);
-        hw_set_i(HW_HMIC, 0); hw_set_i(HW_IMIC, 0); hw_set_i(HW_VOX,false);
-        hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
+        fd_route_stop();
         atomic_store(&modem_on, false);
         freedv_owner->abort_reason = freedv_owner->last_error = FD_RADIO_TX_GUARD;
     }
@@ -2079,28 +2079,27 @@ static void freedv_protection_trip(void) {
 #endif
 
 #ifdef ENABLE_FREEDV_CONTROL
-/* Sensitive initial audio/power values are deferred until a post-clear RX packet. This keeps
- * the GUI/flow alive during recovery without restoring analog speech under a
- * continuously held physical PTT. The marker is in memory, never persisted. */
+/* Legacy diagnostic startup defers selected settings until an RX packet;
+ * neither this wait nor software key clearing establishes physical RF-off.
+ * The native development image retains ordinary conventional-radio startup. */
 static struct { Subject *subject; observer_cb callback; void *data; } freedv_initial[128];
 static unsigned freedv_initial_count;
 static atomic_bool freedv_startup_queued;
 static uint64_t freedv_startup_clear_sequence;
 static void freedv_startup_begin(void) {
-    atomic_store(&freedv_startup_pending, true);
+    atomic_store(&freedv_startup_pending, fd_route_experiments_enabled());
     radio_lock();
-    hw_set_i(HW_HMIC, 0); hw_set_i(HW_IMIC, 0);
-    hw_set_i(HW_VOX, false); hw_set_f(HW_TXPWR_F, 0.0f);
-    hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
+    fd_route_stop();
     hw_pin_set(HW_PIN_MORSE_KEY, false);
-    hw_set_i(HW_RECORD, true);
     fd_observation o; freedv_observe_locked(&o);
     freedv_startup_clear_sequence = o.sequence;
     radio_unlock();
-    msg_schedule_text_fmt("Diagnostic recovery: release microphone PTT; waiting for RX");
+    if (radio_freedv_startup_waiting())
+        msg_schedule_text_fmt("Software TX clear requested: release PTT; waiting for RX status");
 }
 static void freedv_initial_subscribe(Subject *subject, observer_cb callback, void *data) {
     subject_subscribe(subject, callback, data);
+    if (!fd_route_experiments_enabled()) { callback(subject, data); return; }
     if (freedv_initial_count == sizeof(freedv_initial)/sizeof(freedv_initial[0])) {
         fprintf(stderr, "FreeDV diagnostic startup: initial setting capacity exceeded\n"); exit(1);
     }
@@ -2118,12 +2117,11 @@ static void freedv_initial_subscribe(Subject *subject, observer_cb callback, voi
     if (!sensitive) callback(subject, data);
 }
 static void freedv_startup_seal(void) {
+    if (!fd_route_experiments_enabled()) return;
     if (!fd_writer_reserve()) {
         fprintf(stderr, "FreeDV diagnostic startup: competing writer before recovery\n"); exit(1);
     }
     radio_lock();
-    hw_set_i(HW_HMIC,0); hw_set_i(HW_IMIC,0); hw_set_i(HW_VOX,false);
-    hw_set_f(HW_TXPWR_F,0.0f); hw_set_i(HW_MODEM,false); hw_set_i(HW_PTT,false);
     (void)hw_resend_all();
     radio_unlock();
 }
@@ -2137,10 +2135,6 @@ static void freedv_startup_restore_cb(void *unused) {
     fd_observation o;
     bool safe = radio_freedv_startup_waiting() && freedv_observe_locked(&o) && freedv_rx(&o) &&
         o.sequence > freedv_startup_clear_sequence && state == RADIO_RX && physical_ready;
-    if (safe) {
-        hw_set_i(HW_RECORD, false);
-        hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
-    }
     radio_unlock();
     if (!safe) { atomic_store(&freedv_startup_queued, false); return; }
     /* Startup flag continues to reject TX and session acquisition until all
@@ -2151,13 +2145,12 @@ static void freedv_startup_restore_cb(void *unused) {
     radio_lock();
     bool sent = hw_resend_all();
     if (!sent) {
-        hw_set_i(HW_HMIC, 0); hw_set_i(HW_IMIC, 0); hw_set_f(HW_TXPWR_F, 0.0f);
-        hw_set_i(HW_MODEM, false); hw_set_i(HW_PTT, false);
+        fd_route_stop();
     }
     radio_unlock();
     if (!sent) { fprintf(stderr, "FreeDV diagnostic startup: initial transport failed\n"); exit(1); }
     atomic_store(&freedv_startup_pending, false);
-    msg_schedule_text_fmt("Diagnostic recovery complete: RX confirmed");
+    msg_schedule_text_fmt("Startup settings restored: baseband reports RX");
 }
 static void freedv_startup_packet(void) {
     if (!radio_freedv_startup_waiting() || pack->tx || atomic_exchange(&freedv_startup_queued, true)) return;

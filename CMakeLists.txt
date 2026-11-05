@@ -119,6 +119,11 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                 target_include_directories(freedv_route_driver_test PRIVATE ${CMAKE_SOURCE_DIR})
                 target_compile_options(freedv_route_driver_test PRIVATE -UNDEBUG)
                 add_test(NAME freedv_route_driver COMMAND freedv_route_driver_test)
+                add_executable(freedv_route_driver_blocked_test tools/freedv/route_driver_test.c)
+                target_include_directories(freedv_route_driver_blocked_test PRIVATE ${CMAKE_SOURCE_DIR})
+                target_compile_definitions(freedv_route_driver_blocked_test PRIVATE BOARD_X6200=1)
+                target_compile_options(freedv_route_driver_blocked_test PRIVATE -UNDEBUG)
+                add_test(NAME freedv_route_driver_blocked COMMAND freedv_route_driver_blocked_test)
                 add_executable(freedv_agent_protocol_test tools/freedv/agent_protocol_test.c)
                 target_include_directories(freedv_agent_protocol_test PRIVATE ${CMAKE_SOURCE_DIR})
                 target_compile_options(freedv_agent_protocol_test PRIVATE -UNDEBUG)
@@ -192,6 +197,16 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                 target_link_libraries(freedv_native_radio_backend_test PRIVATE freedv_writer_gate freedv_diagnostic_state
                     Threads::Threads m PkgConfig::FREEDV_BACKEND_DEPS)
                 add_test(NAME freedv_native_radio_backend COMMAND freedv_native_radio_backend_test)
+                add_executable(freedv_native_radio_blocked_test tools/freedv/native_radio_backend_test.c
+                    src/hw/stub/hw_stub.c src/control_owner.c src/freedv/packet_tx.c)
+                target_include_directories(freedv_native_radio_blocked_test PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src
+                    ${CMAKE_SOURCE_DIR}/build-host/deps/include)
+                target_compile_definitions(freedv_native_radio_blocked_test PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1 BOARD_X6200=1)
+                target_compile_options(freedv_native_radio_blocked_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+                target_link_options(freedv_native_radio_blocked_test PRIVATE -Wl,--gc-sections)
+                target_link_libraries(freedv_native_radio_blocked_test PRIVATE freedv_writer_gate freedv_diagnostic_state
+                    Threads::Threads m PkgConfig::FREEDV_BACKEND_DEPS)
+                add_test(NAME freedv_native_radio_blocked COMMAND freedv_native_radio_blocked_test)
                 add_executable(freedv_native_audio_adapter_test tools/freedv/native_audio_adapter_test.c
                     src/freedv/native_audio.c src/freedv/capture_dispatch.c src/freedv/capture_ring.c src/freedv/wav_capture.c)
                 target_include_directories(freedv_native_audio_adapter_test PRIVATE ${CMAKE_SOURCE_DIR})

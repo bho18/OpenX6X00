@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 
 
-SCHEMA = "x6200.native-conversation.v1"
+SCHEMA = "x6200.native-conversation.v2"
 IDENTITIES = {
     "source_commit": 40, "gui_sha256": 64, "baseband": None,
     "control_commit": 40, "buildroot_commit": 40,
@@ -21,6 +21,9 @@ IDENTITIES = {
 RETAINED = ("session_id", "engine_id", "capture_stream_id", "playback_stream_id")
 ROUTES = ("tx_mic_survives", "analog_mic_isolated", "rx_capture_survives_speaker",
           "raw_modem_suppressed", "feedback_absent")
+ENDPOINTS = {"rx_capture": "rf_demodulated_audio", "rx_playback": "radio_speaker",
+             "tx_capture": "physical_hand_microphone", "tx_playback": "rf_modulator"}
+INHIBIT_SCOPE = ("software_tx", "physical_ptt", "civ", "vox", "tune_calibration", "cw_tail")
 TIMES = ("press_ms", "admit_ms", "rf_on_ms", "release_ms",
          "last_mic_sample_ms", "rf_off_ms", "rx_ready_ms")
 BUDGETS = ("press_to_rf_ms", "release_to_rf_off_ms", "release_to_rx_ms",
@@ -148,7 +151,7 @@ class Checks:
             previous = -1
             for row in rows[1:-1]:
                 stamp = row.get("monotonic_ns")
-                if type(stamp) is not int or stamp < 0 or stamp < previous:
+                if type(stamp) is not int or not 0 <= stamp <= (1 << 64) - 1 or stamp < previous:
                     raise ValueError("invalid native trace timeline")
                 previous = stamp
             self.native_traces[name] = rows
@@ -206,6 +209,9 @@ def assess(report, bundle_root):
         observed_baseband = c.get("identities.observed.baseband")
         if observed_baseband not in (None, "unknown") and native_rows[0].get("baseband") != observed_baseband:
             c.issue("FAIL", "identities.observed.baseband", "Report differs from the native trace baseband.")
+        contract = c.get("identities.observed.route_contract_id")
+        if contract not in (None, "unknown") and native_rows[0].get("native_contract_id") != contract:
+            c.issue("FAIL", "identities.observed.route_contract_id", "Report differs from the native trace contract.")
     for key in ("engine_create_count", "capture_open_count", "playback_open_count"):
         c.expect("session." + key, 1)
     c.expect("session.wav_taps_enabled", False)
@@ -215,10 +221,91 @@ def assess(report, bundle_root):
     if start is not None and end is not None and end - start < 300000:
         c.issue("FAIL", "session", "At least five measured minutes are required.")
 
+    # A command/cache echo is not an effective route acknowledgement; neither
+    # proves the physical endpoint. Keep all three evidence layers separate.
+    applied_boots = set()
     for route in ROUTES:
-        c.expect("routes." + route + ".observed", True)
-        c.text("routes." + route + ".method")
-        c.artifact("routes." + route + ".evidence", "route_observation")
+        prefix = "routes." + route
+        requested = {key: c.number(prefix + ".requested." + key, 1, integer=True)
+                     for key in ("lease_token", "generation", "route")}
+        applied = {key: c.number(prefix + ".applied." + key, 1, integer=True)
+                   for key in ("lease_token", "generation", "route", "boot_id", "sequence")}
+        c.expect(prefix + ".requested.route", 3 if route in ("tx_mic_survives", "analog_mic_isolated") else 2)
+        for key in requested:
+            if requested[key] is not None and applied[key] is not None and requested[key] != applied[key]:
+                c.issue("FAIL", prefix + ".applied." + key, "Acknowledgement does not match this route request.")
+        if applied["boot_id"] is not None:
+            applied_boots.add(applied["boot_id"])
+        matches = False
+        for row in native_rows:
+            request, state = row.get("requested"), row.get("applied_state")
+            if row.get("kind") != "native_control" or not isinstance(request, dict) or not isinstance(state, dict):
+                continue
+            if (not all(type(request.get(key)) is int and request[key] == value and value is not None
+                        for key, value in requested.items())
+                    or not all(type(state.get(key)) is int and state[key] == value and value is not None
+                               for key, value in applied.items())):
+                continue
+            if (state.get("valid") is not True or state.get("contract_id") != c.get("identities.observed.route_contract_id")
+                    or any(state.get(key) is not True for key in ("physical_keying_inhibited", "autonomous_tx_inhibited",
+                                                                 "direct_mic_rf_inhibited", "raw_rx_speaker_inhibited"))):
+                continue
+            stamp, deadline = state.get("stamp_ms"), state.get("lease_deadline_ms")
+            observed_ms = row.get("monotonic_ns", 0) / 1000000
+            if (type(stamp) not in (int, float) or type(deadline) not in (int, float)
+                    or not 0 <= stamp <= (1 << 64) - 1 or not 0 <= deadline <= (1 << 64) - 1
+                    or not 0 <= observed_ms - stamp <= 250 or not observed_ms < deadline <= observed_ms + 1000):
+                continue
+            if stamp != c.get(prefix + ".applied.at_ms"):
+                continue
+            matches = True
+        if not matches:
+            c.issue("BLOCKED", prefix + ".applied", "Native trace lacks a matching fresh, leased effective-state acknowledgement.")
+        c.expect(prefix + ".applied.source", "effective_hardware_ack")
+        c.artifact(prefix + ".requested.evidence", "control_command")
+        c.artifact(prefix + ".applied.evidence", "effective_state")
+        c.order(prefix + ".timeline", [c.number(prefix + ".requested.at_ms"),
+                                       c.number(prefix + ".applied.at_ms"),
+                                       c.number(prefix + ".observed_at_ms")])
+        c.expect(prefix + ".observed", True)
+        c.expect(prefix + ".observation_basis", "physical_signal_measurement")
+        c.text(prefix + ".method")
+        c.artifact(prefix + ".evidence", "route_observation")
+    if len(applied_boots) > 1:
+        c.issue("FAIL", "routes", "MCU boot identity changed within the retained session.")
+    for endpoint, destination in ENDPOINTS.items():
+        prefix = "endpoints." + endpoint
+        c.text(prefix + ".host_device")
+        c.number(prefix + ".host_channel", integer=True)
+        c.text(prefix + ".board_net")
+        c.expect(prefix + ".physical_endpoint", destination)
+        c.artifact(prefix + ".evidence", "board_mapping")
+
+    c.expect("hardware_contract.ptt.source", "raw_physical_edges")
+    c.expect("hardware_contract.ptt.retained_release_counter", True)
+    c.number("hardware_contract.ptt.minimum_retained_release_ms", 0.001)
+    for control in ("panel", "hand"):
+        c.text("hardware_contract.ptt.source_map." + control)
+    c.artifact("hardware_contract.ptt.evidence", "board_mapping")
+    c.expect("hardware_contract.lease.controller", "independent_controller")
+    c.expect("hardware_contract.lease.expiry_clears_pending_requests", True)
+    c.expect("hardware_contract.lease.inhibit_ack_source", "effective_hardware_ack")
+    scope = c.known("hardware_contract.lease.inhibit_scope")
+    if scope is not None and (not isinstance(scope, list)
+                             or not all(item in scope for item in INHIBIT_SCOPE)):
+        c.issue("FAIL", "hardware_contract.lease.inhibit_scope", "Native inhibit omits a documented software, physical or autonomous TX source.")
+    c.artifact("hardware_contract.lease.evidence", "hardware_contract")
+    c.expect("hardware_contract.shutdown.source", "independent_rf")
+    c.expect("hardware_contract.shutdown.trigger", "native_lease_expiry")
+    c.expect("hardware_contract.shutdown.initial_rf_present", True)
+    c.expect("hardware_contract.shutdown.physical_ptt_held", True)
+    c.expect("hardware_contract.shutdown.ordinary_i2c_traffic_continued", True)
+    shutdown = c.number("hardware_contract.shutdown.max_rf_off_ms")
+    shutdown_uncertainty = c.number("hardware_contract.shutdown.uncertainty_ms")
+    shutdown_budget = c.number("hardware_contract.shutdown.budget_ms", 0.001)
+    if shutdown is not None and shutdown_uncertainty is not None:
+        c.limit("hardware_contract.shutdown.max_rf_off_ms", shutdown + shutdown_uncertainty, shutdown_budget)
+    c.artifact("hardware_contract.shutdown.evidence", "rf_capture")
     c.expect("rf_observation.source", "independent_rf")
     c.artifact("rf_observation.evidence", "rf_capture")
     resolution = c.number("rf_observation.resolution_ms", 0.001)
@@ -267,6 +354,7 @@ def assess(report, bundle_root):
         c.issue("FAIL" if turns else "BLOCKED", "turns", "Exactly ten milestone turns are required.")
     previous_rx, previous_generation = start, 0
     previous_sequences = {"panel": 0, "hand": 0}
+    previous_releases = {"panel": 0, "hand": 0}
     tx_intervals, reply_intervals = [], []
     controls, phrases, grants = [], set(), set()
     for index, turn in enumerate(turns):
@@ -279,6 +367,23 @@ def assess(report, bundle_root):
         if control is not None and control not in ("panel", "hand"):
             c.issue("FAIL", "turn.ptt.control", "Use panel or hand physical PTT.")
         c.expect("turn.ptt.source", "independent_physical")
+        raw_source = c.text("turn.ptt.raw_source_id")
+        expected_source = original.get("hardware_contract", {})
+        if isinstance(expected_source, dict):
+            expected_source = expected_source.get("ptt", {})
+        if isinstance(expected_source, dict):
+            expected_source = expected_source.get("source_map", {})
+        expected_source = expected_source.get(control) if isinstance(expected_source, dict) else None
+        if raw_source is not None and expected_source is not None and raw_source != expected_source:
+            c.issue("FAIL", "turn.ptt.raw_source_id", "Physical control does not match the measured board/input mapping.")
+        released_before = c.number("turn.ptt.release_sequence_at_press", integer=True)
+        released_after = c.number("turn.ptt.release_sequence_at_release", 1, integer=True)
+        if released_before is not None and released_after is not None and released_after <= released_before:
+            c.issue("FAIL", "turn.ptt.release_sequence_at_release", "Raw release was not retained independently of admitted TX state.")
+        if released_before is not None and released_before < previous_releases.get(control, 0):
+            c.issue("FAIL", "turn.ptt.release_sequence_at_press", "Retained release counter regressed across turns.")
+        if released_after is not None:
+            previous_releases[control] = released_after
         c.artifact("turn.ptt.evidence", "ptt_trace")
         age = c.number("turn.ptt.max_age_ms")
         c.limit("turn.ptt.max_age_ms", age, budgets["ptt_max_age_ms"])

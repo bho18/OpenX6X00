@@ -62,7 +62,8 @@ def prepare(baseline, gui, package, overlay, variant, revision, sdk, output, bui
         # the edited image before creating any deliverable SD-card image.
         abi=verify_abi(gui,package,sdk,root,temp/'abi',debugfs,qemu)
         record={**build_record,'schema_version':1,'variant':variant,'firmware_commit':revision,
-                'hardware_qualified':False,'ready_for_guided_hardware_tests':build_record.get('ready_for_guided_hardware_tests',variant=='diagnostic'),
+                'hardware_qualified':False,
+                'ready_for_guided_hardware_tests':build_record.get('ready_for_guided_hardware_tests',False) is True,
                 'baseline_image_sha256':sha(baseline),'baseline_gui_sha256':sha(old_gui),
                 'gui_sha256':sha(gui),'package_manifest_sha256':sha(package/'package-manifest.json'),
                 'root_partition_offset':offset,'root_partition_bytes':size,

@@ -4,11 +4,12 @@
 FreeDV is not exposed as a finished APP → Modes entry.** Do not turn on native
 voice through an unreviewed profile or interpret a host test as radio acceptance.
 
-For user testing, the spare-card candidate provides **APP → Modes → FreeDV
-test**, including persistent live RX and hand-mic TX cases using the actual
-production engine/adapter. Follow [the candidate instructions](candidate-test.md)
-for installation, locally armed testing, collection and recovery. Qualified
-release status is separate from this explicitly labeled test access.
+The current spare-card round is receive-only endpoint/PTT availability mapping
+under [the candidate instructions](candidate-test.md). Legacy recorder/gain/MODEM
+trials are withdrawn. Host simulation exercises the retained coordinator, but
+the stock X6200 backend cannot admit native TX without the measured endpoint map,
+raw PTT, effective route acknowledgement and independent native lease described
+in [the qualification protocol](native-half-duplex-qualification.md).
 
 The working `.2` card and recovery path must remain intact. Hardware work is
 paused. Software tools neither discover nor control a radio automatically.
@@ -23,7 +24,10 @@ application integration, [current software verification](software-verification-2
 and remaining physical gates. Existing evidence stays attached to its original image,
 route, binary and procedure.
 
-Use one workflow: **preflight → run selected cases → collect → assess**.
+Use the current workflow: **read-only inventory → receive-only endpoint/input
+mapping → resolve the lower-layer contract → later bounded native validation**.
+The legacy case matrix below is retained as coverage history, not a grant to
+transmit or repeat gain/order trials.
 [The test kit](../../tools/freedv/qualification/README.md) gives executable
 commands. The [acceptance matrix](acceptance-to-tool-matrix.md) lists 54 cases,
 required equipment, recordings, measurements and assessment criteria. All case

@@ -48,6 +48,9 @@ typedef struct {
     /* Capture the admitted physical edge/release counters before a possibly
      * blocking fence. Transmit must retain this generation's baseline. */
     bool (*begin_transmit)(void *, uint64_t generation, const fd_voice_observation *admission);
+    /* Coordinator-only, bounded lease heartbeat. Observation must not renew
+     * it: a stalled coordinator must allow independent MCU lease expiry. */
+    bool (*maintain)(void *);
 } fd_voice_driver;
 fd_voice_session *fd_session_create(const fd_voice_driver *);
 bool fd_session_enter(fd_voice_session *, const fd_qualified_profile *, const char *hardware,

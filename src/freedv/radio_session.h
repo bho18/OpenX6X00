@@ -59,7 +59,8 @@ bool radio_freedv_session_apply(fd_radio_session *, const fd_case *, radio_mic_s
 bool radio_freedv_session_clear(fd_radio_session *, uint64_t *sequence);
 bool radio_freedv_session_restore(fd_radio_session *, uint64_t clear_sequence);
 bool radio_freedv_session_release(fd_radio_session *);
-/* Diagnostic startup waits for fresh RX before analog microphone restoration. */
+/* Legacy startup may wait for RX status; this is not RF-off evidence.
+ * X6200 builds use ordinary configured startup with legacy trials disabled. */
 bool radio_freedv_startup_waiting(void);
 #ifdef __cplusplus
 }

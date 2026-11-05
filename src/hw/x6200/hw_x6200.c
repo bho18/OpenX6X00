@@ -503,10 +503,21 @@ hw_native_voice_capabilities_t hw_native_voice_capabilities(void) {
      * alone establishes them. Replace only with a documented, version-bound
      * implementation and retained evidence from the baseband investigation. */
     return (hw_native_voice_capabilities_t){
-        .abi_version=HW_NATIVE_VOICE_ABI, .known=HW_NATIVE_HAND_PTT,
+        .abi_version=HW_NATIVE_VOICE_ABI, .known=HW_NATIVE_CONTROL,
         .supported=0, .simulation=false,
-        .evidence="X6200Control 0ee1ae3: independent hand PTT unavailable; audio/keying unestablished"};
+        .evidence="Pinned X6200 interface: no raw PTT, applied-route ACK or native lease/inhibit; audio pairs unqualified"};
 }
+/* No reviewed native lease/applied-route protocol is implemented here.
+ * These functions deliberately perform no bus or register writes. */
+bool hw_native_voice_acquire(uint64_t token) { (void)token;return false; }
+bool hw_native_voice_apply(uint64_t token,uint64_t generation,hw_native_voice_route_t route) {
+    (void)token;(void)generation;(void)route;return false;
+}
+bool hw_native_voice_renew(uint64_t token) { (void)token;return false; }
+bool hw_native_voice_observe(hw_native_voice_state_t *out) {
+    if(out)*out=(hw_native_voice_state_t){0};return false;
+}
+bool hw_native_voice_release(uint64_t token) { (void)token;return false; }
 bool hw_ptt_observe(hw_ptt_source_t source, hw_ptt_observation_t *out) {
     if (out) *out = (hw_ptt_observation_t){.source=source};
     return false;

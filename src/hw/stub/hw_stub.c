@@ -276,6 +276,7 @@ void hw_flow_restart(void) {
 
 #ifdef FREEDV_HOST_TEST_PROFILE
 #include <stdatomic.h>
+#include <pthread.h>
 /* Low bit is the held state; upper bits retain physical release edges. One
  * atomic snapshot cannot combine a new pressed level with an old counter. */
 static atomic_uint_fast64_t test_ptt[2];
@@ -288,11 +289,72 @@ void hw_stub_ptt_set(hw_ptt_source_t source, bool pressed) {
         if(!pressed && (old&1u))next+=2;
     } while(!atomic_compare_exchange_weak(&test_ptt[source],&old,next));
 }
+/* Explicit simulation of a separate device lease; no ordinary command cache
+ * is promoted to an applied acknowledgement. observe never renews the lease. */
+static pthread_mutex_t native_mutex=PTHREAD_MUTEX_INITIALIZER;
+static hw_native_voice_state_t native_state={.valid=true,.boot_id=1,
+    .applied_route=HW_NATIVE_ROUTE_QUIET,.contract_id="host-native-v2",
+    .physical_keying_inhibited=true,.autonomous_tx_inhibited=true,
+    .direct_mic_rf_inhibited=true,.raw_rx_speaker_inhibited=true};
+static uint64_t native_now(void) {
+    struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);
+    return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;
+}
+static void native_expire_locked(uint64_t time) {
+    if(native_state.lease_token && time>=native_state.lease_deadline_ms){
+        native_state.lease_token=0;native_state.lease_deadline_ms=0;
+        native_state.applied_route=HW_NATIVE_ROUTE_QUIET;
+        reg_i[HW_MODEM]=reg_i[HW_PTT]=0;
+        ++native_state.sequence;
+    }
+}
+bool hw_native_voice_acquire(uint64_t token) {
+    pthread_mutex_lock(&native_mutex);uint64_t time=native_now();native_expire_locked(time);
+    bool ok=token && !native_state.lease_token;
+    if(ok){native_state.lease_token=token;native_state.lease_deadline_ms=time+HW_NATIVE_LEASE_MAX_MS;
+        native_state.route_generation=0;native_state.applied_route=HW_NATIVE_ROUTE_QUIET;
+        native_state.physical_keying_inhibited=native_state.autonomous_tx_inhibited=true;
+        native_state.direct_mic_rf_inhibited=native_state.raw_rx_speaker_inhibited=true;
+        native_state.monotonic_ms=time;++native_state.sequence;
+        reg_i[HW_MODEM]=reg_i[HW_PTT]=0;}
+    pthread_mutex_unlock(&native_mutex);return ok;
+}
+bool hw_native_voice_apply(uint64_t token,uint64_t generation,hw_native_voice_route_t route) {
+    pthread_mutex_lock(&native_mutex);uint64_t time=native_now();native_expire_locked(time);
+    bool ok=token && token==native_state.lease_token && generation>native_state.route_generation &&
+        route>=HW_NATIVE_ROUTE_QUIET && route<=HW_NATIVE_ROUTE_TX;
+    if(ok){native_state.route_generation=generation;native_state.applied_route=route;
+        native_state.monotonic_ms=time;++native_state.sequence;
+        reg_i[HW_MODEM]=reg_i[HW_PTT]=route==HW_NATIVE_ROUTE_TX;}
+    pthread_mutex_unlock(&native_mutex);return ok;
+}
+bool hw_native_voice_renew(uint64_t token) {
+    pthread_mutex_lock(&native_mutex);uint64_t time=native_now();native_expire_locked(time);
+    bool ok=token && token==native_state.lease_token;
+    if(ok){native_state.lease_deadline_ms=time+HW_NATIVE_LEASE_MAX_MS;
+        native_state.monotonic_ms=time;++native_state.sequence;}
+    pthread_mutex_unlock(&native_mutex);return ok;
+}
+bool hw_native_voice_observe(hw_native_voice_state_t *out) {
+    if(!out)return false;
+    pthread_mutex_lock(&native_mutex);uint64_t time=native_now();native_expire_locked(time);
+    /* This model samples its applied state anew; never extends the deadline. */
+    native_state.monotonic_ms=time;++native_state.sequence;*out=native_state;
+    pthread_mutex_unlock(&native_mutex);return true;
+}
+bool hw_native_voice_release(uint64_t token) {
+    pthread_mutex_lock(&native_mutex);native_expire_locked(native_now());
+    bool ok=token && token==native_state.lease_token && native_state.applied_route==HW_NATIVE_ROUTE_QUIET &&
+        !(atomic_load(&test_ptt[0])&1u) && !(atomic_load(&test_ptt[1])&1u);
+    if(ok){native_state.lease_token=0;native_state.lease_deadline_ms=0;++native_state.sequence;}
+    pthread_mutex_unlock(&native_mutex);return ok;
+}
 uint32_t hw_independent_ptt_sources(void) { return 3; }
 hw_native_voice_capabilities_t hw_native_voice_capabilities(void) {
     return (hw_native_voice_capabilities_t){.abi_version=HW_NATIVE_VOICE_ABI,
         .known=HW_NATIVE_ALL, .supported=HW_NATIVE_ALL, .simulation=true,
-        .evidence="Explicit host simulation; not hardware evidence"};
+        .evidence="Explicit host simulation; not hardware evidence",
+        .contract_id="host-native-v2"};
 }
 bool hw_ptt_observe(hw_ptt_source_t source, hw_ptt_observation_t *out) {
     if (!out || source<HW_PTT_SOURCE_RADIO || source > HW_PTT_SOURCE_HAND) return false;
@@ -303,6 +365,15 @@ bool hw_ptt_observe(hw_ptt_source_t source, hw_ptt_observation_t *out) {
     return true;
 }
 #else
+bool hw_native_voice_acquire(uint64_t token) { (void)token;return false; }
+bool hw_native_voice_apply(uint64_t token,uint64_t generation,hw_native_voice_route_t route) {
+    (void)token;(void)generation;(void)route;return false;
+}
+bool hw_native_voice_renew(uint64_t token) { (void)token;return false; }
+bool hw_native_voice_observe(hw_native_voice_state_t *out) {
+    if(out)*out=(hw_native_voice_state_t){0};return false;
+}
+bool hw_native_voice_release(uint64_t token) { (void)token;return false; }
 uint32_t hw_independent_ptt_sources(void) { return 0; }
 hw_native_voice_capabilities_t hw_native_voice_capabilities(void) {
     return (hw_native_voice_capabilities_t){.abi_version=HW_NATIVE_VOICE_ABI,

@@ -1,5 +1,7 @@
 # Session 2: native receive routing, microphone source and recovery
 
+> Historical coverage/procedure reference. The current hardware round is receive-only endpoint/PTT availability mapping in [candidate-test.md](candidate-test.md). The native route/PTT/lease interfaces and measured RF shutdown are prerequisites to later TX. Do not execute the older recorder/gain/MODEM sequence below.
+
 This is the follow-up evaluation after Session 1. Select the exact route/control
 experiments from the returned read-only topology before deployment. Do not guess
 baseband registers or manipulate them from SSH. Use the existing image where it

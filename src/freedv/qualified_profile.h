@@ -6,6 +6,14 @@
 extern "C" {
 #endif
 typedef enum { FD_PROFILE_USB, FD_PROFILE_USB_DIG } fd_profile_mode;
+/* PulseAudio stereo slots, not asserted board net identities. Native audio
+ * uses one explicitly selected slot in each direction; 0/default and sums
+ * are reserved for diagnostics and cannot qualify an isolated route. */
+typedef struct { unsigned capture_channel, playback_channel; } fd_profile_audio_map;
+static inline bool fd_profile_audio_map_valid(fd_profile_audio_map map) {
+    return (map.capture_channel == 1 || map.capture_channel == 2) &&
+           (map.playback_channel == 1 || map.playback_channel == 2);
+}
 enum { FD_ROUTE_RECORD = 1u, FD_ROUTE_MODEM = 2u, FD_ROUTE_PTT = 4u };
 enum {
     FD_CAP_MODEM_RF = 1u << 0, FD_CAP_HAND_MIC = 1u << 1,
@@ -18,10 +26,12 @@ enum {
 typedef struct {
     const char *id, *hardware, *build_id, *baseband, *control_version;
     const char *evidence_sha256;
+    const char *native_contract_id; /* exact reviewed route/lease protocol binding */
     fd_profile_mode local_mode;
     bool upper_sideband;
     const char *capture_device, *playback_device, *mixer;
-    unsigned sample_rate, capture_channel;
+    unsigned sample_rate, capture_channel; /* capture_channel: legacy diagnostics only */
+    fd_profile_audio_map rx_audio, tx_audio;
     uint32_t rx_route, tx_route;
     int rx_low_hz, rx_high_hz, tx_low_hz, tx_high_hz;
     int rx2_low_hz, rx2_high_hz;

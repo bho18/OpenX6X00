@@ -48,6 +48,8 @@ size_t audio_freedv_capture_read(int16_t *out,size_t capacity){
 size_t audio_freedv_capture_read_stereo(int16_t *out,size_t frames){(void)out;(void)frames;return 0;}
 audio_freedv_capture_stats_t audio_freedv_capture_stats(void){return(audio_freedv_capture_stats_t){.capture_errors=inject_capture_error&&atomic_load(&active)};}
 audio_freedv_playback_t *audio_freedv_playback_open(void){assert(!current);++playback_creations;current=calloc(1,sizeof(*current));return current;}
+audio_freedv_playback_t *audio_freedv_playback_open_mapped(unsigned channel){(void)channel;assert(!"diagnostic adapter must not claim native mapped output");return NULL;}
+bool audio_freedv_playback_select_channel(audio_freedv_playback_t *p,unsigned channel){(void)p;(void)channel;assert(!"diagnostic adapter must retain its measured format");return false;}
 #ifdef ENABLE_FREEDV_VOICE
 bool audio_freedv_capture_flush_begin(void){assert(!atomic_load(&active));return true;}
 int audio_freedv_capture_flushed(void){return 1;}

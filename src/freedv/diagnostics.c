@@ -7,6 +7,7 @@
 #endif
 #include "radio_session.h"
 #include "route_trace.h"
+#include "route_driver.h"
 #include "agent_protocol.h"
 #include <fcntl.h>
 #include "../../tools/freedv/session_controller.h"
@@ -741,6 +742,10 @@ static void retest_selection(lv_event_t *event) {
 #endif
 static void open_panel(void *unused) {
     (void)unused;if(ui.panel)return;
+    if(!fd_route_experiments_enabled()){
+        msg_schedule_text_fmt("Legacy route/gain experiments withdrawn; native mode requires baseband support");
+        return;
+    }
     mkdir("/tmp/freedv-control",0700);chmod("/tmp/freedv-control",0700);unlink("/tmp/freedv-control/stage");unlink("/tmp/freedv-control/abort");unlink("/tmp/freedv-control/repeat-five");
     if(!input_fence_owned){if(!front_keys_diagnostic_input_acquire()){msg_schedule_text_fmt("Cannot isolate local diagnostic controls; retry after releasing keys");return;}input_fence_owned=true;}
     if(!service_timer)service_timer=lv_timer_create(service,100,NULL);

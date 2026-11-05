@@ -56,6 +56,7 @@ struct audio_freedv_playback {
     pa_operation *drain, *cork;
     uint64_t generation, drain_generation;
     int drain_status;
+    unsigned playback_channel; /* 0: legacy mono; 1/2: explicit stereo slot */
     audio_freedv_playback_stats_t stats;
 };
 static __thread audio_freedv_playback_t *compat_playback;
@@ -284,12 +285,16 @@ bool audio_freedv_voice_capture_open(void) {
      * of real input during a server delivery stall. Retain enough to detect
      * and reject it with the adapter's unchanged 500 ms limit. */
     attr.maxlength = pa_usec_to_bytes(1000 * PA_USEC_PER_MSEC, &spec);
-    pa_stream *stream = pa_stream_new(ctx, "FreeDV voice capture", &spec, NULL);
+    const pa_channel_map map = {.channels=2,
+        .map={PA_CHANNEL_POSITION_FRONT_LEFT,PA_CHANNEL_POSITION_FRONT_RIGHT}};
+    pa_stream *stream = pa_stream_new(ctx, "FreeDV voice capture", &spec,
+                                     voice_capture_channels == 2 ? &map : NULL);
     pa_stream_state_t state = PA_STREAM_FAILED;
     if (stream) {
         pa_stream_set_state_callback(stream, diagnostic_stereo_state, NULL);
         pa_stream_set_read_callback(stream, voice_capture_read, NULL);
-        if (!pa_stream_connect_record(stream, capture_device, &attr, PA_STREAM_ADJUST_LATENCY | PA_STREAM_DONT_MOVE))
+        if (!pa_stream_connect_record(stream, capture_device, &attr, PA_STREAM_ADJUST_LATENCY | PA_STREAM_DONT_MOVE |
+                (voice_capture_channels == 2 ? PA_STREAM_NO_REMIX_CHANNELS : 0)))
             while ((state = pa_stream_get_state(stream)) == PA_STREAM_CREATING) pa_threaded_mainloop_wait(mloop);
         if (state != PA_STREAM_READY) {
             pa_stream_set_state_callback(stream, NULL, NULL); pa_stream_set_read_callback(stream, NULL, NULL);
@@ -307,6 +312,15 @@ bool audio_freedv_voice_capture_open(void) {
         } else ++voice_capture_creations;
     }
     voice_capture = stream;
+    /* configure() can create a temporary stereo diagnostic source before the
+     * retained voice stream exists. Once voice capture owns delivery, retire
+     * that source instead of keeping a second unused stereo subscription. */
+    if (voice_capture && diagnostic_stereo) {
+        pa_stream_set_read_callback(diagnostic_stereo,NULL,NULL);
+        pa_stream_set_state_callback(diagnostic_stereo,NULL,NULL);
+        pa_stream_disconnect(diagnostic_stereo);pa_stream_unref(diagnostic_stereo);
+        diagnostic_stereo=NULL;
+    }
     pa_threaded_mainloop_unlock(mloop); return stream != NULL;
 }
 void audio_freedv_voice_capture_close(void) {
@@ -514,7 +528,7 @@ static bool diagnostic_mixer_select(const char *name) {
 bool audio_freedv_capture_configure(unsigned channel, const char *mixer_item) {
     if (!mloop || !capture_stm || (channel && !ctx) || channel > 3) return false;
 #ifdef HOST_BUILD
-    if (channel || (mixer_item && *mixer_item)) return false;
+    if (mixer_item && *mixer_item) return false;
 #endif
     pa_threaded_mainloop_lock(mloop);
     if (diagnostic_capture_active || (voice_capture && voice_capture_channels != (channel ? 2 : 1))) { pa_threaded_mainloop_unlock(mloop); return false; }
@@ -532,7 +546,8 @@ bool audio_freedv_capture_configure(unsigned channel, const char *mixer_item) {
         if (stream) {
             pa_stream_set_state_callback(stream, diagnostic_stereo_state, NULL);
             pa_stream_set_read_callback(stream, diagnostic_stereo_read, NULL);
-            if (pa_stream_connect_record(stream, capture_device, &attr, PA_STREAM_ADJUST_LATENCY | PA_STREAM_DONT_MOVE) == 0) {
+            if (pa_stream_connect_record(stream, capture_device, &attr, PA_STREAM_ADJUST_LATENCY | PA_STREAM_DONT_MOVE |
+                                         PA_STREAM_NO_REMIX_CHANNELS) == 0) {
                 while ((state = pa_stream_get_state(stream)) == PA_STREAM_CREATING) pa_threaded_mainloop_wait(mloop);
             }
             if (state != PA_STREAM_READY) {
@@ -867,14 +882,14 @@ static void loop_mute(bool mute) {
 }
 
 /* A playback stream on sink, ready, or NULL. With the mainloop locked */
-static pa_stream *stream_open(const char *name, const char *sink, const pa_buffer_attr *attr) {
-    pa_sample_spec    spec = { .format = PA_SAMPLE_S16NE, .rate = AUDIO_PLAY_RATE, .channels = 1 };
+static pa_stream *stream_open_format(const char *name, const char *sink, const pa_buffer_attr *attr,
+        const pa_sample_spec *spec, const pa_channel_map *map, pa_stream_flags_t flags) {
     pa_stream_state_t st = PA_STREAM_FAILED;
-    pa_stream         *s = pa_stream_new(ctx, name, &spec, NULL);
+    pa_stream         *s = pa_stream_new(ctx, name, spec, map);
 
     if (!s) return NULL;
     pa_stream_set_state_callback(s, on_stream_state, NULL);
-    if (pa_stream_connect_playback(s, sink, attr, PA_STREAM_ADJUST_LATENCY | PA_STREAM_DONT_MOVE, NULL, NULL) == 0) {
+    if (pa_stream_connect_playback(s, sink, attr, PA_STREAM_ADJUST_LATENCY | PA_STREAM_DONT_MOVE | flags, NULL, NULL) == 0) {
         while ((st = pa_stream_get_state(s)) == PA_STREAM_CREATING) {
             pa_threaded_mainloop_wait(mloop);
         }
@@ -887,6 +902,10 @@ static pa_stream *stream_open(const char *name, const char *sink, const pa_buffe
         s = NULL;
     }
     return s;
+}
+static pa_stream *stream_open(const char *name, const char *sink, const pa_buffer_attr *attr) {
+    pa_sample_spec spec = {.format=PA_SAMPLE_S16NE,.rate=AUDIO_PLAY_RATE,.channels=1};
+    return stream_open_format(name,sink,attr,&spec,NULL,0);
 }
 
 /* Audio from a network client (the TCI server) into the codec, from the playing thread as audio_play_bt_begin:
@@ -977,13 +996,16 @@ static void diagnostic_flush_done(pa_stream *stream, int success, void *userdata
     atomic_store_explicit(&p->flush_acknowledged, success != 0, memory_order_release);
     if (!success) ++p->stats.write_errors;
 }
-audio_freedv_playback_t *audio_freedv_playback_open(void) {
+static audio_freedv_playback_t *diagnostic_playback_open(unsigned channel) {
     if (!mloop) return NULL;
     audio_freedv_playback_t *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
     atomic_init(&p->cancellation_requested, false);
     atomic_init(&p->flush_acknowledged, false);
-    pa_sample_spec spec = {.format=PA_SAMPLE_S16NE, .rate=AUDIO_PLAY_RATE, .channels=1};
+    p->playback_channel = channel;
+    pa_sample_spec spec = {.format=PA_SAMPLE_S16NE, .rate=AUDIO_PLAY_RATE, .channels=channel ? 2 : 1};
+    const pa_channel_map map = {.channels=2,
+        .map={PA_CHANNEL_POSITION_FRONT_LEFT,PA_CHANNEL_POSITION_FRONT_RIGHT}};
     pa_buffer_attr attr;
     memset(&attr, 0xff, sizeof(attr));
     attr.maxlength = pa_usec_to_bytes(200 * PA_USEC_PER_MSEC, &spec);
@@ -991,7 +1013,8 @@ audio_freedv_playback_t *audio_freedv_playback_open(void) {
     attr.prebuf = pa_usec_to_bytes(60 * PA_USEC_PER_MSEC, &spec);
     attr.minreq = pa_usec_to_bytes(10 * PA_USEC_PER_MSEC, &spec);
     pa_threaded_mainloop_lock(mloop);
-    p->stream = stream_open("FreeDV diagnostic", play_device, &attr);
+    p->stream = stream_open_format(channel ? "FreeDV native stereo" : "FreeDV diagnostic", play_device,
+        &attr,&spec,channel ? &map : NULL,channel ? PA_STREAM_NO_REMIX_CHANNELS : 0);
     if (p->stream) {
         const pa_buffer_attr *actual = pa_stream_get_buffer_attr(p->stream);
         if (actual) {
@@ -1006,6 +1029,19 @@ audio_freedv_playback_t *audio_freedv_playback_open(void) {
     if (!p->stream) { free(p); return NULL; }
     return p;
 }
+audio_freedv_playback_t *audio_freedv_playback_open(void) { return diagnostic_playback_open(0); }
+audio_freedv_playback_t *audio_freedv_playback_open_mapped(unsigned channel) {
+    return channel == 1 || channel == 2 ? diagnostic_playback_open(channel) : NULL;
+}
+bool audio_freedv_playback_select_channel(audio_freedv_playback_t *p,unsigned channel) {
+    if (!mloop || !p || (channel != 1 && channel != 2)) return false;
+    pa_threaded_mainloop_lock(mloop);
+    bool ok = p->playback_channel && audio_freedv_playback_quiescent(p) &&
+        p->stream && pa_stream_get_state(p->stream) == PA_STREAM_READY;
+    if (ok) p->playback_channel = channel;
+    pa_threaded_mainloop_unlock(mloop);
+    return ok;
+}
 ssize_t audio_freedv_playback_submit_generation(audio_freedv_playback_t *p, uint64_t generation, const int16_t *samples, size_t count) {
     if (!mloop || !p) return -1;
     pa_threaded_mainloop_lock(mloop);
@@ -1015,10 +1051,21 @@ ssize_t audio_freedv_playback_submit_generation(audio_freedv_playback_t *p, uint
     if (!count) { accepted = 0; goto done; }
     size_t bytes = pa_stream_writable_size(p->stream);
     if (bytes == (size_t)-1) goto error;
-    size_t available = bytes / sizeof(*samples);
+    size_t frame_bytes = sizeof(*samples) * (p->playback_channel ? 2 : 1);
+    size_t available = bytes / frame_bytes;
     size_t n = count < available ? count : available;
     if (!n) { accepted = 0; goto done; }
-    if (pa_stream_write(p->stream, samples, n * sizeof(*samples), NULL, 0, PA_SEEK_RELATIVE) < 0) goto error;
+    int16_t stereo[960];
+    const int16_t *output = samples;
+    if (p->playback_channel) {
+        if (n > sizeof(stereo) / (2 * sizeof(*stereo))) n = sizeof(stereo) / (2 * sizeof(*stereo));
+        for (size_t i = 0; i < n; ++i) {
+            stereo[2*i] = p->playback_channel == 1 ? samples[i] : 0;
+            stereo[2*i+1] = p->playback_channel == 2 ? samples[i] : 0;
+        }
+        output = stereo;
+    }
+    if (pa_stream_write(p->stream, output, n * frame_bytes, NULL, 0, PA_SEEK_RELATIVE) < 0) goto error;
     if (!p->stats.accepted_samples) p->stats.first_write_monotonic_ns = diagnostic_audio_clock_ns();
     p->stats.accepted_samples += n;
     if(!p->stats.generation_accepted_samples)p->stats.generation_first_write_ns=diagnostic_audio_clock_ns();

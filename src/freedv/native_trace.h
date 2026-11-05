@@ -2,6 +2,7 @@
 #pragma once
 #include "voice_types.h"
 #include "qualified_profile.h"
+#include "../hw/native_voice.h"
 #include <stdio.h>
 
 /* Bounded in-memory evidence. Export is an explicit operator action; normal
@@ -14,10 +15,16 @@ typedef struct {
     unsigned capture_dropped, capture_holes, capture_errors, playback_underflows;
     unsigned rade_creations, encoder_creations, decoder_creations;
     unsigned resampler_creations, worker_creations, capture_stream_creations;
+    unsigned capture_channel, playback_channel;
     bool failed, cancelled, finished;
 } fd_native_audio_trace;
 void fd_native_trace_begin(const fd_qualified_profile *, bool simulation);
 void fd_native_trace_note(const fd_voice_status *, const fd_voice_observation *);
 void fd_native_trace_command(uint64_t generation, bool modem, bool ptt);
+/* Requested route and independently supplied applied-state observation stay
+ * separate. Neither an acknowledgement nor this trace proves electrical RF. */
+void fd_native_trace_control(const char *operation, uint64_t lease_token,
+        uint64_t generation, hw_native_voice_route_t requested_route,
+        const hw_native_voice_state_t *observed);
 void fd_native_trace_audio(const fd_native_audio_trace *);
 bool fd_native_trace_export(FILE *);

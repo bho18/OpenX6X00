@@ -20,16 +20,33 @@ bool hw_resend_all(void){
 static bool admit(void *context){assert(context==&permitted);if(!permitted)rejected=true;return !rejected;}
 int main(void){
  fd_route_settings r={radio_mic_handle,20,0,true,true,false};
+#if defined(BOARD_X6200) || defined(ENABLE_FREEDV_NATIVE_VALIDATION)
+ assert(!fd_route_experiments_enabled());
+ for(unsigned bits=0;bits<8;++bits){
+  r.record=(bits&4)!=0;r.modem=(bits&2)!=0;r.ptt=(bits&1)!=0;
+  assert(!fd_route_activate(&r));assert(!fd_route_activate_guarded(&r,admit,&permitted));
+  assert(!n && !sends); /* Unsupported routes issue no commands, even RX-only. */
+ }
+ fd_route_record_start(0);fd_route_record_stop(28,17);
+ assert(n==5 && keys[0]==HW_IMIC && keys[1]==HW_RECORD && keys[2]==HW_RECORD);
+ assert(values[HW_HMIC]==28 && values[HW_IMIC]==17);
+ n=0;fd_route_stop();
+ assert(n==2 && keys[0]==HW_MODEM && keys[1]==HW_PTT);
+ assert(values[HW_HMIC]==28 && values[HW_IMIC]==17);
+ puts("PASS: native development rejects every legacy route without writes; ordinary recorder remains unchanged");
+ return 0;
+#endif
  assert(fd_route_activate(&r));assert(sends==2);
- assert(keys[0]==HW_HMIC && vals[0]==0 && keys[1]==HW_IMIC && vals[1]==0);
+ assert(keys[0]==HW_MIC && keys[1]==HW_RECORD);
  assert(values[HW_RECORD] && values[HW_MODEM] && !values[HW_PTT] && values[HW_HMIC]==20 && !values[HW_IMIC]);
- n=sends=0;fail_at=1;assert(!fd_route_activate(&r));assert(!values[HW_HMIC]);
- n=0;fd_route_stop();assert(!values[HW_MODEM] && !values[HW_PTT] && !values[HW_HMIC] && !values[HW_IMIC]);
+ n=sends=0;fail_at=1;assert(!fd_route_activate(&r));assert(values[HW_HMIC]==20);
+ assert(!values[HW_MODEM] && !values[HW_PTT]);
+ n=0;fd_route_stop();assert(n==2 && !values[HW_MODEM] && !values[HW_PTT] && values[HW_HMIC]==20);
  r.ptt=true;fail_at=0;
  for(release_step=1;release_step<=6;++release_step){
   memset(values,0,sizeof(values));n=sends=0;permitted=true;rejected=false;keys_after_release=0;
   assert(!fd_route_activate_guarded(&r,admit,&permitted));
-  assert(!values[HW_MODEM] && !values[HW_PTT] && !values[HW_HMIC] && !values[HW_IMIC]);
+  assert(!values[HW_MODEM] && !values[HW_PTT]);
   assert(rejected && !keys_after_release);
   if(release_step==1)assert(!sends); /* release in prep precedes every key */
   if(release_step==2)for(int i=0;i<n;++i)assert(keys[i]!=HW_PTT || !vals[i]);
@@ -37,5 +54,5 @@ int main(void){
   permitted=true;assert(!admit(&permitted)); /* same attempt cannot revive */
  }
  puts("PASS: release during route preparation/key/gain/resend writes fences every later key and clears software TX");
- puts("PASS: shared route isolates gains before activation, admits hand input after transport, and propagates failure");
+ puts("PASS: legacy gain settings are explicit requests; software clear preserves gains and makes no mute or RF-off claim");
 }

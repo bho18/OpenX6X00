@@ -20,6 +20,8 @@ struct fd_voice_audio {
     uint64_t generation;
     uint64_t adapter_instance, engine_instance, capture_instance, playback_instance;
     unsigned rate;
+    bool directional_audio;
+    fd_profile_audio_map rx_audio, tx_audio, selected_audio;
     fd_voice_direction direction;
     atomic_bool cancelled, failed;
     atomic_uint microphone_peak;
@@ -82,6 +84,8 @@ static void snapshot_locked(fd_voice_audio *a) {
     a->snapshot=(fd_voice_audio_snapshot){.sampled_ms=now(),.generation=a->generation,
         .adapter_instance=a->adapter_instance,.engine_instance=a->engine_instance,
         .capture_instance=a->capture_instance,.playback_instance=a->playback_instance,
+        .capture_channel=a->directional_audio ? a->selected_audio.capture_channel : 0,
+        .playback_channel=a->directional_audio ? a->selected_audio.playback_channel : 0,
         .cancelled=atomic_load(&a->cancelled),.failed=atomic_load(&a->failed),.finishing=a->finishing,
         .first_fault=atomic_load(&a->first_fault),.fault_generation=atomic_load(&a->fault_generation),
         .fault_capture_queued=atomic_load(&a->fault_capture_queued),.fault_engine_input_depth=atomic_load(&a->fault_engine_input_depth),
@@ -181,10 +185,12 @@ telemetry:;
     }
     pthread_mutex_unlock(&a->lock);return NULL;
 }
-fd_voice_audio *fd_voice_audio_open(const fd_qualified_profile *profile) {
+static fd_voice_audio *voice_audio_open(const fd_qualified_profile *profile,bool diagnostic) {
     /* The existing capture source is fixed by board.h. Reject incompatible
      * descriptors instead of silently using the wrong endpoint or boundary. */
     if(!profile || !profile->capture_device || !profile->playback_device || !profile->mixer)return NULL;
+    if(!diagnostic && (!fd_profile_audio_map_valid(profile->rx_audio) ||
+                       !fd_profile_audio_map_valid(profile->tx_audio)))return NULL;
 #if defined(FREEDV_HOST_TEST_PROFILE) || defined(HOST_BUILD)
     if(strcmp(profile->capture_device,"@default-source@") || strcmp(profile->playback_device,"@default-sink@") ||
         strcmp(profile->mixer,"host-default") || profile->sample_rate!=AUDIO_CAPTURE_RATE)return NULL;
@@ -200,16 +206,19 @@ fd_voice_audio *fd_voice_audio_open(const fd_qualified_profile *profile) {
     atomic_init(&a->first_fault,FD_AUDIO_OK);atomic_init(&a->fault_generation,0);atomic_init(&a->fault_ms,0);
     atomic_init(&a->attempted_generation,0);
     atomic_init(&a->fault_capture_queued,0);atomic_init(&a->fault_engine_input_depth,0);
+    a->directional_audio=!diagnostic;a->rx_audio=profile->rx_audio;a->tx_audio=profile->tx_audio;
+    a->selected_audio=diagnostic ? (fd_profile_audio_map){.capture_channel=profile->capture_channel} : profile->rx_audio;
 #if defined(FREEDV_HOST_TEST_PROFILE) || defined(HOST_BUILD)
-    if(!audio_freedv_capture_configure(profile->capture_channel,NULL))goto error;
+    if(!audio_freedv_capture_configure(a->selected_audio.capture_channel,NULL))goto error;
 #else
-    if(!audio_freedv_capture_configure(profile->capture_channel,profile->mixer))goto error;
+    if(!audio_freedv_capture_configure(a->selected_audio.capture_channel,profile->mixer))goto error;
 #endif
     if(!audio_freedv_voice_capture_open())goto error;
     a->capture_owned=true;a->capture_instance=resource_instance();
     a->engine=fd_voice_create(profile->sample_rate);
     if(a->engine)a->engine_instance=resource_instance();
-    a->playback=audio_freedv_playback_open();
+    a->playback=diagnostic ? audio_freedv_playback_open() :
+        audio_freedv_playback_open_mapped(a->selected_audio.playback_channel);
     if(a->playback)a->playback_instance=resource_instance();
     if(!a->engine || !a->playback)goto error;
     if(pthread_create(&a->pump,NULL,pump,a))goto error;
@@ -217,6 +226,8 @@ fd_voice_audio *fd_voice_audio_open(const fd_qualified_profile *profile) {
 error:
     fd_voice_audio_close(a);return NULL;
 }
+fd_voice_audio *fd_voice_audio_open(const fd_qualified_profile *profile) {return voice_audio_open(profile,false);}
+fd_voice_audio *fd_voice_audio_open_diagnostic(const fd_qualified_profile *profile) {return voice_audio_open(profile,true);}
 bool fd_voice_audio_fence(fd_voice_audio *a) {
     if(!a)return false;fd_voice_audio_cancel(a);
     pthread_mutex_lock(&a->lock);a->active=false;
@@ -247,7 +258,7 @@ static bool startup_allowed(fd_voice_audio *a,unsigned epoch,fd_voice_audio_admi
 }
 bool fd_voice_audio_begin_guarded(fd_voice_audio *a,fd_voice_direction direction,uint64_t generation,
         fd_voice_audio_admit_fn admit,void *context) {
-    if(!a || direction==FD_VOICE_IDLE || atomic_load(&a->failed))return false;
+    if(!a || (direction!=FD_VOICE_RX && direction!=FD_VOICE_TX) || atomic_load(&a->failed))return false;
     atomic_store(&a->attempted_generation,generation);
     unsigned epoch=atomic_load(&a->cancel_epoch);
     /* Driver applies/key-selects the qualified route first. Flush at that
@@ -269,6 +280,16 @@ bool fd_voice_audio_begin_guarded(fd_voice_audio *a,fd_voice_direction direction
     bool rejected=!startup_allowed(a,epoch,admit,context);
     bool ok=!a->active && generation>a->generation;
     ok &= !rejected;
+    if(ok && a->directional_audio) {
+        /* Both streams retain stereo framing. Only the application slot
+         * changes, while capture admission is closed and output is flushed. */
+        fd_profile_audio_map map=direction==FD_VOICE_RX ? a->rx_audio : a->tx_audio;
+        reason=FD_AUDIO_CHANNEL_MAP;
+        ok=audio_freedv_capture_configure(map.capture_channel,NULL) &&
+            audio_freedv_playback_select_channel(a->playback,map.playback_channel);
+        if(ok)a->selected_audio=map;
+    }
+    if(!startup_allowed(a,epoch,admit,context)){rejected=true;ok=false;}
     if(ok){reason=FD_AUDIO_TRANSITION;ok=fd_voice_transition(a->engine,direction,generation);}
     if(!startup_allowed(a,epoch,admit,context)){rejected=true;ok=false;}
     if(ok){reason=FD_AUDIO_PLAYBACK_REARM;ok=audio_freedv_playback_rearm(a->playback,generation);}

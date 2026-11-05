@@ -92,6 +92,13 @@ typedef struct audio_freedv_playback audio_freedv_playback_t;
 /* The session owns the handle. Any thread may cancel/write/read statistics;
  * close requires all callers joined and is never part of the RF stop path. */
 audio_freedv_playback_t *audio_freedv_playback_open(void);
+/* Native playback retains an explicit FL/FR stereo stream. channel 1/2
+ * receives the mono waveform; the other slot is zero. No server remixing.
+ * Slot selection is a Linux transport property, not proof of board wiring. */
+audio_freedv_playback_t *audio_freedv_playback_open_mapped(unsigned channel);
+/* Change slots only after cancellation and acknowledged flush, before rearm.
+ * The stream and its stereo format are retained across RX/TX turns. */
+bool audio_freedv_playback_select_channel(audio_freedv_playback_t *, unsigned channel);
 ssize_t audio_freedv_playback_submit(audio_freedv_playback_t *, const int16_t *, size_t);
 /* Lock-free write fence for the RF watchdog: request, clear RF commands, then
  * let the audio worker issue the server flush. Never wait for PulseAudio before

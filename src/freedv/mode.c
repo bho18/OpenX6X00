@@ -60,9 +60,10 @@ static const fd_qualified_profile *production_profile(void) {
     /* Explicit virtual fixture, compiled out of every radio build. This is
      * neither qualification evidence nor a production registry entry. */
     static const fd_qualified_profile simulated={.id="SIMULATION ONLY",.hardware="host",.build_id=FREEDV_BUILD_ID,
-        .baseband="stub",.control_version="stub",.evidence_sha256="0000000000000000000000000000000000000000000000000000000000000000",
+        .baseband="stub",.control_version="stub",.native_contract_id="host-native-v2",.evidence_sha256="0000000000000000000000000000000000000000000000000000000000000000",
         .local_mode=FD_PROFILE_USB_DIG,.upper_sideband=true,.capture_device="@default-source@",.playback_device="@default-sink@",
         .mixer="host-default",.sample_rate=44100,.capture_channel=0,.rx_route=FD_ROUTE_RECORD,.tx_route=FD_ROUTE_MODEM|FD_ROUTE_PTT,
+        .rx_audio={1,1},.tx_audio={1,1},
         .rx_low_hz=100,.rx_high_hz=3100,.tx_low_hz=100,.tx_high_hz=3100,.rx2_low_hz=0,.rx2_high_hz=3300,.agc=radio_agc_auto,
         .mic_gain=20,.line_gain=20,.line_out_gain=10,.rf_gain=100,.squelch=0,.mixer_levels_attested=true,
         .monitor_gain=0,.power_tenths_watt=10,
@@ -295,6 +296,7 @@ static void service(lv_timer_t *timer) {
         fd_native_audio_trace sample={.generation=audio.generation,
             .adapter_instance=audio.adapter_instance,.engine_instance=audio.engine_instance,
             .capture_instance=audio.capture_instance,.playback_instance=audio.playback_instance,
+            .capture_channel=audio.capture_channel,.playback_channel=audio.playback_channel,
             .input_samples=audio.engine.input_samples,.output_samples=audio.engine.output_samples,
             .delivered_samples=audio.engine.delivered_samples,.processing_max_ns=audio.engine.processing_max_ns,
             .synthesis_max_ns=audio.engine.synthesis_max_ns,.input_high_water=audio.engine.input_high_water,
@@ -308,7 +310,10 @@ static void service(lv_timer_t *timer) {
             .failed=audio.failed || audio.engine.failures,.cancelled=audio.cancelled,.finished=audio.engine.finished};
         fd_native_trace_audio(&sample);
     }
-    lv_label_set_text_fmt(ui.state,"%s | microphone %s",fd_voice_state_name(s),s.microphone_active?"active":"quiet");
+    if(radio_voice_control_recovery_required()) {
+        lv_label_set_text(ui.state,"Native control lost: recovery required");
+        notice("Device recovery required; RF-off is unverified");
+    }else lv_label_set_text_fmt(ui.state,"%s | mic input %s",fd_voice_state_name(s),s.microphone_active?"active":"quiet");
     int32_t hz=s.tuning.frequency;
     lv_label_set_text_fmt(ui.frequency,"VFO %c  %d.%03d.%03d Hz | upper sideband | %s",'A'+s.tuning.vfo,hz/1000000,(hz/1000)%1000,hz%1000,
         profile()->local_mode==FD_PROFILE_USB_DIG?"USB-DIG":"USB");
@@ -337,14 +342,17 @@ static void open_mode(bool validation) {
     if(validation && timeout>admission.max_turn_seconds)timeout=admission.max_turn_seconds;
     if(!created || tuning.frequency<=0 || tuning.vfo>1 || timeout<(validation?1u:30u) || timeout>600 ||
        !(validation?radio_voice_claim_validation(chosen,&admission):radio_voice_claim(chosen))){
-        if(created)fd_session_destroy(created);front_keys_diagnostic_input_release();input_owned=false;msg_schedule_text_fmt("Cannot prepare FreeDV session");return;
+        if(created)fd_session_destroy(created);front_keys_diagnostic_input_release();input_owned=false;
+        msg_schedule_text_fmt(radio_voice_control_recovery_required()?
+            "Native control lost: device recovery required; RF-off unverified":"Cannot prepare FreeDV session");return;
     }
     selected_profile=chosen;validation_mode=validation;validation_admission=admission;
     /* No app memory or saved-frequency restoration belongs to this mode. */
     if(fd_writer_voice_begin()){dialog_construct(&view,lv_scr_act());fd_writer_voice_end();}
     pthread_mutex_lock(&pointer_mutex);session=created;pthread_mutex_unlock(&pointer_mutex);atomic_store(&active,true);
     /* All immutable arguments and the new OFF session were validated before
-     * claiming. An invariant violation must preserve the mute/unkey fence. */
+     * claiming. An invariant violation requests the contract's quiet/inhibit
+     * state; software cleanup is not a physical RF cessation measurement. */
     bool entered=validation?fd_session_enter_validation(created,chosen,&admission,tuning,timeout):
         fd_session_enter(created,chosen,BOARD_NAME,FREEDV_BUILD_ID,tuning,timeout);
     if(!entered){driver.emergency_clear(driver.context);abort();}

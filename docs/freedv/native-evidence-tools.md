@@ -1,9 +1,12 @@
 # Native audio evidence tools
 
-Start with [Session 1](native-session-1.md), using the installed diagnostic image.
-The later [Session 2](native-session-2.md) investigates the unresolved native paths.
-All helper operations are file processing or read-only inventory; no helper can
-Acquire, Arm, Run, select a radio route or open a physical audio device.
+Start with the [current receive-only operator guide](candidate-test.md) and
+[integrated qualification protocol](native-half-duplex-qualification.md).
+The old Session 1/2 route procedures are historical references. Legacy Stage is
+withdrawn in the Python/Windows helper before any GUI request; inventory success
+grants no TX. CaptureWatch can open the existing capture source, but it does not
+change the route. Virtual probes and file decoding remain simulation/offline
+checks, not physical qualification.
 
 ## Portable package and assessment
 
@@ -13,8 +16,12 @@ Build the Windows-friendly ZIP from the repository:
 python3 tools/freedv/build_native_test_package.py --output /path/to/new-test-package.zip
 ```
 
-The package contains the step-by-step checklist, collection script, evidence
-templates/tool, inventory collector and checksums; no radio binary or new image.
+The package includes the current guides, read-only inventory/historical
+collection helpers, the standalone v2 conversation assessor and per-file
+checksums; no radio binary or MCU payload. Current inventory and assessment use
+the Python standard library. Optional historical SDR offset analysis needs
+NumPy/SciPy, listed in DEPENDENCIES.txt. The full-checkout native_session.py
+commands below are historical evidence tools, not the next hardware procedure.
 
 Assess a returned directory or ZIP (Windows path separators are supported):
 

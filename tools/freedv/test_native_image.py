@@ -8,9 +8,11 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from native_image import ExtImage, extract_root, replace_root, root_partition, sha
 from fetch_native_baseline import unpack_sdk
 from verify_native_abi import same_sdk_build
+from prepare_native_image import prepare
 
 
 class ImageTests(unittest.TestCase):
@@ -19,6 +21,9 @@ class ImageTests(unittest.TestCase):
         self.t=Path(self.directory.name)
         root=self.t/'root'; (root/'usr/sbin').mkdir(parents=True); (root/'etc').mkdir(); (root/'lib').mkdir()
         (root/'usr/lib').mkdir(); (root/'etc/sentinel').write_bytes(b'preserve configuration and signature enforcement')
+        (root/'usr/share/x6100').mkdir(parents=True)
+        (root/'usr/share/x6100/update.pub').write_bytes(b'synthetic unchanged signing key')
+        (root/'usr/lib/python3.11/site-packages').mkdir(parents=True)
         (root/'usr/sbin/x6100_gui').write_bytes(b'old synthetic executable')
         (root/'lib/real.so').write_bytes(b'linked target')
         (root/'usr/lib/alias.so').symlink_to('../../lib/real.so')
@@ -57,6 +62,23 @@ class ImageTests(unittest.TestCase):
         corrupt=self.t/'corrupt'; corrupt.write_bytes(b'not an SD card')
         with self.assertRaises(ValueError): root_partition(corrupt)
         with self.assertRaises(ValueError): root_partition(Path('/dev/null'))
+
+    def test_diagnostic_image_does_not_infer_hardware_readiness(self):
+        package=self.t/'package'; package.mkdir()
+        (package/'package-manifest.json').write_text(json.dumps({'target':'x6200-buildroot','firmware_commit':'test-revision'}))
+        (package/'SHA256SUMS').write_text(sha(package/'package-manifest.json')+'  package-manifest.json\n')
+        overlay=self.t/'overlay'; (overlay/'usr/share/x6100').mkdir(parents=True)
+        (overlay/'usr/share/x6100/update.pub').write_bytes(b'synthetic unchanged signing key')
+        gui=self.t/'gui'; gui.write_bytes(b'synthetic replacement executable')
+        # Exercise actual offline filesystem/metadata assembly while replacing
+        # only ARM/ABI checks, which this synthetic image cannot satisfy.
+        with patch('prepare_native_image.require_arm_elf'), patch('prepare_native_image.verify_abi',return_value={'status':'SYNTHETIC-TEST'}):
+            record=prepare(self.image,gui,package,overlay,'diagnostic','test-revision',self.t,
+                           self.t/'diagnostic.img',{'software_gates_passed':True})
+        self.assertFalse(record['hardware_qualified'])
+        self.assertIs(record['ready_for_guided_hardware_tests'],False)
+        serialized=json.loads((self.t/'diagnostic.json').read_text())
+        self.assertIs(serialized['ready_for_guided_hardware_tests'],False)
 
     def test_abi_accepts_debug_only_changes_and_rejects_code_changes(self):
         original=Path('/bin/true')

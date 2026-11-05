@@ -1,5 +1,7 @@
 # Session 1: hand-mic RADE RF proof and ten short turns
 
+> Historical coverage/procedure reference. The current hardware round is receive-only endpoint/PTT availability mapping in [candidate-test.md](candidate-test.md). The native route/PTT/lease interfaces and measured RF shutdown are prerequisites to later TX. Do not execute the older recorder/gain/MODEM sequence below.
+
 Use the diagnostic card already installed: release
 `freedv-native-diagnostics-20261028.1`, image source `2083e3e7`.
 **No reflash, standalone codec batch or two-minute fixture repeat is needed.**

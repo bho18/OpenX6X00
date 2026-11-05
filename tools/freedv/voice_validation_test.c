@@ -118,13 +118,19 @@ static void *run_grant(void *ctx) {
     struct run_request *request=ctx;request->result=fd_session_validation_run(request->session);return NULL;
 }
 int main(void) {
-    fd_qualified_profile candidate={.id="unqualified candidate",.hardware="fake",.build_id="test",
+    fd_qualified_profile candidate={.native_contract_id="host-native-v2",.rx_audio={1,1},.tx_audio={1,1},.id="unqualified candidate",.hardware="fake",.build_id="test",
         .baseband="1",.control_version="test-control",.local_mode=FD_PROFILE_USB_DIG,.upper_sideband=true,
         .capture_device="fake-source",.playback_device="fake-sink",.mixer="fake",
         .sample_rate=44100,.rx_route=FD_ROUTE_RECORD,.tx_route=FD_ROUTE_MODEM,
         .rx_low_hz=100,.rx_high_hz=3100,.tx_low_hz=100,.tx_high_hz=3100,.power_tenths_watt=10};
     fd_validation_admission admission={FD_VALIDATION_ABI,"fake","test","1","test-control",3,true,3};
     assert(fd_profile_candidate_valid(&candidate,"fake","test"));
+    candidate.native_contract_id=NULL;assert(!fd_profile_candidate_valid(&candidate,"fake","test"));
+    candidate.native_contract_id="host-native-v2";
+    candidate.rx_audio.capture_channel=0;assert(!fd_profile_candidate_valid(&candidate,"fake","test"));
+    candidate.rx_audio.capture_channel=1;
+    candidate.tx_audio.playback_channel=3;assert(!fd_profile_candidate_valid(&candidate,"fake","test"));
+    candidate.tx_audio.playback_channel=1;
     assert(!fd_profile_valid(&candidate,"fake","test") && !fd_profile_production());
     assert(fd_validation_admission_valid(&candidate,&admission));
     fd_validation_admission bad=admission;

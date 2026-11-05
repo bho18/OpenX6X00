@@ -19,6 +19,7 @@ static bool engine_finished;
 static int failure_mode;
 static int token_engine,token_playback;
 static unsigned submit_calls,sequence_checked;
+static unsigned selected_capture,selected_playback;
 static bool device_blocked,check_sequence;
 static fd_voice_audio *cancel_during_submit;
 static atomic_bool *startup_permission;
@@ -39,7 +40,10 @@ bool fd_voice_finish(fd_voice_engine *e,uint64_t gen){(void)e;assert(gen==fake_g
 void fd_voice_cancel(fd_voice_engine *e){(void)e;}
 fd_voice_stats fd_voice_observe(fd_voice_engine *e){(void)e;return(fd_voice_stats){.input_samples=generated,.finished=engine_finished,.output_depth=generated-consumed,.input_depth=failure_mode==3?14000:0};}
 void fd_voice_destroy(fd_voice_engine *e){assert(e);}
-bool audio_freedv_capture_configure(unsigned channel,const char *mixer){assert(!channel && (!mixer || !strcmp(mixer,"fake")));return true;}
+bool audio_freedv_capture_configure(unsigned channel,const char *mixer){
+    assert(!atomic_load(&capture_on) && channel<=3 && (!mixer || !strcmp(mixer,"fake")));
+    selected_capture=channel;return true;
+}
 bool audio_freedv_capture_begin(void){atomic_store(&capture_on,true);atomic_fetch_add(&capture_begins,1);startup_step(3);return true;}
 void audio_freedv_capture_end(void){atomic_store(&capture_on,false);}
 bool audio_freedv_capture_flush_begin(void){assert(!atomic_load(&capture_on));atomic_store(&entered_capture_flush,true);return true;}
@@ -52,6 +56,13 @@ audio_freedv_capture_stats_t audio_freedv_capture_stats(void){return(audio_freed
     .last_callback_ms=(unsigned)now()-(failure_mode==5?501:0),.longest_inter_callback_gap_ms=failure_mode==7?773:0,
     .first_callback_delay_ms=failure_mode==8?1001:0};}
 audio_freedv_playback_t *audio_freedv_playback_open(void){atomic_fetch_add(&stream_creates,1);return(audio_freedv_playback_t *)&token_playback;}
+audio_freedv_playback_t *audio_freedv_playback_open_mapped(unsigned channel){
+    assert(channel==1 || channel==2);selected_playback=channel;return audio_freedv_playback_open();
+}
+bool audio_freedv_playback_select_channel(audio_freedv_playback_t *p,unsigned channel){
+    assert(p && !atomic_load(&capture_on) && atomic_load(&flush_complete) && (channel==1 || channel==2));
+    if(failure_mode==9)return false;selected_playback=channel;return true;
+}
 audio_freedv_playback_stats_t audio_freedv_playback_observe(audio_freedv_playback_t *p){assert(p);return(audio_freedv_playback_stats_t){.generation=fake_gen,.accepted_samples=atomic_load(&accepted),.stream_failed=failure_mode==4};}
 ssize_t audio_freedv_playback_submit_generation(audio_freedv_playback_t *p,uint64_t gen,const int16_t *pcm,size_t n){
     assert(p && gen==fake_gen && pcm);++submit_calls;
@@ -141,10 +152,49 @@ static void ready_output_test(void){
     fake_gen=generated=consumed=0;atomic_store(&accepted,0);
     puts("PASS: ready PCM submission is bounded, preserves partial-write order, stops on backpressure and observes concurrent cancellation");
 }
+static fd_voice_audio_snapshot wait_snapshot(fd_voice_audio *a){
+    /* Telemetry deliberately uses trylock and may be busy while the retained
+     * pump samples a fenced stream. Wait for one bounded read. */
+    fd_voice_audio_snapshot snapshot;uint64_t deadline=now()+1000;
+    while(!fd_voice_audio_snapshot_get(a,&snapshot)){assert(now()<deadline);pause_ms();}
+    return snapshot;
+}
+static void directional_turn_test(fd_qualified_profile profile){
+    profile.rx_audio=(fd_profile_audio_map){1,2};profile.tx_audio=(fd_profile_audio_map){2,1};
+    fd_qualified_profile bad=profile;
+    bad.rx_audio.capture_channel=0;assert(!fd_voice_audio_open(&bad));
+    bad=profile;bad.tx_audio.capture_channel=3;assert(!fd_voice_audio_open(&bad));
+    bad=profile;bad.rx_audio.playback_channel=3;assert(!fd_voice_audio_open(&bad));
+    bad=profile;bad.tx_audio.playback_channel=0;assert(!fd_voice_audio_open(&bad));
+    failure_mode=0;fake_gen=generated=consumed=0;
+    unsigned streams=atomic_load(&stream_creates),engines=atomic_load(&engine_creates);
+    fd_voice_audio *a=fd_voice_audio_open(&profile);assert(a);
+    for(unsigned turn=1;turn<=20;++turn){
+        fd_voice_direction direction=turn%2 ? FD_VOICE_RX : FD_VOICE_TX;
+        fd_profile_audio_map map=direction==FD_VOICE_RX ? profile.rx_audio : profile.tx_audio;
+        assert(fd_voice_audio_fence(a));
+        assert(fd_voice_audio_begin(a,direction,turn));
+        assert(selected_capture==map.capture_channel && selected_playback==map.playback_channel);
+        unsigned before=atomic_load(&engine_samples);uint64_t deadline=now()+1000;
+        while(atomic_load(&engine_samples)==before){assert(now()<deadline);pause_ms();}
+        assert(fd_voice_audio_fence(a));
+        fd_voice_audio_snapshot snapshot=wait_snapshot(a);
+        assert(snapshot.capture_channel==map.capture_channel && snapshot.playback_channel==map.playback_channel);
+        assert(atomic_load(&stream_creates)==streams+1 && atomic_load(&engine_creates)==engines+1);
+    }
+    unsigned input=atomic_load(&engine_samples),output=atomic_load(&accepted);
+    failure_mode=9;assert(!fd_voice_audio_begin(a,FD_VOICE_RX,21));
+    assert(fd_voice_audio_failed(a) && !atomic_load(&capture_on));
+    assert(atomic_load(&engine_samples)==input && atomic_load(&accepted)==output);
+    assert(atomic_load(&a->first_fault)==FD_AUDIO_CHANNEL_MAP);
+    fd_voice_audio_close(a);failure_mode=0;
+    puts("PASS: explicit native maps reject default/summed slots; 20 RX/TX map changes retain streams, and a mapping failure admits no PCM");
+}
 int main(int argc,char **argv){
     ready_output_test();
     if(argc==2 && !strcmp(argv[1],"--submission"))return 0;
-    fd_qualified_profile profile={.sample_rate=44100,.capture_device=BOARD_PA_SOURCE,.playback_device=BOARD_PA_SINK,.mixer="fake"};
+    fd_qualified_profile profile={.sample_rate=44100,.capture_device=BOARD_PA_SOURCE,.playback_device=BOARD_PA_SINK,.mixer="fake",
+        .rx_audio={1,2},.tx_audio={2,1}};
     fd_voice_audio *a=fd_voice_audio_open(&profile);assert(a);
     uint64_t adapter_id=a->adapter_instance,engine_id=a->engine_instance,
         capture_id=a->capture_instance,playback_id=a->playback_instance;
@@ -168,8 +218,7 @@ int main(int argc,char **argv){
         assert(fd_voice_audio_drained(a)==0);atomic_store(&drain_completed,true);assert(fd_voice_audio_drained(a)==1);
         assert(atomic_load(&engine_creates)==1 && atomic_load(&stream_creates)==1);
         assert(!fd_voice_audio_failed(a));
-        fd_voice_audio_snapshot snapshot;
-        while(!fd_voice_audio_snapshot_get(a,&snapshot)){assert(now()<deadline);pause_ms();}
+        fd_voice_audio_snapshot snapshot=wait_snapshot(a);
         assert(snapshot.generation==turn && snapshot.playback.generation==turn);
         assert(snapshot.adapter_instance==adapter_id && snapshot.engine_instance==engine_id &&
             snapshot.capture_instance==capture_id && snapshot.playback_instance==playback_id);
@@ -185,8 +234,8 @@ int main(int argc,char **argv){
     assert(fd_voice_audio_fence(a));failure_mode=1;
     assert(fd_voice_audio_begin(a,FD_VOICE_RX,101));uint64_t deadline=now()+1000;
     while(!fd_voice_audio_failed(a)){assert(now()<deadline);pause_ms();}
-    assert(fd_voice_audio_fence(a));fd_voice_audio_snapshot fault;
-    assert(fd_voice_audio_snapshot_get(a,&fault) && fault.first_fault==FD_AUDIO_CAPTURE && fault.fault_generation==101);
+    assert(fd_voice_audio_fence(a));fd_voice_audio_snapshot fault=wait_snapshot(a);
+    assert(fault.first_fault==FD_AUDIO_CAPTURE && fault.fault_generation==101);
     unsigned began=atomic_load(&capture_begins);
     assert(!fd_voice_audio_begin(a,FD_VOICE_TX,102) && atomic_load(&capture_begins)==began);
     assert(fd_voice_audio_drained(a)==-1);fd_voice_audio_close(a);assert(atomic_load(&closed)==1);
@@ -197,7 +246,7 @@ int main(int argc,char **argv){
     assert(fd_voice_audio_fence(a) && fd_voice_audio_begin(a,FD_VOICE_RX,1));deadline=now()+1000;
     while(!fd_voice_audio_failed(a)){assert(now()<deadline);pause_ms();}
     assert(fd_voice_audio_fence(a));
-    assert(fd_voice_audio_snapshot_get(a,&fault) && fault.first_fault==FD_AUDIO_BACKLOG);
+    fault=wait_snapshot(a);assert(fault.first_fault==FD_AUDIO_BACKLOG);
     assert(fault.fault_capture_queued==10000 && fault.fault_engine_input_depth==14000);
     fd_voice_audio_close(a);assert(atomic_load(&fault_callbacks)==2 && atomic_load(&closed)==2);
     failure_mode=4;fake_gen=0;a=fd_voice_audio_open(&profile);assert(a);fd_voice_audio_on_error(a,on_error,a);
@@ -211,7 +260,7 @@ int main(int argc,char **argv){
         assert(fd_voice_audio_fence(a) && fd_voice_audio_begin(a,FD_VOICE_TX,1));deadline=now()+1000;
         while(!fd_voice_audio_failed(a)){assert(now()<deadline);pause_ms();}
         assert(fd_voice_audio_fence(a));
-        assert(fd_voice_audio_snapshot_get(a,&fault) && fault.first_fault==FD_AUDIO_CAPTURE_STALL);
+        fault=wait_snapshot(a);assert(fault.first_fault==FD_AUDIO_CAPTURE_STALL);
         assert(!fault.capture.hole_samples && !fault.capture.dropped_samples && !fault.fault_capture_queued);
         fd_voice_audio_close(a);
     }
@@ -222,5 +271,6 @@ int main(int argc,char **argv){
     assert(atomic_load(&fault_callbacks)==7 && atomic_load(&closed)==7);
     assert(!atomic_load(&corks)); /* flush fences writes without idle-suspending */
     startup_admission_test(&profile);
+    directional_turn_test(profile);
     puts("PASS: actual voice adapter, 100 retained turns, partial writes, drain/fence, backlog, device failure and unreported capture stalls");
 }

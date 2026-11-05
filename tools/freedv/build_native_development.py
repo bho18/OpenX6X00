@@ -37,10 +37,12 @@ def source_snapshot():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--variant', required=True,
-                        choices=('host', 'x6200-diagnostic', 'x6200-normal', 'x6100'))
+                        choices=('host', 'host-native-validation', 'x6200-diagnostic', 'x6200-normal', 'x6100'))
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--sdk', type=Path)
     parser.add_argument('--codec', type=Path)
+    parser.add_argument('--codec-fixture', type=Path,
+                        help='Pinned RADE modem fixture for host-native-validation codec checks')
     parser.add_argument('--control-headers', type=Path)
     parser.add_argument('--x6100-prefix', type=Path)
     parser.add_argument('--build-id', default='unqualified-development')
@@ -51,10 +53,14 @@ def main():
         parser.error('--work must be outside the source checkout')
     if args.jobs < 1:
         parser.error('--jobs must be positive')
-    if args.variant != 'host' and not args.sdk:
+    host = args.variant in ('host', 'host-native-validation')
+    host_native = args.variant == 'host-native-validation'
+    if not host and not args.sdk:
         parser.error('ARM variants require --sdk')
-    if args.variant in ('x6200-diagnostic', 'x6100') and not args.codec:
+    if args.variant in ('host-native-validation', 'x6200-diagnostic', 'x6100') and not args.codec:
         parser.error('native/compatibility variants require --codec')
+    if host_native and (not args.codec_fixture or not args.codec_fixture.is_file()):
+        parser.error('host-native-validation requires --codec-fixture')
     if args.variant == 'x6100' and not args.x6100_prefix:
         parser.error('X6100 compatibility build requires --x6100-prefix')
     if not (ROOT / 'lvgl/CMakeLists.txt').is_file():
@@ -67,17 +73,39 @@ def main():
               'source_files': before, 'build_id': args.build_id, 'commands': [],
               'hardware_qualified': False, 'hardware_status': 'BLOCKED',
               'physical_audio_routes': 'UNQUALIFIED',
-              'physical_hand_ptt': 'UNSUPPORTED by pinned documented API',
+              'physical_hand_ptt': 'UNQUALIFIED; aggregate TX does not establish an independent hand PTT contract',
               'physical_rf_off_timing': 'UNASSESSED',
               'timing_qualifies_radio': False}
     env = os.environ.copy()
     options = ['-DCMAKE_BUILD_TYPE=RelWithDebInfo']
-    if args.variant == 'host':
+    if host:
         options += ['-DHOST_BUILD=ON', '-DENABLE_FREEDV_DIAGNOSTICS=ON',
-                    '-DENABLE_FREEDV_NATIVE_CODEC=OFF', '-DENABLE_FREEDV_VOICE=OFF',
-                    '-DENABLE_FREEDV_NATIVE_VALIDATION=OFF']
+                    '-DFREEDV_HOST_TEST_PROFILE=' + ('ON' if host_native else 'OFF')]
+        options += ['-D' + name + '=' + ('ON' if host_native else 'OFF')
+                    for name in ('ENABLE_FREEDV_NATIVE_CODEC', 'ENABLE_FREEDV_VOICE',
+                                 'ENABLE_FREEDV_NATIVE_VALIDATION')]
         if args.control_headers:
             options += ['-DX6200_CONTROL_INCLUDE_DIR=' + str(args.control_headers.resolve())]
+        if host_native:
+            codec = args.codec.resolve()
+            opus = codec / 'rade_c/build_opus-prefix/src/build_opus'
+            dependencies = {
+                'FREEDV_RADE_SOURCE': codec / 'sources/rade_c/src',
+                'FREEDV_OPUS_BUILD': opus,
+                'FREEDV_RADE_LIBRARY': codec / 'rade_c/src/librade.so.0.1',
+                'FREEDV_OPUS_LIBRARY': opus / '.libs/libopus.a',
+                'FREEDV_SAMPLERATE_LIBRARY': codec / 'samplerate/src/libsamplerate.a',
+                'FREEDV_SAMPLERATE_INCLUDE_DIR': codec / 'sources/libsamplerate-0.2.2/include',
+            }
+            options += ['-D' + name + '=' + str(path) for name, path in dependencies.items()]
+            options += ['-DFREEDV_BUILD_ID=' + args.build_id, '-DFREEDV_CONTROL_ID=' + CONTROL_PIN]
+            record['codec_inputs'] = {name: {'path': str(path), 'sha256': sha(path)}
+                                     for name, path in dependencies.items() if path.is_file()}
+            record['opus_configuration_sha256'] = sha(opus / 'config.h')
+            record['codec_fixture_sha256'] = sha(args.codec_fixture)
+            record['host_simulated'] = True
+            record['validation_entry_exercised'] = False
+            env['LD_LIBRARY_PATH'] = str(codec / 'rade_c/src') + os.pathsep + env.get('LD_LIBRARY_PATH', '')
     else:
         sdk = args.sdk.resolve()
         for name in ('CPATH', 'LIBRARY_PATH', 'PKG_CONFIG_PATH', 'CMAKE_PREFIX_PATH'):
@@ -131,6 +159,10 @@ def main():
     try:
         run(['cmake', '-S', ROOT, '-B', work / 'build', '-G', 'Ninja', *options], 'configure.log')
         targets = [] if args.variant == 'host' else ['--target', 'x6100_gui']
+        if host_native:
+            targets += ['params_sqlite', 'freedv_voice_engine_test', 'freedv_native_stream_test',
+                        'freedv_native_stream_fixture_test', 'freedv_native_audio_codec_adapter_test',
+                        'freedv_voice_runner']
         if args.variant == 'x6200-diagnostic':
             targets += ['freedv_voice_runner', 'freedv_voice_pulse_probe']
         run(['cmake', '--build', work / 'build', *targets, '-j', args.jobs], 'build.log')
@@ -145,13 +177,25 @@ def main():
             record['host_tests'] = [case.attrib['name'] for case in tests]
             if not record['host_tests']:
                 raise ValueError('CTest executed no FreeDV tests')
+        if host_native:
+            checks = {
+                'voice-engine': [work / 'build/freedv_voice_engine_test', '--turns', '3'],
+                'native-stream': [work / 'build/freedv_native_stream_test', '--unpaced'],
+                'stream-fixture': [work / 'build/freedv_native_stream_fixture_test', args.codec_fixture.resolve()],
+                'codec-adapter': [work / 'build/freedv_native_audio_codec_adapter_test', args.codec_fixture.resolve()],
+            }
+            record['codec_checks'] = {}
+            for name, command in checks.items():
+                run(command, name + '.log')
+                record['codec_checks'][name] = {'status': 'PASS', 'log_sha256': sha(work / (name + '.log'))}
+            record['scope'] = 'Full host native GUI compilation and targeted real-codec correctness; no physical audio, RF or timing qualification'
         gui = work / 'build/src/x6100_gui'
         record['binaries'] = {'gui': {'path': str(gui), 'sha256': sha(gui)}}
         if args.variant == 'x6200-diagnostic':
             for name in ('freedv_voice_runner', 'freedv_voice_pulse_probe'):
                 binary = work / 'build' / name
                 record['binaries'][name] = {'path': str(binary), 'sha256': sha(binary)}
-        if args.variant != 'host':
+        if not host:
             run([sdk / 'bin/arm-buildroot-linux-gnueabihf-readelf', '-h', '-A', '-d', gui], 'elf.txt')
         after, _ = source_snapshot()
         record['source_changed_during_build'] = sorted(name for name in set(before) | set(after)

@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-"""Local diagnostic control. No remote Acquire, Arm, Run, tuning or register writes."""
+"""Read-only endpoint inventory and historical collection; old route staging is withdrawn."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
-import secrets
 import subprocess
 import time
 from radio_retest import collect, assess_collected, command, sha
 
 CONTROL=Path('/tmp/freedv-control')
-STAGES=Path('/tmp/freedv-agent-stages')
 STATUS_MAX_AGE_MS=1500
-CASES={'record-hand-zero':(23,4),'record-hand-saved':(24,4),
-       'record-ordinary-zero':(25,4),'record-ordinary-saved':(26,4),
-       'record-then-modem':(28,6),'modem-prekey-gain':(27,6),'modem-waveform':(20,6),'live-speech':(21,6),'receive':(22,4)}
+WITHDRAWN = ('The recorder/gain/MODEM trial workflow is withdrawn. Collect existing evidence or run '
+             'read-only Preflight for receive-only endpoint/PTT availability mapping. Native TX remains '
+             'blocked until the measured board mapping, raw PTT, applied-route acknowledgement and '
+             'independent native lease interfaces exist; see native-half-duplex-qualification.md.')
 
 def atomic(path, value):
     temp=path.with_name(path.name+'.new')
@@ -32,20 +29,23 @@ def preflight(manifest):
     identity=json.loads(installed.read_text())
     if identity['firmware_commit']!=manifest['firmware_commit'] or identity['gui_sha256']!=expected:
         raise ValueError('Installed source/build identities do not match')
-    fixture=Path('/usr/share/x6100/freedv/fixtures/rade-continuous.raw')
-    expected_fixture=manifest.get('modem_fixture_sha256')
-    if not expected_fixture or identity.get('modem_fixture_sha256')!=expected_fixture or not fixture.is_file() or sha(fixture)!=expected_fixture:
-        raise ValueError('Installed modem waveform does not match candidate manifest')
-    if shutil.disk_usage('/tmp').free<96*1024*1024:raise ValueError('Need 96 MiB free for bounded capture and collection')
     inventory={name:command(args) for name,args in {
         'kernel':['uname','-a'],'audio':['pactl','list','sources'],
+        'playback':['pactl','list','sinks'],
         'mixer':['amixer','contents'],'inputs':['cat','/proc/bus/input/devices'],
-        'sound':['cat','/proc/asound/pcm'],'processes':['ps']}.items()}
-    if inventory['audio'].get('exit')!=0 or inventory['mixer'].get('exit')!=0:
-        raise ValueError('Physical audio source/mixer inventory unavailable')
-    return {'status':'READY','firmware_commit':identity['firmware_commit'],'gui_sha256':expected,'modem_fixture_sha256':expected_fixture,
+        'sound':['cat','/proc/asound/pcm'],'sound_cards':['cat','/proc/asound/cards'],
+        'processes':['ps']}.items()}
+    missing=[name for name,result in inventory.items()
+             if result.get('exit')!=0 or not isinstance(result.get('stdout'),str) or not result['stdout'].strip()]
+    return {'status':'INVENTORY_INCOMPLETE' if missing else 'INVENTORIED',
+            'scope':'read_only_receive_endpoint_inventory',
+            'inventory_complete':not missing,'missing_observations':missing,
+            'firmware_commit':identity['firmware_commit'],'gui_sha256':expected,
             'inventory':inventory,'hand_ptt_independent':'UNSUPPORTED by pinned API',
-            'hardware_qualified':False}
+            'hardware_qualified':False,'native_voice_available':False,
+            'legacy_route_staging':'WITHDRAWN','route_requested':False,
+            'effective_route_state':'UNKNOWN','physical_endpoint_mapping':'UNQUALIFIED',
+            'next':'Receive-only endpoint/PTT availability mapping; this inventory grants no TX'}
 
 def read_status():
     status=json.loads((CONTROL/'status.json').read_text())
@@ -55,67 +55,38 @@ def read_status():
     return status
 
 def stage(case,repeat,manifest=None,fixture_sha256=None):
-    if case not in CASES:raise ValueError('Unknown named case')
-    c,route=CASES[case]
-    if repeat and c not in range(23,27):raise ValueError('Only unkeyed recording cases may repeat')
-    if not CONTROL.is_dir() or not (CONTROL/'status.json').is_file():
-        raise ValueError('Open FreeDV test locally before staging')
-    status=read_status()
-    if status['state'] not in (0,1):raise ValueError('Finish current case and restoration before staging')
-    request_id=secrets.randbits(63) or 1
-    selection={'case':c,'route':route,'microphone_index':0,'capture_channel':0,'mixer_choice':0,'repeat':5 if repeat else 1}
-    # One atomic request binds repetition to this particular case. A stale
-    # repeat marker can never spill over into a later RF selection.
-    atomic(CONTROL/'stage',f"2 {request_id} {c} {route} 0 0 0 {selection['repeat']}\n")
-    deadline=time.monotonic()+3
-    while time.monotonic()<deadline:
-        status=read_status()
-        if status.get('stage_request_id')==request_id:
-            if status.get('stage_accepted') is not True:
-                raise ValueError('GUI rejected staging: '+str(status.get('stage_rejection','unspecified')))
-            if status.get('selected')!=selection:
-                raise ValueError('GUI acknowledged different case/settings; do not run')
-            break
-        time.sleep(.05)
-    else:raise ValueError('GUI did not acknowledge staging; no case was started')
-    result={'status':'STAGED','request_id':request_id,'case':case,'selected':selection,
-        'repeat':selection['repeat'],'firmware_commit':(manifest or {}).get('firmware_commit'),
-        'gui_sha256':(manifest or {}).get('gui_sha256'),'fixture_sha256':fixture_sha256,
-        'modem_fixture_sha256':(manifest or {}).get('modem_fixture_sha256'),
-        'fixture_listening':'UNASSESSED','staged_monotonic_ms':status['monotonic_ms'],
-        'local_action':'Run' if c in range(23,27) else 'Arm then Run' if c in (20,21,27,28) else 'Run',
-        'ptt':'Both physical PTT controls released throughout', 'rf_started':False}
-    STAGES.mkdir(mode=0o700,parents=True,exist_ok=True)
-    atomic(STAGES/(str(request_id)+'.json'),json.dumps(result,indent=2)+'\n')
-    return result
+    # Keep the callable/CLI for old automation, but reject before touching the
+    # GUI control directory. Historic evidence collection remains supported.
+    raise ValueError(WITHDRAWN)
 
 def next_case(assessment):
     cases=assessment.get('cases',[])
     if assessment.get('issues'):
         return {'status':'INCONCLUSIVE','next':'Resolve evidence completeness or identity issues before another case','issues':assessment['issues']}
-    if not cases:return {'status':'INCONCLUSIVE','next':'record-ordinary-zero','reason':'No completed captures'}
+    if not cases:return {'status':'BLOCKED','next':'receive-only endpoint/PTT availability mapping',
+                         'reason':'No completed captures; legacy route staging is withdrawn'}
     latest=cases[-1];voice=latest.get('voice_assessment',{})
     if voice.get('input_activity',{}).get('status') in ('NEAR_CONSTANT','BRIEF_TRANSIENTS_ONLY'):
-        return {'status':'FAIL','next':'inspect source PCM and control-trace; compare recording conventions before another RF case'}
+        return {'status':'FAIL','next':'inspect existing source PCM and control trace against measured board endpoints and the lower-layer contract; no new route/gain trial'}
     return {'status':'INCONCLUSIVE','next':'listening assessment of input, local decode and RF decode',
             'reason':'Activity and mechanics do not establish speech intelligibility'}
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('operation',choices=['preflight','stage','status','events','abort','collect','assess'])
-    p.add_argument('--manifest',type=Path);p.add_argument('--case',choices=CASES)
-    p.add_argument('--repeat-five',action='store_true');p.add_argument('--output',type=Path)
+    p.add_argument('--manifest',type=Path);p.add_argument('--case',help=argparse.SUPPRESS)
+    p.add_argument('--repeat-five',action='store_true',help=argparse.SUPPRESS);p.add_argument('--output',type=Path)
     p.add_argument('--fixture-sha256')
     a=p.parse_args()
     try:
+        if a.operation=='stage':raise ValueError(WITHDRAWN)
         manifest=json.loads(a.manifest.read_text()) if a.manifest else None
         if a.fixture_sha256 and (len(a.fixture_sha256)!=64 or any(c not in '0123456789abcdef' for c in a.fixture_sha256)):
             raise ValueError('Fixture SHA256 must contain 64 lowercase hex digits')
-        if a.operation in ('preflight','stage'):
+        if a.operation=='preflight':
             if not a.manifest:raise ValueError('Candidate manifest is required')
             checked=preflight(manifest)
         if a.operation=='preflight':result=checked
-        elif a.operation=='stage':result=stage(a.case,a.repeat_five,manifest,a.fixture_sha256)
         elif a.operation=='status':result=read_status()
         elif a.operation=='abort':
             if not CONTROL.is_dir():raise ValueError('Diagnostic interface is not open')

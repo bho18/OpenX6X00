@@ -16,13 +16,17 @@ typedef enum {
     FD_AUDIO_FINISH, FD_AUDIO_WRITE, FD_AUDIO_ENGINE, FD_AUDIO_DRAIN,
     FD_AUDIO_STREAM, FD_AUDIO_CAPTURE_FLUSH, FD_AUDIO_CAPTURE_FLUSH_TIMEOUT,
     FD_AUDIO_REARM, FD_AUDIO_TRANSITION, FD_AUDIO_PLAYBACK_REARM,
-    FD_AUDIO_UNCORK, FD_AUDIO_CAPTURE_BEGIN, FD_AUDIO_CAPTURE_STALL
+    FD_AUDIO_UNCORK, FD_AUDIO_CAPTURE_BEGIN, FD_AUDIO_CAPTURE_STALL,
+    FD_AUDIO_CHANNEL_MAP
 } fd_voice_audio_fault;
 typedef struct fd_voice_audio_snapshot {
     uint64_t sampled_ms, generation;
     /* Process-local monotonic identities, assigned after successful opens.
      * They remain unchanged across turns and never expose pointer values. */
     uint64_t adapter_instance, engine_instance, capture_instance, playback_instance;
+    /* Selected native Linux stereo slots only, never an MCU route ACK.
+     * Legacy diagnostic adapters report 0, not an isolation claim. */
+    unsigned capture_channel, playback_channel;
     bool cancelled, failed, finishing;
     unsigned first_fault;
     uint64_t fault_generation, fault_ms;
@@ -42,6 +46,9 @@ void fd_voice_audio_on_error(fd_voice_audio *,void (*handler)(void *),void *cont
 /* Caller owns radio/mixer routing. Devices must match the qualified profile.
  * One retained capture source, playback stream, engine and pump per entry. */
 fd_voice_audio *fd_voice_audio_open(const fd_qualified_profile *);
+/* Explicit measurement adapter: retains legacy mono/mean capture and mono
+ * playback. This does not qualify a native profile or claim channel isolation. */
+fd_voice_audio *fd_voice_audio_open_diagnostic(const fd_qualified_profile *);
 /* Synchronous callback/pump fence, used outside the RF-clear path. */
 bool fd_voice_audio_fence(fd_voice_audio *);
 bool fd_voice_audio_begin(fd_voice_audio *, fd_voice_direction, uint64_t generation);

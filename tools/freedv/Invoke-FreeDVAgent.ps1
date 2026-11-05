@@ -7,11 +7,14 @@ param(
  [ValidateRange(1,600)][int]$DurationSeconds=150,
  [string]$RadioIp='192.168.100.62',
  [string]$CandidateManifest=(Join-Path $PSScriptRoot 'candidate-manifest.json'),
- [ValidateSet('record-hand-zero','record-hand-saved','record-ordinary-zero','record-ordinary-saved','modem-waveform','modem-prekey-gain','record-then-modem','live-speech','receive')][string]$Case='record-ordinary-zero',
+ [string]$Case='',
  [switch]$RepeatFive,
  [string]$OutputDir=(Join-Path (Get-Location) 'freedv-route-results')
 )
 $ErrorActionPreference='Stop'
+if($Action -eq 'Stage'){
+ throw 'The recorder/gain/MODEM trial workflow is withdrawn. Use Preflight for read-only receive endpoint/PTT availability inventory, or Collect/Assess for existing evidence. Native TX remains blocked; follow native-half-duplex-qualification.md.'
+}
 if($Action -eq 'SpeechFixture'){
  Add-Type -AssemblyName System.Speech
  $speaker=New-Object System.Speech.Synthesis.SpeechSynthesizer
@@ -41,7 +44,7 @@ $operation=$Action.ToLowerInvariant()
 if($Action -eq 'CaptureWatch'){
  New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
  $watchLog=Join-Path $OutputDir ('source-watch-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.log')
- Write-Host 'Recording the physical source in bounded stereo chunks. Keep this window open; run Stage in a second PowerShell window. Both physical PTT controls remain released.'
+ Write-Host 'Recording the existing physical source without route changes. Keep both physical PTT controls released. This does not establish endpoint wiring or grant TX; legacy Stage is withdrawn.'
  & ssh @opts "root@$RadioIp" "python3 $remote/capture_source_watch.py --gui-sha256 $($identity.gui_sha256) --seconds $DurationSeconds --channels 2 --chunks" | Tee-Object -FilePath $watchLog
 }elseif($Action -eq 'Probe'){
  if(!(Test-Path -LiteralPath $SpeechWav)){throw 'Run -Action SpeechFixture first or supply a 44.1kHz mono PCM16 WAV with -SpeechWav'}
@@ -52,10 +55,6 @@ if($Action -eq 'CaptureWatch'){
  & ssh @opts "root@$RadioIp" "python3 $remote/radio_retest.py probe --duration-ms $DurationMs$cycleArg --speech-wav /tmp/freedv-agent-kit/speech.wav --turns $Turns --output $probeOutput --gui-sha256 $($identity.gui_sha256) --probe-sha256 $($identity.pulse_probe_sha256)"
 }else{
  $argsText="--manifest $remote/candidate-manifest.json"
- if($Action -eq 'Stage'){
-  $argsText+=" --case $Case";if($RepeatFive){$argsText+=' --repeat-five'}
-  if(Test-Path -LiteralPath $SpeechWav){$argsText+=' --fixture-sha256 '+(Get-FileHash -LiteralPath $SpeechWav -Algorithm SHA256).Hash.ToLowerInvariant()}
- }
  if($Action -in @('Collect','Assess')){$argsText+=' --output /tmp/freedv-agent-results'}
  & ssh @opts "root@$RadioIp" "python3 $remote/route_agent.py $operation $argsText"
 }

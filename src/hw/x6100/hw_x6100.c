@@ -452,6 +452,17 @@ hw_native_voice_capabilities_t hw_native_voice_capabilities(void) {
     return (hw_native_voice_capabilities_t){.abi_version=HW_NATIVE_VOICE_ABI,
         .evidence="Native voice capabilities have not been established for X6100"};
 }
+/* No reviewed native lease/applied-route protocol is implemented here.
+ * These functions deliberately perform no bus or register writes. */
+bool hw_native_voice_acquire(uint64_t token) { (void)token;return false; }
+bool hw_native_voice_apply(uint64_t token,uint64_t generation,hw_native_voice_route_t route) {
+    (void)token;(void)generation;(void)route;return false;
+}
+bool hw_native_voice_renew(uint64_t token) { (void)token;return false; }
+bool hw_native_voice_observe(hw_native_voice_state_t *out) {
+    if(out)*out=(hw_native_voice_state_t){0};return false;
+}
+bool hw_native_voice_release(uint64_t token) { (void)token;return false; }
 bool hw_ptt_observe(hw_ptt_source_t source, hw_ptt_observation_t *out) {
     if (out) *out = (hw_ptt_observation_t){.source=source};
     return false;

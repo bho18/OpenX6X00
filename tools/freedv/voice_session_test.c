@@ -9,8 +9,8 @@
 static uint64_t now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return(uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;}
 static void pause_ms(void){struct timespec t={0,1000000};nanosleep(&t,NULL);}
 static struct {
-    atomic_bool held[2],stale,frozen,tx,drain,error,stall,preparing,stall_finish;
-    atomic_uint clears,restores,closes,prepares,tunes,transmits,receives;
+    atomic_bool held[2],stale,frozen,tx,drain,error,stall,preparing,stall_finish,maintenance_failure;
+    atomic_uint clears,restores,closes,prepares,tunes,transmits,receives,maintenance_calls;
     uint64_t sequence;
 } fake;
 static bool prepare(void *p,const fd_qualified_profile *profile,const atomic_bool *cancel){
@@ -28,6 +28,7 @@ static void clear(void *p){(void)p;atomic_store(&fake.tx,false);atomic_fetch_add
 static bool retune(void *p,fd_voice_tuning *tuning,const fd_qualified_profile *profile){(void)p;assert(profile && tuning->frequency);atomic_fetch_add(&fake.tunes,1);return true;}
 static bool restore(void *p){(void)p;assert(!atomic_load(&fake.tx) && !atomic_load(&fake.held[0]) && !atomic_load(&fake.held[1]));atomic_fetch_add(&fake.restores,1);return true;}
 static bool close_driver(void *p){(void)p;atomic_fetch_add(&fake.closes,1);return true;}
+static bool maintain(void *p){(void)p;atomic_fetch_add(&fake.maintenance_calls,1);return !atomic_load(&fake.maintenance_failure);}
 static bool observe(void *p,fd_voice_observation *o,bool *sync,bool *mic){
     (void)p;uint64_t time=now();if(atomic_load(&fake.stale))time-=1000;
     if(!atomic_load(&fake.frozen))++fake.sequence;
@@ -39,7 +40,7 @@ static void wait_state(fd_voice_session *s,fd_voice_state state){
     uint64_t deadline=now()+2500;
     while(fd_session_observe(s).state!=state){if(now()>=deadline){fprintf(stderr,"expected %d, got %d (%s)\n",state,fd_session_observe(s).state,fd_voice_state_name(fd_session_observe(s)));assert(0);}pause_ms();}
 }
-static fd_qualified_profile profile(fd_profile_mode mode){return(fd_qualified_profile){
+static fd_qualified_profile profile(fd_profile_mode mode){return(fd_qualified_profile){.native_contract_id="host-native-v2",.rx_audio={1,1},.tx_audio={1,1},
     .id="test-only",.hardware="fake",.build_id="development",.baseband="fake",.control_version="fake",
     .evidence_sha256="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     .local_mode=mode,.upper_sideband=true,.capture_device="fake",.playback_device="fake",.mixer="fake",
@@ -52,7 +53,7 @@ int main(int argc,char **argv){
     usb.complete_pass=false;assert(!fd_profile_select(&usb,&dig,"fake","development"));usb.complete_pass=true;
     assert(!fd_profile_select(&usb,NULL,"fake","other-build"));
     fd_voice_driver driver={.prepare=prepare,.fence=fence,.receive=rx,.transmit=tx,.finish=finish,
-        .drained=drained,.emergency_clear=clear,.retune=retune,.restore=restore,.close=close_driver,.observe=observe};
+        .drained=drained,.emergency_clear=clear,.retune=retune,.restore=restore,.close=close_driver,.observe=observe,.maintain=maintain};
     fd_voice_session *s=fd_session_create(&driver);assert(s);
     fd_voice_tuning tuning={14100000,1};
     assert(!fd_session_enter(s,&usb,"fake","development",tuning,29));
@@ -110,5 +111,14 @@ int main(int argc,char **argv){
     atomic_store(&fake.stall,true);assert(fd_session_enter(s,&usb,"fake","development",tuning,180));
     deadline=now()+1000;while(!atomic_load(&fake.preparing)){assert(now()<deadline);pause_ms();}
     fd_session_leave(s);wait_state(s,FD_VS_OFF);assert(fd_session_destroy(s));
+    atomic_store(&fake.stall,false);s=fd_session_create(&driver);assert(s);
+    assert(fd_session_enter(s,&usb,"fake","development",tuning,180));wait_state(s,FD_VS_RX);
+    atomic_store(&fake.maintenance_failure,true);wait_state(s,FD_VS_FAULT);
+    unsigned maintained=atomic_load(&fake.maintenance_calls),cleared=atomic_load(&fake.clears);
+    for(unsigned i=0;i<50;++i)pause_ms();
+    assert(atomic_load(&fake.maintenance_calls)==maintained && atomic_load(&fake.clears)==cleared);
+    assert(fd_session_observe(s).fault==FD_ABORT_DEVICE);
+    fd_session_leave(s);wait_state(s,FD_VS_OFF);assert(fd_session_destroy(s));
+    puts("PASS: coordinator latches failed lease maintenance once without resetting release/exit fences");
     puts("PASS: profile selection, 100 lifecycle cycles, RX tuning, overlapping PTT, drain repress, Stop, stale health, held-PTT exit, prepare cancellation");
 }
