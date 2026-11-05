@@ -1,0 +1,216 @@
+{
+  "schema": "x6200.ptt-interface-audit.v1",
+  "scope": "software-only, targeted static MCU application analysis; no RF actions, flashing or hardware probing",
+  "firmware": {
+    "source_sha256": "9a19f97a5ad9e141a3663d222f984073bf0b18b38d4662604372a0036f9daa23",
+    "plaintext_sha256": "c3f7d028bc63e43fbb478a09e1032d46059b71efe217a60b576231866fbc2c0a",
+    "bytes": 524288,
+    "load_address": "0x08020000",
+    "report_input_match": true
+  },
+  "tools": {
+    "ghidra_version": "12.2 PUBLIC 20261016",
+    "ghidra_archive_sha256": "2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67",
+    "java": "Temurin 25.0.5+8",
+    "capstone": "5.0.6"
+  },
+  "startup_data": {
+    "flash_source": "0x0806ea50",
+    "ram_base": "0x24000000",
+    "length": 22232,
+    "basis": "Reset instructions 0x08024888..0x0802489c"
+  },
+  "manual": {
+    "url": "https://radioddity.s3.amazonaws.com/Xiegu_X6200_Manual_20240925.pdf",
+    "sha256": "ac4bbf32ca52dd9842302101b97c1e584c1df34f3dd264cf765d548600d7ff4e",
+    "pdf_page": 12,
+    "signals": [
+      "MICE",
+      "MIC",
+      "GND",
+      "MDATA",
+      "PTT",
+      "MSVSW",
+      "NC",
+      "+8V"
+    ],
+    "connector_to_mcu_net_measured": false
+  },
+  "i2c": {
+    "event_handler": "0x08044b54",
+    "read_dispatch": "0x08044b94..0x08044e2a",
+    "address_semantics": "16-bit selector for fixed banks/cases, not a general MCU memory address",
+    "ranges": [
+      {
+        "address": "0x0000..0x0080",
+        "source": "0x24005cb8 + address",
+        "purpose": "metadata bank"
+      },
+      {
+        "address": "0x0100..0x02fa",
+        "source": "0x24024670 + address - 0x0100",
+        "purpose": "507-byte calibration"
+      },
+      {
+        "address": "0x1000..0x1004",
+        "purpose": "VFO context frequency bytes/internal mode"
+      },
+      {
+        "address": "0x1100..0x1104",
+        "purpose": "other VFO context frequency bytes/internal mode"
+      },
+      {
+        "address": "0x1200..0x1201",
+        "purpose": "RX volume bytes"
+      },
+      {
+        "address": "0x1204",
+        "purpose": "mode-selected spectrum decimation"
+      },
+      {
+        "address": "0x2000..0x2fff",
+        "purpose": "repeated readiness byte in transport state"
+      },
+      {
+        "address": "0x3000..0x303f",
+        "purpose": "64-byte CW text buffer"
+      },
+      {
+        "address": "0x3040..0x3043",
+        "purpose": "CW speed float bytes"
+      }
+    ],
+    "other_reads": "Recovered fallback writes zero to TXDR; no arbitrary-address dereference found",
+    "computed_cases": [
+      {
+        "read_address": "0x1000",
+        "target": "0x8044d22",
+        "assembly": [
+          "08044d22 ldr r0, [pc, #0xa4] ; 0x24024870",
+          "08044d24 ldrb.w r0, [r0, #0x28]",
+          "08044d28 str r0, [r3, #0x28]",
+          "08044d2a b #0x8044ba8"
+        ]
+      },
+      {
+        "read_address": "0x1001",
+        "target": "0x8044d06",
+        "assembly": [
+          "08044d06 ldr r0, [pc, #0xc0] ; 0x24024870",
+          "08044d08 ldrb.w r0, [r0, #0x29]",
+          "08044d0c str r0, [r3, #0x28]",
+          "08044d0e b #0x8044ba8"
+        ]
+      },
+      {
+        "read_address": "0x1002",
+        "target": "0x8044cfc",
+        "assembly": [
+          "08044cfc ldr r0, [pc, #0xc8] ; 0x24024870",
+          "08044cfe ldrb.w r0, [r0, #0x2a]",
+          "08044d02 str r0, [r3, #0x28]",
+          "08044d04 b #0x8044ba8"
+        ]
+      },
+      {
+        "read_address": "0x1003",
+        "target": "0x8044d18",
+        "assembly": [
+          "08044d18 ldr r0, [pc, #0xac] ; 0x24024870",
+          "08044d1a ldrb.w r0, [r0, #0x2b]",
+          "08044d1e str r0, [r3, #0x28]",
+          "08044d20 b #0x8044ba8"
+        ]
+      },
+      {
+        "read_address": "0x1004",
+        "target": "0x8044d10",
+        "assembly": [
+          "08044d10 ldr r0, [pc, #0xb4] ; 0x24024870",
+          "08044d12 ldr r0, [r0, #0x48]",
+          "08044d14 str r0, [r3, #0x28]",
+          "08044d16 b #0x8044ba8"
+        ]
+      },
+      {
+        "read_address": "0x1101",
+        "target": "0x8044d8a",
+        "assembly": [
+          "08044d8a ldr r0, [pc, #0x3c] ; 0x24024870",
+          "08044d8c ldrb.w r0, [r0, #0x59]",
+          "08044d90 str r0, [r3, #0x28]",
+          "08044d92 b #0x8044ba8"
+        ]
+      },
+      {
+        "read_address": "0x1102",
+        "target": "0x8044d80",
+        "assembly": [
+          "08044d80 ldr r0, [pc, #0x44] ; 0x24024870",
+          "08044d82 ldrb.w r0, [r0, #0x5a]",
+          "08044d86 str r0, [r3, #0x28]",
+          "08044d88 b #0x8044ba8"
+        ]
+      },
+      {
+        "read_address": "0x1103",
+        "target": "0x8044d76",
+        "assembly": [
+          "08044d76 ldr r0, [pc, #0x50] ; 0x24024870",
+          "08044d78 ldrb.w r0, [r0, #0x5b]",
+          "08044d7c str r0, [r3, #0x28]",
+          "08044d7e b #0x8044ba8"
+        ]
+      },
+      {
+        "read_address": "0x1104",
+        "target": "0x8044d94",
+        "assembly": [
+          "08044d94 ldr r0, [pc, #0x30] ; 0x24024870",
+          "08044d96 ldr r0, [r0, #0x78]",
+          "08044d98 str r0, [r3, #0x28]",
+          "08044d9a b #0x8044ba8"
+        ]
+      }
+    ],
+    "special_writes": {
+      "0xf000": "calibration data mailbox",
+      "0xfffe": "16-bit special command mailbox; consumer in main loop"
+    },
+    "special_commands_observed": [
+      "0x8002",
+      "0x8003",
+      "0x8004",
+      "0x8005",
+      "0x8009",
+      "0x800a"
+    ],
+    "raw_gpio_or_memory_read_found": false
+  },
+  "console": {
+    "table": "0x0806b19c",
+    "entries": 14,
+    "entry_stride": 12,
+    "trx_display": "0x0803f318",
+    "trx_input": "0x0803f35c",
+    "display_source": "0x2402506d software/console latch",
+    "input_effect": "toggles that latch, copies it to shared 0x24025074 and reconciles TX",
+    "raw_ph6_read": false,
+    "raw_memory_read_found": false,
+    "uart_instance": "USART1 0x40011000",
+    "configured_baud": 115200,
+    "console_wiring_to_linux_verified": false
+  },
+  "linux_uart_paths": {
+    "ttyS1": "MCU status flow reader",
+    "ttyS2": "Linux CI-V CAT endpoint; not established as MCU diagnostic console"
+  },
+  "result": "No independent raw mic-PTT read interface found in the inspected application I2C/console paths",
+  "remaining_limits": [
+    "Installed MCU identity not freshly obtained",
+    "Connector net to MCU PH6 not measured",
+    "Analysis is not an exhaustive proof about all firmware or hardware interfaces",
+    "Bootloader region 0x08000000..0x0801ffff is absent; modified MCU image acceptance/recovery remain unestablished"
+  ],
+  "hardware_qualified": false
+}
