@@ -1,0 +1,6 @@
+rade_open: model_file=built-in (ignored, using built-in weights)
+rade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180
+rade_open: model_file=built-in (ignored, using built-in weights)
+rade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180
+PASS: full fixture-to-mocked-playback adapter sync=30 features=29 accepted=151208 output=151208
+PASS: unkeyed prepare silence, partial output accounting, explicit flush acknowledgement, deferred mixer restore and injected worker failure

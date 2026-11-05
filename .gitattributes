@@ -1,0 +1,3 @@
+# Preserve verified delivery transport bytes and omit binary/log diffs.
+release-delivery/metadata/** -text -diff
+release-delivery/transport/** -text -diff

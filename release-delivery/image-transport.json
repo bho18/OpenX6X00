@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "baseline_release": "freedv-native-diagnostics-20261028.2",
+  "baseline_asset": "x6200-freedv-baseline.zip",
+  "baseline_archive_sha256": "0fdfdd2bc9f67cda6137a8adb8e60e829b2055db2506f1184cf8c3b924311b01",
+  "baseline_member_basename": "OpenX6X00-x6200-local-sdcard.img",
+  "baseline_image_sha256": "a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab",
+  "image_size_bytes": 571473920,
+  "image_sha256": "fdfcc3791f68e1028751cc54591dfe96ef9e08ad12a3223bcf3e70cb39ef2c35",
+  "delta_sha256": "2953e3fb770f50637092bc293b3ae71ac4bb840ee3afb936c96ee3a2ea4503ec",
+  "parts": [
+    {
+      "path": "transport/image-delta.000.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "88f3f2b15d4726ea0789866990326f71d6cb5221726d3fb415c8e0860835392d"
+    },
+    {
+      "path": "transport/image-delta.001.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "0dcae910d4788f686eaa69c4b13fd84dcdf62f35d10f3586a412f3ba2fc77e93"
+    },
+    {
+      "path": "transport/image-delta.002.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "a09112012aebcc4e09a3c547e876f791819c74511ec957699ffa09454f560f62"
+    },
+    {
+      "path": "transport/image-delta.003.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "a7b6b17bd6b1437f888e5bab653f3d2733f99c76850edd8b0f5695ba0e482d7d"
+    },
+    {
+      "path": "transport/image-delta.004.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "f228a6577a4df6a7d09648b24d4bf221f324322f643241607447c10ee18ac1da"
+    },
+    {
+      "path": "transport/image-delta.005.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "b974025b62e333a2725e0d6bc044a0664dd9a5b2fcbd0884ac021bf30a66e2c7"
+    },
+    {
+      "path": "transport/image-delta.006.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "4815ed7fe648eedbedc30930f2c5a49a739dcf013d9e2f09ae56f9cf16b02d25"
+    },
+    {
+      "path": "transport/image-delta.007.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "b0eaa45e88667735307203fc2edf9695266652c8c5d841a22d9277d2ec16579c"
+    },
+    {
+      "path": "transport/image-delta.008.b64",
+      "encoded_bytes": 5592408,
+      "sha256": "33c4b3dc2559bde5c344d407e587f9be35c9c0f81d5bd1fba136f4c54d4ca687"
+    },
+    {
+      "path": "transport/image-delta.009.b64",
+      "encoded_bytes": 3987084,
+      "sha256": "d70f40f6e6fa777246eaf75ccc22a75517152b61e2124ed099ba47b7a6bb6fc2"
+    }
+  ]
+}

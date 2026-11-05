@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="42"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname=""
+	time="57"
+	timestamp="2026-11-05T16:00:50"
+	>
+	<testcase name="freedv_native_contract" classname="freedv_native_contract" time="0.00282638" status="run">
+		<properties/>
+		<system-out></system-out>
+	</testcase>
+	<testcase name="freedv_voice_validation" classname="freedv_voice_validation" time="17.349" status="run">
+		<properties/>
+		<system-out>PASS: truthful candidate admission, identities/control blockers, one-turn local grants, overlap/repress, stale controls, startup release, timeout and expiry
+</system-out>
+	</testcase>
+	<testcase name="freedv_native_trace" classname="freedv_native_trace" time="0.209627" status="run">
+		<properties/>
+		<system-out>......
+----------------------------------------------------------------------
+Ran 6 tests in 0.119s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_native_conversation_evidence" classname="freedv_native_conversation_evidence" time="0.530585" status="run">
+		<properties/>
+		<system-out>................
+----------------------------------------------------------------------
+Ran 16 tests in 0.446s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_baseband_inventory" classname="freedv_baseband_inventory" time="0.0750582" status="run">
+		<properties/>
+		<system-out>.........
+----------------------------------------------------------------------
+Ran 9 tests in 0.006s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_baseband_decryption" classname="freedv_baseband_decryption" time="0.316373" status="run">
+		<properties/>
+		<system-out>........
+----------------------------------------------------------------------
+Ran 8 tests in 0.210s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_candidate_bundle" classname="freedv_candidate_bundle" time="0.476787" status="run">
+		<properties/>
+		<system-out>........
+----------------------------------------------------------------------
+Ran 8 tests in 0.387s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_retest_collection" classname="freedv_retest_collection" time="0.408057" status="run">
+		<properties/>
+		<system-out>...........................
+----------------------------------------------------------------------
+Ran 27 tests in 0.266s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_capture_source_watch" classname="freedv_capture_source_watch" time="0.992854" status="run">
+		<properties/>
+		<system-out>{"status": "RECORDING", "directory": "/tmp/tmp5krrzq1c", "first_read_monotonic_ns": 47118049980086, "message": "Source samples are arriving; keep this window open"}
+.{"status": "RECORDING", "directory": "/tmp/tmpqzver4ru", "first_read_monotonic_ns": 47118350556195, "message": "Source samples are arriving; keep this window open"}
+..{"status": "RECORDING", "directory": "/tmp/tmplv4et5qa", "first_read_monotonic_ns": 47118384434411, "message": "Source samples are arriving; keep this window open"}
+..{"status": "RECORDING", "directory": "/tmp/tmp9t_5o91v", "first_read_monotonic_ns": 47118720683473, "message": "Source samples are arriving; keep this window open"}
+.{"status": "RECORDING", "directory": "/tmp/tmp1l5govju", "first_read_monotonic_ns": 47118876060111, "message": "Source samples are arriving; keep this window open"}
+.
+----------------------------------------------------------------------
+Ran 7 tests in 0.850s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_capture_continuity" classname="freedv_capture_continuity" time="0.242464" status="run">
+		<properties/>
+		<system-out>.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.168s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_route_driver" classname="freedv_route_driver" time="0.00290161" status="run">
+		<properties/>
+		<system-out>PASS: release during route preparation/key/gain/resend writes fences every later key and clears software TX
+PASS: legacy gain settings are explicit requests; software clear preserves gains and makes no mute or RF-off claim
+</system-out>
+	</testcase>
+	<testcase name="freedv_route_driver_blocked" classname="freedv_route_driver_blocked" time="0.00247352" status="run">
+		<properties/>
+		<system-out>PASS: native development rejects every legacy route without writes; ordinary recorder remains unchanged
+</system-out>
+	</testcase>
+	<testcase name="freedv_agent_protocol" classname="freedv_agent_protocol" time="0.00267514" status="run">
+		<properties/>
+		<system-out>PASS: strict bounded v2 stage parser rejects malformed fields and RF repetition
+</system-out>
+	</testcase>
+	<testcase name="freedv_route_trace" classname="freedv_route_trace" time="0.00334977" status="run">
+		<properties/>
+		<system-out>PASS: phase markers do not imply transport success; trace overflow stays bounded
+</system-out>
+	</testcase>
+	<testcase name="freedv_route_agent" classname="freedv_route_agent" time="0.369571" status="run">
+		<properties/>
+		<system-out>........
+----------------------------------------------------------------------
+Ran 8 tests in 0.226s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="freedv_voice_writer" classname="freedv_voice_writer" time="0.00227212" status="run">
+		<properties/>
+		<system-out>PASS: cross-process web/voice exclusion in both orders, owned scopes and hardware safe-off
+</system-out>
+	</testcase>
+	<testcase name="freedv_voice_bookmarks" classname="freedv_voice_bookmarks" time="0.0046739" status="run">
+		<properties/>
+		<system-out>Apply migration: 14 ...
+PASS: 17 fresh HF seeds, one-time upgrade preserves USB storage/user edits/deletions and bookmark type 6
+</system-out>
+	</testcase>
+	<testcase name="freedv_voice_audio" classname="freedv_voice_audio" time="0.593342" status="run">
+		<properties/>
+		<system-out>FreeDV audio fault 1, generation 101
+FreeDV audio fault 2, generation 1
+FreeDV audio fault 8, generation 1
+FreeDV audio fault 16, generation 1
+FreeDV audio fault 16, generation 1
+FreeDV audio fault 16, generation 1
+FreeDV audio fault 16, generation 1
+FreeDV audio fault 17, generation 20
+PASS: ready PCM submission is bounded, preserves partial-write order, stops on backpressure and observes concurrent cancellation
+PASS: startup release before/during flush, engine transition, playback rearm and capture begin admits no codec input/output; healthy streams remain reusable
+PASS: explicit native maps reject default/summed slots; 20 RX/TX map changes retain streams, and a mapping failure admits no PCM
+PASS: actual voice adapter, 100 retained turns, partial writes, drain/fence, backlog, device failure and unreported capture stalls
+</system-out>
+	</testcase>
+	<testcase name="freedv_voice_session" classname="freedv_voice_session" time="3.02846" status="run">
+		<properties/>
+		<system-out>PASS: coordinator latches failed lease maintenance once without resetting release/exit fences
+PASS: profile selection, 100 lifecycle cycles, RX tuning, overlapping PTT, drain repress, Stop, stale health, held-PTT exit, prepare cancellation
+</system-out>
+	</testcase>
+	<testcase name="freedv_voice_timeout" classname="freedv_voice_timeout" time="30.055" status="run">
+		<properties/>
+		<system-out>PASS: actual 30-second timeout clears TX and requires both sources to release
+</system-out>
+	</testcase>
+	<testcase name="freedv_input_fence" classname="freedv_input_fence" time="0.00241922" status="run">
+		<properties/>
+		<system-out>PASS: admitted-write fence, blocked injection, stale queued power generation and input drain
+</system-out>
+	</testcase>
+	<testcase name="freedv_front_input" classname="freedv_front_input" time="0.00196006" status="run">
+		<properties/>
+		<system-out>PASS: queued inputs/hold state drained, only fresh front-panel press consents, release and reacquire expire consent
+</system-out>
+	</testcase>
+	<testcase name="freedv_remote_input_fence" classname="freedv_remote_input_fence" time="0.00295904" status="run">
+		<properties/>
+		<system-out>PASS: production remote key/knob admission, queued power invalidation and retry generation
+</system-out>
+	</testcase>
+	<testcase name="freedv_voice_radio" classname="freedv_voice_radio" time="1.59226" status="run">
+		<properties/>
+		<system-out>PASS: actual radio startup retains hand/panel release-repress through the pre-transmit fence and audio startup; stale/unknown/future PTT, protection and Stop reject audio admission
+[User]	(0.000, +0)	 update_agc_time: Radio set agc time=1000 for agc: 1
+ 	(in radio.c line #1050)
+[User]	(0.000, +0)	 on_low_filter_change: Radio set filters: low=250, low2=210 	(in radio.c line #1089)
+[User]	(0.000, +0)	 on_high_filter_change: Radio set filters: high=2800, high2=2840 	(in radio.c line #1115)
+[User]	(0.000, +0)	 on_vfo_freq_change: Radio set vfo 0 freq=14100000 (14099920) 	(in radio.c line #951)
+[User]	(0.000, +0)	 on_vfo_freq_change: Radio set vfo 1 freq=7177100 (7177020) 	(in radio.c line #951)
+PASS: production binding, 100 retained turns, independent PTT, raw/settings/remote guards, RX tune and held exit/current-VFO restoration
+[User]	(0.000, +0)	 update_agc_time: Radio set agc time=1000 for agc: 1
+ 	(in radio.c line #1050)
+[User]	(0.000, +0)	 on_low_filter_change: Radio set filters: low=250, low2=210 	(in radio...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="freedv_native_coordinator" classname="freedv_native_coordinator" time="0.145277" status="run">
+		<properties/>
+		<system-out>PASS: production coordinator Acquire/Arm/Run, benign-stop physical observations, exact cleanup and RX unlock; bad observations/audio cannot unlock; pending MODEM cancels on Stop/Close/audio/evidence/stale RX and never revives
+</system-out>
+	</testcase>
+	<testcase name="freedv_native_radio_backend" classname="freedv_native_radio_backend" time="0.0031157" status="run">
+		<properties/>
+		<system-out>PASS: real radio backend busy guards, route writes, held/stale TX, transient restoration and protection abort
+</system-out>
+	</testcase>
+	<testcase name="freedv_native_radio_blocked" classname="freedv_native_radio_blocked" time="0.0028369" status="run">
+		<properties/>
+		<system-out>PASS: native development startup preserves conventional controls; all legacy diagnostic routes reject without keying or route writes
+</system-out>
+	</testcase>
+	<testcase name="freedv_native_audio_adapter" classname="freedv_native_audio_adapter" time="0.236817" status="run">
+		<properties/>
+		<system-out>PASS: unkeyed prepare silence, partial output accounting, explicit flush acknowledgement, deferred mixer restore and injected worker failure
+</system-out>
+	</testcase>
+	<testcase name="freedv_audio_stereo" classname="freedv_audio_stereo" time="0.00292011" status="run">
+		<properties/>
+		<system-out>PASS: retained stereo RX/TX channel switches discard old PCM; explicit no-remix maps, raw evidence, mixer restoration and ordinary-stream exclusion
+</system-out>
+	</testcase>
+	<testcase name="freedv_writer_preferences" classname="freedv_writer_preferences" time="0.00466868" status="run">
+		<properties/>
+		<system-out>PASS: diagnostic reservation excludes validation, computed reverse, observers and deferred writes
+</system-out>
+	</testcase>
+	<testcase name="freedv_capture_dispatch" classname="freedv_capture_dispatch" time="0.117862" status="run">
+		<properties/>
+		<system-out>PASS: identical codec/recording streams, bounded stalled consumers, source holes and restart
+</system-out>
+	</testcase>
+	<testcase name="freedv_session_controller" classname="freedv_session_controller" time="0.304894" status="run">
+		<properties/>
+		<system-out>PASS: mocked session acquisition, arm, stop, timeout and post-clear restore
+</system-out>
+	</testcase>
+	<testcase name="freedv_wav_capture" classname="freedv_wav_capture" time="0.00461028" status="run">
+		<properties/>
+		<system-out>PASS: WAV header, PCM, exclusive creation, capture failure and write failure
+</system-out>
+	</testcase>
+	<testcase name="freedv_capture_ring" classname="freedv_capture_ring" time="0.0038038" status="run">
+		<properties/>
+		<system-out>PASS: bounded capture, overflow, holes, cursor wrap and concurrent ordered transfer
+</system-out>
+	</testcase>
+	<testcase name="freedv_audio_capture" classname="freedv_audio_capture" time="0.00230756" status="run">
+		<properties/>
+		<system-out>PASS: PulseAudio callback, holes, errors, stop, reset and WAV pipeline
+</system-out>
+	</testcase>
+	<testcase name="freedv_audio_playback" classname="freedv_audio_playback" time="0.00204997" status="run">
+		<properties/>
+		<system-out>PASS: native stereo waveform slot isolation, explicit no-remix map, frame accounting and fenced retained map changes
+PASS: cross-thread cancellation, acknowledged flush, partial writes and finite buffer attributes
+</system-out>
+	</testcase>
+	<testcase name="freedv_packet_tx" classname="freedv_packet_tx" time="0.00175631" status="run">
+		<properties/>
+		<system-out>PASS: packet TX is distinct, timestamped and unknown before a packet
+</system-out>
+	</testcase>
+	<testcase name="freedv_stub_snapshot" classname="freedv_stub_snapshot" time="0.00184066" status="run">
+		<properties/>
+		<system-out>PASS: host stub exposes simulated cached state without claiming raw X6200 registers
+</system-out>
+	</testcase>
+	<testcase name="freedv_watchdog" classname="freedv_watchdog" time="0.187454" status="run">
+		<properties/>
+		<system-out>PASS: watchdog arm, timeout, cancellation, callback synchronization and close
+</system-out>
+	</testcase>
+	<testcase name="freedv_control_lease" classname="freedv_control_lease" time="0.00577722" status="run">
+		<properties/>
+		<system-out>PASS: diagnostic lease rejects competing owners and remote takeovers
+</system-out>
+	</testcase>
+	<testcase name="freedv_diagnostic_state" classname="freedv_diagnostic_state" time="0.00226748" status="run">
+		<properties/>
+		<system-out>PASS: session arming, guards, timeout, fresh post-clear RX and held PTT
+</system-out>
+	</testcase>
+	<testcase name="freedv_x6200_route_snapshot" classname="freedv_x6200_route_snapshot" time="0.00280421" status="run">
+		<properties/>
+		<system-out>PASS: X6200 cached route bits and diagnostic register fields
+</system-out>
+	</testcase>
+</testsuite>

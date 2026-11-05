@@ -1,0 +1,31 @@
+{
+  "public_source_commit": "e2d5cdc7c85f8bcfd74d1b2e2d20ce2d55757ca1",
+  "public_source_branch": "publish/freedv-native-source-20261105.2",
+  "original_build_source_commit": "bbcd265e3f644f508067eafb157e4f31978adb11",
+  "original_source_tree_sha256": "ecdd86c8f386eeb2d6d502aa0b12a87de547eae1b9fb4cb8c9ad56304615ad1c",
+  "public_source_tree_sha256": "22ce2bd544719142030a371994569fd56655debb6f04949077bc671194dd357d",
+  "regular_file_count": 1803,
+  "complete_tree_regular_files_verified": 1803,
+  "all_retained_files_present": true,
+  "retained_git_blobs_identical": true,
+  "retained_git_modes_identical": true,
+  "gitlinks": {
+    "lvgl": "ad032d84eba1baa1173e91a95af11e551e0b805e"
+  },
+  "lvgl_gitlink": "ad032d84eba1baa1173e91a95af11e551e0b805e",
+  "excluded_path_prefixes": [
+    "docs/freedv/baseband-research/"
+  ],
+  "excluded_regular_files": [
+    "docs/freedv/baseband-research/README.md",
+    "docs/freedv/baseband-research/capability-contract.json",
+    "docs/freedv/baseband-research/evidence/decryption-input.json",
+    "docs/freedv/baseband-research/evidence/handoff-input-inventory.json",
+    "docs/freedv/baseband-research/evidence/mestre-provenance.json",
+    "docs/freedv/baseband-research/evidence/stock-1.0.8-release-note-provenance.json",
+    "docs/freedv/baseband-research/evidence/stock-1.0.8-remote-inventory.json"
+  ],
+  "private_ancestry_published": false,
+  "public_source_is_root_commit": false,
+  "public_parent_commit": "75be4c40744d2c5e7b684598577690e996f45df9"
+}

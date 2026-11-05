@@ -1,0 +1,50 @@
+-- The C compiler identification is GNU 14.2.0
+-- The CXX compiler identification is GNU 14.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /workspace/toolchain/sysroot/usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /workspace/toolchain/sysroot/usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Found Python3: /workspace/toolchain/sysroot/usr/bin/python3 (found version "3.13.5") found components: Interpreter
+-- Found PkgConfig: /workspace/toolchain/sysroot/usr/bin/pkg-config (found version "1.8.1")
+-- Checking for modules 'libnm;dbus-glib-1'
+--   Found libnm, version 1.52.1
+--   Found dbus-glib-1, version 0.114
+-- Checking for module 'libpulse'
+--   Found libpulse, version 17.0
+CMake Warning (dev) at lvgl/env_support/cmake/custom.cmake:66 (install):
+  Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+  "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+  command to set the policy and suppress this warning.
+Call Stack (most recent call first):
+  lvgl/CMakeLists.txt:16 (include)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Checking for modules 'libnm;dbus-glib-1;sqlite3;libpng;sndfile;libudev;libpulse;libpulse-simple;alsa;libjpeg'
+--   Found libnm, version 1.52.1
+--   Found dbus-glib-1, version 0.114
+--   Found sqlite3, version 3.46.1
+--   Found libpng, version 1.6.48
+--   Found sndfile, version 1.2.2
+--   Found libudev, version 257
+--   Found libpulse, version 17.0
+--   Found libpulse-simple, version 17.0
+--   Found alsa, version 1.2.14
+--   Found libjpeg, version 2.1.5
+-- Checking for module 'libgps'
+--   Package 'libgps', required by 'virtual:world', not found
+-- Checking for module 'libdrm'
+--   Found libdrm, version 2.4.124
+-- Checking for module 'sdl2'
+--   Found sdl2, version 2.32.4
+-- Configuring done (1.3s)
+-- Generating done (0.1s)
+-- Build files have been written to: /workspace/build/x6200-native-development-20261105.2/host/build

@@ -1,0 +1,90 @@
+Internal ctest changing into directory: /workspace/build/x6200-native-development-20261105.2/host/build
+Test project /workspace/build/x6200-native-development-20261105.2/host/build
+      Start  1: freedv_native_contract
+ 1/42 Test  #1: freedv_native_contract ................   Passed    0.00 sec
+      Start  2: freedv_voice_validation
+ 2/42 Test  #2: freedv_voice_validation ...............   Passed   17.35 sec
+      Start  3: freedv_native_trace
+ 3/42 Test  #3: freedv_native_trace ...................   Passed    0.21 sec
+      Start  4: freedv_native_conversation_evidence
+ 4/42 Test  #4: freedv_native_conversation_evidence ...   Passed    0.53 sec
+      Start  5: freedv_baseband_inventory
+ 5/42 Test  #5: freedv_baseband_inventory .............   Passed    0.08 sec
+      Start  6: freedv_baseband_decryption
+ 6/42 Test  #6: freedv_baseband_decryption ............   Passed    0.32 sec
+      Start  7: freedv_candidate_bundle
+ 7/42 Test  #7: freedv_candidate_bundle ...............   Passed    0.48 sec
+      Start  8: freedv_retest_collection
+ 8/42 Test  #8: freedv_retest_collection ..............   Passed    0.41 sec
+      Start  9: freedv_capture_source_watch
+ 9/42 Test  #9: freedv_capture_source_watch ...........   Passed    0.99 sec
+      Start 10: freedv_capture_continuity
+10/42 Test #10: freedv_capture_continuity .............   Passed    0.24 sec
+      Start 11: freedv_route_driver
+11/42 Test #11: freedv_route_driver ...................   Passed    0.00 sec
+      Start 12: freedv_route_driver_blocked
+12/42 Test #12: freedv_route_driver_blocked ...........   Passed    0.00 sec
+      Start 13: freedv_agent_protocol
+13/42 Test #13: freedv_agent_protocol .................   Passed    0.00 sec
+      Start 14: freedv_route_trace
+14/42 Test #14: freedv_route_trace ....................   Passed    0.00 sec
+      Start 15: freedv_route_agent
+15/42 Test #15: freedv_route_agent ....................   Passed    0.37 sec
+      Start 16: freedv_voice_writer
+16/42 Test #16: freedv_voice_writer ...................   Passed    0.00 sec
+      Start 17: freedv_voice_bookmarks
+17/42 Test #17: freedv_voice_bookmarks ................   Passed    0.00 sec
+      Start 18: freedv_voice_audio
+18/42 Test #18: freedv_voice_audio ....................   Passed    0.59 sec
+      Start 19: freedv_voice_session
+19/42 Test #19: freedv_voice_session ..................   Passed    3.03 sec
+      Start 20: freedv_voice_timeout
+20/42 Test #20: freedv_voice_timeout ..................   Passed   30.05 sec
+      Start 21: freedv_input_fence
+21/42 Test #21: freedv_input_fence ....................   Passed    0.00 sec
+      Start 22: freedv_front_input
+22/42 Test #22: freedv_front_input ....................   Passed    0.00 sec
+      Start 23: freedv_remote_input_fence
+23/42 Test #23: freedv_remote_input_fence .............   Passed    0.00 sec
+      Start 24: freedv_voice_radio
+24/42 Test #24: freedv_voice_radio ....................   Passed    1.59 sec
+      Start 25: freedv_native_coordinator
+25/42 Test #25: freedv_native_coordinator .............   Passed    0.15 sec
+      Start 26: freedv_native_radio_backend
+26/42 Test #26: freedv_native_radio_backend ...........   Passed    0.00 sec
+      Start 27: freedv_native_radio_blocked
+27/42 Test #27: freedv_native_radio_blocked ...........   Passed    0.00 sec
+      Start 28: freedv_native_audio_adapter
+28/42 Test #28: freedv_native_audio_adapter ...........   Passed    0.24 sec
+      Start 29: freedv_audio_stereo
+29/42 Test #29: freedv_audio_stereo ...................   Passed    0.00 sec
+      Start 30: freedv_writer_preferences
+30/42 Test #30: freedv_writer_preferences .............   Passed    0.00 sec
+      Start 31: freedv_capture_dispatch
+31/42 Test #31: freedv_capture_dispatch ...............   Passed    0.12 sec
+      Start 32: freedv_session_controller
+32/42 Test #32: freedv_session_controller .............   Passed    0.30 sec
+      Start 33: freedv_wav_capture
+33/42 Test #33: freedv_wav_capture ....................   Passed    0.00 sec
+      Start 34: freedv_capture_ring
+34/42 Test #34: freedv_capture_ring ...................   Passed    0.00 sec
+      Start 35: freedv_audio_capture
+35/42 Test #35: freedv_audio_capture ..................   Passed    0.00 sec
+      Start 36: freedv_audio_playback
+36/42 Test #36: freedv_audio_playback .................   Passed    0.00 sec
+      Start 37: freedv_packet_tx
+37/42 Test #37: freedv_packet_tx ......................   Passed    0.00 sec
+      Start 38: freedv_stub_snapshot
+38/42 Test #38: freedv_stub_snapshot ..................   Passed    0.00 sec
+      Start 39: freedv_watchdog
+39/42 Test #39: freedv_watchdog .......................   Passed    0.19 sec
+      Start 40: freedv_control_lease
+40/42 Test #40: freedv_control_lease ..................   Passed    0.01 sec
+      Start 41: freedv_diagnostic_state
+41/42 Test #41: freedv_diagnostic_state ...............   Passed    0.00 sec
+      Start 42: freedv_x6200_route_snapshot
+42/42 Test #42: freedv_x6200_route_snapshot ...........   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 42
+
+Total Test time (real) =  57.31 sec

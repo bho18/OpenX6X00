@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "status": "PASS",
+  "variant": "host-native-validation",
+  "source_commit": "bbcd265e3f644f508067eafb157e4f31978adb11",
+  "source_tree_sha256": "ecdd86c8f386eeb2d6d502aa0b12a87de547eae1b9fb4cb8c9ad56304615ad1c",
+  "build_id": "freedv-native-development-20261105.2",
+  "commands": [
+    [
+      "cmake",
+      "-S",
+      "/workspace/x6200-native-development",
+      "-B",
+      "/workspace/build/x6200-native-development-20261105.2/host-native/build",
+      "-G",
+      "Ninja",
+      "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+      "-DHOST_BUILD=ON",
+      "-DENABLE_FREEDV_DIAGNOSTICS=ON",
+      "-DFREEDV_HOST_TEST_PROFILE=ON",
+      "-DENABLE_FREEDV_NATIVE_CODEC=ON",
+      "-DENABLE_FREEDV_VOICE=ON",
+      "-DENABLE_FREEDV_NATIVE_VALIDATION=ON",
+      "-DFREEDV_RADE_SOURCE=/workspace/build/x6200-native-host-codec/sources/rade_c/src",
+      "-DFREEDV_OPUS_BUILD=/workspace/build/x6200-native-host-codec/rade_c/build_opus-prefix/src/build_opus",
+      "-DFREEDV_RADE_LIBRARY=/workspace/build/x6200-native-host-codec/rade_c/src/librade.so.0.1",
+      "-DFREEDV_OPUS_LIBRARY=/workspace/build/x6200-native-host-codec/rade_c/build_opus-prefix/src/build_opus/.libs/libopus.a",
+      "-DFREEDV_SAMPLERATE_LIBRARY=/workspace/build/x6200-native-host-codec/samplerate/src/libsamplerate.a",
+      "-DFREEDV_SAMPLERATE_INCLUDE_DIR=/workspace/build/x6200-native-host-codec/sources/libsamplerate-0.2.2/include",
+      "-DFREEDV_BUILD_ID=freedv-native-development-20261105.2",
+      "-DFREEDV_CONTROL_ID=0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8"
+    ],
+    [
+      "cmake",
+      "--build",
+      "/workspace/build/x6200-native-development-20261105.2/host-native/build",
+      "--target",
+      "x6100_gui",
+      "params_sqlite",
+      "freedv_voice_engine_test",
+      "freedv_native_stream_test",
+      "freedv_native_stream_fixture_test",
+      "freedv_native_audio_codec_adapter_test",
+      "freedv_voice_runner",
+      "-j",
+      "2"
+    ],
+    [
+      "/workspace/build/x6200-native-development-20261105.2/host-native/build/freedv_voice_engine_test",
+      "--turns",
+      "3"
+    ],
+    [
+      "/workspace/build/x6200-native-development-20261105.2/host-native/build/freedv_native_stream_test",
+      "--unpaced"
+    ],
+    [
+      "/workspace/build/x6200-native-development-20261105.2/host-native/build/freedv_native_stream_fixture_test",
+      "/workspace/build/migration-codec-release/package/freedv-benchmark/fixtures/rade-modem.raw"
+    ],
+    [
+      "/workspace/build/x6200-native-development-20261105.2/host-native/build/freedv_native_audio_codec_adapter_test",
+      "/workspace/build/migration-codec-release/package/freedv-benchmark/fixtures/rade-modem.raw"
+    ]
+  ],
+  "hardware_qualified": false,
+  "hardware_status": "BLOCKED",
+  "physical_audio_routes": "UNQUALIFIED",
+  "physical_hand_ptt": "UNQUALIFIED; aggregate TX does not establish an independent hand PTT contract",
+  "physical_rf_off_timing": "UNASSESSED",
+  "timing_qualifies_radio": false,
+  "codec_inputs": {
+    "FREEDV_RADE_LIBRARY": {
+      "path": "/workspace/build/x6200-native-host-codec/rade_c/src/librade.so.0.1",
+      "sha256": "6eb87d6a123defd3522c2d36ffe0acecf4984469a3f4212f905fdf4b2a28ff45"
+    },
+    "FREEDV_OPUS_LIBRARY": {
+      "path": "/workspace/build/x6200-native-host-codec/rade_c/build_opus-prefix/src/build_opus/.libs/libopus.a",
+      "sha256": "c082a43c8db937ad1b87344570bd7ec1cdec403098488dbee185f7e5969653b6"
+    },
+    "FREEDV_SAMPLERATE_LIBRARY": {
+      "path": "/workspace/build/x6200-native-host-codec/samplerate/src/libsamplerate.a",
+      "sha256": "712247f79bb164efa55686f1f1be311f7a4c1c7b71286550bc7e05abc3039c23"
+    }
+  },
+  "opus_configuration_sha256": "8437bd6d75adc4d5faadff9a09eb155313fd96ed429e618041d373add778cc07",
+  "codec_fixture_sha256": "f4b0ce17951109d33abbf72f865bdec9e718044e869cde3ffdbdcf3191592d21",
+  "host_simulated": true,
+  "validation_entry_exercised": false,
+  "codec_checks": {
+    "voice-engine": {
+      "status": "PASS",
+      "log_sha256": "9bdf0396ba0262c0b517b899f2b349cb3fe91eec4e19cc19bfa049f82e32e843"
+    },
+    "native-stream": {
+      "status": "PASS",
+      "log_sha256": "1d6a9a842499b6fe1553be6898f19f025f50496a3c3282479466e4986630c43c"
+    },
+    "stream-fixture": {
+      "status": "PASS",
+      "log_sha256": "af829c2ec109124c28a97e21bb3e066f6b202eb433e89db56e4ed56b05d6a362"
+    },
+    "codec-adapter": {
+      "status": "PASS",
+      "log_sha256": "4a9f03d4d062164c4c99816328d519f15247d2e34a0cedd729fb241bf71a3ee2"
+    }
+  },
+  "scope": "Full host native GUI compilation and targeted real-codec correctness; no physical audio, RF or timing qualification",
+  "binaries": {
+    "gui": {
+      "path": "/workspace/build/x6200-native-development-20261105.2/host-native/build/src/x6100_gui",
+      "sha256": "16f4a079e2d1a1d6685b427644ce93ebacefcdddc83f07d61556244f605c4355"
+    }
+  },
+  "source_changed_during_build": [],
+  "gui_smoke": {
+    "status": "PASS",
+    "observations": [
+      "geometry",
+      "greeting",
+      "ping",
+      "screen",
+      "state"
+    ],
+    "state": {
+      "freq": 14100000,
+      "mode": 2,
+      "flo": 100,
+      "fhi": 2900,
+      "agc": 3,
+      "pre": 0,
+      "att": 0,
+      "nb": 0,
+      "nr": 0,
+      "sql": 0,
+      "rfg": 63,
+      "vol": 30,
+      "pwr": 5.0,
+      "step": 500,
+      "zoom": 1,
+      "vfo": 0,
+      "atu": 0,
+      "bat": -1,
+      "tx": 0,
+      "lock": 0
+    },
+    "diagnostic_panel": {
+      "status": "not requested"
+    }
+  },
+  "gui_sha256": "16f4a079e2d1a1d6685b427644ce93ebacefcdddc83f07d61556244f605c4355",
+  "cmake_cache_sha256": "b0136126e07116179f5eabc134e8dbe5e0518aa0a2e8ccfdf22a435cfef7711d",
+  "checks": {
+    "voice-engine": {
+      "status": "PASS",
+      "log_sha256": "9bdf0396ba0262c0b517b899f2b349cb3fe91eec4e19cc19bfa049f82e32e843",
+      "output": "rade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nrade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nPASS: 3 synthetic alternating turns x 1 lifecycles, rate=8000; speech assessment INCONCLUSIVE\n"
+    },
+    "native-stream": {
+      "status": "PASS",
+      "log_sha256": "1d6a9a842499b6fe1553be6898f19f025f50496a3c3282479466e4986630c43c",
+      "output": "rade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nrade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nrade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nrade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nrade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nrade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nrade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nPASS: full bounded RADE TX/RX, three acquisition participants, turn generations, abort and backlog failure\n"
+    },
+    "stream-fixture": {
+      "status": "PASS",
+      "log_sha256": "af829c2ec109124c28a97e21bb3e066f6b202eb433e89db56e4ed56b05d6a362",
+      "output": "rade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nPASS: synchronized full streaming RX through FARGAN/resampling; blocks=49 sync=46 features=45 output=235880 nonzero=235683; hardware_qualified=false\n"
+    },
+    "codec-adapter": {
+      "status": "PASS",
+      "log_sha256": "4a9f03d4d062164c4c99816328d519f15247d2e34a0cedd729fb241bf71a3ee2",
+      "output": "rade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nrade_open: model_file=built-in (ignored, using built-in weights)\nrade_open: V1 n_features_in=432 Nmf=960 Neoo=1152 n_eoo_bits=180\nPASS: full fixture-to-mocked-playback adapter sync=30 features=29 accepted=151208 output=151208\nPASS: unkeyed prepare silence, partial output accounting, explicit flush acknowledgement, deferred mixer restore and injected worker failure\n"
+    }
+  }
+}
