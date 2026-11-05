@@ -1846,7 +1846,7 @@
     },
     "BUILD-RESULTS.md": {
       "original_delivery_sha256": "0f252d178fa3c020b2e7123b23d5a1898dea8d9bf33ed37c207efa7fa9fe12ec",
-      "public_delivery_sha256": "e986431ff32b4d12ebda855d4b4ea1ebace54283755ca850f24fbdc6c85b1442",
+      "public_delivery_sha256": "a004d572392d1488d2b012d8de536b3a284407f986ebdb08d002bcf83dad8719",
       "change": "Release-facing references updated to omit research snapshot and private source bundle; no firmware/source code modification"
     },
     "guide/docs/freedv/native-development-build.md": {
@@ -1871,11 +1871,12 @@
   "ready_for_guided_hardware_tests": false,
   "firmware_installed": false,
   "baseband_modified": false,
-  "public_source_commit": "1a2aad375dadc8a14f2b12c6c939b369cc30004d",
-  "public_source_branch": "publish/freedv-native-development-20261105",
-  "public_source_is_root_commit": true,
+  "public_source_commit": "5b570cd041c6a8c1913d261d4b4cd9440341cc28",
+  "public_source_branch": "publish/freedv-native-source-20261105",
+  "public_source_is_root_commit": false,
   "public_git_snapshot_record": {
     "path": "validation/public-git-snapshot.json",
-    "sha256": "c3f00b45d6f6c44a94dab0987e2743f8939790e4b66a701e262542748980fdbf"
-  }
+    "sha256": "9e5740c7c69c202c55188719e6b757573a0201a866b2ff13fad72ee5e0ca7ee1"
+  },
+  "public_root_commit": "1a2aad375dadc8a14f2b12c6c939b369cc30004d"
 }

@@ -12632,7 +12632,7 @@
     "raw_tar_sha256": "209aae5d595774baeed65ddf9d7accc3d1d5808289ae286891f25447393d6af3",
     "expected_archive_sha256": "959dab48f25d52b96d47b3e19ac06b92ef281ac12febbddddb96fe3e1d943581",
     "original_source_commit": "dd42af45012b2b31da4c0fc2d876581052bb817b",
-    "public_source_commit": "1a2aad375dadc8a14f2b12c6c939b369cc30004d",
+    "public_source_commit": "5b570cd041c6a8c1913d261d4b4cd9440341cc28",
     "xz_preset": 6,
     "xz_check": "CRC64"
   },
@@ -12645,7 +12645,7 @@
   },
   "preserved": {
     "software_verification_sha256": "8f6ec66ac236189d8129a1eb6b9c834d0cf71061a315c50d0ea806a19072dbe8",
-    "publication_manifest_sha256": "cf02e35f443e5d75bf4b91a42f2d3318e8484fad680f919337d7285641155737"
+    "publication_manifest_sha256": "eb89abde32e15a773438ff10fb8c55fab578d93f1144ec9f46c82d31e6a759ae"
   },
   "zip": {
     "archive_name": "x6200-native-development-windows.zip",
@@ -12662,31 +12662,31 @@
       {
         "name": "BUILD-RESULTS.md",
         "size": 2229,
-        "crc32": 2685183400,
+        "crc32": 506455452,
         "local_header": "zip/local/001.bin",
         "central_header": "zip/central/001.bin",
         "image": false,
-        "sha256": "e986431ff32b4d12ebda855d4b4ea1ebace54283755ca850f24fbdc6c85b1442",
+        "sha256": "a004d572392d1488d2b012d8de536b3a284407f986ebdb08d002bcf83dad8719",
         "compressed_payload": "zip/deflate/001.bin"
       },
       {
         "name": "PUBLICATION-MANIFEST.json",
-        "size": 205894,
-        "crc32": 4199027362,
+        "size": 205958,
+        "crc32": 2628290386,
         "local_header": "zip/local/002.bin",
         "central_header": "zip/central/002.bin",
         "image": false,
-        "sha256": "cf02e35f443e5d75bf4b91a42f2d3318e8484fad680f919337d7285641155737",
+        "sha256": "eb89abde32e15a773438ff10fb8c55fab578d93f1144ec9f46c82d31e6a759ae",
         "compressed_payload": "zip/deflate/002.bin"
       },
       {
         "name": "SHA256SUMS",
         "size": 5567,
-        "crc32": 3111439383,
+        "crc32": 4166310606,
         "local_header": "zip/local/003.bin",
         "central_header": "zip/central/003.bin",
         "image": false,
-        "sha256": "3f6b1a427cd770b695bd0be523ac8abe284350922ff8d62b54dfe874d36b95b6",
+        "sha256": "e4b110b018ff4b6a1bc6775d904da3748a9d78bea8def717264552a108aaba8d",
         "compressed_payload": "zip/deflate/003.bin"
       },
       {
@@ -13181,17 +13181,17 @@
       },
       {
         "name": "validation/public-git-snapshot.json",
-        "size": 421,
-        "crc32": 2254399466,
+        "size": 888,
+        "crc32": 2058373773,
         "local_header": "zip/local/053.bin",
         "central_header": "zip/central/053.bin",
         "image": false,
-        "sha256": "c3f00b45d6f6c44a94dab0987e2743f8939790e4b66a701e262542748980fdbf",
+        "sha256": "9e5740c7c69c202c55188719e6b757573a0201a866b2ff13fad72ee5e0ca7ee1",
         "compressed_payload": "zip/deflate/053.bin"
       }
     ],
     "eocd": "zip/eocd.bin",
-    "expected_archive_sha256": "1894c4023812bc05dcebec640aa04e1d0020c4d04a460faea3bd4ade20418889",
+    "expected_archive_sha256": "1330c02a93951f30e4c2966a213ee52714222653afa2f582709ab6b2a15570d6",
     "comment_hex": "",
     "image_deflate_level": 9
   }

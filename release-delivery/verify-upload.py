@@ -19,7 +19,7 @@ release = json.loads(subprocess.check_output([
 ]))
 if (release['id'] != 434793318 or release['draft'] is not True or
         release['tag_name'] != 'freedv-native-development-20261105' or
-        release['target_commitish'] != '1a2aad375dadc8a14f2b12c6c939b369cc30004d'):
+        release['target_commitish'] != '5b570cd041c6a8c1913d261d4b4cd9440341cc28'):
     raise ValueError('Release identity, draft state or source target changed')
 assets = {asset['name']: asset for asset in release['assets']}
 if set(assets) != NAMES or len(release['assets']) != len(NAMES):

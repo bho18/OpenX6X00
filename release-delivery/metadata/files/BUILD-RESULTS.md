@@ -5,7 +5,7 @@ This is a Linux application development image. **Stock native RX/TX remains BLOC
 The Windows ZIP contains exactly one full SD-card image, `x6200-native-development.img`, plus these guides and verification records. Decompressing the separate `.img.xz` download produces the same image.
 
 - Original built source: `dd42af45012b2b31da4c0fc2d876581052bb817b`.
-- Published corresponding-source snapshot: `1a2aad375dadc8a14f2b12c6c939b369cc30004d` (research documents excluded; no compiled code changed).
+- Published corresponding-source snapshot: `5b570cd041c6a8c1913d261d4b4cd9440341cc28` (research documents excluded; no compiled code changed).
 - Passed: 40 host tests; X6200 development/normal and X6100 compatibility builds; full native-validation host simulation and targeted codec checks.
 - ARM/QEMU processed 33 modem blocks with zero failures. This is emulated correctness, not radio timing or RF evidence.
 - Image checks passed for ELF dependencies/loader, filesystem, written files, signing-key preservation, and unchanged bytes outside the root partition.
