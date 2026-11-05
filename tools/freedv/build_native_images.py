@@ -19,7 +19,10 @@ from native_image import sha
 from prepare_native_image import prepare
 
 ROOT=Path(__file__).resolve().parents[2]
-BASELINE_SOURCE='fd7f0bba70c0c8f8854219b6422600cbd428a6dc'
+# Public snapshot of the reviewed baseline-compatible runtime sources. Its
+# X6200 package/kernel inputs, image level and web dependencies match the
+# original baseline; only allowed X6100 boot/reporting changes differ.
+BASELINE_SOURCE='1a2aad375dadc8a14f2b12c6c939b369cc30004d'
 APP_BASELINE='91f3b5e03f8cf7bffc58a1c44eaef6221be21631'
 
 
