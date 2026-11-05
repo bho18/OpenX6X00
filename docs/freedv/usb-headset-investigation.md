@@ -15,6 +15,13 @@ enumeration must be recorded before implementation choices are fixed.
 
 ## Proposed audio and control paths
 
+Half-duplex conversation is the primary use case and acceptance target: receive
+and decode, then transmit and encode, then return to receive. Only one codec
+direction is active at a time. Keeping streams and codec contexts allocated
+does not require processing or transmitting both directions concurrently.
+The earlier simultaneous USB capture/playback probe tested endpoint capability;
+it does not define the operating model or require full-duplex RF.
+
 | Direction | Pinned capture endpoint | Processing | Pinned playback endpoint |
 | --- | --- | --- | --- |
 | Receive | Physical radio demodulated-audio source | Linux RADE decoder | USB headset earphone sink |
@@ -27,6 +34,15 @@ throughout the conversation. Direction changes select and fence the active
 streams, without reopening devices or admitting old-turn samples. Keep the
 existing 44.1 kHz application PCM boundary initially; the engine already converts
 to RADE's speech/modem rates, and USB hardware-rate conversion needs measurement.
+
+Qualify sustained operation in each direction separately, then repeated
+RX-to-TX-to-RX turns under panel PTT. Acceptance includes first/last words,
+bounded release and modem-tail drain, return-to-RX timing, no stale-turn audio,
+stable queues and resource counts, playback pacing, and device-loss handling.
+Do not use simultaneous encoder/decoder workload as a requirement for this
+half-duplex profile. Split-frequency operation is a later variant using separate
+RX/TX frequencies with the same exclusive direction ownership and turnaround
+rules; it does not by itself require simultaneous RF reception/transmission.
 
 The stock routing candidate keeps RECORD clear and uses ordinary MODEM entry to
 select the line-audio TX route. The external microphone bypasses the requirement
@@ -142,6 +158,100 @@ and zero engine failures. The decoded file contains 511,064 samples (about
 11.589 s). This verifies offline processing of this input, not on-radio CPU
 margin, word completeness, headset playback or RF behavior. User recordings
 and decoded audio are retained privately, not published in the helper kit.
+
+### Returned revised campaign: recorded path completed
+
+The returned `20261105.2` campaign completed every automated stage on the radio:
+12 s simultaneous USB capture/playback, actual recorded codec round trip,
+original playback, decoded playback and endpoint recheck. Evidence ZIP and
+inner/outer checksums all verified. Processing reported 1,200 speech frames,
+202 modem blocks, one EOO, 98 synchronized blocks, 97 synthesis blocks and zero
+engine failures. Both replays obtained drain acknowledgement, with equal final
+read/write indexes and zero pre-EOF underrun counts. Their one EOF underrun each
+occurred at the exact submitted byte count, consistent with reaching file end.
+
+The operator initially reported clear speech with minor dropouts through the
+headset, then separately confirmed the downloaded files sound clean without
+dropouts. Accept the recorded speech/codec/listening milestone; the remaining
+interruption investigation belongs to live headset playback rather than the
+saved codec output. These observations do not distinguish Pulse/ALSA buffering,
+USB transport, the dongle's wireless behavior or the headset itself.
+
+Playback timing remains unresolved: the 529,200-sample original (12 s at
+44.1 kHz) completed in 11.040 s; the 511,064-sample decoded file (11.589 s)
+completed in 10.662 s. Both are close to their sample counts divided by 48 kHz
+plus 15 ms, but current snapshots still identify the sink as 44.1 kHz. A clock
+or rate mismatch is a candidate, not an established cause: drain timing and
+hardware latency accounting could also matter. A separate private virtual-sink
+check consumed 3 s in 3.030 s with the same helper, so the early completion was
+not reproduced on that fixture. Verify active stream, ALSA and USB rates and
+sustained playback pacing in the next real-time test. Reported sink latency is
+not an acoustic end-to-end latency measurement.
+
+The next milestone is sustained real-time half-duplex processing, one direction
+at a time, with explicit USB streams retained across alternating turns, followed
+by panel-PTT and integrated RF qualification.
+The completed file test does not establish live codec deadlines, queue stability,
+direction fencing or RF behavior. Preserve the original native-mode guard;
+USB-profile support remains a separate implementation.
+
+### Next kit: live half-duplex turns
+
+`usb-half-duplex-20261105.1.zip` runs on the existing `.2` image. Start
+`Invoke-UsbHalfDuplex.ps1 -RadioIp 192.168.4.210` from the verified GitHub kit.
+The test is timed; leave physical PTT released throughout. No radio-control,
+I2C or PTT calls are linked into the standalone helper.
+
+One retained actual codec alternates three eight-second microphone TX windows
+with paced channel-file RX windows. The microphone feeds the encoder live;
+modem samples are retained in a file in place of an RF channel. During RX that
+file feeds the decoder at the declared sample rate, and synthesized speech goes
+straight to the headset while decoding runs. This is live processing in each
+direction, not simultaneous TX/RX and not an on-air test. The same USB source,
+sink and codec contexts remain open across all three turns. Inactive microphone
+data is discarded and idle playback is silence, preserving the endpoint session
+without admitting the microphone during RX or playing modem audio in earphones.
+
+At each countdown, prepare the displayed numbered phrase. At GO, speak for
+eight seconds, including "Turn 1/2/3" and "End turn 1/2/3". At RX, listen to that
+turn's decoded speech; wait for the next countdown. Compare first/last words,
+turn identities, speed/pitch, dropouts and unwanted previous-turn speech.
+The campaign normally takes about 70 seconds, with a 180-second process limit.
+Return `usb-half-duplex-results-*.zip` even if it stops early. Its microphone,
+modem and decoded PCM/WAV files contain your speech. Listen to microphone and
+decoded WAVs for comparison; modem WAVs are channel evidence, not speech audio.
+
+The helper requests a 48 kHz mono S16LE client boundary for this USB-only test.
+It does not change the installed GUI or its 44.1 kHz radio PCM boundary. Pulse
+performs hardware format/rate conversion as needed. Active source/sink rates,
+ALSA USB status and server read-index pacing are recorded; a server rate outside
+48 kHz +/-1% blocks completion. This investigates the earlier 44.1/48 kHz timing
+discrepancy without assuming its cause. Server timing is not an acoustic latency
+measurement or proof that the wireless leg has no dropouts.
+
+Capture and render queues are bounded at 500 ms, and TX finish has a 3 s bound.
+Per-turn generation fences clear PCM, while codec histories and workers remain
+retained. Telemetry includes queue high-water marks, codec and stream creation
+counts, one EOO per TX, capture continuity, first decoded-output timing and
+mid-payload render-padding events. Startup and expected end-of-channel silence
+are distinguished from the middle of the known payload; counts are diagnostic,
+not an automatic word-completeness verdict. Reported playback gaps remain a
+separate `COMPLETED_WITH_PLAYBACK_GAPS` result, never an unqualified pass.
+Device loss exits without fallback or automatic reconnect/resume.
+
+The full local real-codec host fixture completed three eight-second turns in
+66.657 s, retained one engine/two streams, emitted three EOOs, and reported no
+engine failures, capture holes, PA underruns or mid-payload render gaps. Measured
+server pacing was 48,000.687 samples/s on the virtual sink. A separate disconnect
+fixture stopped during TX with an alternate sink present. These are software
+fixtures, not measurements of the radio/headset. The ARM binary links the same engine archive and
+matching RADE library as the installed candidate. An ARM-emulated run encoded
+and synthesized speech, then reached the 500 ms input bound after RX returned
+to search. That run is not a real-time ARM pass, nor a measurement of radio CPU
+margin. Keep the bound intact and use this hardware campaign to establish actual
+pacing; partial failure still retains its trace, PCM and first-fault phase.
+Panel PTT, RF routing, actual RF-off timing and split-frequency control remain
+subsequent GUI-owned integration work.
 
 ### Earlier inventory procedure
 

@@ -13,12 +13,15 @@ jobs:
       - name: Check USB duplex endpoint identification without devices
         run: python tools/freedv/test_usb_headset_inventory.py
       - name: Check validation guards and partial evidence
-        run: python tools/freedv/test_usb_headset_validate.py
+        run: |
+          python tools/freedv/test_usb_headset_validate.py
+          python tools/freedv/test_usb_half_duplex.py
       - name: Install private PulseAudio test dependencies
         run: sudo apt-get update && sudo apt-get install -y libpulse-dev pulseaudio pulseaudio-utils
       - name: Check PCM streams and endpoint loss on private virtual devices
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -O2 tools/freedv/usb_headset_pcm.c -lpulse -o /tmp/usb_headset_pcm
+          gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only tools/freedv/usb_half_duplex.c
           gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared tools/freedv/test_usb_headset_drop_drain.c -lpulse -ldl -o /tmp/drop-drain.so
           TEST_PULSE_DROP_DRAIN_ACK_SO=/tmp/drop-drain.so python tools/freedv/test_usb_headset_pcm.py /tmp/usb_headset_pcm
   windows-runner:
@@ -30,4 +33,6 @@ jobs:
         run: tools/freedv/test_usb_headset_inventory_runner.ps1
       - name: Check validation collection and failure preservation
         shell: powershell
-        run: tools/freedv/test_usb_headset_validation_runner.ps1
+        run: |
+          tools/freedv/test_usb_headset_validation_runner.ps1
+          tools/freedv/test_usb_half_duplex_runner.ps1
