@@ -47,7 +47,10 @@ def main():
     parser.add_argument('--x6100-prefix', type=Path)
     parser.add_argument('--build-id', default='unqualified-development')
     parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--usb-test', action='store_true', help='Separate GUI USB headset RF development mode')
     args = parser.parse_args()
+    if args.usb_test and args.variant not in ('host-native-validation','x6200-diagnostic'):
+        parser.error('--usb-test is restricted to X6200 diagnostic or host-native validation builds')
     work = args.work.resolve()
     if work == ROOT or ROOT in work.parents:
         parser.error('--work must be outside the source checkout')
@@ -69,6 +72,7 @@ def main():
     before, tree = source_snapshot()
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     record = {'schema_version': 1, 'status': 'RUNNING', 'variant': args.variant,
+              'usb_test_enabled':args.usb_test,
               'source_commit': revision, 'source_tree_sha256': tree,
               'source_files': before, 'build_id': args.build_id, 'commands': [],
               'hardware_qualified': False, 'hardware_status': 'BLOCKED',
@@ -78,6 +82,7 @@ def main():
               'timing_qualifies_radio': False}
     env = os.environ.copy()
     options = ['-DCMAKE_BUILD_TYPE=RelWithDebInfo']
+    options += ['-DENABLE_FREEDV_USB_TEST=' + ('ON' if args.usb_test else 'OFF')]
     if host:
         options += ['-DHOST_BUILD=ON', '-DENABLE_FREEDV_DIAGNOSTICS=ON',
                     '-DFREEDV_HOST_TEST_PROFILE=' + ('ON' if host_native else 'OFF')]
@@ -163,6 +168,7 @@ def main():
             targets += ['params_sqlite', 'freedv_voice_engine_test', 'freedv_native_stream_test',
                         'freedv_native_stream_fixture_test', 'freedv_native_audio_codec_adapter_test',
                         'freedv_voice_runner']
+            if args.usb_test: targets += ['freedv_usb_audio_test']
         if args.variant == 'x6200-diagnostic':
             targets += ['freedv_voice_runner', 'freedv_voice_pulse_probe']
         run(['cmake', '--build', work / 'build', *targets, '-j', args.jobs], 'build.log')
@@ -188,6 +194,19 @@ def main():
             for name, command in checks.items():
                 run(command, name + '.log')
                 record['codec_checks'][name] = {'status': 'PASS', 'log_sha256': sha(work / (name + '.log'))}
+            if args.usb_test:
+                from array import array
+                pcm=array('h',args.codec_fixture.read_bytes())
+                converted=array('h')
+                for i,x in enumerate(pcm):
+                    following=pcm[i+1] if i+1<len(pcm) else x
+                    converted.extend(round(x+(following-x)*fraction/6) for fraction in range(6))
+                fixture=work/'usb-reference-48k.raw';fixture.write_bytes(converted.tobytes())
+                env['USB_RF_REFERENCE_RUNNER']=str(work/'build/freedv_voice_runner')
+                for name,extra in [('usb-controller',[]),('usb-disconnect',['--disconnect']),('usb-watchdog',['--stall'])]:
+                    run([sys.executable,ROOT/'tools/freedv/test_usb_audio_integration.py',work/'build/freedv_usb_audio_test',
+                         codec/'sources/rade_c/input_sample.wav',fixture,*extra],name+'.log')
+                    record['codec_checks'][name]={'status':'PASS','log_sha256':sha(work/(name+'.log'))}
             record['scope'] = 'Full host native GUI compilation and targeted real-codec correctness; no physical audio, RF or timing qualification'
         gui = work / 'build/src/x6100_gui'
         record['binaries'] = {'gui': {'path': str(gui), 'sha256': sha(gui)}}

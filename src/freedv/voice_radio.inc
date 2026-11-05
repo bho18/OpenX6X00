@@ -698,7 +698,12 @@ bool radio_voice_audio_stats(fd_voice_audio_snapshot *out) {
     pthread_mutex_unlock(&voice_radio.audio_mutex);return ok;
 }
 bool radio_voice_tuning_request(fd_local_operation op,int32_t value,fd_voice_tuning *out) {return cfg_voice_resolve(op,value,out);}
-static int voice_monitor_level(void) { return atomic_load(&voice_radio.owned) && voice_radio.profile ? voice_radio.profile->monitor_gain : param_i_get(cfg_moni); }
+static int voice_monitor_level(void) {
+#ifdef ENABLE_FREEDV_USB_TEST
+    if(radio_usb_quiet())return 0;
+#endif
+    return atomic_load(&voice_radio.owned) && voice_radio.profile ? voice_radio.profile->monitor_gain : param_i_get(cfg_moni);
+}
 bool radio_voice_volume(int32_t delta) {
     if(!fd_writer_voice_begin())return false;
     (void)radio_change_vol((int16_t)delta);fd_writer_voice_end();return true;

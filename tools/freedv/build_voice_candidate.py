@@ -77,11 +77,14 @@ def main():
         p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--debugfs',default='debugfs');p.add_argument('--e2fsck',default='e2fsck');p.add_argument('--qemu',default='qemu-arm')
     p.add_argument('--pulse-probe',type=Path)
+    p.add_argument('--usb-rf',action='store_true',help='Separate USB headset RF development candidate; native guard stays blocked')
     a=p.parse_args()
     revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     if subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=ROOT,text=True).strip():
         raise ValueError('candidate source must be committed before image assembly')
     verification=json.loads(a.verification.read_text())
+    if a.usb_rf and verification.get('usb_integration',{}).get('status')!='PASS':
+        raise ValueError('USB RF candidate requires completed four-stream controller, panel-event and recovery checks')
     if verification.get('status')!='PASS' or verification.get('source_commit')!=revision:
         raise ValueError('passing verification for this exact source revision is required')
     # Route and collection corrections need relevant regression/build checks.
@@ -129,6 +132,12 @@ def main():
             'modem_fixture_sha256':sha(package/'fixtures/rade-continuous.raw'),
             'web_wheel_sha256':sha(a.web_wheel),'model_sha256':model,
             'physical_hand_ptt_release':'UNSUPPORTED by pinned documented API; never inferred from aggregate TX'}
+    if a.usb_rf:
+        record.update(candidate_kind='USB headset / panel PTT RF development image',
+                      hardware_status='UNQUALIFIED_RF',ready_for_guided_hardware_tests=True,
+                      usb_rf_test_ready=True,native_mode_status='BLOCKED: unchanged native MCU contract guard',
+                      validation_scope='Software/image checks passed; requested 1 W, panel-only timed TX for guided SDR/dummy-load qualification',
+                      stock_baseband_lease_available=False,physical_rf_off_timing='UNMEASURED')
     if a.pulse_probe:record['pulse_probe_sha256']=sha(a.pulse_probe)
     metadata={**record,'target':'x6200-buildroot','sources':json.loads((ROOT/'tools/freedv/sources.json').read_text())}
     (package/'package-manifest.json').write_text(json.dumps(metadata,indent=2)+'\n')

@@ -195,7 +195,7 @@ The completed file test does not establish live codec deadlines, queue stability
 direction fencing or RF behavior. Preserve the original native-mode guard;
 USB-profile support remains a separate implementation.
 
-### Next kit: live half-duplex turns
+### Live half-duplex turn kit
 
 `usb-half-duplex-20261105.1.zip` runs on the existing `.2` image. Start
 `Invoke-UsbHalfDuplex.ps1 -RadioIp 192.168.4.210` from the verified GitHub kit.
@@ -252,6 +252,47 @@ margin. Keep the bound intact and use this hardware campaign to establish actual
 pacing; partial failure still retains its trace, PCM and first-fault phase.
 Panel PTT, RF routing, actual RF-off timing and split-frequency control remain
 subsequent GUI-owned integration work.
+
+### Returned live half-duplex campaign: accepted short-turn milestone
+
+The returned `usb-half-duplex-20261105.1` campaign completed all three live
+eight-second TX/RX turns on the radio in 66.937 s. ZIP integrity and both checksum
+manifests verified. Operator notes: "Yes, all sounded excellent, no dropouts
+observed." Accept this short-turn live Linux/USB codec milestone for the tested
+Loop110, retaining the original machine reports' unassessed listening fields as
+immutable evidence; human review is recorded here rather than rewriting them.
+
+One engine/encoder/decoder and two USB streams were retained. Three EOOs, 2,400
+speech frames and 192 synthesis blocks completed, with zero engine failures,
+capture holes, capture overflows, PA underruns or mid-payload render gaps.
+The maximum input queue was 9,600 samples (200 ms at 48 kHz), microphone queue
+528 samples (11 ms), and render queue 19,236 samples (400.75 ms), all within the
+500 ms bounds. This is observed queue behavior over three short turns, not a
+worst-case CPU-margin or long-duration stability measurement.
+
+Active ALSA USB status confirms 48,000 Hz stereo packed-24-bit playback and
+16,000 Hz mono S16_LE capture. Pulse lists the headset sink at 48 kHz with copy
+resampling for the 48 kHz client; the microphone is converted from 16 to 48 kHz.
+Measured server read pacing was 47,998.535 samples/s (about -30.5 ppm from
+48 kHz). No earlier 44.1/48 kHz discrepancy appeared with retained streams and
+48 kHz playback. Both choices changed together, so this result does not isolate
+the original cause; preserve the successful configuration for integration.
+
+TX finish-to-channel-file processing took 78..84 ms. This excludes actual modem
+playback/RF drain and is not a physical PTT-release-to-RF-off result. First
+decoded samples were submitted toward playback 1,020..1,037 ms after paced RX
+began; this includes test buffering and codec acquisition and does not measure
+acoustic end-to-end latency. The operator's general listening pass is not an
+independent word-by-word or acoustic-latency measurement.
+
+Proceed to the GUI-owned USB profile: retain explicit radio RX/modem endpoints
+and USB microphone/headphone endpoints; choose the correct rate/conversion per
+endpoint; own panel PTT before legacy analog handling; admit one codec direction
+at a time; fence old-turn PCM and finish/drain TX before returning to RX. Keep
+the original all-native guard intact. Then qualify one integrated RF conversation
+campaign, including first/last words, press/release behavior, actual RF turnaround,
+disconnect and recovery, and longer RX/search/turn operation. No PTT/RF operation
+was tested in this upload. Any new Linux image must be delivered through GitHub.
 
 ### Earlier inventory procedure
 

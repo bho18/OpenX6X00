@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #define _POSIX_C_SOURCE 200809L
 #include "mode.h"
+#include "usb_voice.h"
 #include "voice_radio.h"
 #include "writer_gate.h"
 #include "voice_audio.h"
@@ -75,6 +76,7 @@ static const fd_qualified_profile *production_profile(void) {
 }
 static const fd_qualified_profile *profile(void) {return selected_profile?selected_profile:production_profile();}
 bool freedv_mode_available(void) {
+    if(freedv_usb_available())return true;
 #ifdef ENABLE_FREEDV_NATIVE_VALIDATION
     /* This explicit candidate build always exercises validation admission,
      * including on the host where a simulated production fixture exists. */
@@ -90,8 +92,8 @@ bool freedv_mode_validation_available(void) {
     return false;
 #endif
 }
-bool freedv_mode_active(void) {return atomic_load(&active);}
-const fd_qualified_profile *freedv_mode_profile(void) {return freedv_mode_active()?profile():NULL;}
+bool freedv_mode_active(void) {return atomic_load(&active) || freedv_usb_active();}
+const fd_qualified_profile *freedv_mode_profile(void) {if(freedv_usb_active())return freedv_usb_profile_view();return freedv_mode_active()?profile():NULL;}
 bool freedv_mode_audio_stats(fd_voice_audio_snapshot *out) {return freedv_mode_active() && radio_voice_audio_stats(out);}
 bool freedv_mode_status(fd_voice_status *out) {
     if(!out)return false;
@@ -125,16 +127,19 @@ static void leave(void) {
     notice("Waiting for fresh RX and both PTT controls to release");
 }
 bool freedv_mode_defer_app(int action) {
+    if(freedv_usb_active())return freedv_usb_leave();
     if(!freedv_mode_active() || completing)return false;
     if(local()){destination=action;next_dialog=NULL;next_parent=NULL;leave();}
     return true;
 }
 bool freedv_mode_defer_dialog(void *dialog,void *parent) {
+    if(freedv_usb_active())return freedv_usb_leave();
     if(!freedv_mode_active() || completing || dialog==&view)return false;
     if(local()){next_dialog=dialog;next_parent=parent;destination=0;leave();}
     return true;
 }
 bool freedv_mode_request(fd_local_operation op,int32_t value) {
+    if(freedv_usb_active())return false;
     if(!freedv_mode_active() || !local() || !session)return false;
     fd_voice_status s=fd_session_observe(session);
     if(s.state!=FD_VS_RX || s.exit_requested){notice("Control available while receiving");return false;}
@@ -144,6 +149,7 @@ bool freedv_mode_request(fd_local_operation op,int32_t value) {
     notice(ok?"Preparing receiver at selected frequency":"Tuning rejected; receiver is busy");return ok;
 }
 bool freedv_mode_radio_ptt(bool pressed) {
+    if(freedv_usb_ptt(pressed))return true;
     if(!freedv_mode_active())return false;
     /* Called by the physical front-key reader before ordinary analog handling.
      * The driver independently verifies the held state; no remote PTT path can
@@ -153,9 +159,11 @@ bool freedv_mode_radio_ptt(bool pressed) {
     return true;
 }
 void freedv_mode_protection(void) {
+    if(freedv_usb_active()){freedv_usb_abort();return;}
     pthread_mutex_lock(&pointer_mutex);if(session)fd_session_abort(session,FD_ABORT_PROTECTION);pthread_mutex_unlock(&pointer_mutex);
 }
 void freedv_mode_device_fault(void) {
+    if(freedv_usb_active()){freedv_usb_abort();return;}
     pthread_mutex_lock(&pointer_mutex);if(session)fd_session_abort(session,FD_ABORT_DEVICE);pthread_mutex_unlock(&pointer_mutex);
 }
 static void select_bookmark(void) {
@@ -358,5 +366,5 @@ static void open_mode(bool validation) {
     if(!entered){driver.emergency_clear(driver.context);abort();}
     freq_strip_set_app(validation?"FreeDV test":"FreeDV");info_refresh_effective();service_timer=lv_timer_create(service,50,NULL);
 }
-void freedv_mode_open(void) {open_mode(false);}
+void freedv_mode_open(void) {if(freedv_usb_available())freedv_usb_open();else open_mode(false);}
 void freedv_mode_validation_open(void) {open_mode(true);}

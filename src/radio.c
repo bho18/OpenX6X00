@@ -16,6 +16,9 @@
 #endif
 #include "radio.h"
 #include "freedv/mode.h"
+#ifdef ENABLE_FREEDV_USB_TEST
+#include "freedv/usb_radio.h"
+#endif
 #include "freedv/writer_gate.h"
 #include "board.h"
 
@@ -583,7 +586,11 @@ void radio_vol_refresh() {
     if (rec_raise) moni = LV_MAX(moni, 30);
     else if (muted || vol == 0) moni = 0;
     radio_lock();
-    hw_set_i(HW_RXVOL, muted ? 0 : vol);
+    hw_set_i(HW_RXVOL,
+#ifdef ENABLE_FREEDV_USB_TEST
+        radio_usb_quiet()?0:
+#endif
+        muted ? 0 : vol);
 #ifdef ENABLE_FREEDV_VOICE
     if(fd_writer_voice_owned())moni=voice_monitor_level();
 #endif
@@ -1625,6 +1632,10 @@ static bool radio_tick() {
             case TX_WATCH_RESTORE:
                 radio_lock();
 #ifdef ENABLE_FREEDV_CONTROL
+#ifdef ENABLE_FREEDV_USB_TEST
+                if(radio_usb_quiet()) hw_set_f(HW_TXPWR_F,1.0f);
+                else
+#endif
                 if (freedv_owner) hw_set_f(HW_TXPWR_F, freedv_owner->restoration_complete ?
                     freedv_owner->saved.requested_power_tenths_watt / 10.0f : 1.0f);
                 else
@@ -2161,4 +2172,7 @@ static void freedv_startup_packet(void) {
 
 #ifdef ENABLE_FREEDV_VOICE
 #include "freedv/voice_radio.inc"
+#ifdef ENABLE_FREEDV_USB_TEST
+#include "freedv/usb_radio.inc"
+#endif
 #endif
