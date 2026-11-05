@@ -14,6 +14,8 @@ jobs:
         run: python tools/freedv/test_mic_ptt_input_watch.py
       - name: Check pinned status memory reads, relocation and process restart rejection
         run: python tools/freedv/test_mic_status_snapshot.py
+      - name: Check read-only R16 PIO sampling and device-tree rejection
+        run: python tools/freedv/test_mic_ptt_r16_pio.py
   windows-runner:
     runs-on: windows-latest
     steps:

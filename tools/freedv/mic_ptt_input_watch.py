@@ -40,11 +40,11 @@ class EventDecoder:
         return result
 
 
-def observe(devices, out, seconds=40, packet_reader=None):
+def observe(devices, out, seconds=40, packet_reader=None, pio_reader=None):
     started = time.monotonic()
     counts = {name: 0 for name, _ in devices}
     issues = []
-    steps = iter(WIDE_SCHEDULE if packet_reader else SCHEDULE)
+    steps = iter(WIDE_SCHEDULE if packet_reader and not pio_reader else SCHEDULE)
     step = next(steps, None)
     decoders = {fd: EventDecoder() for _, fd in devices}
     rows = 0
@@ -66,6 +66,8 @@ def observe(devices, out, seconds=40, packet_reader=None):
                 next_sample = time.monotonic() + .02
                 try:
                     sample = packet_reader.sample()
+                    if pio_reader:
+                        sample['r16_pio'] = pio_reader.sample()
                 except (OSError, ValueError) as e:
                     issues.append('GUI packet sampling stopped: ' + str(e))
                     break
@@ -136,9 +138,11 @@ def main():
     parser.add_argument('--check-only', action='store_true')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--wide', action='store_true', help='Also sample pinned GUI packet buffer and existing exported GPIO values')
+    parser.add_argument('--pio', action='store_true', help='PTT-only prompts and read-only raw R16 PIO data/configuration sampling; requires --wide')
     args = parser.parse_args()
     devices, inventory = [], []
     packet_reader = None
+    pio_reader = None
     out = args.output
     try:
         gui = Path('/usr/sbin/x6100_gui')
@@ -157,20 +161,30 @@ def main():
         if args.wide:
             from mic_status_snapshot import open_verified_gui
             packet_reader = open_verified_gui()
+        if args.pio:
+            if not args.wide:
+                raise ValueError('--pio requires --wide')
+            from mic_ptt_r16_pio import R16PioReader
+            pio_reader = R16PioReader()
         if args.check_only:
             print(json.dumps({'status': 'READY', 'devices': inventory,
                               'gui_packet_sampling': packet_reader is not None,
+                              'r16_pio_sampling': pio_reader.controllers if pio_reader else None,
                               'note': 'Check only. No press test has started.'}, indent=2))
             return 0
         if out is None or not out.is_absolute() or out.parent != Path('/tmp'):
             raise ValueError('Provide a fresh absolute --output directory directly under /tmp')
         out.mkdir(mode=0o700)
         (out / 'identity.json').write_text(json.dumps({
-            'gui_sha256': EXPECTED_GUI, 'devices': inventory, 'schedule': WIDE_SCHEDULE if args.wide else SCHEDULE,
+            'gui_sha256': EXPECTED_GUI, 'devices': inventory, 'schedule': WIDE_SCHEDULE if args.wide and not args.pio else SCHEDULE,
+            'r16_pio_controllers': pio_reader.controllers if pio_reader else None,
             'scope': 'evdev plus sampled GUI status and existing exported GPIO' if args.wide else 'evdev only',
             'radio_control_commands': False,
             'wall_time_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}, indent=2) + '\n')
-        result = observe(devices, out, seconds=55 if args.wide else 40, packet_reader=packet_reader)
+        result = observe(devices, out, seconds=55 if args.wide and not args.pio else 40,
+                         packet_reader=packet_reader, pio_reader=pio_reader)
+        result['r16_pio_observed'] = pio_reader is not None
+        result['r16_pio_limits'] = 'Sampled SoC GPIO register values, not MCU PH6; pin mux and board wiring must be checked before interpreting a PTT candidate'
         (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result, indent=2), flush=True)
         return 0 if result['status'] == 'OBSERVED' else 1
@@ -178,6 +192,8 @@ def main():
         print(json.dumps({'status': 'BLOCKED', 'reason': str(e)}), flush=True)
         return 1
     finally:
+        if pio_reader is not None:
+            pio_reader.close()
         if packet_reader is not None:
             packet_reader.close()
         for _, fd in devices:

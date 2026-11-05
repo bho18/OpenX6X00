@@ -1,4 +1,52 @@
-# Broad mic-button/PTT discovery — helper .2, existing 20261105.2 image
+# PTT signal investigation — helper .3, existing 20261105.2 image
+
+Current round: run `Invoke-MicPttInputWatch.ps1 -RadioIp 192.168.4.210 -PttPins`.
+UP/DOWN mapping is out of scope; no mic-button actions are requested in this mode.
+No image, baseband or GUI replacement/restart is required.
+
+Earlier logging covered evdev, sampled MCU status and exported sysfs GPIO values.
+The last of these was empty, but it did not cover the GPIO character devices
+used by the control library, or unexported pins. This round adds the R16/A33 PIO
+bank data and mux configuration words read-only through `/dev/mem`.
+
+Before READY, the helper requires both expected live device-tree pin controllers
+and exact register ranges, a reviewed identity bus-address translation, the
+pinned GUI identity and read access to the packet buffer and PIO registers.
+If it reports BLOCKED, do not press PTT; return the error. It does not mount
+debugfs, export/request GPIOs, change mux/direction/pulls/IRQ settings, acknowledge
+IRQs, or write registers. Only mux configuration and DATA registers are read.
+
+Prepare a suitable dummy load, ordinary USB mode, lowest power and released PTT.
+Close digital/test modes and transmitting CAT/TCI/modem applications. Type READY,
+then follow the 40-second PTT-only schedule:
+
+| Time | Action |
+| --- | --- |
+| 0 seconds | Both PTT controls released. |
+| 5 seconds | Radio side PTT, hold one second, release. |
+| 15 seconds | Mic PTT, hold one second, release. |
+| 25 seconds | Repeat mic PTT, hold one second, release. |
+| 35 seconds | Both released. |
+| 40 seconds | Capture ends. |
+
+If TX persists after release, switch off the radio; do not wait for collection.
+Record whether the TX indicator followed all three presses/releases and any
+missed prompt. Send back the printed results ZIP. The sampled PIO data/config
+is stored alongside the MCU status in `status-samples.jsonl` as `r16_pio`.
+
+PIO layout references: Linux v6.1 `pinctrl-sunxi.h` (bank stride 0x24, DATA 0x10),
+`pinctrl-sun8i-a33.c`, `pinctrl-sun8i-a23-r.c`, and `sun8i-a23-a33.dtsi`.
+Main controller is 0x01c20800, always-on controller is 0x01f02c00. PB..PH use
+their physical bank indices; PL is bank zero in the always-on block. Bonded
+pin lists and all four mux words are retained for interpreting sampled bits.
+
+These are R16 GPIOs, not STM32 GPIOH/PH6. Sampling a DATA register on a muxed
+pin does not establish a usable input, and a TX-correlated output is not raw
+mic PTT. No signal on these sampled banks cannot exclude an MCU-only connection,
+another interface, short events, or a value unavailable under the current mux.
+No overlapping software/MODEM TX experiment is part of this round.
+
+## Earlier broad status mode (helper .2, -Wide)
 
 Use `Invoke-MicPttInputWatch.ps1 -RadioIp 192.168.4.210 -Wide` for the current
 55-second round. No image update, GUI restart or baseband update is needed.

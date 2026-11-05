@@ -5,6 +5,7 @@ New-Item -ItemType Directory -Path $root | Out-Null
 Copy-Item (Join-Path $PSScriptRoot 'Invoke-MicPttInputWatch.ps1') $root
 Copy-Item (Join-Path $PSScriptRoot 'mic_ptt_input_watch.py') $root
 Copy-Item (Join-Path $PSScriptRoot 'mic_status_snapshot.py') $root
+Copy-Item (Join-Path $PSScriptRoot 'mic_ptt_r16_pio.py') $root
 $global:mockCalls=@()
 $global:mockPrompts=0
 function global:ssh { $global:mockCalls+=($args -join ' '); Write-Output 'synthetic read-only observation'; $global:LASTEXITCODE=0 }
@@ -41,6 +42,12 @@ try {
   throw 'Wide status sampling was omitted'
  }
  if(@(Get-ChildItem $root -Filter '*.zip').Count -ne 2){throw 'Wide evidence ZIP missing'}
+ $global:mockPrompts=0
+ & (Join-Path $root 'Invoke-MicPttInputWatch.ps1') -PttPins
+ if($global:mockCalls[-1] -notmatch '--output /tmp/mic-ptt-input-results-[a-f0-9]+ --wide --pio'){
+  throw 'PTT pin sampling was omitted'
+ }
+ if(@(Get-ChildItem $root -Filter '*.zip').Count -ne 3){throw 'PTT pin evidence ZIP missing'}
  'PASS: prerequisite-only and full runner flow, paths with spaces, notes, evidence ZIP; mocked SSH only'
 } finally {
  Remove-Item Function:\ssh,Function:\scp,Function:\Read-Host

@@ -1,4 +1,4 @@
-param([string]$RadioIp='192.168.4.210', [switch]$CheckOnly, [switch]$Wide)
+param([string]$RadioIp='192.168.4.210', [switch]$CheckOnly, [switch]$Wide, [switch]$PttPins)
 $ErrorActionPreference='Stop'
 $kitDir=Split-Path -Parent $MyInvocation.MyCommand.Path
 $python=Join-Path $kitDir 'mic_ptt_input_watch.py'
@@ -10,13 +10,16 @@ $remoteScript="/tmp/mic-ptt-input-watch-$token.py"
 & scp -O @opts $python "root@${RadioIp}:$remoteScript"
 if($LASTEXITCODE){throw 'Script copy failed'}
 $wideArg=''
-if($Wide){
+if($Wide -or $PttPins){
  $wideArg=' --wide'
+ if($PttPins){$wideArg+=' --pio'}
  # Use a private directory so concurrent helper runs cannot replace imports.
  $remoteDir="/tmp/mic-ptt-wide-kit-$token"
  & ssh @opts "root@$RadioIp" "umask 077 && mkdir $remoteDir"
  if($LASTEXITCODE){throw 'Remote helper directory creation failed'}
- foreach($name in @('mic_status_snapshot.py','mic_ptt_input_watch.py')){
+ $names=@('mic_status_snapshot.py','mic_ptt_input_watch.py')
+ if($PttPins){$names+='mic_ptt_r16_pio.py'}
+ foreach($name in $names){
   & scp -O @opts (Join-Path $kitDir $name) "root@${RadioIp}:$remoteDir/$name"
   if($LASTEXITCODE){throw "Copy failed: $name"}
  }
