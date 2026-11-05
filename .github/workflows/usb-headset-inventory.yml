@@ -1,0 +1,21 @@
+name: USB headset inventory helper
+on:
+  push:
+    branches: [test/usb-headset-20261105]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check USB duplex endpoint identification without devices
+        run: python tools/freedv/test_usb_headset_inventory.py
+  windows-runner:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Check inventory collection and failure preservation
+        shell: powershell
+        run: tools/freedv/test_usb_headset_inventory_runner.ps1
