@@ -842,7 +842,15 @@ def validate_backend_failure(rows,harness,text,mode):
             int(ack[2])==(mode=='missing'),'The backend request/ACK ordering is invalid')
     require(harness.get('rf_clear_confirmed') is True,'Backend failure did not confirm RF clear')
     if mode=='missing':
-        require(first['ms']-int(requested[1])>=1000,'Missing backend ACK faulted before its unchanged deadline')
+        # The injector hook runs after the controller starts its deadline.
+        # Bind elapsed time to the controller's own typed request epoch instead
+        # of independently rounded hook timestamps.
+        issued=receipt.get('timing_issued_ms');issued_us=receipt.get('timing_issued_us')
+        duration=first.get('duration_ms')
+        require(type(issued) is int and type(issued_us) is int and issued_us//1000==issued and
+                receipt['protocol_ack_ms']<=issued<=int(requested[1]) and type(duration) is int and
+                duration>=1000 and first['ms']-issued>=duration,
+                'Missing backend ACK faulted before its unchanged deadline')
     result={'schema':'x6200.usb.backend-failure.v1','status':'PASS','mode':mode,'fault':fault,'origin':origin,
         'state':4,'first_fault_ms':first['ms'],'requested_ms':int(requested[1]),'real_ack_ms':int(ack[1]),
         'protocol_ack_ms':receipt['protocol_ack_ms'],'eoo':1,'completed_rf_turns':0,'keys':1,'physical_tx':False,

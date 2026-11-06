@@ -146,8 +146,10 @@ class BackendFailureEvidenceTest(unittest.TestCase):
 
     def fixture(self,mode):
         fault,origin,when=self.variants[mode]
-        rows=[{'kind':'event','event':'first-fault','ms':when,'state':4,'status':fault,'operation':origin},
-              {'kind':'backend-tail','complete':False,'rf_tx_confirmed':False,'protocol_ack_ms':1000},
+        rows=[{'kind':'event','event':'first-fault','ms':when,'state':4,'status':fault,'operation':origin,
+               'duration_ms':1000 if mode=='missing' else 0},
+              {'kind':'backend-tail','complete':False,'rf_tx_confirmed':False,'protocol_ack_ms':1000,
+               'timing_issued_ms':1001,'timing_issued_us':1001000},
               {'kind':'sample','ms':when+30,'state':6 if fault==1 else 5,
                'rf_valid':True,'rf_tx':False,'rf_clear_confirmed':True}]
         harness={'fault':fault,'first_fault_origin':origin,'turns':0,'eoo':1,'keys':1,
@@ -201,6 +203,17 @@ class BackendFailureEvidenceTest(unittest.TestCase):
 
     def test_missing_ack_timeout_cannot_be_credited_before_the_original_one_second_deadline(self):
         rows,harness,text=self.fixture('missing');rows[0]['ms']=2000
+        with self.assertRaises(ValueError):validate_backend_failure(rows,harness,text,'missing')
+
+    def test_missing_ack_deadline_uses_controller_issue_before_the_later_injector_hook(self):
+        rows,harness,text=self.fixture('missing')
+        rows[0]['ms']=2000
+        rows[1].update(timing_issued_ms=1000,timing_issued_us=1000998)
+        self.assertEqual(validate_backend_failure(rows,harness,text,'missing')['status'],'PASS')
+
+    def test_late_fault_event_cannot_hide_a_premature_operation_timeout(self):
+        rows,harness,text=self.fixture('missing')
+        rows[0].update(ms=2001,duration_ms=999)
         with self.assertRaises(ValueError):validate_backend_failure(rows,harness,text,'missing')
 
     def test_stop_after_call_receipt_may_follow_the_fault_but_cannot_precede_it(self):
