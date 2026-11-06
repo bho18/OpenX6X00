@@ -13,6 +13,13 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sched.h>
+#ifndef FREEDV_BUILD_ID
+#define FREEDV_BUILD_ID "unqualified-development"
+#endif
+#ifndef FREEDV_SOURCE_COMMIT
+#define FREEDV_SOURCE_COMMIT "unqualified-development"
+#endif
 #include <limits.h>
 #include <unistd.h>
 
@@ -30,6 +37,9 @@ extern unsigned usb_test_render_hold_hits(void) __attribute__((weak));
 extern unsigned long long usb_test_mic_release_hold_started_ms(void) __attribute__((weak));
 extern unsigned long long usb_test_mic_barrier_started_ms(void) __attribute__((weak));
 extern void usb_test_mic_stop_callback(void (*)(void *),void *) __attribute__((weak));
+extern void usb_test_mic_release_action(void (*)(void *),void *) __attribute__((weak));
+extern int usb_test_mic_release_now(void) __attribute__((weak));
+extern unsigned long long usb_test_mic_release_posted_ms(void) __attribute__((weak));
 static void stop_from_close(void *audio){fd_usb_audio_stop(audio);}
 static bool cold_case,cold_rx_case,cold_late_tx_case;
 static atomic_uint recovered_observations;
@@ -114,6 +124,28 @@ static void clear(void *context,bool halt) {
 static void inhibit(void *context) { atomic_store(&((fake*)context)->halted,true); }
 static void release_ptt(fake *f) {
     atomic_store(&f->pressed,false);atomic_fetch_add(&f->release,1);
+}
+static void release_from_callback(void *context){release_ptt(context);}
+typedef struct {pthread_mutex_t pa;fake input;atomic_bool attempted,observed;} release_lock_model;
+static void *release_lock_worker(void *context){
+    release_lock_model *model=context;
+    /* Prove the old circular-wait interleaving: the callback owns PA and the
+     * coordinator cannot observe the input until that callback returns. */
+    assert(pthread_mutex_trylock(&model->pa)==EBUSY);atomic_store(&model->attempted,true);
+    assert(!pthread_mutex_lock(&model->pa));assert(!atomic_load(&model->input.pressed)&&atomic_load(&model->input.release)==1);
+    atomic_store(&model->observed,true);assert(!pthread_mutex_unlock(&model->pa));return NULL;
+}
+static int release_lock_protocol_selftest(void){
+    assert(usb_test_mic_release_action&&usb_test_mic_release_now&&usb_test_mic_release_posted_ms);
+    release_lock_model model={0};atomic_store(&model.input.pressed,true);assert(!pthread_mutex_init(&model.pa,NULL));assert(!pthread_mutex_lock(&model.pa));
+    pthread_t worker;assert(!pthread_create(&worker,NULL,release_lock_worker,&model));uint64_t until=ms()+1000;
+    while(!atomic_load(&model.attempted)&&ms()<until)sched_yield();
+    assert(atomic_load(&model.attempted)&&!atomic_load(&model.observed));
+    usb_test_mic_release_action(release_from_callback,&model.input);assert(usb_test_mic_release_now()==1);
+    assert(usb_test_mic_release_posted_ms()&&!atomic_load(&model.observed)&&!atomic_load(&model.input.pressed)&&atomic_load(&model.input.release)==1);
+    assert(!pthread_mutex_unlock(&model.pa));assert(!pthread_join(worker,NULL));assert(atomic_load(&model.observed));assert(!pthread_mutex_destroy(&model.pa));
+    puts("PASS release-lock-protocol: coordinator blocked; retained release posted without waiting; coordinator observed after callback unlock; no Pulse/codec/RF");
+    printf("RELEASE_LOCK_PROTOCOL {\"status\":\"PASS\",\"source_commit\":\"%s\",\"build_id\":\"%s\",\"coordinator_blocked\":true,\"release_posted_without_wait\":true,\"observed_after_unlock\":true,\"radio_accessed\":false}\n",FREEDV_SOURCE_COMMIT,FREEDV_BUILD_ID);return 0;
 }
 static void marker(const char *name) {
     const char *path=getenv(name);assert(path);
@@ -215,6 +247,7 @@ static void result(const char *directory,const char *scenario,fake *f,fd_usb_sna
         usb_test_render_hold_started_ms?usb_test_render_hold_started_ms():0,usb_test_render_hold_ended_ms?usb_test_render_hold_ended_ms():0,usb_test_render_hold_hits?usb_test_render_hold_hits():0);fclose(out);stop_telemetry(f);
 }
 int main(int argc,char **argv) {
+    if(argc==2&&!strcmp(argv[1],"--release-lock-protocol-selftest"))return release_lock_protocol_selftest();
     assert(argc==2 || argc==3);const char *scenario=argc==3?argv[2]:"--normal";
     fake f={0};run_directory=argv[1];run_scenario=scenario;run_control=&f;start_telemetry(&f);char prefix[512];
     snprintf(prefix,sizeof(prefix),"%s/%s",argv[1],!strcmp(scenario,"--reopen")?"freedv-usb-session-00":"freedv-usb-session");
@@ -270,6 +303,7 @@ int main(int argc,char **argv) {
     }
     if(!strcmp(scenario,"--capture-release-split")||!strcmp(scenario,"--capture-release-held150")){
         assert(usb_test_mic_release_hold_started_ms&&usb_test_mic_barrier_started_ms);
+        if(!strcmp(scenario,"--capture-release-split")){assert(usb_test_mic_release_action&&usb_test_mic_release_posted_ms);usb_test_mic_release_action(release_from_callback,&f);}
         fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);
         marker("USB_TEST_MIC_RELEASE_TRIGGER");uint64_t until=ms()+2000;
         while(!usb_test_mic_release_hold_started_ms()&&ms()<until){(void)healthy_snapshot(audio,"unexpected-capture-release-hold-fault");pause_ms(1);}
@@ -277,8 +311,10 @@ int main(int argc,char **argv) {
         if(!strcmp(scenario,"--capture-release-split")){
             while(!usb_test_mic_barrier_started_ms()&&ms()<until){(void)healthy_snapshot(audio,"unexpected-capture-release-barrier-fault");pause_ms(1);}
             assert(usb_test_mic_barrier_started_ms());
-        }else pause_ms(50);
-        release_ptt(&f);fd_usb_snapshot last=wait_state(audio,FD_USB_RX,10000);
+            while(!usb_test_mic_release_posted_ms()&&ms()<until){(void)healthy_snapshot(audio,"unexpected-capture-release-action-fault");pause_ms(1);}
+            assert(usb_test_mic_release_posted_ms()&&!atomic_load(&f.pressed)&&atomic_load(&f.release)==1);
+        }else {pause_ms(50);release_ptt(&f);}
+        fd_usb_snapshot last=wait_state(audio,FD_USB_RX,10000);
         assert(last.turns==1&&last.engine.eoo_count==1&&last.rf_clear_confirmed&&!last.mic_holes&&!last.rx_holes);
         fd_usb_audio_stop(audio);last=wait_stopped(audio,10000);result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
     }

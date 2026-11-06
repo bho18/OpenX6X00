@@ -2,7 +2,8 @@
 """Prove unexpected controller failures stay failed and retain evidence.
 
 This is an infrastructure prerequisite, never a passing functional radio case.
-Both initial admission and active RF-disabled qualification must exit nonzero
+A pure lock protocol check runs first without opening audio or radio. Both
+initial admission and active RF-disabled qualification must exit nonzero
 after orderly failure reporting and teardown. Neither expected failed child
 counts as a passing functional case.
 """
@@ -26,6 +27,41 @@ FAILURE_VARIANTS={
     'initial_buffer':{'case':'normal','fault':13,'origin':'modem-buffer-budget','rf_disabled':False},
     'qualification_telemetry':{'case':'rf-disabled','fault':4,'origin':'radio-packet-stale','rf_disabled':True},
 }
+
+
+def _run_release_lock_protocol(binary,injector,output,identity):
+    """Exercise the real injector action with a lock-blocked model worker.
+
+    The child opens no audio or radio; the outer process bounds a broken join
+    or reintroduced circular wait and preserves its log as failed evidence.
+    """
+    output.mkdir(parents=True,exist_ok=False)
+    record={'schema':'x6200.usb.release-lock-protocol.v1','status':'FAIL',
+            **{key:identity[key] for key in ('source_commit','build_id','controller_binary_sha256',
+                                            'fault_injector_sha256','radio_accessed')},'checks':{}}
+    log=output/'protocol.log'
+    try:
+        env=dict(os.environ,LD_PRELOAD=str(injector))
+        executed=run_bounded([binary,'--release-lock-protocol-selftest'],log,5,env=env)
+        record['execution']=executed
+        require(not executed['timed_out'] and executed['exit_code']==0,
+                'Release lock protocol hung or failed')
+        prefix='RELEASE_LOCK_PROTOCOL '
+        witnesses=[json.loads(line[len(prefix):]) for line in log.read_text().splitlines() if line.startswith(prefix)]
+        require(len(witnesses)==1,'Release lock protocol did not retain one structured witness')
+        witness=witnesses[0]
+        require(witness.get('status')=='PASS' and witness.get('source_commit')==identity['source_commit'] and
+                witness.get('build_id')==identity['build_id'] and witness.get('radio_accessed') is False,
+                'Release lock protocol has the wrong binary identity or scope')
+        checks=('coordinator_blocked','release_posted_without_wait','observed_after_unlock')
+        require(all(witness.get(key) is True for key in checks),'Release lock protocol did not exercise the blocked interleaving')
+        record['checks']={key:True for key in checks};record['witness']=witness;record['status']='PASS'
+    except Exception as error:
+        record['reason']=str(error)
+    finally:
+        if log.is_file():record['evidence_files']={'log':{'path':str(log),'sha256':sha(log)}}
+        save_json(output/'protocol-result.json',record)
+    return record
 
 
 def _run_variant(name,spec,binary,speech,modem,runner,injector,output,identity):
@@ -141,6 +177,9 @@ def run_failure_preservation(binary,speech,modem,runner,injector,output,
         require(record['controller_binary_sha256']==expected_binary_sha256,'Infrastructure test received a different controller binary')
         identity={key:record[key] for key in ('source_commit','build_id','controller_binary_sha256','fixture_sha256',
                                             'runner_sha256','fault_injector_sha256','radio_accessed')}
+        protocol=_run_release_lock_protocol(binary,injector,output/'release-lock-protocol',identity)
+        record['release_lock_protocol']=protocol;save_json(output/'infrastructure-result.json',record)
+        require(protocol['status']=='PASS',protocol.get('reason','Release lock protocol failed'))
         for name,spec in FAILURE_VARIANTS.items():
             variant=_run_variant(name,spec,binary,speech,modem,runner,injector,output/name,identity)
             record['variants'][name]=variant

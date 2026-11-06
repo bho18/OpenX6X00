@@ -529,11 +529,13 @@ def indexed_capture_source_match(close_result, microphone_pcm, source_rows, sour
 def validate_capture_release_boundary(close, closed, microphone_pcm, source_rows, source_pcm, log_text, mode):
     pattern=(r'INJECT MIC release mode=(\S+) hold_started_ms=(\d+) hold_ended_ms=(\d+) '
              r'callback_started_ms=(\d+) barrier_started_ms=(\d+) release_observed_ms=(\d+) '
-             r'callback_ended_ms=(\d+) blocked_peeks=(\d+) cutoff_index=(\d+) sentinel_frames=(\d+) no-discard=1')
+             r'callback_ended_ms=(\d+) blocked_peeks=(\d+) cutoff_index=(\d+) sentinel_frames=(\d+) no-discard=1 '
+             r'release_posted_ms=(\d+) pa_lock_attempt_ms=(\d+) pa_lock_waiting=([01]) coordinator_wait_required=([01])')
     match=re.search(pattern,log_text)
     require(match and match[1]==mode,'The indexed capture release exercise was not retained')
     keys=('hold_started_ms','hold_ended_ms','callback_started_ms','barrier_started_ms','release_observed_ms',
-          'callback_ended_ms','blocked_peeks','cutoff_index','sentinel_frames')
+          'callback_ended_ms','blocked_peeks','cutoff_index','sentinel_frames','release_posted_ms','pa_lock_attempt_ms',
+          'pa_lock_waiting','coordinator_wait_required')
     witness=dict(zip(keys,map(int,match.groups()[1:])))
     require(witness['hold_ended_ms']-witness['hold_started_ms']>=150 and witness['cutoff_index']==closed['cutoff_index'],
             'The capture delivery hold or frozen cutoff was not exercised')
@@ -543,8 +545,10 @@ def validate_capture_release_boundary(close, closed, microphone_pcm, source_rows
                 witness['blocked_peeks']>0,'The release fence bypassed the held microphone delivery')
     else:
         require(mode=='split' and witness['hold_ended_ms']<=witness['callback_started_ms']<=witness['barrier_started_ms']<=
-                witness['release_observed_ms']<witness['callback_ended_ms'] and close['cutoff_split_frames']>0,
-                'The coordinator did not observe release inside the selected callback and split its finite cutoff')
+                witness['release_posted_ms']<=witness['callback_ended_ms'] and
+                witness['barrier_started_ms']<=witness['release_observed_ms'] and
+                witness['coordinator_wait_required']==0 and close['cutoff_split_frames']>0,
+                'The selected callback did not post release without waiting for the coordinator and split its finite cutoff')
     require(witness['release_observed_ms']<=close['close_started_ms']<=close['timing_issued_ms'],
             'Capture closure did not follow the observed retained release')
     result=indexed_capture_source_match(closed,microphone_pcm,source_rows,source_pcm)
@@ -772,3 +776,30 @@ def validate_turn_decode(reference, observed, turn_number, tolerance_seconds=.14
             label + ' sink lost more than one modem synthesis block')
     return {'status': 'PASS', 'turn': turn_number, 'reference': reference, 'observed': observed,
             'allowed_rounding_and_acquisition_seconds': tolerance_seconds}
+
+
+def validate_decoder_control_inputs(reference,observed,control):
+    require(control.get('schema')=='x6200.usb.decoder-control.v1' and control.get('status')=='PASS' and
+            control.get('basis')=='independent_transport_reference' and control.get('source_rate')==48000 and
+            control.get('rate')==44100 and control.get('channels')==1 and control.get('gain_divisor')==4 and
+            control.get('source_context')=='fixed_full_waveform_alignment',
+            'Decoder comparison requires an independent reference in the actual transport domain')
+    frames=control['control_frames']
+    require(type(frames) is int and frames>0,'Decoder control frame count is invalid')
+    padded=(math.ceil(frames/44100)+1)*44100
+    require(0<=control['leading_frames'] and
+            control['leading_frames']+control['transport_frames']<=frames and
+            control['native_alignment']['complete_transport_covered'] is True,
+            'Decoder alignment omitted part of the finite source interval')
+    for name,stats in [('reference',reference),('actual',observed)]:
+        require(stats.get('input_rate')==44100 and stats.get('input_channels')==1 and
+                stats.get('input_frames')==padded and stats.get('unpadded_frames')==frames and
+                stats.get('input_sha256')==control.get(name+'_stimulus_sha256'),
+                'Decoder '+name+' input does not match the declared rate, context and immutable stimulus')
+
+
+def validate_matched_turn_decode(reference,observed,control,turn_number):
+    validate_decoder_control_inputs(reference,observed,control)
+    result=validate_turn_decode(reference,observed,turn_number)
+    result['decoder_control']=control
+    return result

@@ -22,7 +22,8 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require, run_b
                               audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait,
                               render_capacity_audit, validate_tail_backpressure,
                               capture_close_oracle, indexed_capture_source_match, validate_capture_release_boundary,
-                              validate_capture_close_failure)
+                              validate_capture_close_failure,validate_matched_turn_decode)
+from usb_transport_oracle import production_transport_reference,matched_decoder_control,transport_chunks_for_turn
 
 
 class SupervisorTests(unittest.TestCase):
@@ -157,6 +158,29 @@ class SinkOracleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'decoder failed'):
             validate_turn_decode(self.record(),bad,1)
 
+    def matched(self,reference_blocks=6,actual_blocks=6):
+        control={'schema':'x6200.usb.decoder-control.v1','status':'PASS','basis':'independent_transport_reference',
+            'source_rate':48000,'rate':44100,'channels':1,'gain_divisor':4,'source_context':'fixed_full_waveform_alignment',
+            'control_frames':114000,'leading_frames':30252,'transport_frames':73382,
+            'native_alignment':{'complete_transport_covered':True},'reference_stimulus_sha256':'ideal','actual_stimulus_sha256':'actual'}
+        def stats(blocks,digest):
+            return dict(self.record(blocks*.12-.05125,blocks),input_rate=44100,input_channels=1,input_frames=176400,
+                        unpadded_frames=114000,input_sha256=digest)
+        return stats(reference_blocks,'ideal'),stats(actual_blocks,'actual'),control,12
+
+    def test_matched_acquisition_context_is_required_without_relaxing_loss_policy(self):
+        self.assertEqual(validate_matched_turn_decode(*self.matched())['status'],'PASS')
+        unequal=list(self.matched(8,6));unequal[0]['input_rate']=48000
+        with self.assertRaisesRegex(ValueError,'rate, context'):validate_matched_turn_decode(*unequal)
+        with self.assertRaisesRegex(ValueError,'truncated'):validate_matched_turn_decode(*self.matched(8,6))
+
+    def test_matched_decoder_input_hash_and_complete_interval_are_required(self):
+        for change in ('hash','coverage'):
+            values=list(self.matched())
+            if change=='hash':values[1]['input_sha256']='different'
+            else:values[2]['native_alignment']['complete_transport_covered']=False
+            with self.assertRaises(ValueError):validate_matched_turn_decode(*values)
+
     def test_each_turn_requires_drain(self):
         with self.assertRaisesRegex(ValueError,'omitted drain'):
             completed_turns([{'kind':'event','event':'state','state':3,'ms':1},
@@ -223,6 +247,40 @@ class SinkOracleTests(unittest.TestCase):
             with self.subTest(active_ms=active_ms,accepted=accepted):
                 with self.assertRaisesRegex(ValueError,'microphone frames'):
                     microphone_frame_budget(active_ms,accepted,960)
+
+
+class TransportReferenceTests(unittest.TestCase):
+    def source(self):
+        values=array('h',(round(12000*math.sin(2*math.pi*937*index/48000)) for index in range(5641)))
+        return values.tobytes()
+
+    def chunks(self):
+        return [dict(stage='regular',input_frames=4096,generated_frames=3743),
+                dict(stage='regular',input_frames=1545,generated_frames=1420),
+                dict(stage='src-final',input_frames=0,generated_frames=19),
+                dict(stage='src-final',input_frames=0,generated_frames=0)]
+
+    def test_actual_libsrc_matches_independent_production_counts_and_finite_tail(self):
+        output,proof=production_transport_reference(self.source(),self.chunks())
+        self.assertEqual(len(output)//2,5182)
+        self.assertEqual(proof['input_frames'],5641)
+        self.assertTrue(proof['eof_complete'])
+        self.assertTrue(Path(proof['library_path']).is_file())
+        self.assertEqual(len(proof['library_sha256']),64)
+        with self.assertRaisesRegex(ValueError,'finite EOF'):
+            production_transport_reference(self.source(),self.chunks()[:-1])
+
+    def test_wrong_transport_count_or_unproved_waveform_cannot_supply_decoder_control(self):
+        chunks=self.chunks();chunks[0]['generated_frames']+=1
+        with self.assertRaisesRegex(ValueError,'frame counts'):production_transport_reference(self.source(),chunks)
+        with self.assertRaisesRegex(ValueError,'Complete original waveform'):
+            matched_decoder_control(self.source(),self.chunks(),b'\0'*20000,{'status':'FAIL'})
+
+    def test_exact_render_input_offsets_replace_transport_ratio_estimates(self):
+        rows=[dict(kind='render-queue',ms=1,**self.chunks()[0]),dict(kind='render-queue',ms=2,**self.chunks()[1]),
+              dict(kind='render-queue',ms=3,**self.chunks()[2]),dict(kind='render-queue',ms=4,**self.chunks()[3])]
+        start,end,calls=transport_chunks_for_turn(rows,{'start_ms':1,'end_ms':4})
+        self.assertEqual((start,end),(0,5641));self.assertEqual(calls,self.chunks())
 
 
 class AudioReserveTests(unittest.TestCase):
@@ -339,7 +397,8 @@ class CaptureCloseTests(unittest.TestCase):
             ' callback_started_ms='+('2100' if mode=='held150' else '1950')+
             ' barrier_started_ms='+('0' if mode=='held150' else '1999')+
             ' release_observed_ms=2000 callback_ended_ms='+('2110' if mode=='held150' else '2001')+
-            ' blocked_peeks=1 cutoff_index=48528 sentinel_frames=1472 no-discard=1')
+            ' blocked_peeks=1 cutoff_index=48528 sentinel_frames=1472 no-discard=1 release_posted_ms='+
+            ('0' if mode=='held150' else '2000')+' pa_lock_attempt_ms=1999 pa_lock_waiting=1 coordinator_wait_required=0')
         return close,closed,accepted,blocks,pcm,prefix,mode
 
     def test_release_handshakes_and_post_cutoff_sentinel_are_independent(self):
@@ -349,11 +408,18 @@ class CaptureCloseTests(unittest.TestCase):
             self.assertEqual(result['post_cutoff_sentinel_frames'],1472)
 
     def test_callback_or_peek_bypass_cannot_claim_release_boundary_coverage(self):
-        for mode,old,new in [('split','release_observed_ms=2000','release_observed_ms=2002'),
+        for mode,old,new in [('split','release_posted_ms=2000','release_posted_ms=2002'),
                              ('held150','blocked_peeks=1','blocked_peeks=0'),
                              ('held150','release_observed_ms=2000','release_observed_ms=2101')]:
             values=list(self.boundary(mode));values[-2]=values[-2].replace(old,new)
             with self.assertRaises(ValueError):validate_capture_release_boundary(*values)
+
+    def test_split_callback_can_post_release_while_coordinator_waits_for_its_lock(self):
+        values=list(self.boundary('split'));values[0].update(close_started_ms=2002,timing_issued_ms=2003)
+        values[-2]=values[-2].replace('release_observed_ms=2000','release_observed_ms=2002')
+        self.assertEqual(validate_capture_release_boundary(*values)['exercise']['release_posted_ms'],2000)
+        values[-2]=values[-2].replace('coordinator_wait_required=0','coordinator_wait_required=1')
+        with self.assertRaises(ValueError):validate_capture_release_boundary(*values)
 
     def test_missing_post_cutoff_sentinel_cannot_credit_exclusion(self):
         values=list(self.boundary('held150'));values[-2]=values[-2].replace('sentinel_frames=1472','sentinel_frames=0')
@@ -478,6 +544,32 @@ class IdentityAndPhaseTests(unittest.TestCase):
 
 
 class DriverFailureTests(unittest.TestCase):
+    def test_decoder_failure_preserves_prior_full_waveform_and_control_evidence(self):
+        import copy,json
+        import test_usb_audio_integration as driver
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);trace=root/'session.jsonl'
+            rows=[dict(kind='event',event='state',state=3,ms=1000),
+                dict(kind='event',event='state',state=4,ms=1800),dict(kind='event',event='state',state=8,ms=2000),
+                dict(kind='stream',stream='mic',rate=48000,channels=1,fragsize=1920),
+                dict(kind='sample',ms=2100,submitted_mic=4)]
+            trace.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            (root/'session-modem.raw').write_bytes(b'\1\0'*1000);(root/'session-mic.raw').write_bytes(b'\0'*8)
+            (root/'radio-output.raw').write_bytes(b'\0'*(44100*3*2))
+            saved=[];closed={'turns':[dict(rf_completed=True,accepted_frames=4,microphone_frame_budget={'status':'PASS'})]}
+            with mock.patch.object(driver,'capture_close_oracle',return_value=closed), \
+                 mock.patch.object(driver,'transport_chunks_for_turn',return_value=(0,1000,[])), \
+                 mock.patch.object(driver,'modem_waveform_match',return_value={'status':'PASS','complete_reference_covered':True}), \
+                 mock.patch.object(driver,'matched_decoder_control',return_value=(b'\0'*1000,b'\1\0'*900,{'status':'PASS'})), \
+                 mock.patch.object(driver,'decode_pcm',side_effect=RuntimeError('original decoder failure')):
+                with self.assertRaisesRegex(RuntimeError,'original decoder failure'):
+                    driver.sink_turn_oracle(root,[trace],0,None,[],{},1,progress=lambda turns:saved.append(copy.deepcopy(turns)))
+            partial=saved[-1][0]
+            self.assertEqual(partial['status'],'FAIL')
+            self.assertEqual(partial['content_match']['status'],'PASS')
+            self.assertEqual(partial['decoder_control']['status'],'PASS')
+            self.assertEqual(set(partial['artifacts']),{'source48','transport441'})
+
     def test_failed_controller_without_terminal_receipt_stays_incomplete(self):
         import test_usb_audio_integration as driver
         import json
@@ -569,6 +661,11 @@ class DriverFailureTests(unittest.TestCase):
 class InfrastructureFailureTests(unittest.TestCase):
     def child_receipts(self,command,log_path,timeout,env=None,terminate_grace=None):
         import json
+        if '--release-lock-protocol-selftest' in command:
+            Path(log_path).write_text('RELEASE_LOCK_PROTOCOL '+json.dumps(dict(status='PASS',source_commit='source',
+                build_id='build',radio_accessed=False,coordinator_blocked=True,release_posted_without_wait=True,
+                observed_after_unlock=True))+'\n')
+            return {'exit_code':0,'timed_out':False}
         case_name=command[command.index('--case')+1]
         qualification=case_name=='rf-disabled'
         case=Path(command[command.index('--output')+1]);runtime=case/'result';runtime.mkdir(parents=True)

@@ -7,6 +7,7 @@ failed or abandoned attempt with the same source/configuration identity.
 """
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -268,6 +269,8 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
         raise ValueError('USB promotion requires the declared repeated qualification profile')
     if not expected or len(expected) != len(set(expected)):
         raise ValueError('USB expected-case registry is empty or duplicated')
+    if re.fullmatch('[0-9a-f]{64}',str(matrix.get('identity',{}).get('transport_library_sha256',''))) is None:
+        raise ValueError('Qualification did not bind its loaded transport library dependency')
     validate_host_resources(matrix, verify_files=verify_files)
     validate_infrastructure_prerequisites(matrix, verify_files=verify_files)
     if plan.get('expected_cases') != expected or plan.get('selected_cases') != expected:
@@ -290,6 +293,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
             raise ValueError('USB qualification case did not pass every repetition: ' + name)
         for repeat, run in enumerate(runs,1):
             validate_capture_close_run(run)
+            validate_sink_turns_run(run,name,verify_files=verify_files,expected_transport_sha256=matrix['identity']['transport_library_sha256'])
             if name in ('capture-release-split','capture-release-held150'):
                 validate_capture_source_boundary_run(run,name,verify_files=verify_files)
             if name in ('capture-close-missing','capture-close-invalid','capture-close-stop'):
@@ -307,12 +311,191 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 for path_key, sha_key in (('log_path', 'log_sha256'), ('case_record_path', 'case_record_sha256')):
                     if not run.get(path_key) or sha(run[path_key]) != run.get(sha_key):
                         raise ValueError('Retained USB case evidence changed: ' + name)
+                details=_load(run['case_record_path'])
+                for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
+                            'capture_close_failure','tail_backpressure'):
+                    if run.get(key)!=details.get(key):
+                        raise ValueError('USB campaign summary differs from retained per-turn case evidence: '+name)
     campaign = matrix.get('campaign', {})
     if campaign.get('plan') != plan or not matrix.get('promotion_eligible'):
         raise ValueError('USB campaign is not the declared qualifying plan')
     bare = {key: value for key, value in matrix.items() if key not in ('campaign', 'promotion_eligible')}
     validate_history(campaign, matrix.get('identity'), bare, verify_files=verify_files)
     return campaign
+
+
+
+def _bounded_number(value,minimum,maximum):
+    return type(value) in (int,float) and math.isfinite(value) and minimum<=value<=maximum
+
+
+
+def validate_decoder_control(turn,verify_files=True,case_root=None,expected_transport_sha256=None):
+    """Bind the same-rate real decoders to a complete independent SRC model."""
+    proof=turn.get('decoder_control',{})
+    if (proof.get('schema')!='x6200.usb.decoder-control.v1' or proof.get('status')!='PASS' or
+            proof.get('basis')!='independent_transport_reference' or proof.get('source_rate')!=48000 or
+            proof.get('rate')!=44100 or proof.get('channels')!=1 or proof.get('gain_divisor')!=4 or
+            proof.get('source_context')!='fixed_full_waveform_alignment'):
+        raise ValueError('Per-turn matched transport decoder control is missing or uses a different model')
+    keys=('leading_frames','control_frames','source_frames','transport_frames')
+    if (any(type(proof.get(key)) is not int or proof[key]<0 for key in keys) or
+            proof['source_frames']<=0 or proof['transport_frames']<=0 or
+            proof['leading_frames']+proof['transport_frames']>proof['control_frames']):
+        raise ValueError('Matched decoder control omitted part of the independent transport reference')
+    if (type(turn.get('source_tap_start')) is not int or type(turn.get('source_tap_end')) is not int or
+            turn['source_tap_start']<0 or turn['source_tap_end']-turn['source_tap_start']!=proof['source_frames']):
+        raise ValueError('Matched transport reference lacks exact source tap boundaries')
+    alignment=proof.get('native_alignment',{})
+    if (alignment.get('offset_frames')!=proof['leading_frames'] or alignment.get('search_radius_frames')!=8 or
+            alignment.get('complete_transport_covered') is not True or
+            not _bounded_number(alignment.get('normalized_rms_error'),0,float('inf'))):
+        raise ValueError('Matched decoder control did not retain complete native sample alignment')
+    transport=proof.get('transport',{});calls=transport.get('calls')
+    if (transport.get('converter')!=2 or not isinstance(transport.get('library'),str) or not transport['library'] or
+            not isinstance(transport.get('version'),str) or not transport['version'] or
+            not transport.get('library_path') or re.fullmatch('[0-9a-f]{64}',str(transport.get('library_sha256',''))) is None or
+            (expected_transport_sha256 is not None and transport.get('library_sha256')!=expected_transport_sha256) or
+            transport.get('input_frames')!=proof['source_frames'] or transport.get('output_frames')!=proof['transport_frames'] or
+            transport.get('eof_complete') is not True or not isinstance(calls,list) or not calls):
+        raise ValueError('Independent transport SRC did not prove complete input and EOF output')
+    for call in calls:
+        if (call.get('stage') not in ('regular','src-final') or
+                any(type(call.get(key)) is not int or call[key]<0 for key in ('input_frames','generated_frames')) or
+                call['input_frames']>4096 or call['generated_frames']>4608 or
+                (call['stage']=='src-final')!=(call['input_frames']==0)):
+            raise ValueError('Independent transport SRC has invalid per-call conservation evidence')
+    if (sum(call['input_frames'] for call in calls)!=proof['source_frames'] or
+            sum(call['generated_frames'] for call in calls)!=proof['transport_frames'] or
+            calls[-1]!={'stage':'src-final','input_frames':0,'generated_frames':0}):
+        raise ValueError('Independent transport SRC input or final flush is incomplete')
+    waveform=proof.get('matched_waveform',{})
+    if (waveform.get('status')!='PASS' or waveform.get('method')!='full_modem_waveform_and_100ms_windows' or
+            waveform.get('complete_reference_covered') is not True or waveform.get('expected_gain')!=1 or
+            waveform.get('minimum_correlation')!=.95 or waveform.get('maximum_lag_ms')!=1000 or
+            waveform.get('resampler_edge_allowance_ms')!=5 or waveform.get('allowed_window_normalized_error')!=.35 or
+            not _bounded_number(waveform.get('correlation'),.95,1.000001) or
+            not _bounded_number(waveform.get('lag_ms'),0,1000) or
+            not _bounded_number(waveform.get('fitted_gain'),.96,1.04) or
+            not _bounded_number(waveform.get('maximum_window_normalized_error'),0,.35) or
+            type(waveform.get('reference_frames_compared_at_8k')) is not int or waveform['reference_frames_compared_at_8k']<800):
+        raise ValueError('Matched transport waveform lacks complete fixed-threshold sink comparison')
+    artifacts=turn.get('artifacts',{})
+    required={'source48','transport441','reference_stimulus','actual_stimulus','reference_decoded',
+              'actual_decoded','reference_stats','actual_stats'}
+    if set(artifacts)!=required or any(not item.get('path') or re.fullmatch('[0-9a-f]{64}',str(item.get('sha256',''))) is None
+                                       for item in artifacts.values()):
+        raise ValueError('Matched decoder control is missing source, transport, sink or decoder artifacts')
+    bindings={'source48':'source_sha256','transport441':'transport_sha256',
+              'reference_stimulus':'reference_stimulus_sha256','actual_stimulus':'actual_stimulus_sha256'}
+    if any(artifacts[name]['sha256']!=proof.get(key) for name,key in bindings.items()):
+        raise ValueError('Matched decoder inputs differ from their independent model receipts')
+    padded=(math.ceil(proof['control_frames']/44100)+1)*44100
+    for side,stats_name in (('reference','reference_stats'),('actual','actual_stats')):
+        stats=turn.get('reference' if side=='reference' else 'observed',{})
+        if (stats.get('input_rate')!=44100 or stats.get('input_channels')!=1 or
+                stats.get('input_frames')!=padded or stats.get('unpadded_frames')!=proof['control_frames'] or
+                stats.get('input_sha256')!=artifacts[side+'_stimulus']['sha256'] or
+                type(stats.get('decoded_frames')) is not int or stats['decoded_frames']<0 or
+                stats.get('decoded_sha256')!=artifacts[side+'_decoded']['sha256'] or
+                not _bounded_number(stats.get('decoded_seconds'),0,3600) or
+                abs(stats['decoded_seconds']-stats['decoded_frames']/44100)>1e-12):
+            raise ValueError('The two decoders did not receive the same declared rate, phase, duration and padding')
+    if verify_files:
+        root=Path(case_root).resolve()
+        if sha(transport['library_path'])!=transport['library_sha256']:
+            raise ValueError('Loaded transport library changed after the independent model ran')
+        for name,item in artifacts.items():
+            path=Path(item['path']).resolve()
+            if not path.is_relative_to(root) or sha(path)!=item['sha256']:
+                raise ValueError('Retained matched decoder artifact changed or escaped its case: '+name)
+        for name,frames in (('source48',proof['source_frames']),('transport441',proof['transport_frames']),
+                            ('reference_stimulus',padded),('actual_stimulus',padded),
+                            ('reference_decoded',turn['reference']['decoded_frames']),
+                            ('actual_decoded',turn['observed']['decoded_frames'])):
+            if Path(artifacts[name]['path']).stat().st_size!=frames*2:
+                raise ValueError('Retained matched decoder PCM is partial or misaligned: '+name)
+        if (_load(artifacts['reference_stats']['path'])!=turn['reference'] or
+                _load(artifacts['actual_stats']['path'])!=turn['observed']):
+            raise ValueError('Matched decoder counters differ from their retained enriched stats')
+        trace=root/'result'/turn['trace_file']
+        rows=[json.loads(line) for line in trace.read_text().splitlines() if line.strip()]
+        from usb_transport_oracle import transport_chunks_for_turn
+        start,end,chunks=transport_chunks_for_turn(rows,turn)
+        if (start!=turn['source_tap_start'] or end!=turn['source_tap_end'] or chunks!=calls):
+            raise ValueError('Matched transport summary differs from exact controller SRC input accounting')
+        with trace.with_name(trace.stem+'-modem.raw').open('rb') as source:
+            source.seek(start*2);reference=source.read((end-start)*2)
+        if len(reference)!=(end-start)*2 or hashlib.sha256(reference).hexdigest()!=proof['source_sha256']:
+            raise ValueError('Matched decoder source differs from the complete retained controller modem interval')
+    return proof
+
+
+def validate_sink_turns_run(run,case,verify_files=True,expected_transport_sha256=None):
+    """Require complete waveform and decoder evidence for every positive turn.
+
+    A case-level PASS or a previous turn's successful synthesis cannot replace
+    the indexed RF turn, source-delivery budget and complete actual-sink proof.
+    """
+    from test_usb_audio_integration import SPEECH_CASES,WAVEFORM_CASES
+    if case not in WAVEFORM_CASES:return
+    close=validate_capture_close_run(run)
+    completed=[turn for turn in close['turns'] if turn['rf_completed']]
+    turns=run.get('actual_sink_turns')
+    harness=run.get('harness',{})
+    expected=harness.get('total_turns',harness.get('turns'))
+    if (type(expected) is not int or expected<=0 or not isinstance(turns,list) or len(turns)!=expected or
+            len(completed)!=expected or harness.get('total_eoo',harness.get('eoo'))!=expected):
+        raise ValueError('Required per-turn actual sink evidence does not cover every completed RF turn: '+case)
+    artifact_paths=set();source_ends={}
+    for number,(turn,interval) in enumerate(zip(turns,completed),1):
+        if (turn.get('status')!='PASS' or turn.get('turn')!=number or turn.get('trace_file')!=interval['trace_file'] or
+                turn.get('microphone_frame_budget')!=interval['microphone_frame_budget'] or
+                turn.get('reference_boundary_basis') not in ('exact_modem_tap_offsets','exact_render_input_accounting') or
+                type(turn.get('start_ms')) is not int or type(turn.get('end_ms')) is not int or
+                not 0<=turn['start_ms']<=turn['end_ms']):
+            raise ValueError('Actual sink turn is duplicated, stale or differs from its finite capture interval: '+case)
+        waveform=turn.get('content_match',{})
+        if (waveform.get('status')!='PASS' or waveform.get('method')!='full_modem_waveform_and_100ms_windows' or
+                waveform.get('complete_reference_covered') is not True or waveform.get('minimum_correlation')!=.95 or
+                waveform.get('maximum_lag_ms')!=1000 or waveform.get('resampler_edge_allowance_ms')!=5 or
+                waveform.get('allowed_window_normalized_error')!=.35 or waveform.get('expected_gain')!=.25 or
+                not _bounded_number(waveform.get('correlation'),.95,1.000001) or
+                not _bounded_number(waveform.get('lag_ms'),0,1000) or
+                not _bounded_number(waveform.get('fitted_gain'),.25*.96,.25*1.04) or
+                not _bounded_number(waveform.get('maximum_window_normalized_error'),0,.35) or
+                type(waveform.get('reference_frames_compared_at_8k')) is not int or
+                waveform['reference_frames_compared_at_8k']<800):
+            raise ValueError('Actual sink lacks complete fixed-threshold waveform evidence: '+case)
+        validate_decoder_control(turn,verify_files=verify_files,case_root=Path(run['case_record_path']).parent if verify_files else None,
+                                 expected_transport_sha256=expected_transport_sha256)
+        previous=source_ends.get(turn['trace_file'],0)
+        if turn['source_tap_start']<previous:
+            raise ValueError('An earlier turn source interval was reused as later actual sink evidence: '+case)
+        source_ends[turn['trace_file']]=turn['source_tap_end']
+        for item in turn['artifacts'].values():
+            path=str(Path(item['path']).resolve())
+            if path in artifact_paths:
+                raise ValueError('An earlier decoder or PCM artifact was reused by another actual sink turn: '+case)
+            artifact_paths.add(path)
+        reference,observed=turn.get('reference',{}),turn.get('observed',{})
+        for stats in (reference,observed):
+            if (type(stats.get('failures')) is not int or stats['failures']!=0 or
+                    any(type(stats.get(key)) is not int or stats[key]<0 for key in ('synchronized_blocks','synthesis_blocks')) or
+                    not _bounded_number(stats.get('decoded_seconds'),0,3600)):
+                raise ValueError('Per-turn decoder evidence is missing or failed: '+case)
+        speech=case in SPEECH_CASES or turn.get('speech_status')=='DECODED_REFERENCE_MATCH'
+        if speech:
+            if (turn.get('speech_status')!='DECODED_REFERENCE_MATCH' or
+                    turn.get('allowed_rounding_and_acquisition_seconds')!=.14 or
+                    any(stats['synchronized_blocks']<=0 or stats['synthesis_blocks']<=0 or stats['decoded_seconds']<=0
+                        for stats in (reference,observed)) or
+                    observed['synthesis_blocks']+1<reference['synthesis_blocks'] or
+                    observed['decoded_seconds']+.14<reference['decoded_seconds']):
+                raise ValueError('Per-turn speech synthesis is missing or truncated at the unchanged decoder bound: '+case)
+        elif case!='short-turn200' or turn.get('speech_status')!='UNASSESSED_INSUFFICIENT_DURATION':
+            raise ValueError('A positive voice turn cannot omit its required speech comparison: '+case)
+    return turns
 
 
 def validate_capture_close_run(run):
@@ -400,7 +583,8 @@ def validate_capture_source_boundary_run(run, case, verify_files=True):
     split=row.get('split_block',{});exercise=row.get('exercise',{})
     mode='held150' if case.endswith('held150') else 'split'
     keys=('hold_started_ms','hold_ended_ms','callback_started_ms','barrier_started_ms','release_observed_ms',
-          'callback_ended_ms','blocked_peeks','cutoff_index','sentinel_frames')
+          'callback_ended_ms','blocked_peeks','cutoff_index','sentinel_frames','release_posted_ms','pa_lock_attempt_ms',
+          'pa_lock_waiting','coordinator_wait_required')
     if (row.get('status')!='PASS' or row.get('turn')!=interval['turn'] or row.get('mode')!=mode or count<=0 or
             row.get('compared_frames')!=count or row.get('accepted_frames')!=count or
             re.fullmatch('[0-9a-f]{64}',str(row.get('expected_source_sha256',''))) is None or
@@ -415,6 +599,7 @@ def validate_capture_source_boundary_run(run, case, verify_files=True):
         raise ValueError('Indexed capture did not prove exact pre-cutoff acceptance and post-cutoff exclusion')
     if (exercise['hold_ended_ms']-exercise['hold_started_ms']<150 or exercise['cutoff_index']!=interval['cutoff_index'] or
             exercise['sentinel_frames']!=row['post_cutoff_sentinel_frames'] or
+            exercise['pa_lock_waiting'] not in (0,1) or exercise['coordinator_wait_required']!=0 or
             not exercise['release_observed_ms']<=interval['close_started_ms']<=interval['timing_issued_ms']):
         raise ValueError('Capture boundary was not exercised at the declared retained-release epoch')
     if mode=='held150':
@@ -423,8 +608,9 @@ def validate_capture_source_boundary_run(run, case, verify_files=True):
                 exercise['blocked_peeks']>0):
             raise ValueError('Held capture delivery did not overlap release and asynchronous frontier freeze')
     elif not (exercise['hold_ended_ms']<=exercise['callback_started_ms']<=exercise['barrier_started_ms']<=
-              exercise['release_observed_ms']<exercise['callback_ended_ms'] and interval.get('cutoff_split_frames',0)>0):
-        raise ValueError('Capture callback did not straddle the retained release and finite cutoff')
+              exercise['release_posted_ms']<=exercise['callback_ended_ms'] and
+              exercise['barrier_started_ms']<=exercise['release_observed_ms'] and interval.get('cutoff_split_frames',0)>0):
+        raise ValueError('Capture callback did not post retained release without waiting and split its finite cutoff')
     if verify_files:
         from usb_test_support import indexed_capture_source_match
         root=Path(run['case_record_path']).parent/'result'
@@ -591,6 +777,32 @@ def validate_host_resources(matrix, verify_files=True, require_end=True):
     return host
 
 
+
+def validate_release_lock_protocol(proof,expected,verify_files=True):
+    """The test fixture must release without waiting on its own Pulse lock."""
+    keys=('coordinator_blocked','release_posted_without_wait','observed_after_unlock')
+    execution=proof.get('execution',{});witness=proof.get('witness',{})
+    if (proof.get('schema')!='x6200.usb.release-lock-protocol.v1' or proof.get('status')!='PASS' or
+            execution.get('exit_code')!=0 or execution.get('timed_out') is not False or
+            any(proof.get(key)!=expected[key] for key in
+                ('source_commit','build_id','controller_binary_sha256','fault_injector_sha256','radio_accessed')) or
+            proof.get('checks')!={key:True for key in keys} or witness.get('status')!='PASS' or
+            any(witness.get(key)!=expected[key] for key in ('source_commit','build_id','radio_accessed')) or
+            any(witness.get(key) is not True for key in keys)):
+        raise ValueError('Release lock protocol did not prove the blocked coordinator interleaving without waiting')
+    log=proof.get('evidence_files',{}).get('log',{})
+    if not log.get('path') or re.fullmatch('[0-9a-f]{64}',str(log.get('sha256',''))) is None:
+        raise ValueError('Release lock protocol is missing its retained witness log')
+    if verify_files:
+        if sha(log['path'])!=log['sha256']:
+            raise ValueError('Release lock protocol witness log changed')
+        rows=[json.loads(line[len('RELEASE_LOCK_PROTOCOL '):]) for line in Path(log['path']).read_text().splitlines()
+              if line.startswith('RELEASE_LOCK_PROTOCOL ')]
+        if rows!=[witness]:
+            raise ValueError('Release lock protocol summary differs from its actual child witness')
+    return proof
+
+
 def validate_infrastructure_prerequisites(matrix, verify_files=True):
     """Both startup and active-qualification runtime failures must stay failed."""
     if matrix.get('plan',{}).get('infrastructure_prerequisites')!=list(INFRASTRUCTURE_PREREQUISITES):
@@ -617,6 +829,7 @@ def validate_infrastructure_prerequisites(matrix, verify_files=True):
         if set(proof.get('variants',{}))!=set(specs):
             raise ValueError('USB infrastructure did not exercise both real failure paths')
         _failure_checks(proof)
+        validate_release_lock_protocol(proof.get('release_lock_protocol',{}),expected,verify_files=verify_files)
         if verify_files and (sha(entry['report_path'])!=entry.get('report_sha256') or
                 _load(entry['report_path'])!=proof or sha(entry['log_path'])!=entry.get('log_sha256')):
             raise ValueError('USB infrastructure report was removed or changed')

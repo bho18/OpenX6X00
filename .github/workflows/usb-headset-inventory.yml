@@ -11,6 +11,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install host unit and private audio test dependencies
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=1 update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 install -y --no-install-recommends \
+            build-essential libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils
       - name: Check USB duplex endpoint identification without devices
         run: python tools/freedv/test_usb_headset_inventory.py
       - name: Check validation guards and partial evidence
@@ -24,8 +30,6 @@ jobs:
           python tools/freedv/test_usb_host_resources.py
           python tools/freedv/test_usb_controller_build.py
           python tools/freedv/test_usb_ci_diagnostics.py
-      - name: Install private PulseAudio test dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils
       - name: Check PCM streams and endpoint loss on private virtual devices
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -O2 tools/freedv/usb_headset_pcm.c -lpulse -o /tmp/usb_headset_pcm

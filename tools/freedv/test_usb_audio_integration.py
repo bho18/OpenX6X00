@@ -24,7 +24,8 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require,
                               validate_operation_phase, microphone_frame_budget, PulseTestRuntime, pulse_startup_failure,
                               audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait, validate_tail_backpressure,
                               capture_close_oracle, indexed_capture_source_match, validate_capture_release_boundary,
-                              validate_capture_close_failure)
+                              validate_capture_close_failure,validate_decoder_control_inputs,validate_matched_turn_decode)
+from usb_transport_oracle import transport_chunks_for_turn,matched_decoder_control
 from usb_collector_contract import validate_collector_contract
 
 CASES = (
@@ -145,19 +146,24 @@ def decode_pcm(runner, pcm, rate, directory, commands, env):
     require(not result['timed_out'] and result['exit_code'] == 0,
             'Modem decoder failed; inspect ' + str(directory / 'decode.log'))
     stats = json.loads((directory / 'engine-stats.json').read_text())
-    stats['decoded_seconds'] = (directory / 'decoded-s16le.raw').stat().st_size / (2 * rate)
+    decoded=directory/'decoded-s16le.raw'
+    stats.update(input_rate=rate,input_channels=1,input_frames=raw.stat().st_size//2,
+                 unpadded_frames=len(pcm)//2,input_sha256=sha(raw),decoded_frames=decoded.stat().st_size//2,
+                 decoded_sha256=sha(decoded),decoded_seconds=decoded.stat().st_size/(2*rate))
+    save_json(directory/'decode-stats.json',stats)
     return stats
 
 
-def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env, expected_turns, turn_records=(), require_speech=True):
+def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env, expected_turns, turn_records=(), require_speech=True, progress=None):
     """Check every sink turn; an earlier successful burst cannot mask a lost turn.
 
     The monitor is timestamped at launch. A 200 ms crop margin covers negotiated
-    PA monitor buffering. Reference samples come from the controller modem tap;
-    explicit harness offsets locate durable-case 48k modem tap boundaries. For
-    legacy short cases, cumulative 44.1k transport counts locate boundaries to
-    within a resampler tail, covered by 128 samples of context. Comparison allows
-    one 120 ms block, not an arbitrary partial successful recording.
+    PA monitor buffering. Exact render-input accounting locates each original
+    48k modem span and is checked against retained harness offsets when present.
+    Complete waveform coverage precedes an independent 44.1k transport control
+    with the same gain, leading context and decoder padding as the actual sink.
+    The 48k source is retained as a diagnostic artifact; there are two decodes
+    per turn. Comparison allows one 120 ms block plus 20 ms sample rounding.
     """
     pcm = (root / 'radio-output.raw').read_bytes()
     results = []
@@ -173,49 +179,60 @@ def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env
         descriptor = next((row for row in rows if row.get('kind') == 'stream' and row.get('stream') == 'mic'), None)
         require(descriptor and descriptor['rate'] == 48000 and descriptor['channels'] == 1,
                 'Source frame oracle requires the negotiated 48k mono microphone stream')
-        fragments = descriptor['fragsize']//2
         closed=[turn for turn in capture_close_oracle(rows,microphone,len(turns))['turns'] if turn['rf_completed']]
-        reference_start = 0
-        microphone_start = 0
         for index, turn in enumerate(turns):
-            after = next((row for row in samples if row['ms'] >= turn['end_ms']), None)
-            require(after is not None, 'Completed turn lacks a final counter snapshot')
-            exact = next((row for row in turn_records if row['session'] == trace_path.stem and row['turn'] == index+1), None)
-            if exact:
-                reference_start, reference_end = exact['modem_tap_start'], exact['modem_tap_end']
-                require(reference_end*2 <= len(reference), 'Controller modem reference was truncated')
-                reference_turn = reference[reference_start*2:reference_end*2]
-            else:
-                reference_end = len(reference) // 2 if index == len(turns)-1 else round(after['rendered_modem'] * 48000 / 44100)
-                reference_turn = reference[max(0, reference_start-128)*2:min(len(reference), (reference_end+128)*2)]
-            accepted = exact['accepted_mic_samples'] if exact else after['submitted_mic']-microphone_start
-            microphone_start = after['submitted_mic']
-            source_budget=closed[index]['microphone_frame_budget']
-            require(source_budget['accepted_frames']==accepted,'Capture closure and sink turn disagree on microphone PCM')
-            reference_start = reference_end
-            begin = max(0, math.floor((turn['start_ms']/1000 - recording_started - .2) * 44100))
-            end = math.ceil((turn['end_ms']/1000 - recording_started + .2) * 44100)
-            require(end > begin and end * 2 <= len(pcm) + 44100,
-                    'Monitor recording is missing the complete turn interval')
-            observed = pcm[begin*2:min(len(pcm), end*2)]
             number = len(results) + 1
-            reference_stats = decode_pcm(runner, reference_turn, 48000, root / ('turn-%03d-reference' % number), commands, env)
-            observed_stats = decode_pcm(runner, observed, 44100, root / ('turn-%03d-sink' % number), commands, env)
-            if require_speech:
-                result = validate_turn_decode(reference_stats, observed_stats, number)
-                result['speech_status']='DECODED_REFERENCE_MATCH'
-            else:
-                require(reference_stats['failures']==observed_stats['failures']==0,'Short-turn decoder failed')
-                result={'status':'PASS','turn':number,'reference':reference_stats,'observed':observed_stats,
-                        'speech_status':'UNASSESSED_INSUFFICIENT_DURATION','intelligibility':'UNASSESSED'}
-                if reference_stats['synthesis_blocks'] and observed_stats['synthesis_blocks']:
-                    validate_turn_decode(reference_stats,observed_stats,number)
-                    result['speech_status']='DECODED_REFERENCE_MATCH'
-            result['content_match'] = modem_waveform_match(reference_turn,48000,observed,44100)
-            result['microphone_frame_budget'] = source_budget
-            result.update(trace_file=trace_path.name, start_ms=turn['start_ms'], end_ms=turn['end_ms'])
-            result['reference_boundary_basis'] = 'exact_modem_tap_offsets' if exact else 'transport_ratio_with_resampler_context'
+            result={'status':'IN_PROGRESS','turn':number,'trace_file':trace_path.name,
+                    'start_ms':turn['start_ms'],'end_ms':turn['end_ms']}
             results.append(result)
+            source_path=root/('turn-%03d-source48.raw'%number)
+            transport_path=root/('turn-%03d-transport441.raw'%number)
+            reference_dir=root/('turn-%03d-reference'%number);actual_dir=root/('turn-%03d-sink'%number)
+            artifacts={'source48':source_path,'transport441':transport_path,
+                'reference_stimulus':reference_dir/'modem-padded.raw','actual_stimulus':actual_dir/'modem-padded.raw',
+                'reference_decoded':reference_dir/'decoded-s16le.raw','actual_decoded':actual_dir/'decoded-s16le.raw',
+                'reference_stats':reference_dir/'decode-stats.json','actual_stats':actual_dir/'decode-stats.json'}
+            def persist():
+                result['artifacts']={name:{'path':str(path),'sha256':sha(path)} for name,path in artifacts.items() if path.is_file()}
+                if progress:progress(results)
+            persist()
+            try:
+                reference_start,reference_end,chunks=transport_chunks_for_turn(rows,turn)
+                require(reference_end*2<=len(reference),'Controller modem reference was truncated')
+                exact=next((row for row in turn_records if row['session']==trace_path.stem and row['turn']==index+1),None)
+                if exact:
+                    require((reference_start,reference_end)==(exact['modem_tap_start'],exact['modem_tap_end']) and
+                            exact['accepted_mic_samples']==closed[index]['accepted_frames'],
+                            'Harness turn offsets disagree with exact controller input accounting')
+                reference_turn=reference[reference_start*2:reference_end*2];source_path.write_bytes(reference_turn)
+                result.update(source_tap_start=reference_start,source_tap_end=reference_end,
+                    reference_boundary_basis='exact_modem_tap_offsets' if exact else 'exact_render_input_accounting',
+                    microphone_frame_budget=closed[index]['microphone_frame_budget'])
+                begin=max(0,math.floor((turn['start_ms']/1000-recording_started-.2)*44100))
+                end=math.ceil((turn['end_ms']/1000-recording_started+.2)*44100)
+                require(end>begin and end*2<=len(pcm)+44100,'Monitor recording is missing the complete turn interval')
+                observed=pcm[begin*2:min(len(pcm),end*2)]
+                result['content_match']=modem_waveform_match(reference_turn,48000,observed,44100)
+                persist()  # A later decoder failure cannot erase complete waveform evidence.
+                control,transported,proof=matched_decoder_control(reference_turn,chunks,observed,result['content_match'])
+                transport_path.write_bytes(transported);result['decoder_control']=proof;persist()
+                reference_stats=decode_pcm(runner,control,44100,reference_dir,commands,env)
+                result['reference']=reference_stats;proof['reference_stimulus_sha256']=reference_stats['input_sha256'];persist()
+                observed_stats=decode_pcm(runner,observed,44100,actual_dir,commands,env)
+                result['observed']=observed_stats;proof['actual_stimulus_sha256']=observed_stats['input_sha256'];persist()
+                validate_decoder_control_inputs(reference_stats,observed_stats,proof)
+                if require_speech:
+                    result.update(validate_matched_turn_decode(reference_stats,observed_stats,proof,number))
+                    result['speech_status']='DECODED_REFERENCE_MATCH'
+                else:
+                    require(reference_stats['failures']==observed_stats['failures']==0,'Short-turn decoder failed')
+                    result.update(status='PASS',speech_status='UNASSESSED_INSUFFICIENT_DURATION',intelligibility='UNASSESSED')
+                    if reference_stats['synthesis_blocks'] and observed_stats['synthesis_blocks']:
+                        result.update(validate_matched_turn_decode(reference_stats,observed_stats,proof,number))
+                        result['speech_status']='DECODED_REFERENCE_MATCH'
+                persist()
+            except BaseException as error:
+                result.update(status='FAIL',error=str(error));persist();raise
     require(len(results) == expected_turns and results, 'Sink evidence did not cover every completed turn')
     return results
 
@@ -582,8 +599,13 @@ def run_case(args):
         runner = args.runner or (Path(os.environ['USB_RF_REFERENCE_RUNNER']) if os.environ.get('USB_RF_REFERENCE_RUNNER') else None)
         if args.case in WAVEFORM_CASES:
             require(runner is not None, 'Speech cases require the actual codec runner')
+            record['actual_sink_turns']=[]
+            def preserve_turn_progress(turns):
+                record['actual_sink_turns']=turns
+                save_json(root/'case-result.json',record)
             record['actual_sink_turns'] = sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env,
-                harness.get('total_turns', harness['turns']), harness.get('turn_records',()),require_speech=args.case in SPEECH_CASES)
+                harness.get('total_turns', harness['turns']), harness.get('turn_records',()),require_speech=args.case in SPEECH_CASES,
+                progress=preserve_turn_progress)
             record['actual_sink_decode'] = {'failures':0,
                 'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in record['actual_sink_turns']),
                 'synchronized_blocks':sum(turn['observed']['synchronized_blocks'] for turn in record['actual_sink_turns'])}

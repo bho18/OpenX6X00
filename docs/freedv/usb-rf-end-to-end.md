@@ -127,7 +127,11 @@ The microphone evidence can also contain background audio from the preceding
 RF-disabled transition check; the phase trace identifies the RF speech turn.
 Record intelligibility, dropouts, RF release behavior,
 frequency, SDR settings and power/ALC indications. Automated synchronization
-alone is not a successful complete-phrase result.
+alone is not a successful complete-phrase result. Host waveform and matched-
+transport decoder controls check payload preservation; they do not qualify
+physical first-word acquisition. Leading context, gain and resampling phase can
+change decoder acquisition, so retain the complete SDR burst and the first/last-
+word listening observations. No additional basic audio recording round is needed.
 
 Return the printed `usb-rf-results-*.zip`, including on failure. It contains your
 voice and recording. WAV accepts PCM16 mono/stereo at 8, 44.1 or 48 kHz; stereo

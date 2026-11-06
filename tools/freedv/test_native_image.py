@@ -15,7 +15,7 @@ from verify_native_abi import same_sdk_build
 from prepare_native_image import prepare
 from build_voice_candidate import verify_usb_integration, USB_REQUIRED_COVERAGE, USB_CONTROLLER_CASES
 from usb_test_campaign import Campaign, MATRIX_SCHEMA, sha as campaign_sha, INFRASTRUCTURE_PREREQUISITES, host_resource_configuration
-from test_usb_campaign import infrastructure_fixture, capture_case_fixture, resource_fixture
+from test_usb_campaign import infrastructure_fixture, capture_case_fixture, resource_fixture, SYNTHETIC_TRANSPORT_SHA
 
 
 class UsbReleaseGateTests(unittest.TestCase):
@@ -27,6 +27,7 @@ class UsbReleaseGateTests(unittest.TestCase):
                     'test_binary_sha256':'c'*64,'runner_sha256':'d'*64,'speech_sha256':'e'*64,
                     'modem_sha256':'f'*64,'fault_injector_sha256':'1'*64}
         identity['host_resource_configuration']=host_resource_configuration()
+        identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
         expected = list(USB_CONTROLLER_CASES)
         plan = {'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
                 'selected_cases':expected, 'debug_subset':False,

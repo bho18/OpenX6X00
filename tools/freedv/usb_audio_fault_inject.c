@@ -40,6 +40,23 @@ static atomic_int buffer_reject_reported;
 static atomic_ullong render_hold_started,render_hold_ended;
 static atomic_uint render_hold_hits;
 static atomic_ullong mic_release_hold_started,mic_release_hold_ended,mic_callback_started,mic_callback_ended,mic_release_observed,mic_barrier_started,mic_test_cutoff;
+static atomic_ullong mic_release_posted,mic_lock_attempted,mic_release_lock_attempt;
+static atomic_bool mic_lock_waiting,mic_release_saw_waiter;
+typedef void (*mic_release_action_fn)(void *);
+static _Atomic(mic_release_action_fn) mic_release_action;
+static _Atomic(void *) mic_release_userdata;
+void usb_test_mic_release_action(mic_release_action_fn action,void *userdata){atomic_store(&mic_release_userdata,userdata);atomic_store(&mic_release_action,action);}
+unsigned long long usb_test_mic_release_posted_ms(void){return atomic_load(&mic_release_posted);}
+int usb_test_mic_release_now(void){
+    mic_release_action_fn action=atomic_load(&mic_release_action);if(!action)return 0;
+    atomic_store(&mic_release_saw_waiter,atomic_load(&mic_lock_waiting));atomic_store(&mic_release_lock_attempt,atomic_load(&mic_lock_attempted));
+    action(atomic_load(&mic_release_userdata));atomic_store(&mic_release_posted,now_ms());return 1;
+}
+void pa_threaded_mainloop_lock(pa_threaded_mainloop *loop){
+    void (*real)(pa_threaded_mainloop*)=dlsym(RTLD_NEXT,"pa_threaded_mainloop_lock");
+    atomic_store(&mic_lock_attempted,now_ms());atomic_store(&mic_lock_waiting,true);
+    real(loop);atomic_store(&mic_lock_waiting,false);
+}
 static atomic_uint mic_release_peeks,mic_blocked_peeks;
 static unsigned long long mic_sentinel_frames;
 static atomic_int mic_close_requested,mic_close_invalid;
@@ -187,7 +204,7 @@ static void mic_observer_finish(void){
     if(f){fwrite(mic_observer_pcm,2,mic_observer_n,f);fclose(f);}
     snprintf(path,sizeof(path),"%s.jsonl",prefix);f=fopen(path,"w");
     if(f){for(unsigned i=0;i<mic_observation_n;++i){mic_observation r=mic_observations[i];fprintf(f,"{\"index_start\":%llu,\"index_end\":%llu,\"tap_start\":%llu,\"tap_frames\":%u,\"valid\":true,\"observed_ms\":%llu}\n",(unsigned long long)r.start,(unsigned long long)r.end,(unsigned long long)r.tap,r.frames,r.ms);}fclose(f);}
-    fprintf(stderr,"INJECT MIC release mode=%s hold_started_ms=%llu hold_ended_ms=%llu callback_started_ms=%llu barrier_started_ms=%llu release_observed_ms=%llu callback_ended_ms=%llu blocked_peeks=%u cutoff_index=%llu sentinel_frames=%llu no-discard=1\n",setting("USB_TEST_MIC_RELEASE_MODE",""),atomic_load(&mic_release_hold_started),atomic_load(&mic_release_hold_ended),atomic_load(&mic_callback_started),atomic_load(&mic_barrier_started),atomic_load(&mic_release_observed),atomic_load(&mic_callback_ended),atomic_load(&mic_blocked_peeks),atomic_load(&mic_test_cutoff),mic_sentinel_frames);
+    fprintf(stderr,"INJECT MIC release mode=%s hold_started_ms=%llu hold_ended_ms=%llu callback_started_ms=%llu barrier_started_ms=%llu release_observed_ms=%llu callback_ended_ms=%llu blocked_peeks=%u cutoff_index=%llu sentinel_frames=%llu no-discard=1 release_posted_ms=%llu pa_lock_attempt_ms=%llu pa_lock_waiting=%u coordinator_wait_required=0\n",setting("USB_TEST_MIC_RELEASE_MODE",""),atomic_load(&mic_release_hold_started),atomic_load(&mic_release_hold_ended),atomic_load(&mic_callback_started),atomic_load(&mic_barrier_started),atomic_load(&mic_release_observed),atomic_load(&mic_callback_ended),atomic_load(&mic_blocked_peeks),atomic_load(&mic_test_cutoff),mic_sentinel_frames,atomic_load(&mic_release_posted),atomic_load(&mic_release_lock_attempt),atomic_load(&mic_release_saw_waiter));
     free(mic_observer_pcm);
 }
 static bool mic_release_target(pa_stream *stream){
@@ -221,8 +238,11 @@ int pa_stream_peek(pa_stream *stream,const void **data,size_t *bytes) {
         unsigned long long started=atomic_load(&mic_release_hold_started);
         if(started&&now_ms()-started<150){atomic_fetch_add(&mic_blocked_peeks,1);*data=NULL;*bytes=0;return 0;}
         if(*data&&*bytes&&!strcmp(setting("USB_TEST_MIC_RELEASE_MODE",""),"split")&&atomic_load(&mic_callback_started)&&!atomic_load(&mic_callback_ended)&&atomic_fetch_add(&mic_release_peeks,1)==1){
-            atomic_store(&mic_barrier_started,now_ms());unsigned long long until=now_ms()+300;
-            while(!atomic_load(&mic_release_observed)&&now_ms()<until){struct timespec span={0,1000000};nanosleep(&span,NULL);}
+            /* The coordinator may already be waiting for our PA lock. Only
+             * post the physical/retained input here; never wait for its
+             * observation while holding the lock it needs to make progress. */
+            atomic_store(&mic_barrier_started,now_ms());int posted=usb_test_mic_release_now();
+            fprintf(stderr,"INJECT MIC callback-release posted=%d posted_ms=%llu pa_lock_waiting=%u coordinator_wait_required=0\n",posted,atomic_load(&mic_release_posted),atomic_load(&mic_release_saw_waiter));
         }
     }
     if(result>=0)observe_mic(stream,data,*bytes);
@@ -246,7 +266,7 @@ static void deliver_read(pa_stream *stream,size_t bytes,void *userdata) {
         bool first=!atomic_load(&mic_release_hold_ended);
         if(first){atomic_store(&mic_release_hold_ended,now);atomic_store(&mic_callback_started,now);}
         if(registration->callback)registration->callback(stream,bytes,registration->userdata);
-        if(first)atomic_store(&mic_callback_ended,now_ms());
+        if(first){atomic_store(&mic_callback_ended,now_ms());fprintf(stderr,"INJECT MIC callback-finished started_ms=%llu ended_ms=%llu release_posted_ms=%llu coordinator_observed_ms=%llu\n",atomic_load(&mic_callback_started),atomic_load(&mic_callback_ended),atomic_load(&mic_release_posted),atomic_load(&mic_release_observed));}
         return;
     }
     const char *target=getenv("USB_TEST_STALE_DEVICE"),*trigger=getenv("USB_TEST_STALE_TRIGGER");

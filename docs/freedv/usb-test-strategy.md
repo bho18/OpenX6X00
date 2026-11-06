@@ -25,6 +25,8 @@ and the blocked native hand-mic contract remain separate.
 | A host run underrun was followed by a clean replay | Retain every attempt. A replay cannot remove the failure or establish scheduling margin. |
 | Polling refreshed the fake packet clock | Advance fake telemetry independently of observation so stale-status tests exercise real loss of freshness. |
 | An operation injection could fire during the wrong phase | Require the intended phase/state and observed injected operation; startup coverage cannot substitute for TX or RX-return coverage. |
+| A release-interleaving fixture held the Pulse lock while waiting for a coordinator that needed it | Keep synchronization hooks nonblocking under the audio lock, bound fixture execution and retain the deadlock as a test-infrastructure failure. |
+| Unequal 48 kHz/full-scale and 44.1 kHz/quarter-scale decoder inputs produced different synthesis counts despite a preserved waveform | Require full-waveform preservation first, then compare against an independently generated control with matched transport, leading context and decoder phase; retain the original unequal-domain baseline as diagnostic evidence. |
 | A 650 ms injected delay measured as 649 ms because issue and wait timers began at different points | Anchor the injected hold to the controller's first operation poll and retain separate issue, wait and acknowledgment timestamps. |
 | A stale/incomplete trace or ignored fault could look complete | Bind current-session identity, immutable first fault and terminal receipt; reconcile them before accepting a result. |
 | One global decode could hide a missing or stale later turn | Check the complete raw modem waveform and actual decoder output for each turn against its own reference. |
@@ -129,6 +131,11 @@ fail even if later microphone samples are available.
 
 1. **Software contracts.** Run two complete repetitions of the registered
    functional matrix against the shared production controller, real codec and four retained Pulse streams.
+   First prove that the release injector can post a retained release while the
+   modeled coordinator is blocked on the audio lock. Separately force real
+   controller failures at startup and during qualification, and require both
+   children to exit failed with their original fault and terminal evidence.
+   These infrastructure checks do not count as passing functional cases.
    Inject delayed/rejected/missing acknowledgments, capture holes and starvation,
    device/server loss, retained releases, blocked control and Stop at phase
    boundaries. Expected faults pass only when their reason and admission/OFF
@@ -150,10 +157,28 @@ fail even if later microphone samples are available.
    host-fixture turns, it allows at most one second of alignment lag, requires full payload
    coverage except 5 ms at resampler edges, correlation of at least 0.95,
    fitted gain from 0.24 to 0.26, and 100 ms-window normalized RMS error no
-   greater than 0.35. Each turn must also decode, with at most one 120 ms block
-   plus 20 ms of duration difference. Truncated, swapped and altered payload
-   negatives must fail. These are continuity/content checks; human speech
-   intelligibility remains unassessed by them.
+   greater than 0.35. This full-waveform gate is primary. Each turn must also
+   decode against a matched-transport control independently generated from its
+   48 kHz reference through the production 44.1 kHz resampler and quarter-gain
+   operation, preserving leading context and decoder phase. Do not use the
+   observed sink payload itself as the control. The same one-120 ms-block plus
+   20 ms decoded-duration allowance applies; no tolerance is widened.
+
+   Retain the original unequal-domain 48 kHz decoder comparison in the
+   investigation record. Each new turn retains its 48 kHz source, matched
+   control, actual sink input, transport/library identities, alignment/gain
+   and decoder results.
+   A retained CI turn demonstrated why: the complete actual waveform matched
+   the production transport control with zero RMS error, and both matched
+   44.1 kHz decoders produced six synthesis blocks, while the unequal-domain
+   48 kHz baseline produced eight. That observation establishes no missing PCM
+   in that fixture; it does not establish physical first-word acquisition.
+   The 240 ms erasure negative still fails the unchanged waveform threshold.
+   Save each turn's partial waveform/source proof before downstream decoder
+   checks so a later failure does not erase it. Truncated, swapped and altered
+   payload negatives must fail. These are transport/content checks; human
+   speech intelligibility and physical first/last-word completeness remain
+   unassessed by them.
 3. **Radio transition check, RF disabled.** Run the same retained controller and
    real endpoints on the radio. Keep the independent RF gate disabled. Record
    Pulse/server/module configuration, effective negotiated buffers and endpoint

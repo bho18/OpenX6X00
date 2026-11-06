@@ -15,16 +15,29 @@ import subprocess
 import sys
 
 from build_native_development import source_snapshot
-from test_usb_audio_integration import CASES, SPEECH_CASES
+from test_usb_audio_integration import CASES, SPEECH_CASES, WAVEFORM_CASES
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEATS,
                                atomic_json, digest, sha, validate_campaign,
                                INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
-                               host_resource_configuration, validate_host_resources)
+                               host_resource_configuration, validate_host_resources, validate_sink_turns_run)
 from usb_test_support import run_bounded
 from usb_host_resources import run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES
 
+
+def observed_transport_library():
+    """Identify the loaded SRC dependency before the durable campaign starts."""
+    import ctypes as C
+    import ctypes.util
+    from usb_transport_oracle import library_identity
+    name=ctypes.util.find_library('samplerate')
+    if name is None:raise ValueError('The independent transport library is unavailable')
+    library=C.CDLL(name)
+    return library_identity(C.cast(library.src_process,C.c_void_p).value)
+
+
 COVERAGE = {
+    'matched_decoder_control':set(WAVEFORM_CASES),
     'prekey_audio': {'pa-delay', 'pa-reject', 'pa-missing'},
     'capture_reacquisition': {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-prekey-unexpected-tx', 'cold-rx-resume'},
     'preparation_sample_accounting': {'cold-qualification'},
@@ -151,12 +164,13 @@ def main():
                     'fault_injector_source_sha256': sha(here/'usb_audio_fault_inject.c'),
                     'compiler_sha256': sha(Path(compiler).resolve()),
                     'host_resource_configuration':resource_config,
+                    'transport_library_sha256':observed_transport_library()['library_sha256'],
                     'pulse_tools_sha256': {name: sha(Path(shutil.which(name)).resolve()) for name in
                         ('pulseaudio','paplay','parec','pactl') if shutil.which(name)},
                     'test_tools_sha256': {name: sha(here / name) for name in
                         ('test_usb_audio_matrix.py', 'test_usb_audio_integration.py', 'usb_test_support.py',
                          'usb_test_campaign.py', 'usb_collector_contract.py', 'usb_rf_evidence.py',
-                         'usb_harness_failure_selftest.py','usb_host_resources.py',
+                         'usb_harness_failure_selftest.py','usb_host_resources.py','usb_transport_oracle.py',
                          'usb_audio_fault_inject.c', 'usb_audio_integration_test.c')}}
         record.update(identity=identity, source_commit=revision, source_tree_sha256=tree,
                       build_id=args.build_id, test_binary_sha256=identity['test_binary_sha256'])
@@ -282,6 +296,12 @@ def main():
                     except ValueError as error:
                         run['status'] = 'FAIL'
                         run.setdefault('reason',str(error))
+                if passed:
+                    try:
+                        validate_sink_turns_run(run,name,expected_transport_sha256=identity['transport_library_sha256'])
+                    except ValueError as error:
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason',str(error))
                 if passed and name in ('capture-release-split','capture-release-held150'):
                     try:
                         validate_capture_source_boundary_run(run,name)
@@ -323,7 +343,7 @@ def main():
         passed = {name for name, case in record['cases'].items()
                   if case['status'] == 'PASS' and len(case['runs']) == repetitions}
         record['coverage'] = sorted([name for name, cases in COVERAGE.items() if cases <= passed] +
-                                    ['infrastructure_failure_preservation'])
+                                    ['infrastructure_failure_preservation','release_lock_protocol'])
         _, after_tree = source_snapshot()
         rechecked = {'test_binary_sha256':sha(args.binary.resolve()), 'runner_sha256':sha(args.runner.resolve()),
                      'speech_sha256':sha(args.speech.resolve()), 'modem_sha256':sha(args.modem.resolve()),

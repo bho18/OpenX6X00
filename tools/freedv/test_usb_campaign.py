@@ -16,7 +16,11 @@ import build_native_development as builder
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
                                immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
-                               host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS)
+                               host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol)
+
+
+SYNTHETIC_TRANSPORT_LIBRARY=b'synthetic-libsamplerate-gate-fixture'
+SYNTHETIC_TRANSPORT_SHA=hashlib.sha256(SYNTHETIC_TRANSPORT_LIBRARY).hexdigest()
 
 
 def resource_fixture(root,identity,configuration=None):
@@ -95,8 +99,18 @@ def infrastructure_fixture(root, identity, injector_sha):
                  'terminal_fault_origin':origin,'collector_status':'BLOCKED','evidence_files':files}
         if q:variant['qualification_failure']=q
         variants[name]=variant;atomic_json(directory/'variant-result.json',variant)
+    protocol_root=root/'release-lock-protocol';protocol_root.mkdir()
+    protocol_keys=('coordinator_blocked','release_posted_without_wait','observed_after_unlock')
+    witness={'status':'PASS','source_commit':identity['source_commit'],'build_id':identity['build_id'],
+             'radio_accessed':False,**{key:True for key in protocol_keys}}
+    protocol_log=protocol_root/'protocol.log';protocol_log.write_text('RELEASE_LOCK_PROTOCOL '+json.dumps(witness)+'\n')
+    protocol={'schema':'x6200.usb.release-lock-protocol.v1','status':'PASS',
+        **{key:shared[key] for key in ('source_commit','build_id','controller_binary_sha256','fault_injector_sha256','radio_accessed')},
+        'execution':{'exit_code':0,'timed_out':False,'duration_ms':1},'witness':witness,
+        'checks':{key:True for key in protocol_keys},'evidence_files':{'log':{'path':str(protocol_log),'sha256':sha(protocol_log)}}}
     proof={'schema':'x6200.usb.infrastructure.v2','kind':'unexpected-runtime-failures','status':'PASS',
-           **shared,'checks':{key:True for key in INFRASTRUCTURE_CHECKS},'variants':variants}
+           **shared,'checks':{key:True for key in INFRASTRUCTURE_CHECKS},'variants':variants,
+           'release_lock_protocol':protocol}
     report=root/'infrastructure-result.json';atomic_json(report,proof)
     log=root/'infrastructure.log';log.write_text('Expected failed children preserved; unit fixture only\n')
     return {'status':'PASS','record':proof,'record_sha256':digest(proof),'report_path':str(report),
@@ -109,14 +123,14 @@ def capture_close_fixture(completed_rf_turns=0, extra_failed=False):
     rows=[]
     count=completed_rf_turns+int(extra_failed)
     for number in range(1,count+1):
-        start=1000+(number-1)*144000;cutoff=start+96000
+        start=1000+(number-1)*144000;cutoff=start+96000;epoch=(number-1)*5000
         rows.append({'status':'PASS','turn':number,'trace_file':'freedv-usb-session-unit.jsonl',
             'rf_completed':number<=completed_rf_turns,'start_index':start,'cutoff_index':cutoff,
             'consumed_index':cutoff,'accepted_frames':96000,'mic_tap_start':(number-1)*96000,'mic_tap_end':number*96000,
             'close_elapsed_ms':150,'write_index_bytes':(cutoff-96)*2,'source_usec':1000,'transport_usec':1000,
             'sink_usec':10000,'frontier_extra_frames':96,'release_fence_index':cutoff-100,'tail_frames':100,
-            'cutoff_split_frames':200,'capture_started_ms':1000,'close_started_ms':3000,'timing_issued_ms':3000,
-            'frozen_ms':3001,'reached_ms':3100,'closed_ms':3150,'frontier_basis':'Pulse capture production; no monitor playback correction',
+            'cutoff_split_frames':200,'capture_started_ms':1000+epoch,'close_started_ms':3000+epoch,'timing_issued_ms':3000+epoch,
+            'frozen_ms':3001+epoch,'reached_ms':3100+epoch,'closed_ms':3150+epoch,'frontier_basis':'Pulse capture production; no monitor playback correction',
             'physical_latency':'UNMEASURED','microphone_frame_budget':{'status':'PASS','stream':'microphone',
                 'active_ms':2000,'accepted_frames':96000,'expected_frames':96000.,'minimum_frames':93120,
                 'maximum_frames':98880,'fragment_frames':960,'boundary_frames':1920,
@@ -146,7 +160,9 @@ def capture_source_boundary_fixture(case,root):
               'hold_ended_ms':3110 if mode=='held150' else 2950,
               'callback_started_ms':3110 if mode=='held150' else 2950,'barrier_started_ms':0 if mode=='held150' else 2999,
               'release_observed_ms':3000,'callback_ended_ms':3110 if mode=='held150' else 3001,
-              'blocked_peeks':1 if mode=='held150' else 0,'cutoff_index':97000,'sentinel_frames':200}
+              'blocked_peeks':1 if mode=='held150' else 0,'cutoff_index':97000,'sentinel_frames':200,
+              'release_posted_ms':0 if mode=='held150' else 2999,'pa_lock_attempt_ms':0 if mode=='held150' else 2999,
+              'pa_lock_waiting':0,'coordinator_wait_required':0}
     boundary={'status':'PASS','turn':1,'compared_frames':96000,'accepted_frames':96000,
               'expected_source_sha256':hashlib.sha256(accepted_pcm).hexdigest(),
               'accepted_sha256':hashlib.sha256(accepted_pcm).hexdigest(),'post_cutoff_frames_observed':200,
@@ -183,11 +199,83 @@ def capture_close_failure_fixture(case,root):
             'capture_close_failure':validate_capture_close_failure(rows,harness,text,mode)}
 
 
+def sink_turn_fixture(close,require_speech=True,root=None):
+    """Synthetic numeric/file proof for gate negatives; no controller runs."""
+    turns=[];trace_rows={};trace_pcm={};tap_cursors={}
+    root=Path(root) if root is not None else None
+    for number,interval in enumerate((row for row in close['turns'] if row['rf_completed']),1):
+        stats={'failures':0,'synchronized_blocks':8 if require_speech else 0,
+               'synthesis_blocks':7 if require_speech else 0,'decoded_seconds':.84 if require_speech else 0.}
+        turn={'status':'PASS','turn':number,'trace_file':interval['trace_file'],
+              'start_ms':interval['capture_started_ms'],'end_ms':interval['closed_ms']+500,
+              'reference_boundary_basis':'exact_render_input_accounting',
+              'microphone_frame_budget':copy.deepcopy(interval['microphone_frame_budget']),
+              'reference':copy.deepcopy(stats),'observed':copy.deepcopy(stats),
+              'speech_status':'DECODED_REFERENCE_MATCH' if require_speech else 'UNASSESSED_INSUFFICIENT_DURATION',
+              'allowed_rounding_and_acquisition_seconds':.14,
+              'content_match':{'status':'PASS','method':'full_modem_waveform_and_100ms_windows',
+                   'complete_reference_covered':True,'correlation':.999,'lag_ms':600.,'fitted_gain':.25,
+                   'expected_gain':.25,'minimum_correlation':.95,'maximum_lag_ms':1000,
+                   'resampler_edge_allowance_ms':5,'maximum_window_normalized_error':.01,
+                   'allowed_window_normalized_error':.35,'reference_frames_compared_at_8k':3900}}
+        calls=[{'stage':'regular','input_frames':4000,'generated_frames':3675} for _ in range(6)]
+        calls.append({'stage':'src-final','input_frames':0,'generated_frames':0})
+        artifacts={};bodies={};directory=(root or Path('/synthetic'))/('turn-%03d-control'%number)
+        for name,frames in (('source48',24000),('transport441',22050),('reference_stimulus',88200),
+                            ('actual_stimulus',88200),('reference_decoded',37044 if require_speech else 0),
+                            ('actual_decoded',37044 if require_speech else 0)):
+            raw=(b'\x01\x00' if name=='source48' else b'\0\0')*frames
+            bodies[name]=raw
+            artifacts[name]={'path':str(directory/(name+'.raw')),'sha256':hashlib.sha256(raw).hexdigest()}
+        for side,key in (('reference','reference'),('actual','observed')):
+            stats=turn[key]
+            stats.update(input_rate=44100,input_channels=1,input_frames=88200,unpadded_frames=26460,
+                         input_sha256=artifacts[side+'_stimulus']['sha256'],
+                         decoded_frames=37044 if require_speech else 0,decoded_sha256=artifacts[side+'_decoded']['sha256'])
+            raw=(json.dumps(stats,sort_keys=True,indent=2)+'\n').encode();bodies[side+'_stats']=raw
+            artifacts[side+'_stats']={'path':str(directory/(side+'-stats.json')),'sha256':hashlib.sha256(raw).hexdigest()}
+        source_start=tap_cursors.get(interval['trace_file'],0);tap_cursors[interval['trace_file']]=source_start+24000
+        turn.update(source_tap_start=source_start,source_tap_end=source_start+24000,artifacts=artifacts)
+        matched=copy.deepcopy(turn['content_match']);matched.update(expected_gain=1,fitted_gain=1.)
+        library_path=(root or Path('/synthetic'))/'transport-library-fixture'
+        if root is not None:library_path.parent.mkdir(parents=True,exist_ok=True);library_path.write_bytes(SYNTHETIC_TRANSPORT_LIBRARY)
+        turn['decoder_control']={'schema':'x6200.usb.decoder-control.v1','status':'PASS',
+            'basis':'independent_transport_reference','source_rate':48000,'rate':44100,'channels':1,
+            'gain_divisor':4,'leading_frames':2205,'control_frames':26460,'source_frames':24000,'transport_frames':22050,
+            'source_sha256':artifacts['source48']['sha256'],'transport_sha256':artifacts['transport441']['sha256'],
+            'reference_stimulus_sha256':artifacts['reference_stimulus']['sha256'],
+            'actual_stimulus_sha256':artifacts['actual_stimulus']['sha256'],
+            'source_context':'fixed_full_waveform_alignment','native_alignment':{'offset_frames':2205,
+                'search_radius_frames':8,'normalized_rms_error':.01,'complete_transport_covered':True},
+            'transport':{'converter':2,'library':'synthetic-libsamplerate','version':'synthetic',
+                'input_frames':24000,'output_frames':22050,'calls':calls,'eof_complete':True,
+                'library_path':str(library_path),'library_sha256':SYNTHETIC_TRANSPORT_SHA},'matched_waveform':matched}
+        if root is not None:
+            directory.mkdir(parents=True,exist_ok=True)
+            for name,raw in bodies.items():Path(artifacts[name]['path']).write_bytes(raw)
+            trace_rows.setdefault(interval['trace_file'],[]).extend(dict(row,kind='render-queue',ms=turn['start_ms']+100+index)
+                                                                   for index,row in enumerate(calls))
+            trace_pcm[interval['trace_file']]=trace_pcm.get(interval['trace_file'],b'')+bodies['source48']
+        turns.append(turn)
+    if root is not None:
+        result=root/'result';result.mkdir(exist_ok=True)
+        for name,rows in trace_rows.items():
+            (result/name).write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            (result/(Path(name).stem+'-modem.raw')).write_bytes(trace_pcm[name])
+    return turns
+
+
 def capture_case_fixture(case,root):
-    if case in ('capture-release-split','capture-release-held150'):return capture_source_boundary_fixture(case,root)
-    if case in ('capture-close-missing','capture-close-invalid','capture-close-stop'):return capture_close_failure_fixture(case,root)
-    if case=='eoo-backpressure':return tail_backpressure_fixture()
-    return {'harness':{'turns':0,'total_turns':0,'fault':1},'capture_close':capture_close_fixture()}
+    from test_usb_audio_integration import SPEECH_CASES,WAVEFORM_CASES
+    if case in ('capture-release-split','capture-release-held150'):result=capture_source_boundary_fixture(case,root)
+    elif case in ('capture-close-missing','capture-close-invalid','capture-close-stop'):result=capture_close_failure_fixture(case,root)
+    elif case=='eoo-backpressure':result=tail_backpressure_fixture()
+    else:
+        count=int(case in WAVEFORM_CASES)
+        result={'harness':{'turns':count,'total_turns':count,'eoo':count,'fault':1},'capture_close':capture_close_fixture(count)}
+    if case in WAVEFORM_CASES:
+        result['actual_sink_turns']=sink_turn_fixture(result['capture_close'],case in SPEECH_CASES,root)
+    return result
 
 
 def tail_backpressure_fixture():
@@ -202,8 +290,7 @@ def tail_backpressure_fixture():
     return {'tail_backpressure':proof,'harness':{'render_queue':queue,'render_hold':hold,
              'turns':1,'total_turns':1,'eoo':1,'fault':1,'rf_clear_confirmed':True},
             'capture_close':capture_close_fixture(1),
-            'actual_sink_turns':[{'status':'PASS','content_match':{'status':'PASS',
-                'method':'full_modem_waveform_and_100ms_windows','complete_reference_covered':True}}]}
+            'actual_sink_turns':sink_turn_fixture(capture_close_fixture(1))}
 
 
 class CampaignTests(unittest.TestCase):
@@ -216,6 +303,7 @@ class CampaignTests(unittest.TestCase):
                          'runner_sha256': 'd' * 64, 'speech_sha256': 'e' * 64,
                          'modem_sha256': 'f' * 64, 'fault_injector_sha256': '1' * 64}
         self.identity['host_resource_configuration']=host_resource_configuration()
+        self.identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
         self.plan = {'profile': 'qualification', 'repetitions': 2,
                      'expected_cases': ['normal'], 'selected_cases': ['normal'],
                      'debug_subset': False, 'case_timeout_seconds': {'normal': 90},
@@ -236,12 +324,13 @@ class CampaignTests(unittest.TestCase):
         for repeat in (1, 2):
             log = evidence / ('normal-%d.log' % repeat)
             log.write_text('retained bounded subprocess log\n')
-            case = evidence / ('normal-%d.json' % repeat)
-            case.write_text(json.dumps({'status': 'PASS', 'repeat': repeat}) + '\n')
+            case_root=evidence/('normal-case-'+str(repeat))
+            case = case_root/'case-result.json'
+            extra=capture_case_fixture('normal',case_root)
+            case.write_text(json.dumps({'status': 'PASS', 'repeat': repeat,**extra}) + '\n')
             runs.append({'status': 'PASS', 'repeat': repeat, 'log_path': str(log),
                          'log_sha256': sha(log), 'case_record_path': str(case),
-                         'case_record_sha256': sha(case),'harness':{'turns':0,'total_turns':0,'fault':1},
-                         'capture_close':capture_close_fixture()})
+                         'case_record_sha256': sha(case),**extra})
         result = {'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
                   'plan': self.plan, 'complete_matrix': status == 'PASS',
                   'expected_executions': ['normal@1', 'normal@2'],
@@ -266,6 +355,14 @@ class CampaignTests(unittest.TestCase):
         self.assertTrue(validate_campaign(report, ['normal'])['promotion_eligible'])
         self.assertEqual(report['campaign']['ledger_head']['sequence'], 1)
 
+    def test_run_summary_cannot_replace_different_retained_sink_proof(self):
+        campaign,evidence=self.begin()
+        result=self.result(evidence)
+        result['cases']['normal']['runs'][0]['actual_sink_turns'][0]['summary_only_claim']=True
+        report=self.finish(campaign,result)
+        with self.assertRaisesRegex(ValueError,'retained per-turn'):
+            validate_campaign(report,['normal'])
+
     def test_missing_infrastructure_proof_cannot_promote_functional_passes(self):
         campaign,evidence=self.begin()
         result=self.result(evidence)
@@ -273,6 +370,21 @@ class CampaignTests(unittest.TestCase):
         report=self.finish(campaign,result)
         with self.assertRaisesRegex(ValueError,'infrastructure'):
             validate_campaign(report,['normal'])
+
+    def test_qualification_identity_must_pin_transport_dependency(self):
+        campaign,evidence=self.begin();result=self.result(evidence)
+        result['identity']=dict(result['identity']);result['identity'].pop('transport_library_sha256')
+        report=self.finish(campaign,result)
+        with self.assertRaisesRegex(ValueError,'transport library dependency'):
+            validate_campaign(report,['normal'],verify_files=False)
+
+    def test_failed_child_proofs_without_release_protocol_cannot_promote(self):
+        campaign,evidence=self.begin();result=self.result(evidence)
+        entry=result['infrastructure_prerequisites']['unexpected_runtime_failure']
+        entry['record'].pop('release_lock_protocol');entry['record_sha256']=digest(entry['record'])
+        report=self.finish(campaign,result)
+        with self.assertRaisesRegex(ValueError,'Release lock protocol'):
+            validate_campaign(report,['normal'],verify_files=False)
 
     def test_infrastructure_child_failure_cannot_be_relabelled_success(self):
         campaign,evidence=self.begin()
@@ -443,6 +555,7 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.old_build = False
         self.fixture_mismatch = False
         self.aggregate_only = False
+        self.malformed_sink = False
         self.infrastructure_fail = False
         self.infrastructure_fake_exit = False
         self.infrastructure_wrong_identity = False
@@ -507,7 +620,12 @@ class MatrixSupervisionTests(unittest.TestCase):
                          'build_id':expected_env.get('USB_TEST_EXPECTED_BUILD_ID'),
                          'controller_binary_sha256':sha(self.binary),
                          'mutations':{name:{'status':'PASS'} for name in ('missing-completion','truncated-completion','truncated-trace')}}}
-        if self.aggregate_only: details['actual_sink_decode']={'synthesis_blocks':20}
+        details.update(capture_case_fixture(case,output))
+        details['actual_sink_decode']={'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in details.get('actual_sink_turns',[]))}
+        if self.aggregate_only:
+            details['actual_sink_decode']={'synthesis_blocks':20}
+            details['actual_sink_turns']=[]
+        if self.malformed_sink:details['actual_sink_turns'][0]['content_match']['complete_reference_covered']=False
         (output / 'case-result.json').write_text(json.dumps(details) + '\n')
         return {'exit_code': 1 if self.fail else 0, 'timed_out': False, 'duration_ms': 1}
 
@@ -527,6 +645,7 @@ class MatrixSupervisionTests(unittest.TestCase):
                 mock.patch.object(matrix, 'CASES', ('normal', 'other') if subset else ('normal',)), \
                 mock.patch.object(matrix, 'SPEECH_CASES', {'normal'} if self.aggregate_only else set()), \
                 mock.patch.object(matrix, 'run_bounded', self.supervised), \
+                mock.patch.object(matrix,'observed_transport_library',return_value={'library_sha256':SYNTHETIC_TRANSPORT_SHA}), \
                 mock.patch.object(matrix,'run_resource_preflight',self.resources_start), \
                 mock.patch.object(matrix,'observe_resource_end',self.resources_end), \
                 mock.patch.object(matrix, 'source_snapshot', return_value=({}, 'b'*64)), \
@@ -649,6 +768,19 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn('per-turn', record['cases']['normal']['runs'][0]['reason'])
 
+    def test_partial_positive_sink_proof_is_sealed_as_failure_before_replay(self):
+        self.malformed_sink=True
+        status,record=self.invoke()
+        self.assertEqual(status,1)
+        self.assertEqual(record['status'],'FAIL')
+        self.assertEqual(record['cases']['normal']['runs'][0]['status'],'FAIL')
+        self.assertIn('waveform',record['cases']['normal']['runs'][0]['reason'])
+        self.assertEqual(record['campaign']['history'][0]['result']['status'],'FAIL')
+        self.malformed_sink=False
+        status,replayed=self.invoke()
+        self.assertEqual(status,1)
+        self.assertEqual(replayed['campaign']['status'],'BLOCKED')
+
     def test_subset_pass_is_explicitly_nonpromotable(self):
         status, record = self.invoke(subset=True)
         self.assertEqual(status, 0)
@@ -663,6 +795,186 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.assertTrue(record['promotion_eligible'])
         self.assertEqual(record['executed'], ['normal@1', 'normal@2'])
         validate_campaign(record, ['normal'])
+
+
+class PositiveTurnGateTests(unittest.TestCase):
+    def fixture(self,case='normal',turns=2):
+        close=capture_close_fixture(turns)
+        return {'harness':{'turns':turns,'total_turns':turns,'eoo':turns,'total_eoo':turns,'fault':1},
+                'capture_close':close,'actual_sink_turns':sink_turn_fixture(close,case!='short-turn200')}
+
+    def test_every_positive_turn_and_short_waveform_pass(self):
+        validate_sink_turns_run(self.fixture(),'normal',verify_files=False)
+        validate_sink_turns_run(self.fixture('short-turn200',1),'short-turn200',verify_files=False)
+
+    def test_aggregate_or_partial_turns_cannot_mask_missing_turn(self):
+        for mutation in ('missing','partial','duplicate','zero','eoo'):
+            run=self.fixture()
+            if mutation=='missing':run.pop('actual_sink_turns')
+            elif mutation=='partial':run['actual_sink_turns'].pop()
+            elif mutation=='duplicate':run['actual_sink_turns'][1]=copy.deepcopy(run['actual_sink_turns'][0])
+            elif mutation=='zero':run=self.fixture(turns=0)
+            else:run['harness']['total_eoo']=1
+            run['decoded_speech_blocks']=20
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_sink_turns_run(run,'normal',verify_files=False)
+
+    def test_waveform_status_alone_or_weakened_threshold_cannot_promote(self):
+        mutations={'complete_reference_covered':False,'correlation':.9,'lag_ms':1001,'fitted_gain':.23,
+                   'maximum_window_normalized_error':.36,'allowed_window_normalized_error':.5,
+                   'minimum_correlation':.9,'resampler_edge_allowance_ms':6,'reference_frames_compared_at_8k':0,
+                   'expected_gain':1.,'maximum_lag_ms':2000,'method':'partial_waveform'}
+        for key,value in mutations.items():
+            run=self.fixture();run['actual_sink_turns'][1]['content_match'][key]=value
+            with self.subTest(key=key),self.assertRaises(ValueError):validate_sink_turns_run(run,'normal',verify_files=False)
+        run=self.fixture();run['actual_sink_turns'][1]['content_match']={'status':'PASS'}
+        with self.assertRaises(ValueError):validate_sink_turns_run(run,'normal',verify_files=False)
+
+    def test_a_previous_turn_artifact_or_source_interval_cannot_count_twice(self):
+        for mutation in ('artifact','source'):
+            run=self.fixture();first,second=run['actual_sink_turns']
+            if mutation=='artifact':second['artifacts']['reference_decoded']['path']=first['artifacts']['reference_decoded']['path']
+            else:
+                second['source_tap_start']=first['source_tap_start'];second['source_tap_end']=first['source_tap_end']
+            with self.subTest(mutation=mutation),self.assertRaisesRegex(ValueError,'reused'):
+                validate_sink_turns_run(run,'normal',verify_files=False)
+
+    def test_nan_or_missing_numeric_evidence_is_rejected(self):
+        for value in (float('nan'),float('inf'),True,None):
+            run=self.fixture();run['actual_sink_turns'][0]['content_match']['correlation']=value
+            with self.subTest(value=value),self.assertRaises(ValueError):validate_sink_turns_run(run,'normal',verify_files=False)
+
+    def test_each_turn_is_bound_to_its_capture_session_and_budget(self):
+        for mutation in ('trace','budget','turn','timestamp','boundary'):
+            run=self.fixture();turn=run['actual_sink_turns'][1]
+            if mutation=='trace':turn['trace_file']='old-session.jsonl'
+            elif mutation=='budget':turn['microphone_frame_budget']['accepted_frames']-=1
+            elif mutation=='turn':turn['turn']=1
+            elif mutation=='timestamp':turn['end_ms']=turn['start_ms']-1
+            else:turn['reference_boundary_basis']='approximate'
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_sink_turns_run(run,'normal',verify_files=False)
+
+    def test_speech_requires_synthesis_and_unchanged_duration_bounds(self):
+        for mutation in ('missing','failed','no_sync','no_synthesis','blocks','duration','tolerance','unassessed'):
+            run=self.fixture();turn=run['actual_sink_turns'][1]
+            if mutation=='missing':turn.pop('observed')
+            elif mutation=='failed':turn['observed']['failures']=1
+            elif mutation=='no_sync':turn['observed']['synchronized_blocks']=0
+            elif mutation=='no_synthesis':turn['observed']['synthesis_blocks']=0
+            elif mutation=='blocks':turn['observed']['synthesis_blocks']-=2
+            elif mutation=='duration':turn['observed']['decoded_seconds']-=.141
+            elif mutation=='tolerance':turn['allowed_rounding_and_acquisition_seconds']=.25
+            else:turn['speech_status']='UNASSESSED_INSUFFICIENT_DURATION'
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_sink_turns_run(run,'normal',verify_files=False)
+
+
+
+class MatchedDecoderGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name)
+
+    def fixture(self,files=False):
+        run=capture_case_fixture('normal',self.root) if files else PositiveTurnGateTests().fixture(turns=1)
+        run['case_record_path']=str(self.root/'case-result.json')
+        return run
+
+    def test_exact_same_domain_control_and_retained_artifacts_pass(self):
+        validate_sink_turns_run(self.fixture(files=True),'normal')
+
+    def test_control_status_cannot_replace_missing_model_or_eof(self):
+        for mutation in ('missing','rate','gain','source_context','source_boundary','whole_transport','eof',
+                         'input','output','final','leading','phase','matched_waveform','native_rms'):
+            run=self.fixture();turn=run['actual_sink_turns'][0];control=turn['decoder_control']
+            if mutation=='missing':turn.pop('decoder_control')
+            elif mutation=='rate':control['rate']=48000
+            elif mutation=='gain':control['gain_divisor']=1
+            elif mutation=='source_context':control['source_context']='actual_sink_payload'
+            elif mutation=='source_boundary':turn['source_tap_end']-=1
+            elif mutation=='whole_transport':control['native_alignment']['complete_transport_covered']=False
+            elif mutation=='eof':control['transport']['eof_complete']=False
+            elif mutation=='input':control['transport']['calls'][0]['input_frames']-=1
+            elif mutation=='output':control['transport']['calls'][0]['generated_frames']-=1
+            elif mutation=='final':control['transport']['calls'].pop()
+            elif mutation=='leading':control['control_frames']=control['leading_frames']+control['transport_frames']-1
+            elif mutation=='phase':control['native_alignment']['offset_frames']+=1
+            elif mutation=='native_rms':control['native_alignment']['normalized_rms_error']=float('nan')
+            else:control['matched_waveform']['complete_reference_covered']=False
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                validate_sink_turns_run(run,'normal',verify_files=False)
+
+    def test_loaded_transport_dependency_must_match_campaign_identity(self):
+        run=self.fixture()
+        validate_sink_turns_run(run,'normal',verify_files=False,expected_transport_sha256=SYNTHETIC_TRANSPORT_SHA)
+        with self.assertRaisesRegex(ValueError,'transport SRC'):
+            validate_sink_turns_run(run,'normal',verify_files=False,expected_transport_sha256='0'*64)
+        run['actual_sink_turns'][0]['decoder_control']['transport'].pop('library_sha256')
+        with self.assertRaises(ValueError):validate_sink_turns_run(run,'normal',verify_files=False)
+
+    def test_unmatched_decoder_rate_duration_or_input_is_rejected(self):
+        for key,value in {'input_rate':48000,'input_channels':2,'input_frames':44100,
+                          'unpadded_frames':1,'input_sha256':'0'*64,'decoded_frames':1,'decoded_sha256':'0'*64}.items():
+            run=self.fixture();run['actual_sink_turns'][0]['observed'][key]=value
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                validate_sink_turns_run(run,'normal',verify_files=False)
+
+    def test_missing_partial_tampered_or_wrong_stats_artifact_blocks(self):
+        for mutation in ('missing','partial','tampered','counter','source','trace'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture('normal',root)
+                run['case_record_path']=str(root/'case-result.json');turn=run['actual_sink_turns'][0]
+                item=turn['artifacts']['actual_stimulus'];path=Path(item['path'])
+                if mutation=='missing':path.unlink()
+                elif mutation=='partial':path.write_bytes(b'\0\0');item['sha256']=sha(path);turn['decoder_control']['actual_stimulus_sha256']=sha(path);turn['observed']['input_sha256']=sha(path)
+                elif mutation=='tampered':path.write_bytes(b'changed')
+                elif mutation=='counter':
+                    item=turn['artifacts']['actual_stats'];path=Path(item['path']);path.write_text('{}');item['sha256']=sha(path)
+                elif mutation=='source':(root/'result/freedv-usb-session-unit-modem.raw').write_bytes(b'other')
+                else:(root/'result/freedv-usb-session-unit.jsonl').write_text('')
+                with self.subTest(mutation=mutation),self.assertRaises((ValueError,OSError)):
+                    validate_sink_turns_run(run,'normal')
+
+    def test_matching_rate_cannot_relax_existing_speech_loss_bound(self):
+        run=self.fixture();turn=run['actual_sink_turns'][0]
+        turn['observed'].update(synthesis_blocks=turn['reference']['synthesis_blocks']-2,
+                               decoded_frames=round((turn['reference']['decoded_seconds']-.24)*44100))
+        turn['observed']['decoded_seconds']=turn['observed']['decoded_frames']/44100
+        with self.assertRaisesRegex(ValueError,'unchanged decoder bound'):
+            validate_sink_turns_run(run,'normal',verify_files=False)
+
+
+class ReleaseLockProtocolGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name)
+        self.identity={'source_commit':'a'*40,'build_id':'synthetic','test_binary_sha256':'b'*64,
+            'runner_sha256':'c'*64,'speech_sha256':'d'*64,'modem_sha256':'e'*64}
+        proof=infrastructure_fixture(self.root,self.identity,'f'*64)['record']
+        self.protocol=proof['release_lock_protocol'];self.expected=proof
+
+    def test_real_child_contract_is_required_independent_of_failed_variants(self):
+        validate_release_lock_protocol(self.protocol,self.expected)
+        with self.assertRaises(ValueError):validate_release_lock_protocol({},self.expected)
+
+    def test_hang_or_wrong_binary_build_scope_and_checks_cannot_pass(self):
+        for mutation in ('timeout','exit','source','build','binary','injector','radio','blocked','posted','unlock'):
+            proof=copy.deepcopy(self.protocol)
+            if mutation=='timeout':proof['execution']['timed_out']=True
+            elif mutation=='exit':proof['execution']['exit_code']=-9
+            elif mutation=='source':proof['source_commit']='old'
+            elif mutation=='build':proof['build_id']='old'
+            elif mutation=='binary':proof['controller_binary_sha256']='0'*64
+            elif mutation=='injector':proof['fault_injector_sha256']='0'*64
+            elif mutation=='radio':proof['radio_accessed']=True
+            else:proof['witness'][{'blocked':'coordinator_blocked','posted':'release_posted_without_wait','unlock':'observed_after_unlock'}[mutation]]=False
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                validate_release_lock_protocol(proof,self.expected,verify_files=False)
+
+    def test_witness_log_is_retained_and_summary_is_bound_to_actual_child(self):
+        path=Path(self.protocol['evidence_files']['log']['path']);path.write_text('PASS\n')
+        with self.assertRaises(ValueError):validate_release_lock_protocol(self.protocol,self.expected)
+        self.protocol['evidence_files']['log']['sha256']=sha(path)
+        with self.assertRaises(ValueError):validate_release_lock_protocol(self.protocol,self.expected)
+
 
 
 class HostResourceGateTests(unittest.TestCase):
@@ -785,6 +1097,20 @@ class CaptureBoundaryProofTests(unittest.TestCase):
     def test_exact_source_boundary_both_delivery_histories(self):
         for case in ('capture-release-split','capture-release-held150'):
             evidence,_=self.fixture(case);validate_capture_source_boundary_run(evidence,case)
+
+    def test_split_callback_can_return_before_coordinator_observes_release(self):
+        evidence,_=self.fixture();exercise=evidence['capture_source_boundary']['turns'][0]['exercise']
+        exercise['callback_ended_ms']=exercise['release_posted_ms']
+        self.assertGreater(exercise['release_observed_ms'],exercise['callback_ended_ms'])
+        validate_capture_source_boundary_run(evidence,'capture-release-split')
+
+    def test_split_fixture_cannot_require_coordinator_while_holding_lock(self):
+        for mutation in ('wait','late_post'):
+            evidence,_=self.fixture();exercise=evidence['capture_source_boundary']['turns'][0]['exercise']
+            if mutation=='wait':exercise['coordinator_wait_required']=1
+            else:exercise['release_posted_ms']=exercise['callback_ended_ms']+1
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                validate_capture_source_boundary_run(evidence,'capture-release-split')
 
     def test_matching_counts_cannot_replace_missing_prefix_with_future_audio(self):
         evidence,root=self.fixture()
