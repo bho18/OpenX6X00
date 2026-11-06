@@ -20,6 +20,7 @@ USB_REQUIRED_COVERAGE = {
     'prekey_audio', 'blocking_control', 'slow_pa_ack', 'direction_health',
     'rf_disabled', 'retained_release', 'stop_priority', 'device_loss',
     'sink_decode', 'hardware_rates', 'unsynchronized_rx',
+    'capture_reacquisition', 'preparation_sample_accounting',
 }
 
 

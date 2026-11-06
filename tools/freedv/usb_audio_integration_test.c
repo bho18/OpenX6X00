@@ -8,6 +8,11 @@
 #include <string.h>
 #include <time.h>
 
+/* Weak test-only symbols are resolved by the selected LD_PRELOAD injector. */
+extern unsigned long long usb_test_cold_ack_ms(void) __attribute__((weak));
+extern unsigned usb_test_cold_recovered(void) __attribute__((weak));
+static bool cold_case,cold_rx_case,cold_late_tx_case;
+static atomic_uint recovered_observations;
 typedef struct {
     atomic_bool pressed,physical_tx,packet_tx,halted,stall,freeze,protection,inflight;
     atomic_uint keys,clears,delay,block_key,block_clear;
@@ -25,6 +30,18 @@ static void pause_ms(unsigned n) {
 static bool observe(void *context,fd_usb_inputs *out) {
     fake *f=context;
     if(atomic_load(&f->stall))pause_ms(1000);
+    if(cold_late_tx_case&&usb_test_cold_ack_ms&&usb_test_cold_ack_ms()){
+        /* Let the first post-ACK observation see both completed callbacks,
+         * avoiding a scheduler race between observation and metric reads. */
+        uint64_t until=ms()+200;
+        while(usb_test_cold_recovered()!=3&&ms()<until)pause_ms(1);
+    }
+    if(cold_late_tx_case&&usb_test_cold_recovered&&usb_test_cold_recovered()==3&&
+       atomic_fetch_add(&recovered_observations,1)==1){
+        /* First recovered observation admits fresh frames; the next one is
+         * the final pre-key observation and must still require actual RX. */
+        atomic_store(&f->physical_tx,true);atomic_store(&f->packet_tx,true);
+    }
     uint64_t now=ms(),at=atomic_load(&f->packet_at);
     if(!atomic_load(&f->freeze) && now-at>=20) {
         uint64_t ack=atomic_load(&f->ack_at);
@@ -40,6 +57,8 @@ static bool observe(void *context,fd_usb_inputs *out) {
 }
 static bool key(void *context,uint64_t release) {
     fake *f=context;
+    if(cold_case&&!cold_rx_case){assert(usb_test_cold_ack_ms&&usb_test_cold_recovered);
+        assert(usb_test_cold_ack_ms()>0&&usb_test_cold_recovered()==3);}
     if(atomic_load(&f->halted) || !atomic_load(&f->pressed) || release!=atomic_load(&f->release))return false;
     atomic_fetch_add(&f->keys,1);atomic_store(&f->inflight,true);
     unsigned block=atomic_load(&f->block_key);
@@ -108,7 +127,10 @@ int main(int argc,char **argv) {
     fake f={0};atomic_store(&f.packet_at,ms());char prefix[512];
     snprintf(prefix,sizeof(prefix),"%s/session",argv[1]);
     bool qualification=!strcmp(scenario,"--rf-disabled") || !strcmp(scenario,"--qualification-physical-tx") ||
-                       !strcmp(scenario,"--qualification-held-ptt");
+                       !strcmp(scenario,"--qualification-held-ptt") || !strcmp(scenario,"--cold-qualification");
+    cold_case=!strncmp(scenario,"--cold-",7);
+    cold_rx_case=!strcmp(scenario,"--cold-rx-resume");
+    cold_late_tx_case=!strcmp(scenario,"--cold-prekey-unexpected-tx");
     fd_usb_config config={.source="alsa_input.usb-fixture",.sink="alsa_output.usb-fixture",
         .radio_source="radio_source_fixture",.radio_sink="radio_sink_fixture",.trace_prefix=prefix,
         .control={.context=&f,.observe=observe,.key=key,.clear=clear,.inhibit=inhibit},
@@ -129,8 +151,10 @@ int main(int argc,char **argv) {
     } else assert(!fd_usb_audio_snapshot(audio).engine.synchronized);
     if(qualification) {
         assert(!fd_usb_audio_enable_rf(audio));
+        bool qualification_prior_gap=!strcmp(scenario,"--cold-qualification");
+        if(qualification_prior_gap)marker("USB_TEST_STALE_TRIGGER");
         assert(fd_usb_audio_start_qualification(audio));
-        if(strcmp(scenario,"--rf-disabled")) {
+        if(strcmp(scenario,"--rf-disabled")&&strcmp(scenario,"--cold-qualification")) {
             pause_ms(300);
             if(!strcmp(scenario,"--qualification-physical-tx"))atomic_store(&f.physical_tx,true);
             else atomic_store(&f.pressed,true);
@@ -140,7 +164,13 @@ int main(int argc,char **argv) {
             result(argv[1],scenario,&f,s);fd_usb_audio_close(audio);return 0;
         }
         uint64_t until=ms()+60000;fd_usb_snapshot s;
-        do{s=fd_usb_audio_snapshot(audio);assert(!s.fault && !atomic_load(&f.keys));if(s.qualification_complete)break;pause_ms(10);}while(ms()<until);
+        do{
+            s=fd_usb_audio_snapshot(audio);assert(!s.fault && !atomic_load(&f.keys));
+            if(qualification_prior_gap&&usb_test_cold_ack_ms&&usb_test_cold_ack_ms()){
+                assert(remove(getenv("USB_TEST_STALE_TRIGGER"))==0);qualification_prior_gap=false;
+            }
+            if(s.qualification_complete)break;pause_ms(10);
+        }while(ms()<until);
         assert(s.qualification_complete && s.qualification_turns==3 && s.turns==3 && s.engine.eoo_count==3);
         assert(s.rf_disabled && !s.rf_tx && !atomic_load(&f.physical_tx));
         atomic_store(&f.pressed,true);pause_ms(50);assert(!fd_usb_audio_enable_rf(audio));release_ptt(&f);pause_ms(100);
@@ -157,6 +187,54 @@ int main(int argc,char **argv) {
         assert(remove(getenv("USB_TEST_STALE_TRIGGER"))==0);pause_ms(600);
     }
     fd_usb_audio_arm(audio,true);
+    if(cold_case){
+        assert(usb_test_cold_ack_ms&&usb_test_cold_recovered);
+        atomic_store(&f.pressed,true);
+        if(cold_rx_case){
+            wait_state(audio,FD_USB_TX,10000);pause_ms(1250);release_ptt(&f);
+            uint64_t until=ms()+5000;while(!usb_test_cold_ack_ms()&&ms()<until)pause_ms(1);
+            assert(usb_test_cold_ack_ms()>0&&!atomic_load(&f.physical_tx)&&atomic_load(&f.keys)==1);
+            wait_state(audio,FD_USB_RX,10000);pause_ms(100);
+            fd_usb_snapshot s=fd_usb_audio_snapshot(audio);assert(s.turns==1&&s.engine.eoo_count==1);
+            fd_usb_audio_stop(audio);s=wait_stopped(audio,10000);
+            assert(atomic_load(&f.keys)==1&&!atomic_load(&f.physical_tx));
+            result(argv[1],scenario,&f,s);fd_usb_audio_close(audio);return 0;
+        }
+        uint64_t until=ms()+5000;
+        while(!usb_test_cold_ack_ms()&&ms()<until)pause_ms(1);
+        assert(usb_test_cold_ack_ms()>0&&!atomic_load(&f.keys)&&!atomic_load(&f.physical_tx));
+        if(cold_late_tx_case){
+            fd_usb_snapshot s=wait_stopped(audio,10000);
+            assert(s.fault==4&&!strcmp(s.first_fault_origin,"unexpected-tx-during-preparation"));
+            assert(atomic_load(&recovered_observations)>=2&&!atomic_load(&f.keys)&&!atomic_load(&f.physical_tx));
+            result(argv[1],scenario,&f,s);fd_usb_audio_close(audio);return 0;
+        }
+        if(!strcmp(scenario,"--cold-stop")){
+            uint64_t before=ms();fd_usb_audio_stop(audio);assert(ms()-before<100);
+            fd_usb_snapshot s=wait_stopped(audio,10000);assert(s.fault==1&&!atomic_load(&f.keys));
+            result(argv[1],scenario,&f,s);fd_usb_audio_close(audio);return 0;
+        }
+        if(!strcmp(scenario,"--cold-release")){
+            /* Retain release even when a press follows before readiness. */
+            release_ptt(&f);atomic_store(&f.pressed,true);
+            wait_state(audio,FD_USB_RX,10000);pause_ms(400);
+            assert(!atomic_load(&f.keys)&&!atomic_load(&f.physical_tx));
+            fd_usb_audio_stop(audio);fd_usb_snapshot s=wait_stopped(audio,10000);
+            result(argv[1],scenario,&f,s);fd_usb_audio_close(audio);return 0;
+        }
+        if(!strcmp(scenario,"--cold-recovery-fails")){
+            fd_usb_snapshot s=wait_stopped(audio,10000);
+            assert(s.fault==17&&!strcmp(s.first_fault_origin,"capture-not-resumed-after-preparation"));
+            assert(s.first_fault_operation_ms>=1500&&!atomic_load(&f.keys)&&!atomic_load(&f.physical_tx));
+            result(argv[1],scenario,&f,s);fd_usb_audio_close(audio);return 0;
+        }
+        wait_state(audio,FD_USB_TX,10000);assert(atomic_load(&f.keys)==1);puts("TX_ACTIVE");fflush(stdout);
+        pause_ms(1250);release_ptt(&f);wait_state(audio,FD_USB_RX,10000);pause_ms(100);
+        assert(!atomic_load(&f.physical_tx)&&atomic_load(&f.keys)==1);
+        fd_usb_snapshot s=fd_usb_audio_snapshot(audio);assert(s.turns==1&&s.engine.eoo_count==1);
+        fd_usb_audio_stop(audio);s=wait_stopped(audio,10000);
+        result(argv[1],scenario,&f,s);fd_usb_audio_close(audio);return 0;
+    }
     if(!strcmp(scenario,"--prekey-stale")) {
         marker("USB_TEST_STALE_TRIGGER");pause_ms(900);assert(!fd_usb_audio_snapshot(audio).fault);
         atomic_store(&f.pressed,true);fd_usb_snapshot s=wait_stopped(audio,10000);

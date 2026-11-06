@@ -22,9 +22,11 @@ CASES = (
     'pa-delay', 'pa-reject', 'pa-missing', 'inactive-hole', 'active-hole',
     'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'stale-status', 'disconnect', 'stall', 'tx-stall',
     'rf-disabled', 'qualification-physical-tx', 'qualification-held-ptt',
+    'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume',
 )
 SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled'}
-INJECT_CASES = {'pa-delay', 'pa-reject', 'pa-missing', 'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale'}
+COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
+INJECT_CASES = COLD_CASES | {'pa-delay', 'pa-reject', 'pa-missing', 'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale'}
 
 
 def sha(path):
@@ -42,7 +44,17 @@ def injection_environment(case, root, library):
     if not library or not library.is_file():
         raise ValueError('This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
-    if case.startswith('pa-'):
+    if case in COLD_CASES:
+        result.update(USB_TEST_PA_MODE='delay', USB_TEST_PA_DEVICE='radio_sink_fixture',
+                      USB_TEST_PA_ACTION='uncork', USB_TEST_PA_DELAY_MS='760', USB_TEST_COLD_CAPTURE='1',
+                      USB_TEST_COLD_RESUME_MS='200' if case in {'cold-stop', 'cold-release'} else '30')
+        if case == 'cold-qualification':
+            result.update(USB_TEST_STALE_DEVICE='alsa_input.usb-fixture', USB_TEST_STALE_TRIGGER=str(root / 'inject-stale'))
+        if case == 'cold-rx-resume':
+            result.update(USB_TEST_PA_ACTION='cork', USB_TEST_PA_MATCH='3', USB_TEST_COLD_RESUME_MS='1000')
+        if case == 'cold-recovery-fails':
+            result['USB_TEST_COLD_NEVER'] = '1'
+    elif case.startswith('pa-'):
         result.update(USB_TEST_PA_MODE={'pa-delay': 'delay', 'pa-reject': 'reject', 'pa-missing': 'missing'}[case],
                       USB_TEST_PA_DEVICE='radio_sink_fixture', USB_TEST_PA_ACTION='flush', USB_TEST_PA_DELAY_MS='650')
     elif case.endswith('hole'):
@@ -170,6 +182,26 @@ def run_case(args):
                 assert not status_rows[-1]['rf_tx'], status_rows[-1]
             if args.case in INJECT_CASES:
                 assert 'INJECT ' in (root / 'test.log').read_text(), 'Fault injector did not exercise requested path'
+            if args.case in COLD_CASES:
+                log = (root / 'test.log').read_text()
+                assert 'INJECT cold ACK success=1' in log, log
+                assert 'callback starvation device=alsa_input.usb-fixture' in log, log
+                assert 'callback starvation device=radio_source_fixture' in log, log
+                if args.case == 'cold-qualification':
+                    samples = [row for row in rows if row.get('kind') == 'sample' and row.get('qualification_complete')]
+                    assert samples, 'Qualification did not publish rate-accounting evidence'
+                    last = samples[-1]
+                    assert all(value >= 760 for value in last['preparation_excluded_ms']), last
+                    assert all(value > 0 for value in last['preparation_excluded_frames']), last
+                    # MIC delivery stopped before preparation; that earlier gap
+                    # must remain in the rate window rather than be excluded.
+                    assert harness['mic_max_gap_ms'] >= harness['rx_max_gap_ms'] + 150, harness
+                    assert abs(last['preparation_excluded_ms'][0] - last['preparation_excluded_ms'][1]) < 100, last
+                    assert last['mic_rate_window_ms'] >= 3000 and last['rx_rate_window_ms'] >= 3000, last
+                    assert 45600 <= last['mic_rate_hz'] <= 50400 and 41895 <= last['rx_rate_hz'] <= 46305, last
+                    record['preparation_accounting'] = {key: last[key] for key in
+                        ('preparation_excluded_ms', 'preparation_excluded_frames', 'mic_rate_hz', 'rx_rate_hz',
+                         'mic_rate_window_ms', 'rx_rate_window_ms')}
             record['harness'] = harness
             record['event_count'] = len(rows)
             record['status_row_count'] = len(status_rows)

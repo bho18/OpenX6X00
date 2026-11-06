@@ -48,6 +48,10 @@ normal Exit.
    MODEM-on/key operation is not called, and the radio adapter's independent TX
    gate remains disabled. Any internal modem loopback checks continuity and
    timing automatically; it is not another voice-quality or RF receive test.
+   If output preparation briefly pauses capture delivery, the controller keeps
+   RF off and waits for new valid microphone and radio samples before continuing.
+   Capture that does not recover within the preparation deadline remains a
+   blocker. Active transmission still uses the strict capture-loss guard.
 4. Continue only after **Transition check passed**, with actual radio RX and
    panel PTT released. RF remains disabled after a pass. If there is a fault,
    unexpected radio TX or an unconfirmed RX state, select Stop, then Exit when

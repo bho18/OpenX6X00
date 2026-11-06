@@ -15,6 +15,8 @@ from test_usb_audio_integration import CASES, SPEECH_CASES
 
 COVERAGE = {
     'prekey_audio': {'pa-delay', 'pa-reject', 'pa-missing'},
+    'capture_reacquisition': {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-prekey-unexpected-tx', 'cold-rx-resume'},
+    'preparation_sample_accounting': {'cold-qualification'},
     'blocking_control': {'block-key', 'stop-during-key', 'release-during-key'},
     'slow_pa_ack': {'pa-delay'},
     'direction_health': {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale'},
