@@ -203,10 +203,23 @@ def main():
                     converted.extend(round(x+(following-x)*fraction/6) for fraction in range(6))
                 fixture=work/'usb-reference-48k.raw';fixture.write_bytes(converted.tobytes())
                 env['USB_RF_REFERENCE_RUNNER']=str(work/'build/freedv_voice_runner')
-                for name,extra in [('usb-controller',[]),('usb-disconnect',['--disconnect']),('usb-watchdog',['--stall'])]:
-                    run([sys.executable,ROOT/'tools/freedv/test_usb_audio_integration.py',work/'build/freedv_usb_audio_test',
-                         codec/'sources/rade_c/input_sample.wav',fixture,*extra],name+'.log')
-                    record['codec_checks'][name]={'status':'PASS','log_sha256':sha(work/(name+'.log'))}
+                matrix_dir=work/'usb-matrix'
+                if matrix_dir.exists():
+                    # Logs from earlier attempts remain available for review.
+                    import time
+                    matrix_dir.rename(work/('usb-matrix-previous-'+str(time.time_ns())))
+                run([sys.executable,ROOT/'tools/freedv/test_usb_audio_matrix.py',
+                     work/'build/freedv_usb_audio_test',codec/'sources/rade_c/input_sample.wav',fixture,
+                     '--output',matrix_dir,'--runner',work/'build/freedv_voice_runner'], 'usb-matrix.log')
+                matrix_record=matrix_dir/'matrix-result.json'
+                matrix=json.loads(matrix_record.read_text())
+                if matrix.get('status')!='PASS' or not matrix.get('cases') or any(
+                        case.get('status')!='PASS' for case in matrix['cases'].values()):
+                    raise ValueError('USB startup matrix has missing, skipped or failed cases')
+                record['usb_matrix']=matrix
+                record['codec_checks']['usb-matrix']={'status':'PASS',
+                    'log_sha256':sha(work/'usb-matrix.log'),
+                    'record_path':str(matrix_record),'record_sha256':sha(matrix_record)}
             record['scope'] = 'Full host native GUI compilation and targeted real-codec correctness; no physical audio, RF or timing qualification'
         gui = work / 'build/src/x6100_gui'
         record['binaries'] = {'gui': {'path': str(gui), 'sha256': sha(gui)}}

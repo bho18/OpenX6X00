@@ -13,6 +13,31 @@ from native_image import ExtImage, extract_root, replace_root, root_partition, s
 from fetch_native_baseline import unpack_sdk
 from verify_native_abi import same_sdk_build
 from prepare_native_image import prepare
+from build_voice_candidate import verify_usb_integration, USB_REQUIRED_COVERAGE
+
+
+class UsbReleaseGateTests(unittest.TestCase):
+    def evidence(self):
+        return {'usb_integration': {'status': 'PASS', 'contract_version': 2,
+            'evidence_cli': {'status': 'PASS'},
+            'matrix': {'status': 'PASS', 'complete_matrix': True, 'skipped': [], 'coverage': sorted(USB_REQUIRED_COVERAGE),
+                       'cases': {'executed-case': {'status': 'PASS'}}}}}
+
+    def test_old_pass_and_incomplete_or_failed_evaluation_cannot_release(self):
+        with self.assertRaises(ValueError):
+            verify_usb_integration({'usb_integration': {'status': 'PASS'}})
+        for mutation in ('coverage', 'case', 'cli'):
+            evidence = self.evidence()
+            if mutation == 'coverage': evidence['usb_integration']['matrix']['coverage'].remove('rf_disabled')
+            elif mutation == 'case': evidence['usb_integration']['matrix']['cases']['executed-case']['status'] = 'SKIPPED'
+            else: evidence['usb_integration']['evidence_cli']['status'] = 'FAIL'
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                verify_usb_integration(evidence)
+
+    def test_executed_contract_acceptance_does_not_claim_hardware_qualification(self):
+        evidence = self.evidence()
+        verify_usb_integration(evidence)
+        self.assertNotIn('hardware_qualified', evidence)
 
 
 class ImageTests(unittest.TestCase):

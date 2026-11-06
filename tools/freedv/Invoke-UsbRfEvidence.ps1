@@ -14,7 +14,7 @@ $evidence=Join-Path $kitDir ("usb-rf-results-$token")
 New-Item -ItemType Directory -Path $evidence | Out-Null
 $log=Join-Path $evidence 'transport.txt'
 $remote="/tmp/usb-rf-evidence-$token"
-$testExit=$copyExit=-1;$complete=$false;$failure=''
+$testExit=$copyExit=-1;$complete=$false;$collected=$false;$failure='';$report=$null
 function Invoke-UsbRfCommand([string]$Executable,[string[]]$Arguments){
  Get-Command $Executable -ErrorAction Stop | Out-Null
  $saved=$ErrorActionPreference
@@ -36,20 +36,37 @@ try {
  $testExit=Invoke-UsbRfCommand 'ssh' ($opts+@("root@$RadioIp","python3 -u $remote/usb_rf_evidence.py --output $remote/results$extra"))
  $copyExit=Invoke-UsbRfCommand 'scp' (@('-O','-r')+$opts+@("root@${RadioIp}:$remote/results",$evidence))
  if($copyExit){throw 'Evidence download failed; files remain in /tmp'}
- if($testExit){throw 'Collection/decode reported a blocker; return the ZIP for diagnosis'}
  $report=Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $evidence 'results/rf-evidence.json') | ConvertFrom-Json
  if($report.schema -ne 'x6200.usb-rf-evidence.v1' -or $report.rf_key_commands_sent -ne $false -or
-    $report.status -notin @('COLLECTED_NO_SDR_RECORDING','RF_RECORDING_DECODED_LISTENING_REQUIRED')){throw 'Unexpected evidence report'}
- $complete=$true;Write-Host "Evidence status: $($report.status)"
+    $report.status -notin @('BLOCKED','COLLECTED_NO_SDR_RECORDING','RF_RECORDING_DECODED_LISTENING_REQUIRED','READY_FOR_RF_TEST')){throw 'Invalid evidence report schema/status'}
+ $collected=$true
+ Write-Host "Evidence status: $($report.status)"
+ if($report.stages){foreach($stage in $report.stages.PSObject.Properties){Write-Host "$($stage.Name): $($stage.Value.status)"}}
+ if($report.status -eq 'BLOCKED'){
+  if(!$testExit){Write-Warning 'Helper returned exit 0 for BLOCKED; the report still prevents acceptance.'}
+  $reason=[string]$report.reason;if(!$reason){$reason='The GUI/audio/decode test reported a blocker.'}
+  throw "Test blocked: $reason"
+ }
+ if($report.stages){foreach($stage in $report.stages.PSObject.Properties){
+  if($stage.Value.status -eq 'BLOCKED'){throw "Report status conflicts with blocked stage $($stage.Name); return the ZIP for diagnosis"}
+ }}
+ if($testExit){throw "Helper exited $testExit despite a non-blocked report; return the ZIP for diagnosis"}
+ if($report.status -eq 'READY_FOR_RF_TEST'){
+  if($report.rf_disabled -ne $true -or $report.rf_tested -ne $false -or $report.stages.qualification.status -ne 'PASS'){
+   throw 'Invalid RF-disabled qualification claim'
+  }
+  Write-Host 'RF-disabled qualification passed. No RF transmission was qualified by this collection.'
+ }
+ $complete=$true
 } catch {$failure=$_.Exception.Message;Write-Warning $failure}
 finally {
  $notes=Read-Host 'Notes: frequency, PTT release/RX return, SDR level/ALC, decoded first/last words, disconnect/Stop behavior?'
  $notes | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $evidence 'operator-notes.txt')
- @{test_exit=$testExit;copy_exit=$copyExit;collection_completed=$complete;error=$failure;remote_evidence=$remote} | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $evidence 'collection.json')
+ @{test_exit=$testExit;copy_exit=$copyExit;collection_completed=$collected;test_accepted=$complete;report_status=$report.status;primary_failure_stage=$report.primary_failure_stage;error=$failure;remote_evidence=$remote} | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $evidence 'collection.json')
  $sums=foreach($file in Get-ChildItem -LiteralPath $evidence -File -Recurse){(Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()+'  '+$file.FullName.Substring($evidence.Length+1).Replace('\','/')}
  $sums | Set-Content -Encoding Ascii -LiteralPath (Join-Path $evidence 'COLLECTION-SHA256SUMS')
  Compress-Archive -Path (Join-Path $evidence '*') -DestinationPath "$evidence.zip"
  Write-Host "Return: $evidence.zip"
  Write-Host 'Listen to results/offair-decode/offair-decoded.wav if present; automated sync does not establish word completeness.'
 }
-if(!$complete){throw 'RF evidence needs review; use the printed ZIP'}
+if(!$complete){throw "RF evidence needs review: $failure Use the printed ZIP."}

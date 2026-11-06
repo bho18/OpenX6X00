@@ -16,6 +16,26 @@ from prepare_native_image import prepare
 
 ROOT=Path(__file__).resolve().parents[2]
 BASELINE_SHA='a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab'
+USB_REQUIRED_COVERAGE = {
+    'prekey_audio', 'blocking_control', 'slow_pa_ack', 'direction_health',
+    'rf_disabled', 'retained_release', 'stop_priority', 'device_loss',
+    'sink_decode', 'hardware_rates', 'unsynchronized_rx',
+}
+
+
+def verify_usb_integration(verification):
+    """A legacy virtual-audio PASS cannot qualify the new startup contract."""
+    evidence = verification.get('usb_integration', {})
+    matrix = evidence.get('matrix', {})
+    if (evidence.get('status') != 'PASS' or evidence.get('contract_version') != 2 or
+            evidence.get('evidence_cli', {}).get('status') != 'PASS' or
+            matrix.get('status') != 'PASS' or
+            matrix.get('complete_matrix') is not True or matrix.get('skipped') != [] or
+            not USB_REQUIRED_COVERAGE <= set(matrix.get('coverage', []))):
+        raise ValueError('USB RF image requires startup-contract v2 integration and actual CLI checks')
+    cases = matrix.get('cases', {})
+    if not cases or any(case.get('status') != 'PASS' for case in cases.values()):
+        raise ValueError('USB integration cases must all execute and pass')
 
 
 def verify_source_manifest(repository, files, tree_sha256):
@@ -83,8 +103,8 @@ def main():
     if subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=ROOT,text=True).strip():
         raise ValueError('candidate source must be committed before image assembly')
     verification=json.loads(a.verification.read_text())
-    if a.usb_rf and verification.get('usb_integration',{}).get('status')!='PASS':
-        raise ValueError('USB RF candidate requires completed four-stream controller, panel-event and recovery checks')
+    if a.usb_rf:
+        verify_usb_integration(verification)
     if verification.get('status')!='PASS' or verification.get('source_commit')!=revision:
         raise ValueError('passing verification for this exact source revision is required')
     # Route and collection corrections need relevant regression/build checks.
@@ -134,9 +154,11 @@ def main():
             'physical_hand_ptt_release':'UNSUPPORTED by pinned documented API; never inferred from aggregate TX'}
     if a.usb_rf:
         record.update(candidate_kind='USB headset / panel PTT RF development image',
-                      hardware_status='UNQUALIFIED_RF',ready_for_guided_hardware_tests=True,
+                      hardware_status='RF_DISABLED_EVALUATION_REQUIRED',ready_for_guided_hardware_tests=True,
                       usb_rf_test_ready=True,native_mode_status='BLOCKED: unchanged native MCU contract guard',
-                      validation_scope='Software/image checks passed; requested 1 W, panel-only timed TX for guided SDR/dummy-load qualification',
+                      validation_scope='Startup-contract v2 software checks passed; real-device RF-disabled evaluation precedes local RF arming and the SDR trial',
+                      usb_startup_contract_version=2,on_device_readiness_required=True,
+                      rf_arm_policy='Local only, after the shared-core RF-disabled audio evaluation passes; panel PTT only; requested 1 W',
                       stock_baseband_lease_available=False,physical_rf_off_timing='UNMEASURED')
     if a.pulse_probe:record['pulse_probe_sha256']=sha(a.pulse_probe)
     metadata={**record,'target':'x6200-buildroot','sources':json.loads((ROOT/'tools/freedv/sources.json').read_text())}
@@ -153,14 +175,19 @@ def main():
     (out/'candidate-manifest.json').write_text(json.dumps({**record,'image_sha256':result['image_sha256'],
         'signature_key_preserved':result['signature_key_preserved'],'actual_image_abi':result['abi']['status']},indent=2)+'\n')
     guide=out/'guide/docs/freedv';shutil.copytree(ROOT/'docs/freedv',guide)
-    start=(ROOT/'docs/freedv/native-development-build.md').read_text()
+    start=(ROOT/('docs/freedv/usb-rf-end-to-end.md' if a.usb_rf else 'docs/freedv/native-development-build.md')).read_text()
     start=start.replace('(native-half-duplex-qualification.md)',
                         '(guide/docs/freedv/native-half-duplex-qualification.md)')
     start=start.replace('(baseband-research/README.md)',
                         '(guide/docs/freedv/baseband-research/README.md)')
     (out/'START-HERE.md').write_text(start)
-    subprocess.run([sys.executable,str(ROOT/'tools/freedv/build_native_test_package.py'),
-        '--output',str(out/'native-voice-test-kit.zip')],check=True)
+    if a.usb_rf:
+        subprocess.run([sys.executable,str(ROOT/'tools/freedv/build_usb_rf_kit.py'),
+            '--image-manifest',str(out/'candidate-manifest.json'),
+            '--output',str(out/'usb-rf-test-kit.zip')],check=True)
+    else:
+        subprocess.run([sys.executable,str(ROOT/'tools/freedv/build_native_test_package.py'),
+            '--output',str(out/'native-voice-test-kit.zip')],check=True)
     with (out/'candidate-source.tar').open('xb') as archive:
         subprocess.run(['git','archive','--format=tar','--prefix=OpenX6X00/','HEAD'],cwd=ROOT,stdout=archive,check=True)
     create_source_bundle(ROOT,out/'candidate-source.bundle',revision)
