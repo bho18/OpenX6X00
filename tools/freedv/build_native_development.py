@@ -6,6 +6,9 @@ the matching Buildroot SDK and target codec libraries. This does not download,
 install, flash, qualify hardware, or weaken image-assembly checks.
 """
 import argparse
+import shutil
+import time
+import uuid
 import hashlib
 import json
 import os
@@ -13,6 +16,9 @@ from pathlib import Path
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+
+from usb_test_campaign import Campaign, atomic_json, immutable_json, validate_campaign, validate_history
+from usb_test_support import run_bounded
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTROL_PIN = '0ee1ae3d4d9d74cbac7e349147ebc440eed8fad8'
@@ -25,7 +31,7 @@ def sha(path):
 
 def source_snapshot():
     names = subprocess.check_output(
-        ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], cwd=ROOT
+        ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], cwd=ROOT, timeout=30
     ).decode().split('\0')
     files = {name: sha(ROOT / name) for name in sorted(set(names))
              if name and (ROOT / name).is_file()}
@@ -70,8 +76,8 @@ def main():
         parser.error('populate the pinned LVGL submodule first')
     work.mkdir(parents=True, exist_ok=True)
     before, tree = source_snapshot()
-    revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    record = {'schema_version': 1, 'status': 'RUNNING', 'variant': args.variant,
+    revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True, timeout=10).strip()
+    record = {'schema_version': 2, 'status': 'RUNNING', 'variant': args.variant,
               'usb_test_enabled':args.usb_test,
               'source_commit': revision, 'source_tree_sha256': tree,
               'source_files': before, 'build_id': args.build_id, 'commands': [],
@@ -80,8 +86,118 @@ def main():
               'physical_hand_ptt': 'UNQUALIFIED; aggregate TX does not establish an independent hand PTT contract',
               'physical_rf_off_timing': 'UNASSESSED',
               'timing_qualifies_radio': False}
+    attempt_id = '%020d-%s' % (time.time_ns(), uuid.uuid4().hex[:12])
+    attempt = work / 'attempts' / attempt_id
+    attempt.mkdir(parents=True)
+    record.update(evidence_attempt_path=str(attempt), build_attempt_id=attempt_id,
+                  command_results=[], logs={})
+    immutable_json(attempt/'start.json', {'source_commit': revision, 'source_tree_sha256': tree,
+                   'variant': args.variant, 'build_id': args.build_id, 'build_attempt_id': attempt_id})
+    # This is a derived latest pointer/copy. Immutable attempt records and logs
+    # are authoritative; replacing this file never deletes an earlier failure.
+    atomic_json(work/'build-record.json', record)
+    history = None
+    try:
+        identity = _build_identity(args, revision, tree)
+        plan = {'profile': 'build', 'variant': args.variant, 'usb_test_enabled': args.usb_test}
+        record.update(build_identity=identity, build_plan=plan)
+        history = Campaign(work/'build-campaigns', identity, plan, attempt, args.build_id)
+        _perform_build(args, parser, work, attempt, record, before, tree, revision, host, host_native)
+    except BaseException as error:
+        record['status'] = 'INTERRUPTED' if isinstance(error, KeyboardInterrupt) else 'FAIL'
+        record['error'] = str(error)
+        raise
+    finally:
+        immutable_json(attempt/'build-record.json', record)
+        latest = {**record, 'immutable_record_path': str(attempt/'build-record.json'),
+                  'immutable_record_sha256': sha(attempt/'build-record.json'),
+                  'build_promotion_eligible': False}
+        if history:
+            try:
+                latest['build_history'] = history.finish(record)
+                latest['build_promotion_eligible'] = latest['build_history']['promotion_eligible']
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                latest['build_history_error'] = str(error)
+            finally:
+                history.close()
+        atomic_json(work/'build-record.json', latest)
+    validate_build_record(latest)
+    print('PASS: ' + args.variant + ' software build; hardware remains BLOCKED', flush=True)
+
+
+def _build_identity(args, revision, tree):
+    """Prerequisite history identity excludes work paths and human labels."""
+    inputs = {}
+    def add(name, path):
+        path = Path(path)
+        inputs[name] = sha(path.resolve()) if path.is_file() else 'MISSING'
+    if args.variant in ('host','host-native-validation'):
+        for name, default in (('CC','cc'),('CXX','c++')):
+            compiler = shutil.which(os.environ.get(name,default))
+            inputs['host-'+name.lower()+'-compiler'] = sha(Path(compiler).resolve()) if compiler else 'MISSING'
+    if args.sdk:
+        sdk = args.sdk.resolve()
+        add('sdk-compiler', sdk/'bin/arm-buildroot-linux-gnueabihf-gcc')
+        add('sdk-ne10', sdk/'arm-buildroot-linux-gnueabihf/sysroot/usr/lib/libNE10.so')
+    if args.codec:
+        codec = args.codec.resolve()
+        host_native = args.variant == 'host-native-validation'
+        add('rade-library', codec/'rade_c/src/librade.so.0.1')
+        opus = codec/('rade_c/build_opus-prefix/src/build_opus' if host_native else 'opus')
+        add('opus-library', opus/'.libs/libopus.a')
+        add('opus-configuration', opus/'config.h')
+        add('samplerate-library', codec/'samplerate/src/libsamplerate.a')
+    if args.codec_fixture:
+        add('codec-fixture', args.codec_fixture)
+    for label, directory in (('control-headers', args.control_headers), ('x6100-prefix', args.x6100_prefix)):
+        if directory:
+            directory = directory.resolve()
+            files = sorted(p for p in directory.rglob('*') if p.is_file())
+            if not files:
+                inputs[label] = 'MISSING'
+            for path in files:
+                add(label+'/'+str(path.relative_to(directory)), path)
+    return {'source_commit': revision, 'source_tree_sha256': tree,
+            'variant': args.variant, 'build_id': args.build_id,
+            'usb_test_enabled': args.usb_test, 'jobs': args.jobs,
+            'control_pin': CONTROL_PIN, 'dependency_inputs_sha256': inputs}
+
+
+def validate_build_record(record, verify_files=True):
+    try:
+        return _validate_build_record(record, verify_files)
+    except (OSError, KeyError, TypeError, AttributeError) as error:
+        raise ValueError('Build evidence is missing or malformed: '+str(error)) from error
+
+
+def _validate_build_record(record, verify_files=True):
+    """Require the sealed current build and every same-config prerequisite attempt."""
+    if (record.get('schema_version') != 2 or record.get('status') != 'PASS' or
+            not record.get('build_promotion_eligible') or record.get('source_changed_during_build')):
+        raise ValueError('Build is failed, incomplete, source-changed or blocked by prerequisite history')
+    identity = record.get('build_identity', {})
+    if any(identity.get(key) != record.get(key) for key in ('source_commit','source_tree_sha256','variant','build_id','usb_test_enabled')):
+        raise ValueError('Build history identity differs from the recorded source/configuration')
+    if record.get('build_history', {}).get('plan') != record.get('build_plan') or record.get('build_plan', {}).get('profile') != 'build':
+        raise ValueError('Build prerequisite plan is missing or inconsistent')
+    derived = {'immutable_record_path','immutable_record_sha256','build_history',
+               'build_promotion_eligible','build_history_error'}
+    bare = {key: value for key, value in record.items() if key not in derived}
+    validate_history(record['build_history'], identity, bare, verify_files=verify_files)
+    if verify_files:
+        path = Path(record['immutable_record_path'])
+        if sha(path) != record.get('immutable_record_sha256') or json.loads(path.read_text()) != bare:
+            raise ValueError('Immutable build record differs from its latest pointer/copy')
+        for entry in [*record.get('logs', {}).values(), *record.get('binaries', {}).values()]:
+            if sha(entry['path']) != entry['sha256']:
+                raise ValueError('Retained build evidence changed: '+entry['path'])
+    return record
+
+
+def _perform_build(args, parser, work, attempt, record, before, tree, revision, host, host_native):
     env = os.environ.copy()
-    options = ['-DCMAKE_BUILD_TYPE=RelWithDebInfo']
+    options = ['-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DFREEDV_SOURCE_COMMIT=' + revision,
+               '-DFREEDV_BUILD_ID=' + args.build_id]
     options += ['-DENABLE_FREEDV_USB_TEST=' + ('ON' if args.usb_test else 'OFF')]
     if host:
         options += ['-DHOST_BUILD=ON', '-DENABLE_FREEDV_DIAGNOSTICS=ON',
@@ -103,7 +219,7 @@ def main():
                 'FREEDV_SAMPLERATE_INCLUDE_DIR': codec / 'sources/libsamplerate-0.2.2/include',
             }
             options += ['-D' + name + '=' + str(path) for name, path in dependencies.items()]
-            options += ['-DFREEDV_BUILD_ID=' + args.build_id, '-DFREEDV_CONTROL_ID=' + CONTROL_PIN]
+            options += ['-DFREEDV_CONTROL_ID=' + CONTROL_PIN]
             record['codec_inputs'] = {name: {'path': str(path), 'sha256': sha(path)}
                                      for name, path in dependencies.items() if path.is_file()}
             record['opus_configuration_sha256'] = sha(opus / 'config.h')
@@ -117,11 +233,11 @@ def main():
             env.pop(name, None)
         env['PATH'] = str(sdk / 'bin') + os.pathsep + env['PATH']
         compiler = sdk / 'bin/arm-buildroot-linux-gnueabihf-gcc'
-        sysroot = Path(subprocess.check_output([str(compiler), '-print-sysroot'], text=True).strip())
+        sysroot = Path(subprocess.check_output([str(compiler), '-print-sysroot'], text=True, timeout=10).strip())
         if sdk not in sysroot.resolve().parents:
             parser.error('compiler sysroot must belong to the supplied SDK')
         record['compiler'] = {'path': str(compiler), 'sha256': sha(compiler.resolve()),
-                              'version': subprocess.check_output([str(compiler), '--version'], text=True).splitlines()[0],
+                              'version': subprocess.check_output([str(compiler), '--version'], text=True, timeout=10).splitlines()[0],
                               'sysroot': str(sysroot)}
         options += ['-DHOST_BUILD=OFF', '-DCMAKE_TOOLCHAIN_FILE=' + str(sdk / 'share/buildroot/toolchainfile.cmake'),
                     '-DHW_BACKEND=' + ('x6100' if args.variant == 'x6100' else 'x6200'),
@@ -143,7 +259,7 @@ def main():
                 'FREEDV_NE10_LIBRARY': sysroot / 'usr/lib/libNE10.so',
             }
             options += ['-D' + name + '=' + str(path) for name, path in dependencies.items()]
-            options += ['-DFREEDV_BUILD_ID=' + args.build_id, '-DFREEDV_CONTROL_ID=' + CONTROL_PIN]
+            options += ['-DFREEDV_CONTROL_ID=' + CONTROL_PIN]
             record['codec_inputs'] = {name: {'path': str(path), 'sha256': sha(path)}
                                       for name, path in dependencies.items() if path.is_file()}
             record['opus_configuration_sha256'] = sha(codec / 'opus/config.h')
@@ -154,94 +270,108 @@ def main():
                         '-DCMAKE_CXX_FLAGS=' + flags + ' -I' + str(prefix / 'include'),
                         '-DCMAKE_EXE_LINKER_FLAGS=-L' + str(prefix / 'lib')]
 
-    def run(command, log_name):
+    def run(command, log_name, timeout=3600):
         command = list(map(str, command))
         print('+ ' + ' '.join(command), flush=True)
         record['commands'].append(command)
-        with (work / log_name).open('w') as log:
-            subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+        log_path = attempt / log_name
+        try:
+            outcome = run_bounded(command, log_path, timeout, cwd=ROOT, env=env, terminate_grace=12.0)
+            record['command_results'].append(outcome)
+        except BaseException as error:
+            record['command_results'].append({'command':command,'error':str(error),'interrupted':True})
+            raise
+        finally:
+            if log_path.exists(): record['logs'][log_name] = {'path': str(log_path), 'sha256': sha(log_path)}
+        if outcome['timed_out'] or outcome['exit_code'] != 0:
+            raise subprocess.CalledProcessError(outcome['exit_code'] or 124, command)
 
-    try:
-        run(['cmake', '-S', ROOT, '-B', work / 'build', '-G', 'Ninja', *options], 'configure.log')
-        targets = [] if args.variant == 'host' else ['--target', 'x6100_gui']
-        if host_native:
-            targets += ['params_sqlite', 'freedv_voice_engine_test', 'freedv_native_stream_test',
-                        'freedv_native_stream_fixture_test', 'freedv_native_audio_codec_adapter_test',
-                        'freedv_voice_runner']
-            if args.usb_test: targets += ['freedv_usb_audio_test']
-        if args.variant == 'x6200-diagnostic':
-            targets += ['freedv_voice_runner', 'freedv_voice_pulse_probe']
-        run(['cmake', '--build', work / 'build', *targets, '-j', args.jobs], 'build.log')
-        if args.variant == 'host':
-            run(['ctest', '--test-dir', work / 'build', '-R', '^freedv_', '--no-tests=error',
-                 '--output-on-failure', '--output-junit', work / 'ctest.xml'], 'ctest.log')
-            tests = list(ET.parse(work / 'ctest.xml').getroot().iter('testcase'))
-            incomplete = [case.attrib['name'] for case in tests
-                          if any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error'))]
-            if incomplete:
-                raise ValueError('host tests were skipped or failed: ' + ', '.join(incomplete))
-            record['host_tests'] = [case.attrib['name'] for case in tests]
-            if not record['host_tests']:
-                raise ValueError('CTest executed no FreeDV tests')
-        if host_native:
-            checks = {
-                'voice-engine': [work / 'build/freedv_voice_engine_test', '--turns', '3'],
-                'native-stream': [work / 'build/freedv_native_stream_test', '--unpaced'],
-                'stream-fixture': [work / 'build/freedv_native_stream_fixture_test', args.codec_fixture.resolve()],
-                'codec-adapter': [work / 'build/freedv_native_audio_codec_adapter_test', args.codec_fixture.resolve()],
-            }
-            record['codec_checks'] = {}
-            for name, command in checks.items():
-                run(command, name + '.log')
-                record['codec_checks'][name] = {'status': 'PASS', 'log_sha256': sha(work / (name + '.log'))}
-            if args.usb_test:
-                from array import array
-                pcm=array('h',args.codec_fixture.read_bytes())
-                converted=array('h')
-                for i,x in enumerate(pcm):
-                    following=pcm[i+1] if i+1<len(pcm) else x
-                    converted.extend(round(x+(following-x)*fraction/6) for fraction in range(6))
-                fixture=work/'usb-reference-48k.raw';fixture.write_bytes(converted.tobytes())
-                env['USB_RF_REFERENCE_RUNNER']=str(work/'build/freedv_voice_runner')
-                matrix_dir=work/'usb-matrix'
-                if matrix_dir.exists():
-                    # Logs from earlier attempts remain available for review.
-                    import time
-                    matrix_dir.rename(work/('usb-matrix-previous-'+str(time.time_ns())))
+    run(['cmake', '-S', ROOT, '-B', work / 'build', '-G', 'Ninja', *options], 'configure.log')
+    targets = [] if args.variant == 'host' else ['--target', 'x6100_gui']
+    if host_native:
+        targets += ['params_sqlite', 'freedv_voice_engine_test', 'freedv_native_stream_test',
+                    'freedv_native_stream_fixture_test', 'freedv_native_audio_codec_adapter_test',
+                    'freedv_voice_runner']
+        if args.usb_test: targets += ['freedv_usb_audio_test']
+    if args.variant == 'x6200-diagnostic':
+        targets += ['freedv_voice_runner', 'freedv_voice_pulse_probe']
+    run(['cmake', '--build', work / 'build', *targets, '-j', args.jobs], 'build.log')
+    gui = work / 'build/src/x6100_gui'
+    archive = attempt / 'binaries'; archive.mkdir()
+    def retained(binary):
+        target = archive / binary.name
+        shutil.copy2(binary, target); target.chmod(0o555)
+        return {'path': str(target), 'sha256': sha(target)}
+    record['binaries'] = {'gui': retained(gui)}
+    if host_native:
+        for name in ('freedv_voice_runner', 'freedv_usb_audio_test', 'freedv_voice_engine_test',
+                     'freedv_native_stream_test', 'freedv_native_stream_fixture_test', 'freedv_native_audio_codec_adapter_test'):
+            if (work/'build'/name).is_file(): record['binaries'][name] = retained(work/'build'/name)
+    if args.variant == 'x6200-diagnostic':
+        for name in ('freedv_voice_runner', 'freedv_voice_pulse_probe'):
+            binary = work / 'build' / name
+            record['binaries'][name] = retained(binary)
+    if args.variant == 'host':
+        run(['ctest', '--test-dir', work / 'build', '-R', '^freedv_', '--no-tests=error',
+             '--output-on-failure', '--output-junit', attempt / 'ctest.xml'], 'ctest.log')
+        tests = list(ET.parse(attempt / 'ctest.xml').getroot().iter('testcase'))
+        incomplete = [case.attrib['name'] for case in tests
+                      if any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error'))]
+        if incomplete:
+            raise ValueError('host tests were skipped or failed: ' + ', '.join(incomplete))
+        record['host_tests'] = [case.attrib['name'] for case in tests]
+        if not record['host_tests']:
+            raise ValueError('CTest executed no FreeDV tests')
+    if host_native:
+        checks = {
+            'voice-engine': [work / 'build/freedv_voice_engine_test', '--turns', '3'],
+            'native-stream': [work / 'build/freedv_native_stream_test', '--unpaced'],
+            'stream-fixture': [work / 'build/freedv_native_stream_fixture_test', args.codec_fixture.resolve()],
+            'codec-adapter': [work / 'build/freedv_native_audio_codec_adapter_test', args.codec_fixture.resolve()],
+        }
+        record['codec_checks'] = {}
+        for name, command in checks.items():
+            run(command, name + '.log')
+            record['codec_checks'][name] = {'status': 'PASS', 'log_sha256': sha(attempt / (name + '.log'))}
+        if args.usb_test:
+            from array import array
+            pcm=array('h',args.codec_fixture.read_bytes())
+            converted=array('h')
+            for i,x in enumerate(pcm):
+                following=pcm[i+1] if i+1<len(pcm) else x
+                converted.extend(round(x+(following-x)*fraction/6) for fraction in range(6))
+            fixture=attempt/'usb-reference-48k.raw';fixture.write_bytes(converted.tobytes());fixture.chmod(0o444)
+            env['USB_RF_REFERENCE_RUNNER']=record['binaries']['freedv_voice_runner']['path']
+            matrix_dir=attempt/'usb-matrix'
+            matrix_record=matrix_dir/'matrix-result.json'
+            try:
                 run([sys.executable,ROOT/'tools/freedv/test_usb_audio_matrix.py',
-                     work/'build/freedv_usb_audio_test',codec/'sources/rade_c/input_sample.wav',fixture,
-                     '--output',matrix_dir,'--runner',work/'build/freedv_voice_runner'], 'usb-matrix.log')
-                matrix_record=matrix_dir/'matrix-result.json'
-                matrix=json.loads(matrix_record.read_text())
-                if matrix.get('status')!='PASS' or not matrix.get('cases') or any(
-                        case.get('status')!='PASS' for case in matrix['cases'].values()):
-                    raise ValueError('USB startup matrix has missing, skipped or failed cases')
-                record['usb_matrix']=matrix
-                record['codec_checks']['usb-matrix']={'status':'PASS',
-                    'log_sha256':sha(work/'usb-matrix.log'),
-                    'record_path':str(matrix_record),'record_sha256':sha(matrix_record)}
-            record['scope'] = 'Full host native GUI compilation and targeted real-codec correctness; no physical audio, RF or timing qualification'
-        gui = work / 'build/src/x6100_gui'
-        record['binaries'] = {'gui': {'path': str(gui), 'sha256': sha(gui)}}
-        if args.variant == 'x6200-diagnostic':
-            for name in ('freedv_voice_runner', 'freedv_voice_pulse_probe'):
-                binary = work / 'build' / name
-                record['binaries'][name] = {'path': str(binary), 'sha256': sha(binary)}
-        if not host:
-            run([sdk / 'bin/arm-buildroot-linux-gnueabihf-readelf', '-h', '-A', '-d', gui], 'elf.txt')
-        after, _ = source_snapshot()
-        record['source_changed_during_build'] = sorted(name for name in set(before) | set(after)
-                                                      if before.get(name) != after.get(name))
-        if record['source_changed_during_build']:
-            raise ValueError('source changed during build; repeat after edits finish')
-        record['status'] = 'PASS'
-    except (subprocess.CalledProcessError, ValueError) as error:
-        record['status'] = 'FAIL'
-        record['error'] = str(error)
-        raise
-    finally:
-        (work / 'build-record.json').write_text(json.dumps(record, indent=2) + '\n')
-    print('PASS: ' + args.variant + ' software build; hardware remains BLOCKED', flush=True)
+                     record['binaries']['freedv_usb_audio_test']['path'],codec/'sources/rade_c/input_sample.wav',fixture,
+                     '--output',matrix_dir,'--runner',record['binaries']['freedv_voice_runner']['path'],
+                     '--profile','qualification','--campaign-root',work/'usb-campaigns',
+                     '--rade-library',codec/'rade_c/src/librade.so.0.1',
+                     '--source-commit',revision,'--source-tree-sha256',tree,
+                     '--build-id',args.build_id], 'usb-matrix.log', timeout=3600)
+            finally:
+                if matrix_record.exists():
+                    record['usb_matrix']=json.loads(matrix_record.read_text())
+            matrix=record['usb_matrix']
+            from test_usb_audio_integration import CASES
+            validate_campaign(matrix, expected_cases=CASES)
+            record['codec_checks']['usb-matrix']={'status':'PASS',
+                'log_sha256':sha(attempt/'usb-matrix.log'),
+                'record_path':str(matrix_record),'record_sha256':sha(matrix_record)}
+        record['scope'] = 'Full host native GUI compilation and targeted real-codec correctness; no physical audio, RF or timing qualification'
+    if not host:
+        run([sdk / 'bin/arm-buildroot-linux-gnueabihf-readelf', '-h', '-A', '-d', gui], 'elf.txt')
+    after, _ = source_snapshot()
+    record['source_changed_during_build'] = sorted(name for name in set(before) | set(after)
+                                                  if before.get(name) != after.get(name))
+    if subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True,timeout=10).strip() != revision:
+        record['source_changed_during_build'].append('git HEAD')
+    if record['source_changed_during_build']:
+        raise ValueError('source changed during build; repeat after edits finish')
+    record['status'] = 'PASS'
 
 
 if __name__ == '__main__':

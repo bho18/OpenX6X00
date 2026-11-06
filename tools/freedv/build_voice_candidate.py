@@ -13,6 +13,9 @@ import tempfile
 from build_native_images import current_overlay
 from native_image import require_arm_elf,sha
 from prepare_native_image import prepare
+from usb_test_campaign import validate_campaign
+from test_usb_audio_integration import CASES as USB_CONTROLLER_CASES
+from build_native_development import validate_build_record
 
 ROOT=Path(__file__).resolve().parents[2]
 BASELINE_SHA='a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab'
@@ -21,22 +24,45 @@ USB_REQUIRED_COVERAGE = {
     'rf_disabled', 'retained_release', 'stop_priority', 'device_loss',
     'sink_decode', 'hardware_rates', 'unsynchronized_rx',
     'capture_reacquisition', 'preparation_sample_accounting',
+    'independent_telemetry', 'phase_targeting', 'per_turn_sink',
+    'many_turns', 'session_reopen', 'cold_idle', 'drain_rf_ownership',
+    'full_lifecycle', 'source_continuity', 'collector_contract',
 }
 
 
 def verify_usb_integration(verification):
-    """A legacy virtual-audio PASS cannot qualify the new startup contract."""
+    """Only the complete, source-bound repeated campaign can promote an image."""
     evidence = verification.get('usb_integration', {})
     matrix = evidence.get('matrix', {})
-    if (evidence.get('status') != 'PASS' or evidence.get('contract_version') != 2 or
+    if (evidence.get('status') != 'PASS' or evidence.get('contract_version') != 3 or
             evidence.get('evidence_cli', {}).get('status') != 'PASS' or
             matrix.get('status') != 'PASS' or
             matrix.get('complete_matrix') is not True or matrix.get('skipped') != [] or
             not USB_REQUIRED_COVERAGE <= set(matrix.get('coverage', []))):
-        raise ValueError('USB RF image requires startup-contract v2 integration and actual CLI checks')
+        raise ValueError('USB RF image requires session-contract v3 qualification and actual CLI checks')
     cases = matrix.get('cases', {})
     if not cases or any(case.get('status') != 'PASS' for case in cases.values()):
         raise ValueError('USB integration cases must all execute and pass')
+    validate_campaign(matrix, expected_cases=USB_CONTROLLER_CASES)
+    for field in ('source_commit', 'source_tree_sha256', 'build_id'):
+        if not verification.get(field) or matrix.get(field) != verification[field]:
+            raise ValueError('USB campaign does not match candidate ' + field)
+
+
+def verify_usb_builds(verification):
+    """A latest PASS cannot hide a failed prerequisite build or changed inputs."""
+    expected = {'host':'host', 'host-native':'host-native-validation',
+                'arm':'x6200-diagnostic', 'normal':'x6200-normal', 'x6100':'x6100'}
+    records = verification.get('build_records', {})
+    if set(records) != set(expected):
+        raise ValueError('USB candidate requires all five sealed prerequisite build records')
+    for name, variant in expected.items():
+        record = validate_build_record(records[name])
+        if record.get('variant') != variant:
+            raise ValueError('Wrong prerequisite build variant: ' + name)
+        for field in ('source_commit', 'source_tree_sha256', 'build_id'):
+            if record.get(field) != verification.get(field):
+                raise ValueError('Prerequisite build does not match candidate ' + field + ': ' + name)
 
 
 def verify_source_manifest(repository, files, tree_sha256):
@@ -106,6 +132,7 @@ def main():
     verification=json.loads(a.verification.read_text())
     if a.usb_rf:
         verify_usb_integration(verification)
+        verify_usb_builds(verification)
     if verification.get('status')!='PASS' or verification.get('source_commit')!=revision:
         raise ValueError('passing verification for this exact source revision is required')
     # Route and collection corrections need relevant regression/build checks.
@@ -142,6 +169,7 @@ def main():
     if not (package/'fixtures/rade-continuous.raw').is_file():raise ValueError('continuous diagnostic fixture missing')
     model=json.loads((ROOT/'tools/freedv/qualification/reference-sources.json').read_text())['model']['sha256']
     record={'firmware_commit':revision,'source_tree_sha256':verification['source_tree_sha256'],
+            'build_id':verification.get('build_id','unqualified-development'),
             'software_gates_passed':True,'hardware_qualified':False,'ready_for_guided_hardware_tests':False,
             'candidate_kind':'report-informed native half-duplex development spare-card image',
             'hardware_status':'BLOCKED',
@@ -157,8 +185,8 @@ def main():
         record.update(candidate_kind='USB headset / panel PTT RF development image',
                       hardware_status='RF_DISABLED_EVALUATION_REQUIRED',ready_for_guided_hardware_tests=True,
                       usb_rf_test_ready=True,native_mode_status='BLOCKED: unchanged native MCU contract guard',
-                      validation_scope='Startup-contract v2 software checks passed; real-device RF-disabled evaluation precedes local RF arming and the SDR trial',
-                      usb_startup_contract_version=2,on_device_readiness_required=True,
+                      validation_scope='Session-contract v3 repeated software campaign passed; real-device cold-idle evaluation precedes local RF arming and the SDR trial',
+                      usb_startup_contract_version=3,on_device_readiness_required=True,
                       rf_arm_policy='Local only, after the shared-core RF-disabled audio evaluation passes; panel PTT only; requested 1 W',
                       stock_baseband_lease_available=False,physical_rf_off_timing='UNMEASURED')
     if a.pulse_probe:record['pulse_probe_sha256']=sha(a.pulse_probe)

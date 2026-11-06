@@ -21,10 +21,10 @@ typedef struct {
     void (*inhibit)(void *);
 } fd_usb_control;
 typedef struct {
-    const char *source,*sink,*radio_source,*radio_sink,*trace_prefix;
+    const char *source,*sink,*radio_source,*radio_sink,*trace_prefix,*incident_dir;
     fd_usb_control control;
     bool rf_disabled;
-    unsigned qualification_turns,qualification_control_delay_ms;
+    unsigned qualification_turns,qualification_control_delay_ms,qualification_idle_ms,trace_pcm_seconds;
 } fd_usb_config;
 typedef struct fd_usb_audio fd_usb_audio;
 typedef struct {
@@ -32,7 +32,8 @@ typedef struct {
     unsigned input_queue,output_queue,holes,underflows,gaps;
     bool armed,pressed,rf_valid,rf_tx,stopped;
     bool rf_disabled,qualification_complete,qualification_running,qualification_loopback,rf_clear_confirmed;
-    unsigned qualification_target,qualification_turns,mic_rate_hz,rx_rate_hz;
+    unsigned qualification_target,qualification_turns,mic_rate_hz,rx_rate_hz,qualification_idle_remaining_ms;
+    uint64_t submitted_mic,rendered_modem,modem_tap_samples;
     uint64_t mic_rate_window_ms,rx_rate_window_ms;
     unsigned first_fault_code,first_fault_pa_error;
     uint64_t first_fault_operation_ms,first_fault_mic_age_ms,first_fault_rx_age_ms,mic_age_ms,rx_age_ms;

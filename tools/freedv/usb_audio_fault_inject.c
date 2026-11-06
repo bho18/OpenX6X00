@@ -23,6 +23,10 @@ typedef struct {
 } delayed_operation;
 static delayed_operation pending;
 static unsigned matches;
+static atomic_int current_phase;
+static int phase_code(const char *name){return !strcmp(name,"tx")?1:!strcmp(name,"rx-return")?2:0;}
+void usb_test_operation_phase(const char *name){atomic_store(&current_phase,phase_code(name));}
+static const char *phase_name(void){int phase=atomic_load(&current_phase);return phase==1?"tx":phase==2?"rx-return":"initial-rx";}
 static int hole_delivered;
 static atomic_int cold_started,cold_recovered;
 static atomic_ullong cold_ack,cold_resume;
@@ -41,6 +45,8 @@ static int selected(pa_stream *stream,const char *action) {
     const char *device=pa_stream_get_device_name(stream);
     if(!mode || !device || strcmp(device,setting("USB_TEST_PA_DEVICE","radio_sink_fixture")) ||
        strcmp(action,setting("USB_TEST_PA_ACTION","flush")))return 0;
+    const char *phase=getenv("USB_TEST_PA_PHASE");
+    if(phase&&strcmp(phase,phase_name()))return 0;
     ++matches;
     return matches==(unsigned)strtoul(setting("USB_TEST_PA_MATCH","1"),NULL,10);
 }
@@ -55,8 +61,8 @@ static void completed(pa_stream *stream,int success,void *unused) {
 static void begin(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata,const char *action) {
     if(getenv("USB_TEST_COLD_CAPTURE"))atomic_store(&cold_started,1);
     pending=(delayed_operation){.stream=stream,.callback=callback,.userdata=userdata,.issued=now_ms()};
-    fprintf(stderr,"INJECT PA %s mode=%s device=%s delay=%sms\n",action,
-            setting("USB_TEST_PA_MODE",""),pa_stream_get_device_name(stream),setting("USB_TEST_PA_DELAY_MS","650"));
+    fprintf(stderr,"INJECT PA %s mode=%s device=%s delay=%sms phase=%s\n",action,
+            setting("USB_TEST_PA_MODE",""),pa_stream_get_device_name(stream),setting("USB_TEST_PA_DELAY_MS","650"),phase_name());
 }
 pa_operation *pa_stream_flush(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata) {
     pa_operation *(*real)(pa_stream*,pa_stream_success_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_flush");
@@ -109,7 +115,7 @@ int pa_stream_peek(pa_stream *stream,const void **data,size_t *bytes) {
     return result;
 }
 
-typedef struct {pa_stream *stream;pa_stream_request_cb_t callback;void *userdata;int reported;} read_registration;
+typedef struct {pa_stream *stream;pa_stream_request_cb_t callback;void *userdata;int reported;unsigned long long stale_started;} read_registration;
 static read_registration readers[8];
 static void deliver_read(pa_stream *stream,size_t bytes,void *userdata) {
     read_registration *registration=userdata;
@@ -117,13 +123,18 @@ static void deliver_read(pa_stream *stream,size_t bytes,void *userdata) {
     const char *device=pa_stream_get_device_name(stream);
     bool cold=atomic_load(&cold_started)&&(getenv("USB_TEST_COLD_NEVER")||
         !atomic_load(&cold_resume)||now_ms()<atomic_load(&cold_resume));
-    if(cold||(target && trigger && device && !strcmp(target,device) && access(trigger,F_OK)==0)) {
+    bool target_stale=target&&trigger&&device&&!strcmp(target,device)&&access(trigger,F_OK)==0;
+    unsigned long long now=now_ms(),duration=strtoull(setting("USB_TEST_STALE_DURATION_MS","0"),NULL,10);
+    if(target_stale&&!registration->stale_started)registration->stale_started=now;
+    bool dropping=target_stale&&(!duration||now-registration->stale_started<duration);
+    if(cold||dropping) {
         if(!registration->reported){registration->reported=1;fprintf(stderr,"INJECT callback starvation device=%s\n",device);}
         int (*peek)(pa_stream*,const void**,size_t*)=dlsym(RTLD_NEXT,"pa_stream_peek");
         int (*drop)(pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_drop");
         for(unsigned i=0;i<64;++i){const void *data;size_t count;if(peek(stream,&data,&count)<0 || !count)break;if(drop(stream)<0)break;}
         return;
     }
+    if(duration&&target_stale&&!dropping&&registration->reported==1){registration->reported=2;fprintf(stderr,"INJECT valid capture resumed device=%s omitted_ms=%llu no-hole=1\n",device,now-registration->stale_started);}
     if(registration->callback)registration->callback(stream,bytes,registration->userdata);
     /* Publish recovery after the controller has consumed the real callback. */
     if(atomic_load(&cold_started)&&device){
@@ -133,7 +144,7 @@ static void deliver_read(pa_stream *stream,size_t bytes,void *userdata) {
 }
 void pa_stream_set_read_callback(pa_stream *stream,pa_stream_request_cb_t callback,void *userdata) {
     void (*real)(pa_stream*,pa_stream_request_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_set_read_callback");
-    if(!callback){real(stream,NULL,userdata);return;}
+    if(!callback){for(unsigned i=0;i<8;++i)if(readers[i].stream==stream)memset(&readers[i],0,sizeof(readers[i]));real(stream,NULL,userdata);return;}
     read_registration *registration=NULL;
     for(unsigned i=0;i<8;++i)if(readers[i].stream==stream){registration=&readers[i];break;}
     if(!registration)for(unsigned i=0;i<8;++i)if(!readers[i].stream){registration=&readers[i];break;}

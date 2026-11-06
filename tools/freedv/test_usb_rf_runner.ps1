@@ -3,7 +3,7 @@ $ErrorActionPreference='Stop'
 $root=Join-Path ([IO.Path]::GetTempPath()) ('usb rf evidence runner '+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-UsbRfEvidence.ps1') -Destination $root
-@{files=@{}} | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $root 'rf-test-manifest.json')
+@{files=@{};usb_startup_contract_version=3;build_id='fixture-build';firmware_commit=('e'*40)} | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $root 'rf-test-manifest.json')
 $global:usbRfEvidenceCase='success'
 $global:usbRfEvidenceCommands=@()
 function global:Read-Host {return 'Mock listening notes; no audio heard or radio contacted'}
@@ -23,18 +23,27 @@ function global:scp {
   New-Item -ItemType Directory -Path $result | Out-Null
   $status='COLLECTED_NO_SDR_RECORDING'
   if($global:usbRfEvidenceCase -in @('helper_failure','blocked_zero_exit')){$status='BLOCKED'}
-  if($global:usbRfEvidenceCase -in @('qualification','invalid_qualification')){$status='READY_FOR_RF_TEST'}
+  if($global:usbRfEvidenceCase -in @('qualification','invalid_qualification','legacy_qualification','missing_completion','mismatched_identity','truncated_history','persistence_failure')){$status='READY_FOR_RF_TEST'}
   $rfTested=($global:usbRfEvidenceCase -eq 'invalid_qualification')
   $guiStatus='STOPPED';if($status -eq 'BLOCKED'){$guiStatus='BLOCKED'}
+  $identity=@{session_id='freedv-usb-fixture';build_id='fixture-build';source_commit=('e'*40)}
+  $completion=@{session_id='freedv-usb-fixture';build_id='fixture-build';source_commit=('e'*40);terminal=$true;trace_complete=$true;trace_history_truncated=$false;storage_errno=0}
+  $version=3;$sessionStatus='COMPLETE'
+  if($global:usbRfEvidenceCase -eq 'legacy_qualification'){$version=2;$sessionStatus='HISTORICAL_ONLY'}
+  if($global:usbRfEvidenceCase -eq 'missing_completion'){$completion=$null}
+  if($global:usbRfEvidenceCase -eq 'mismatched_identity'){$identity.source_commit=('f'*40)}
+  if($global:usbRfEvidenceCase -eq 'truncated_history'){$completion.trace_history_truncated=$true}
+  if($global:usbRfEvidenceCase -eq 'persistence_failure'){$completion.storage_errno=5}
   @{schema='x6200.usb-rf-evidence.v1';status=$status;rf_key_commands_sent=$false;
+    usb_startup_contract_version=$version;session_identity=$identity;runtime_completion=$completion;
     reason='Fixture microphone flush timeout';primary_failure_stage='gui';rf_disabled=$true;rf_tested=$rfTested;
-    stages=@{collection=@{status='PASS'};gui=@{status=$guiStatus};qualification=@{status='PASS'}}} |
-   ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $result 'rf-evidence.json')
+    stages=@{collection=@{status='PASS'};gui=@{status=$guiStatus};qualification=@{status='PASS'};session=@{status=$sessionStatus}}} |
+   ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $result 'rf-evidence.json')
   'partial recording placeholder' | Set-Content -LiteralPath (Join-Path $result 'microphone.raw')
  }
 }
 try {
- foreach($case in @('success','helper_failure','blocked_zero_exit','copy_failure','qualification','invalid_qualification')){
+ foreach($case in @('success','helper_failure','blocked_zero_exit','copy_failure','qualification','invalid_qualification','legacy_qualification','missing_completion','mismatched_identity','truncated_history','persistence_failure')){
   $global:usbRfEvidenceCase=$case
   $before=@(Get-ChildItem -LiteralPath $root -Filter '*.zip').Count
   $rejected=$false;$message=''

@@ -117,7 +117,8 @@ static void service(lv_timer_t *unused){
         lv_label_set_text(notice_label,"Preparing transition checks. RF remains disabled; wait for Run transition check.");
     }else if(s.rf_disabled){
         if(s.qualification_complete)lv_label_set_text(notice_label,"Transition check passed. RF remains disabled. Select Enable TX locally for the SDR test.");
-        else if(s.qualification_running)lv_label_set_text(notice_label,"RF remains OFF. Automatic direction/control-delay checks are running; leave PTT released. No speaking is required.");
+        else if(s.qualification_running&&s.qualification_idle_remaining_ms)lv_label_set_text_fmt(notice_label,"RF remains OFF. Waiting for audio idle: %u seconds. Leave PTT released.",(s.qualification_idle_remaining_ms+999)/1000);
+        else if(s.qualification_running)lv_label_set_text(notice_label,"RF remains OFF. Direction checks are running; leave PTT released. No speaking is required.");
         else lv_label_set_text(notice_label,"RF is disabled. Select Run transition check and leave every PTT released. No speaking is required.");
     }else if(s.stopped && !s.rf_clear_confirmed){
         lv_label_set_text(notice_label,"Audio stopped; RF clear is not confirmed. Keep the dummy load connected and select Stop.");
@@ -144,7 +145,7 @@ void freedv_usb_open(void){
     main_quiet=claimed;bool quiet_ok=claimed && audio_freedv_main_quiet(true);
     if(claimed && quiet_ok){
         struct timespec t;clock_gettime(CLOCK_REALTIME,&t);snprintf(trace_prefix,sizeof(trace_prefix),"/tmp/freedv-usb-%lld-%09ld",(long long)t.tv_sec,t.tv_nsec);
-        fd_usb_config c={.radio_source=BOARD_PA_SOURCE,.radio_sink=BOARD_PA_SINK,.trace_prefix=trace_prefix,.control={.observe=radio_usb_observe,.key=radio_usb_key,.clear=radio_usb_clear,.inhibit=radio_usb_inhibit},.rf_disabled=true,.qualification_turns=3,.qualification_control_delay_ms=450};
+        fd_usb_config c={.radio_source=BOARD_PA_SOURCE,.radio_sink=BOARD_PA_SINK,.trace_prefix=trace_prefix,.control={.observe=radio_usb_observe,.key=radio_usb_key,.clear=radio_usb_clear,.inhibit=radio_usb_inhibit},.rf_disabled=true,.qualification_turns=3,.qualification_control_delay_ms=450,.qualification_idle_ms=20000,.incident_dir=BOARD_DATA "/freedv-usb-incidents"};
         fd_usb_audio *created=fd_usb_audio_open(&c);
         pthread_mutex_lock(&pointer_mutex);audio=created;if(audio && atomic_load(&abort_pending))fd_usb_audio_stop(audio);pthread_mutex_unlock(&pointer_mutex);
     }

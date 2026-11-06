@@ -6,6 +6,9 @@ remains blocked. This USB headset/panel-PTT mode first runs an automatic RF-disa
 check, then offers a separate local Enable TX action for the SDR campaign.
 The earlier successful recording, codec and headset playback results remain
 accepted; there is no new basic speech-recording or listening round.
+The [qualification strategy](usb-test-strategy.md) defines the software,
+lifecycle, radio-transition and RF gates and how failed attempts remain in the
+record. This guide is the short operator procedure for the radio stages.
 
 The RF test requests 1 W and retains a 20-second software limit per press.
 Requested power is not calibrated output power, and Linux TX clearing is not an
@@ -40,9 +43,13 @@ normal Exit.
    preparation to finish. The display must say **RF disabled** and actual radio
    **RX**. Leave every PTT released.
 2. Select **Run transition check** locally. Leave the headset connected and
-   all PTT released while the three automatic direction/control-delay cases
-   run. **No speaking or listening task is required.** This specifically checks
-   the control/audio interaction that failed in the last RF attempts.
+   all PTT released through the initial 20-second idle period and the three
+   automatic direction/control-delay turns. **No speaking or listening task is
+   required.** This specifically checks
+   the control/audio interaction that failed in the last RF attempts. The
+   idle/short-turn sequence is a transition screen; it does not establish
+   session reopen behavior, physical endpoint suspension or sustained operating
+   margin. Those claims need their separately declared campaign results.
 3. The same retained codec and four real streams are serviced through simulated
    turns and injected control delays while the real radio remains RX. The real
    MODEM-on/key operation is not called, and the radio adapter's independent TX
@@ -82,15 +89,23 @@ after a fault.
    RF-off instrumentation.
 4. Stop the SDR recording a few seconds after RF ends. Confirm the SDR was not
    saturated or muted and save the complete 1..30 s PCM16 audio WAV.
-5. Optional after normal release worked, make a separate short transmission on
+5. After normal release worked, make a separate short transmission on
    the dummy load and select Stop while PTT remains held, then release PTT.
    RF should end and the mode must stay stopped without rekeying. Keep this
    interrupted burst out of the WAV used to judge the complete first phrase.
+   Record this outcome separately; a normal-release result does not also
+   qualify Stop while held.
 6. Select **Exit**, release all PTT, and wait for ordinary radio control to
    return. Ownership is retained until asynchronous work has stopped,
    restoration was sent, a newer actual RX packet arrived and panel PTT is
    released. A stopped label alone must not be treated as confirmed RF clear.
-   Save evidence before rebooting because traces are under `/tmp`.
+   Save evidence before a normal reboot because detailed traces/audio are under
+   `/tmp`. Bounded incident metadata is also retained on the SD card. If
+   persistent TX required power-off, report that recovery; collect the surviving
+   metadata afterward. Missing trace/audio leaves the trial blocked. Do not
+   describe it as passed or silently replace it with a retry. Controller
+   completion metadata covers audio/controller teardown; confirm settings
+   restoration and RF cessation through the hardware-trial observations.
 
 ## Collect and decode evidence
 

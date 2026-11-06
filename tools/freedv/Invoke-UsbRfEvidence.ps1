@@ -51,6 +51,23 @@ try {
   if($stage.Value.status -eq 'BLOCKED'){throw "Report status conflicts with blocked stage $($stage.Name); return the ZIP for diagnosis"}
  }}
  if($testExit){throw "Helper exited $testExit despite a non-blocked report; return the ZIP for diagnosis"}
+ if($manifest.usb_startup_contract_version -eq 3){
+  if($report.usb_startup_contract_version -ne 3 -or $report.stages.session.status -ne 'COMPLETE'){
+   throw 'Current kit requires a completed v3 runtime session; legacy or partial evidence cannot be accepted.'
+  }
+  $identity=$report.session_identity;$completion=$report.runtime_completion
+  if(!$identity -or !$completion -or $identity.session_id -notmatch '^freedv-usb-[a-zA-Z0-9_-]{1,160}$' -or
+     $identity.build_id -ne $manifest.build_id -or $identity.source_commit -ne $manifest.firmware_commit -or
+     $completion.session_id -ne $identity.session_id -or $completion.build_id -ne $identity.build_id -or
+     $completion.source_commit -ne $identity.source_commit -or
+     $completion.terminal -isnot [bool] -or $completion.terminal -ne $true -or
+     $completion.trace_complete -isnot [bool] -or $completion.trace_complete -ne $true -or
+     $completion.trace_history_truncated -isnot [bool] -or $completion.trace_history_truncated -ne $false -or
+     ($completion.storage_errno -isnot [int] -and $completion.storage_errno -isnot [long]) -or
+     $completion.storage_errno -ne 0){
+   throw 'Runtime session/completion identity or durability evidence conflicts with this image/kit.'
+  }
+ }
  if($report.status -eq 'READY_FOR_RF_TEST'){
   if($report.rf_disabled -ne $true -or $report.rf_tested -ne $false -or $report.stages.qualification.status -ne 'PASS'){
    throw 'Invalid RF-disabled qualification claim'

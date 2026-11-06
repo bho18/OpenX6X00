@@ -13,15 +13,45 @@ from native_image import ExtImage, extract_root, replace_root, root_partition, s
 from fetch_native_baseline import unpack_sdk
 from verify_native_abi import same_sdk_build
 from prepare_native_image import prepare
-from build_voice_candidate import verify_usb_integration, USB_REQUIRED_COVERAGE
+from build_voice_candidate import verify_usb_integration, USB_REQUIRED_COVERAGE, USB_CONTROLLER_CASES
+from usb_test_campaign import Campaign, MATRIX_SCHEMA, sha as campaign_sha
 
 
 class UsbReleaseGateTests(unittest.TestCase):
     def evidence(self):
-        return {'usb_integration': {'status': 'PASS', 'contract_version': 2,
-            'evidence_cli': {'status': 'PASS'},
-            'matrix': {'status': 'PASS', 'complete_matrix': True, 'skipped': [], 'coverage': sorted(USB_REQUIRED_COVERAGE),
-                       'cases': {'executed-case': {'status': 'PASS'}}}}}
+        temporary = tempfile.TemporaryDirectory(prefix='synthetic-usb-gate-')
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        identity = {'source_commit':'a'*40, 'source_tree_sha256':'b'*64, 'build_id':'synthetic-gate-unit'}
+        expected = list(USB_CONTROLLER_CASES)
+        plan = {'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
+                'selected_cases':expected, 'debug_subset':False}
+        executions = [name+'@'+str(repeat+1) for repeat in range(2) for name in expected]
+        cases = {}
+        for name in expected:
+            runs = []
+            for repeat in (1,2):
+                log = root/(name+'-'+str(repeat)+'.log')
+                log.write_text('Synthetic metadata gate fixture; no controller executed.\n')
+                case_record = root/(name+'-'+str(repeat)+'.json')
+                case_record.write_text('{"synthetic":true}\n')
+                runs.append({'status':'PASS', 'repeat':repeat, 'log_path':str(log),
+                             'log_sha256':campaign_sha(log), 'case_record_path':str(case_record),
+                             'case_record_sha256':campaign_sha(case_record)})
+            cases[name] = {'status':'PASS', 'runs':runs}
+        matrix = {'schema':MATRIX_SCHEMA, 'status':'PASS', 'identity':identity, **identity,
+                  'plan':plan, 'complete_matrix':True, 'skipped':[], 'not_executed':[],
+                  'expected_executions':executions, 'executed':executions,
+                  'coverage':sorted(USB_REQUIRED_COVERAGE),
+                  'cases':cases}
+        campaign = Campaign(root/'history',identity,plan,root/'evidence')
+        try:
+            snapshot = campaign.finish(matrix)
+        finally:
+            campaign.close()
+        matrix = {**matrix, 'campaign':snapshot, 'promotion_eligible':snapshot['promotion_eligible']}
+        return {**identity, 'usb_integration': {'status':'PASS', 'contract_version':3,
+                'evidence_cli':{'status':'PASS'}, 'matrix':matrix}}
 
     def test_old_pass_and_incomplete_or_failed_evaluation_cannot_release(self):
         with self.assertRaises(ValueError):
@@ -29,7 +59,7 @@ class UsbReleaseGateTests(unittest.TestCase):
         for mutation in ('coverage', 'case', 'cli'):
             evidence = self.evidence()
             if mutation == 'coverage': evidence['usb_integration']['matrix']['coverage'].remove('rf_disabled')
-            elif mutation == 'case': evidence['usb_integration']['matrix']['cases']['executed-case']['status'] = 'SKIPPED'
+            elif mutation == 'case': evidence['usb_integration']['matrix']['cases'][USB_CONTROLLER_CASES[0]]['status'] = 'SKIPPED'
             else: evidence['usb_integration']['evidence_cli']['status'] = 'FAIL'
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 verify_usb_integration(evidence)
@@ -38,6 +68,29 @@ class UsbReleaseGateTests(unittest.TestCase):
         evidence = self.evidence()
         verify_usb_integration(evidence)
         self.assertNotIn('hardware_qualified', evidence)
+
+
+    def test_single_run_or_debug_campaign_cannot_promote(self):
+        for field, value in (('repetitions',1), ('debug_subset',True), ('profile','regression')):
+            evidence=self.evidence()
+            evidence['usb_integration']['matrix']['plan'][field]=value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                verify_usb_integration(evidence)
+
+    def test_candidate_identity_and_retained_artifacts_must_match(self):
+        for field in ('source_commit','source_tree_sha256','build_id'):
+            evidence=self.evidence();evidence[field]='different'
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                verify_usb_integration(evidence)
+        evidence=self.evidence()
+        run=evidence['usb_integration']['matrix']['cases'][USB_CONTROLLER_CASES[0]]['runs'][0]
+        Path(run['log_path']).write_text('changed after qualification')
+        with self.assertRaises(ValueError):verify_usb_integration(evidence)
+
+    def test_boolean_pass_with_unresolved_history_cannot_promote(self):
+        evidence=self.evidence()
+        evidence['usb_integration']['matrix']['campaign']['blockers']=['prior-failure']
+        with self.assertRaises(ValueError):verify_usb_integration(evidence)
 
 
 class ImageTests(unittest.TestCase):

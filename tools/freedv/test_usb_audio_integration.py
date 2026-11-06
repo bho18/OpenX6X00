@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Actual codec/four-stream integration, physical rates, fake radio transport.
+"""Actual codec/four-stream integration with bounded, supervised fixtures.
 
-No radio is contacted. Each case retains all evidence, including on failure.
-The test-only PA interposer affects only the test executable, not Pulse itself.
+No radio is contacted. Failures retain the original cause and partial evidence.
+Every completed modem turn is checked against its own controller reference.
 """
 import argparse
 import hashlib
@@ -12,10 +12,16 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
-import threading
 import time
+import wave
+
+from usb_test_support import (ProcessSupervisor, completed_turns, require,
+                              run_bounded, save_json, validate_turn_decode, validate_session_identity, modem_waveform_match,
+                              validate_operation_phase, microphone_frame_budget)
+from usb_collector_contract import validate_collector_contract
 
 CASES = (
     'normal', 'rx-signal', 'block-key', 'stop-during-key', 'release-during-key',
@@ -23,10 +29,23 @@ CASES = (
     'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'stale-status', 'disconnect', 'stall', 'tx-stall',
     'rf-disabled', 'qualification-physical-tx', 'qualification-held-ptt',
     'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume',
+    'many-turns', 'reopen', 'cold-idle', 'drain-tx-loss',
+    'initial-pa-delay', 'initial-pa-reject', 'initial-pa-missing',
+    'return-pa-delay', 'return-pa-reject', 'return-pa-missing',
+    'storage-start-fails', 'storage-completion-fails',
+    'mic-valid-drop300',
+    'full-session',
 )
-SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled'}
+DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
+SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale',
+                'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled', 'cold-resume',
+                'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
-INJECT_CASES = COLD_CASES | {'pa-delay', 'pa-reject', 'pa-missing', 'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale'}
+PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
+            for prefix, phase in [('', 'tx'), ('initial-', 'initial-rx'), ('return-', 'rx-return')]
+            for mode in ('delay', 'reject', 'missing')}
+INJECT_CASES = COLD_CASES | set(PA_CASES) | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300'}
+CASE_TIMEOUTS = {'many-turns': 120, 'reopen': 180, 'cold-idle': 100, 'drain-tx-loss': 60, 'full-session':120}
 
 
 def sha(path):
@@ -34,29 +53,28 @@ def sha(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def save(path, value):
-    path.write_text(json.dumps(value, indent=2) + '\n')
-
-
 def injection_environment(case, root, library):
     if case not in INJECT_CASES:
         return {}
-    if not library or not library.is_file():
-        raise ValueError('This case requires --fault-inject-so')
+    require(library and library.is_file(), 'This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
     if case in COLD_CASES:
         result.update(USB_TEST_PA_MODE='delay', USB_TEST_PA_DEVICE='radio_sink_fixture',
-                      USB_TEST_PA_ACTION='uncork', USB_TEST_PA_DELAY_MS='760', USB_TEST_COLD_CAPTURE='1',
-                      USB_TEST_COLD_RESUME_MS='200' if case in {'cold-stop', 'cold-release'} else '30')
+                      USB_TEST_PA_ACTION='uncork', USB_TEST_PA_PHASE='tx', USB_TEST_PA_DELAY_MS='760',
+                      USB_TEST_COLD_CAPTURE='1', USB_TEST_COLD_RESUME_MS='200' if case in {'cold-stop', 'cold-release'} else '30')
         if case == 'cold-qualification':
             result.update(USB_TEST_STALE_DEVICE='alsa_input.usb-fixture', USB_TEST_STALE_TRIGGER=str(root / 'inject-stale'))
         if case == 'cold-rx-resume':
-            result.update(USB_TEST_PA_ACTION='cork', USB_TEST_PA_MATCH='3', USB_TEST_COLD_RESUME_MS='1000')
+            result.update(USB_TEST_PA_ACTION='cork', USB_TEST_PA_PHASE='rx-return', USB_TEST_COLD_RESUME_MS='1000')
         if case == 'cold-recovery-fails':
             result['USB_TEST_COLD_NEVER'] = '1'
-    elif case.startswith('pa-'):
-        result.update(USB_TEST_PA_MODE={'pa-delay': 'delay', 'pa-reject': 'reject', 'pa-missing': 'missing'}[case],
-                      USB_TEST_PA_DEVICE='radio_sink_fixture', USB_TEST_PA_ACTION='flush', USB_TEST_PA_DELAY_MS='650')
+    elif case == 'mic-valid-drop300':
+        result.update(USB_TEST_STALE_DEVICE='alsa_input.usb-fixture', USB_TEST_STALE_TRIGGER=str(root/'inject-stale'),
+                      USB_TEST_STALE_DURATION_MS='300')
+    elif case in PA_CASES:
+        result.update(USB_TEST_PA_MODE=PA_CASES[case]['mode'],
+                      USB_TEST_PA_DEVICE='radio_sink_fixture', USB_TEST_PA_ACTION='flush',
+                      USB_TEST_PA_PHASE=PA_CASES[case]['phase'], USB_TEST_PA_DELAY_MS='650')
     elif case.endswith('hole'):
         result.update(USB_TEST_HOLE_DEVICE='radio_source_fixture' if case == 'inactive-radio-hole' else 'alsa_input.usb-fixture', USB_TEST_HOLE_TRIGGER=str(root / 'inject-hole'))
     elif case.endswith('stale'):
@@ -64,191 +82,325 @@ def injection_environment(case, root, library):
     return result
 
 
+def continuous_fixture(path, pcm, rate, channels, width, seconds):
+    """One persistent paplay process avoids process-restart holes at EOF."""
+    require(pcm and len(pcm) % (channels * width) == 0, 'Fixture PCM is empty or misaligned')
+    target = math.ceil(seconds * rate) * channels * width
+    with path.open('wb') as output:
+        while target:
+            chunk = pcm[:target]
+            output.write(chunk)
+            target -= len(chunk)
+    return ['--raw', '--rate=' + str(rate), '--format=' + {1: 'u8', 2: 's16le', 3: 's24le', 4: 's32le'}[width],
+            '--channels=' + str(channels), str(path)]
+
+
+def check_command(command, root, name, commands, env, timeout=3, check=True):
+    result = run_bounded(command, root / (name + '.log'), timeout, env=env)
+    commands.append(result)
+    require(not result['timed_out'], 'Fixture command timed out: ' + name)
+    if check:
+        require(result['exit_code'] == 0, 'Fixture command failed: ' + name + '; inspect its retained log')
+    return result, (root / (name + '.log')).read_text()
+
+
+def decode_pcm(runner, pcm, rate, directory, commands, env):
+    directory.mkdir()
+    seconds = math.ceil(len(pcm) / (rate * 2)) + 1
+    raw = directory / 'modem-padded.raw'
+    raw.write_bytes(pcm + b'\0' * (seconds * rate * 2 - len(pcm)))
+    result = run_bounded([runner, '--rx', raw, '--rate', rate, '--seconds', seconds, '--unpaced', '--output', directory],
+                         directory / 'decode.log', 45, env=env)
+    commands.append(result)
+    require(not result['timed_out'] and result['exit_code'] == 0,
+            'Modem decoder failed; inspect ' + str(directory / 'decode.log'))
+    stats = json.loads((directory / 'engine-stats.json').read_text())
+    stats['decoded_seconds'] = (directory / 'decoded-s16le.raw').stat().st_size / (2 * rate)
+    return stats
+
+
+def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env, expected_turns, turn_records=()):
+    """Check every sink turn; an earlier successful burst cannot mask a lost turn.
+
+    The monitor is timestamped at launch. A 200 ms crop margin covers negotiated
+    PA monitor buffering. Reference samples come from the controller modem tap;
+    explicit harness offsets locate durable-case 48k modem tap boundaries. For
+    legacy short cases, cumulative 44.1k transport counts locate boundaries to
+    within a resampler tail, covered by 128 samples of context. Comparison allows
+    one 120 ms block, not an arbitrary partial successful recording.
+    """
+    pcm = (root / 'radio-output.raw').read_bytes()
+    results = []
+    for trace_path in trace_paths:
+        rows = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+        turns = completed_turns(rows)
+        if not turns:
+            continue
+        samples = [row for row in rows if row.get('kind') == 'sample']
+        reference = trace_path.with_name(trace_path.stem + '-modem.raw').read_bytes()
+        microphone = trace_path.with_name(trace_path.stem + '-mic.raw').read_bytes()
+        require(len(microphone)//2 == samples[-1]['submitted_mic'], 'Microphone tap is incomplete or inconsistent with accepted samples')
+        descriptor = next((row for row in rows if row.get('kind') == 'stream' and row.get('stream') == 'mic'), None)
+        require(descriptor and descriptor['rate'] == 48000 and descriptor['channels'] == 1,
+                'Source frame oracle requires the negotiated 48k mono microphone stream')
+        fragments = descriptor['fragsize']//2
+        reference_start = 0
+        microphone_start = 0
+        for index, turn in enumerate(turns):
+            after = next((row for row in samples if row['ms'] >= turn['end_ms']), None)
+            require(after is not None, 'Completed turn lacks a final counter snapshot')
+            exact = next((row for row in turn_records if row['session'] == trace_path.stem and row['turn'] == index+1), None)
+            if exact:
+                reference_start, reference_end = exact['modem_tap_start'], exact['modem_tap_end']
+                require(reference_end*2 <= len(reference), 'Controller modem reference was truncated')
+                reference_turn = reference[reference_start*2:reference_end*2]
+            else:
+                reference_end = len(reference) // 2 if index == len(turns)-1 else round(after['rendered_modem'] * 48000 / 44100)
+                reference_turn = reference[max(0, reference_start-128)*2:min(len(reference), (reference_end+128)*2)]
+            accepted = exact['accepted_mic_samples'] if exact else after['submitted_mic']-microphone_start
+            microphone_start = after['submitted_mic']
+            source_budget = microphone_frame_budget(turn['drain_ms']-turn['start_ms'], accepted, fragments)
+            reference_start = reference_end
+            begin = max(0, math.floor((turn['start_ms']/1000 - recording_started - .2) * 44100))
+            end = math.ceil((turn['end_ms']/1000 - recording_started + .2) * 44100)
+            require(end > begin and end * 2 <= len(pcm) + 44100,
+                    'Monitor recording is missing the complete turn interval')
+            observed = pcm[begin*2:min(len(pcm), end*2)]
+            number = len(results) + 1
+            reference_stats = decode_pcm(runner, reference_turn, 48000, root / ('turn-%03d-reference' % number), commands, env)
+            observed_stats = decode_pcm(runner, observed, 44100, root / ('turn-%03d-sink' % number), commands, env)
+            result = validate_turn_decode(reference_stats, observed_stats, number)
+            result['content_match'] = modem_waveform_match(reference_turn,48000,observed,44100)
+            result['microphone_frame_budget'] = source_budget
+            result.update(trace_file=trace_path.name, start_ms=turn['start_ms'], end_ms=turn['end_ms'])
+            result['reference_boundary_basis'] = 'exact_modem_tap_offsets' if exact else 'transport_ratio_with_resampler_context'
+            results.append(result)
+    require(len(results) == expected_turns and results, 'Sink evidence did not cover every completed turn')
+    return results
+
+
 def run_case(args):
     root = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='freedv-usb-test-'))
     root.mkdir(parents=True, exist_ok=True)
-    if (root / 'result').exists():
-        raise ValueError('Case output must be fresh: ' + str(root))
+    require(not (root / 'result').exists(), 'Case output must be fresh: ' + str(root))
     (root / 'result').mkdir()
     print('Evidence:', root, flush=True)
-    record = {'schema': 'x6200.usb.integration.case.v2', 'status': 'FAIL', 'case': args.case,
+    commands = []
+    record = {'schema': 'x6200.usb.integration.case.v3', 'status': 'FAIL', 'case': args.case,
               'scope': 'Real codec and Pulse streams at representative rates; fake radio control, no hardware RF',
-              'radio_accessed': False, 'test_binary_sha256': sha(args.binary)}
+              'radio_accessed': False, 'test_binary_sha256': sha(args.binary),
+              'fixture_sha256': {'speech': sha(args.speech), 'modem': sha(args.modem)},
+              'runner_sha256': sha(args.runner) if args.runner else None,
+              'fault_injector_sha256': sha(args.fault_inject_so) if args.fault_inject_so else None,
+              'commands': commands}
     env = dict(os.environ, PULSE_SERVER=f'unix:{root}/native', PULSE_RUNTIME_PATH=str(root),
                PULSE_STATE_PATH=str(root), XDG_CONFIG_HOME=str(root))
-    conf = root / 'default.pa'
-    # An ordinary GUI capture client is also retained against the radio source.
-    # The microphone physical side is 16k mono, headphone side 48k stereo/24bit,
-    # and both radio directions 44.1k stereo. The controller's own client specs
-    # remain 48k mono USB and 44.1k mono radio, exercising Pulse conversion.
-    conf.write_text('.fail\n' + f'load-module module-native-protocol-unix socket={root}/native auth-anonymous=1\n' +
-        'load-module module-null-sink sink_name=mic_fixture rate=16000 channels=1 format=s16le norewinds=1\n' +
-        'load-module module-remap-source source_name=alsa_input.usb-fixture master=mic_fixture.monitor rate=16000 channels=1\n' +
-        'load-module module-null-sink sink_name=rf_fixture rate=44100 channels=2 format=s16le norewinds=1\n' +
-        'load-module module-remap-source source_name=radio_source_fixture master=rf_fixture.monitor rate=44100 channels=2\n' +
-        'load-module module-null-sink sink_name=alsa_output.usb-fixture rate=48000 channels=2 format=s24le norewinds=1\n' +
-        'load-module module-null-sink sink_name=radio_sink_fixture rate=44100 channels=2 format=s16le norewinds=1\n' +
-        'load-module module-null-sink sink_name=unrelated_sink norewinds=1\nload-module module-rescue-streams\n')
-    pulse_args = ['pulseaudio', '-nF', str(conf), '--daemonize=no', '--use-pid-file=no', '--exit-idle-time=-1']
-    modules = os.environ.get('TEST_PULSE_MODULES')
-    if not modules:
-        choices = list(Path(shutil.which('pulseaudio')).resolve().parents[1].glob('lib/pulse-*/modules'))
-        if choices:
-            modules = str(choices[0])
-    if modules:
-        pulse_args += ['--dl-search-path', modules]
-        env['LD_LIBRARY_PATH'] = modules + os.pathsep + env.get('LD_LIBRARY_PATH', '')
-    stop = threading.Event()
-    producers, threads = [], []
-    recorder = legacy_capture = server = None
-    recording = None
+    supervisor = ProcessSupervisor(root, env)
+    recording = cleanup = None
+    previous_term = signal.getsignal(signal.SIGTERM)
 
-    def produce(sink, file, raw_rate=None):
-        while not stop.is_set():
-            command = ['paplay', '--device=' + sink]
-            if raw_rate:
-                command += ['--raw', '--rate=' + str(raw_rate), '--format=s16le', '--channels=1']
-            process = subprocess.Popen(command + [str(file)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            producers.append(process)
-            process.wait()
+    def interrupted(signum, frame):
+        del signum, frame
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise RuntimeError('Case interrupted by supervisor; preserving partial evidence')
 
-    def endpoints(name):
-        text = ''
-        for kind in ('sources', 'sinks'):
-            result = subprocess.run(['pactl', 'list', 'short', kind], env=env, capture_output=True, text=True, check=True)
-            text += kind + '\n' + result.stdout
-        (root / name).write_text(text)
-        return text
-
+    signal.signal(signal.SIGTERM, interrupted)
     try:
-        with (root / 'pulse.log').open('w') as log:
-            server = subprocess.Popen(pulse_args, env=env, stdout=log, stderr=log)
-            for _ in range(150):
-                if server.poll() is not None:
-                    raise RuntimeError((root / 'pulse.log').read_text())
-                if subprocess.run(['pactl', 'info'], env=env, capture_output=True).returncode == 0:
-                    break
-                time.sleep(.05)
-            else:
-                raise RuntimeError('Private Pulse did not become ready')
-            legacy_capture = subprocess.Popen(['parec', '--device=radio_source_fixture', '--rate=44100', '--channels=2',
-                                               '--format=s16le', '--latency-msec=10'], env=env,
-                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            silence = root / 'unsynchronized-radio.raw'
-            silence.write_bytes(b'\0' * (44100 * 2 * 3))
-            radio = args.modem if args.case == 'rx-signal' else silence
-            for sink, file, rate in [('mic_fixture', args.speech, None),
-                                     ('rf_fixture', radio, 48000 if args.case == 'rx-signal' else 44100)]:
-                thread = threading.Thread(target=produce, args=(sink, file, rate), daemon=True)
-                threads.append(thread)
-                thread.start()
-            time.sleep(.15)
-            before = endpoints('endpoints-before.txt')
-            assert re.search(r'alsa_input\.usb-fixture\s+[^\n]*1ch 16000Hz', before), before
-            assert re.search(r'alsa_output\.usb-fixture\s+[^\n]*2ch 48000Hz', before), before
-            assert re.search(r'radio_sink_fixture\s+[^\n]*2ch 44100Hz', before), before
-            recording = (root / 'radio-output.raw').open('wb')
-            recorder = subprocess.Popen(['parec', '--device=radio_sink_fixture.monitor', '--rate=44100', '--format=s16le',
-                                         '--channels=1', '--latency-msec=20'], env=env, stdout=recording, stderr=subprocess.DEVNULL)
-            child_env = dict(env, **injection_environment(args.case, root, args.fault_inject_so))
-            with (root / 'test.log').open('w') as output:
-                test = subprocess.Popen([str(args.binary), str(root / 'result'), '--' + args.case], env=child_env,
-                                        stdout=output, stderr=subprocess.STDOUT)
-                until = time.monotonic() + 75
-                changed = False
-                while test.poll() is None:
-                    if time.monotonic() > until:
-                        test.kill()
-                        test.wait()
-                        raise RuntimeError('Controller scenario timed out; retained evidence: ' + str(root))
-                    text = (root / 'test.log').read_text()
-                    if not changed and 'TX_ACTIVE' in text:
-                        endpoints('endpoints-active.txt')
-                        changed = True
-                        if args.case == 'disconnect':
-                            subprocess.run(['pactl', 'unload-module', 'module-remap-source'], env=env, check=True)
-                    time.sleep(.02)
-                code = test.wait()
-            print((root / 'test.log').read_text(), flush=True)
-            if code:
-                raise RuntimeError('Controller scenario failed with exit ' + str(code))
-            harness = json.loads((root / 'result/harness-result.json').read_text())
-            assert harness['status'] == 'PASS' and not harness['physical_tx'], harness
-            rows = [json.loads(line) for line in (root / 'result/session.jsonl').read_text().splitlines() if line.strip()]
-            status_rows = [row for row in rows if 'state' in row]
-            assert status_rows and status_rows[-1]['state'] in (5, 6), status_rows[-1:]  # FAULT/DONE
-            # Unknown/stale telemetry must not be misrepresented as confirmed RX.
+        expected = {name:os.environ.get(variable) for name,variable in
+                    [('source_commit','USB_TEST_EXPECTED_SOURCE_COMMIT'),('build_id','USB_TEST_EXPECTED_BUILD_ID'),
+                     ('binary_sha256','USB_TEST_EXPECTED_BINARY_SHA256')]}
+        if any(expected.values()):
+            require(all(expected.values()), 'Campaign supplied incomplete controller identity')
+            require(record['test_binary_sha256'] == expected['binary_sha256'], 'Invoked controller binary differs from the campaign')
+        conf = root / 'default.pa'
+        conf.write_text('.fail\n' + f'load-module module-native-protocol-unix socket={root}/native auth-anonymous=1\n' +
+            'load-module module-null-sink sink_name=mic_fixture rate=16000 channels=1 format=s16le norewinds=1\n' +
+            'load-module module-remap-source source_name=alsa_input.usb-fixture master=mic_fixture.monitor rate=16000 channels=1\n' +
+            'load-module module-null-sink sink_name=rf_fixture rate=44100 channels=2 format=s16le norewinds=1\n' +
+            'load-module module-remap-source source_name=radio_source_fixture master=rf_fixture.monitor rate=44100 channels=2\n' +
+            'load-module module-null-sink sink_name=alsa_output.usb-fixture rate=48000 channels=2 format=s24le norewinds=1\n' +
+            'load-module module-null-sink sink_name=radio_sink_fixture rate=44100 channels=2 format=s16le norewinds=1\n' +
+            'load-module module-null-sink sink_name=unrelated_sink norewinds=1\nload-module module-rescue-streams\n' +
+            ('load-module module-suspend-on-idle timeout=1\n' if args.case == 'cold-idle' else ''))
+        pulse_args = ['pulseaudio', '-nF', str(conf), '--daemonize=no', '--use-pid-file=no', '--exit-idle-time=-1']
+        modules = os.environ.get('TEST_PULSE_MODULES')
+        if not modules:
+            binary = shutil.which('pulseaudio')
+            require(binary is not None, 'pulseaudio is unavailable')
+            choices = list(Path(binary).resolve().parents[1].glob('lib/pulse-*/modules'))
+            if choices:
+                modules = str(choices[0])
+        if modules:
+            pulse_args += ['--dl-search-path', modules]
+            env['LD_LIBRARY_PATH'] = modules + os.pathsep + env.get('LD_LIBRARY_PATH', '')
+        supervisor.start('pulse', pulse_args)
+        ready_until = time.monotonic() + 7.5
+        ready = False
+        attempt = 0
+        while time.monotonic() < ready_until:
+            supervisor.require_running()
+            result, _ = check_command(['pactl', 'info'], root, 'pulse-ready-%03d' % attempt, commands, env, 1, False)
+            if result['exit_code'] == 0:
+                ready = True
+                break
+            attempt += 1
+            time.sleep(.05)
+        require(ready, 'Private Pulse did not become ready')
+        supervisor.start('legacy-capture', ['parec', '--device=radio_source_fixture', '--rate=44100', '--channels=2',
+                                           '--format=s16le', '--latency-msec=10'], stdout=subprocess.DEVNULL)
+        horizon = CASE_TIMEOUTS.get(args.case, 75) + 15
+        with wave.open(str(args.speech), 'rb') as speech:
+            require(speech.getcomptype() == 'NONE', 'Speech fixture must be PCM WAV')
+            speech_args = continuous_fixture(root/'continuous-speech.raw', speech.readframes(speech.getnframes()),
+                                             speech.getframerate(), speech.getnchannels(), speech.getsampwidth(), horizon)
+        radio_pcm = args.modem.read_bytes() if args.case == 'rx-signal' else b'\0' * 88200
+        radio_args = continuous_fixture(root/'continuous-radio.raw', radio_pcm,
+                                        48000 if args.case == 'rx-signal' else 44100, 1, 2, horizon)
+        supervisor.start('speech-source', ['paplay', '--device=mic_fixture', *speech_args])
+        supervisor.start('radio-source', ['paplay', '--device=rf_fixture', *radio_args])
+        time.sleep(.15)
+        supervisor.require_running()
+
+        def endpoints(name):
+            content = ''
+            for kind in ('sources', 'sinks'):
+                _, text = check_command(['pactl', 'list', 'short', kind], root, name+'-'+kind, commands, env)
+                content += kind + '\n' + text
+            (root/name).write_text(content)
+            return content
+
+        before = endpoints('endpoints-before.txt')
+        require(re.search(r'alsa_input\.usb-fixture\s+[^\n]*1ch 16000Hz', before), before)
+        require(re.search(r'alsa_output\.usb-fixture\s+[^\n]*2ch 48000Hz', before), before)
+        require(re.search(r'radio_sink_fixture\s+[^\n]*2ch 44100Hz', before), before)
+        recorder = None
+        recording_started = None
+        # An open monitor can prevent the idle sink from suspending. This case
+        # proves private-Pulse suspension through trace events, not sink decode.
+        if args.case != 'cold-idle':
+            recording = (root/'radio-output.raw').open('wb')
+            recording_started = time.monotonic()
+            recorder = supervisor.start('modem-monitor', ['parec', '--device=radio_sink_fixture.monitor', '--rate=44100',
+                                                         '--format=s16le', '--channels=1', '--latency-msec=20'], stdout=recording)
+        child_env = dict(env, **injection_environment(args.case, root, args.fault_inject_so))
+        # Only the controller process receives the interposer, never Pulse/fixtures.
+        test = supervisor.start('test', [args.binary, root/'result', '--'+args.case], env=child_env)
+        until = time.monotonic() + CASE_TIMEOUTS.get(args.case, 75)
+        changed = False
+        while test.poll() is None:
+            supervisor.require_running(except_process=test)
+            require(time.monotonic() <= until, 'Controller scenario timed out')
+            text = (root/'test.log').read_text()
+            if not changed and 'TX_ACTIVE' in text:
+                endpoints('endpoints-active.txt')
+                changed = True
+                if args.case == 'disconnect':
+                    check_command(['pactl', 'unload-module', 'module-remap-source'], root, 'disconnect', commands, env)
+            time.sleep(.02)
+        supervisor.require_running(except_process=test)
+        text = (root/'test.log').read_text()
+        print(text, flush=True)
+        require(test.returncode == 0, 'Controller scenario failed with exit '+str(test.returncode))
+        harness = json.loads((root/'result/harness-result.json').read_text())
+        require(harness['status'] == 'PASS' and not harness['physical_tx'], str(harness))
+        trace_paths = sorted((root/'result').glob('freedv-usb-session*.jsonl'))
+        require(trace_paths, 'No controller trace was produced')
+        rows, identities = [], []
+        for path in trace_paths:
+            trace_rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+            status_rows = [row for row in trace_rows if row.get('kind') == 'sample']
+            require(status_rows and status_rows[-1]['state'] in (5, 6), 'Controller trace is not closed: '+path.name)
             if status_rows[-1].get('rf_valid'):
-                assert not status_rows[-1]['rf_tx'], status_rows[-1]
-            if args.case in INJECT_CASES:
-                assert 'INJECT ' in (root / 'test.log').read_text(), 'Fault injector did not exercise requested path'
-            if args.case in COLD_CASES:
-                log = (root / 'test.log').read_text()
-                assert 'INJECT cold ACK success=1' in log, log
-                assert 'callback starvation device=alsa_input.usb-fixture' in log, log
-                assert 'callback starvation device=radio_source_fixture' in log, log
-                if args.case == 'cold-qualification':
-                    samples = [row for row in rows if row.get('kind') == 'sample' and row.get('qualification_complete')]
-                    assert samples, 'Qualification did not publish rate-accounting evidence'
-                    last = samples[-1]
-                    assert all(value >= 760 for value in last['preparation_excluded_ms']), last
-                    assert all(value > 0 for value in last['preparation_excluded_frames']), last
-                    # MIC delivery stopped before preparation; that earlier gap
-                    # must remain in the rate window rather than be excluded.
-                    assert harness['mic_max_gap_ms'] >= harness['rx_max_gap_ms'] + 150, harness
-                    assert abs(last['preparation_excluded_ms'][0] - last['preparation_excluded_ms'][1]) < 100, last
-                    assert last['mic_rate_window_ms'] >= 3000 and last['rx_rate_window_ms'] >= 3000, last
-                    assert 45600 <= last['mic_rate_hz'] <= 50400 and 41895 <= last['rx_rate_hz'] <= 46305, last
-                    record['preparation_accounting'] = {key: last[key] for key in
-                        ('preparation_excluded_ms', 'preparation_excluded_frames', 'mic_rate_hz', 'rx_rate_hz',
-                         'mic_rate_window_ms', 'rx_rate_window_ms')}
-            record['harness'] = harness
-            record['event_count'] = len(rows)
-            record['status_row_count'] = len(status_rows)
-            if recorder:
-                recorder.terminate()
-                recorder.wait(timeout=5)
-                recorder = None
-                recording.close()
-                recording = None
-            runner = args.runner or (Path(os.environ['USB_RF_REFERENCE_RUNNER']) if os.environ.get('USB_RF_REFERENCE_RUNNER') else None)
-            if runner and args.case in SPEECH_CASES:
-                pcm = (root / 'radio-output.raw').read_bytes()
-                seconds = math.ceil(len(pcm) / 88200) + 1
-                pcm += b'\0' * (seconds * 88200 - len(pcm))
-                padded = root / 'radio-padded.raw'
-                padded.write_bytes(pcm)
-                decoded = root / 'decoded-radio-output'
-                decoded.mkdir()
-                with (root / 'loopback-decode.log').open('w') as log:
-                    subprocess.run([str(runner), '--rx', str(padded), '--rate', '44100', '--seconds', str(seconds),
-                                    '--output', str(decoded)], env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=75)
-                stats = json.loads((decoded / 'engine-stats.json').read_text())
-                assert not stats['failures'] and stats['synchronized_blocks'] > 0 and stats['synthesis_blocks'] > 0, stats
-                record['actual_sink_decode'] = stats
-                print('PASS actual radio modem sink audio decoded:', stats['synthesis_blocks'], 'speech blocks', flush=True)
-            record['status'] = 'PASS'
-            print('PASS scenario:', args.case, flush=True)
-    except Exception as error:
+                require(not status_rows[-1]['rf_tx'], 'Final fresh status still reports TX')
+            completion_path = path.with_name(path.stem+'-completion.json')
+            require(completion_path.is_file(), 'Closed controller completion record is missing')
+            identities.append(validate_session_identity(trace_rows, json.loads(completion_path.read_text()),
+                                                        expected['source_commit'], expected['build_id'],
+                                                        args.case in {'storage-start-fails','storage-completion-fails'}))
+            rows.extend(trace_rows)
+        record['identity'] = {'status':'PASS' if all(expected.values()) else 'NOT_REQUESTED',
+                              'source_commit':identities[0]['source_commit'], 'build_id':identities[0]['build_id'],
+                              'binary_sha256':record['test_binary_sha256'], 'session_ids':[identity['session_id'] for identity in identities]}
+        if args.case in INJECT_CASES:
+            require('INJECT ' in text, 'Fault injector did not exercise requested path')
+        if args.case in PA_CASES:
+            phase = PA_CASES[args.case]['phase']
+            require('phase='+phase in text, 'The PA operation fault did not target the requested preparation phase')
+            record['injected_operation'] = validate_operation_phase(rows,phase,PA_CASES[args.case]['mode'])
+        if args.case == 'mic-valid-drop300':
+            require('no-hole=1' in text and 'valid capture resumed' in text,
+                    'The finite microphone-only valid-data deletion was not exercised')
+            require(harness['fault'] == 23 and harness['turns'] == 0 and harness['eoo'] == 0 and harness['mic_holes'] == 0,
+                    'Deleted microphone data was accepted as a complete turn')
+            accounting = [row for row in rows if row.get('kind') == 'source-accounting']
+            require(accounting and accounting[-1]['evaluated'] and accounting[-1]['passed'] is False and
+                    accounting[-1]['accepted_mic_frames'] < accounting[-1]['required_mic_frames'],
+                    'The source frame deficit was not reported independently of holes')
+            record['injected_source_loss'] = accounting[-1]
+        if args.case in COLD_CASES:
+            require('INJECT cold ACK success=1' in text, text)
+            require('callback starvation device=alsa_input.usb-fixture' in text, text)
+            require('callback starvation device=radio_source_fixture' in text, text)
+            if args.case == 'cold-qualification':
+                qualified = [row for row in rows if row.get('kind') == 'sample' and row.get('qualification_complete')]
+                require(qualified, 'Qualification did not publish rate-accounting evidence')
+                last = qualified[-1]
+                require(all(value >= 760 for value in last['preparation_excluded_ms']), str(last))
+                require(all(value > 0 for value in last['preparation_excluded_frames']), str(last))
+                require(harness['mic_max_gap_ms'] >= harness['rx_max_gap_ms']+150, str(harness))
+                require(abs(last['preparation_excluded_ms'][0]-last['preparation_excluded_ms'][1]) < 100, str(last))
+                require(last['mic_rate_window_ms'] >= 3000 and last['rx_rate_window_ms'] >= 3000, str(last))
+                require(45600 <= last['mic_rate_hz'] <= 50400 and 41895 <= last['rx_rate_hz'] <= 46305, str(last))
+                record['preparation_accounting'] = {key:last[key] for key in
+                    ('preparation_excluded_ms','preparation_excluded_frames','mic_rate_hz','rx_rate_hz','mic_rate_window_ms','rx_rate_window_ms')}
+        if args.case == 'cold-idle':
+            suspend = [row for row in rows if row.get('event') == 'stream-suspended' and row.get('stream') == 'modem']
+            require(any(row.get('status') == 1 for row in suspend), 'Idle case never suspended the real private-Pulse modem stream')
+            require(any(row.get('status') == 0 for row in suspend), 'Idle case never resumed the real private-Pulse modem stream')
+        record['harness'] = harness
+        record['event_count'] = len(rows)
+        record['status_row_count'] = sum(row.get('kind') == 'sample' for row in rows)
+        if recorder:
+            time.sleep(.2)
+            supervisor.require_running(except_process=test)
+            supervisor.stop(recorder)
+            recording.close()
+            recording = None
+            monitor_seconds = (root/'radio-output.raw').stat().st_size / 88200
+            wall_seconds = time.monotonic() - recording_started
+            record['monitor_clock'] = {'basis':'CLOCK_MONOTONIC process launch to reaped monitor',
+                                       'started_seconds':recording_started, 'wall_seconds':wall_seconds,
+                                       'pcm_seconds':monitor_seconds, 'maximum_alignment_error_seconds':.2}
+            require(abs(wall_seconds-monitor_seconds) <= .2,
+                    'Monitor sample clock does not match its monotonic recording interval')
+        cleanup = supervisor.close()
+        require(not cleanup['errors'], 'Fixture cleanup failed: '+str(cleanup['errors']))
+        record['collector_contract'] = validate_collector_contract(
+            root/'result', root/'collector-contract', args.binary,
+            expected['source_commit'] or identities[0]['source_commit'],
+            expected['build_id'] or identities[0]['build_id'], record['test_binary_sha256'],
+            storage_failure_expected=args.case in {'storage-start-fails','storage-completion-fails'})
+        runner = args.runner or (Path(os.environ['USB_RF_REFERENCE_RUNNER']) if os.environ.get('USB_RF_REFERENCE_RUNNER') else None)
+        if args.case in SPEECH_CASES:
+            require(runner is not None, 'Speech cases require the actual codec runner')
+            record['actual_sink_turns'] = sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env,
+                                                         harness.get('total_turns', harness['turns']), harness.get('turn_records',()))
+            record['actual_sink_decode'] = {'failures':0,
+                'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in record['actual_sink_turns']),
+                'synchronized_blocks':sum(turn['observed']['synchronized_blocks'] for turn in record['actual_sink_turns'])}
+        record['status'] = 'PASS'
+        print('PASS scenario:', args.case, flush=True)
+    except BaseException as error:
         record['error'] = str(error)
         raise
     finally:
-        for process in (recorder, legacy_capture):
-            if process and process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
+        if cleanup is None:
+            cleanup = supervisor.close()
+        record['process_cleanup'] = cleanup
         if recording:
             recording.close()
-        stop.set()
-        for process in producers:
-            if process.poll() is None:
-                process.terminate()
-        for thread in threads:
-            thread.join(timeout=3)
-        if server and server.poll() is None:
-            server.terminate()
-            server.wait(timeout=5)
-        save(root / 'case-result.json', record)
+        signal.signal(signal.SIGTERM, previous_term)
+        save_json(root/'case-result.json', record)
     return root
 
 

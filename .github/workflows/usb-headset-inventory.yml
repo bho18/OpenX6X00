@@ -1,4 +1,4 @@
-name: USB headset helpers
+name: USB headset and controller checks
 on:
   push:
     branches: [test/usb-headset-20261105]
@@ -8,6 +8,7 @@ permissions:
 jobs:
   linux-inventory:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Check USB duplex endpoint identification without devices
@@ -17,6 +18,9 @@ jobs:
           python tools/freedv/test_usb_headset_validate.py
           python tools/freedv/test_usb_half_duplex.py
           python tools/freedv/test_usb_rf_evidence.py
+          python tools/freedv/test_usb_test_support.py
+          python -O tools/freedv/test_usb_test_support.py
+          python tools/freedv/test_usb_campaign.py
       - name: Install private PulseAudio test dependencies
         run: sudo apt-get update && sudo apt-get install -y libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils
       - name: Check PCM streams and endpoint loss on private virtual devices
@@ -28,8 +32,64 @@ jobs:
           /tmp/usb_panel_test
           gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared tools/freedv/test_usb_headset_drop_drain.c -lpulse -ldl -o /tmp/drop-drain.so
           TEST_PULSE_DROP_DRAIN_ACK_SO=/tmp/drop-drain.so python tools/freedv/test_usb_headset_pcm.py /tmp/usb_headset_pcm
+  usb-controller-regression:
+    # Run the production controller and real codec, rather than relying on
+    # syntax-only checks or successful basic PCM helpers. This one-pass host
+    # profile is explicitly nonpromotable; release qualification is separate.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Install pinned-codec and private audio test build prerequisites
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=1 update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 install -y --no-install-recommends \
+            build-essential cmake ninja-build autoconf automake libtool pkg-config \
+            libpulse-dev libsamplerate0-dev libsndfile1-dev pulseaudio pulseaudio-utils
+      - name: Build exact production controller and codec runner without the GUI
+        timeout-minutes: 25
+        run: |
+          python3 tools/freedv/build_usb_controller_host.py --prepare-codec \
+            --work "$RUNNER_TEMP/usb-controller-build" --jobs 2 \
+            --build-id "usb-controller-ci-${GITHUB_SHA}" \
+            > "$RUNNER_TEMP/usb-controller-build.log" 2>&1
+      - name: Run complete controller regression and lifecycle cases on private PulseAudio
+        timeout-minutes: 15
+        run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/usb-controller-build/codec/rade_c/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          python3 tools/freedv/test_usb_audio_matrix.py \
+            "$RUNNER_TEMP/usb-controller-build/freedv_usb_audio_test" \
+            "$RUNNER_TEMP/usb-controller-build/codec/sources/rade_c/input_sample.wav" \
+            "$RUNNER_TEMP/usb-controller-build/usb-reference-48k.raw" \
+            --runner "$RUNNER_TEMP/usb-controller-build/freedv_voice_runner" \
+            --rade-library "$RUNNER_TEMP/usb-controller-build/codec/rade_c/src/librade.so.0.1" \
+            --output "$RUNNER_TEMP/usb-controller-matrix" --profile regression \
+            --campaign-root "$RUNNER_TEMP/usb-controller-campaigns" \
+            --source-commit "$GITHUB_SHA" --build-id "usb-controller-ci-${GITHUB_SHA}" \
+            > "$RUNNER_TEMP/usb-controller-matrix.log" 2>&1
+      - name: Retain successful and failed build/campaign evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: usb-controller-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/usb-controller-build.log
+            ${{ runner.temp }}/usb-controller-build/build-record.json
+            ${{ runner.temp }}/usb-controller-build/*.log
+            ${{ runner.temp }}/usb-controller-matrix.log
+            ${{ runner.temp }}/usb-controller-matrix/**/*.json
+            ${{ runner.temp }}/usb-controller-matrix/**/*.jsonl
+            ${{ runner.temp }}/usb-controller-matrix/**/*.log
+            ${{ runner.temp }}/usb-controller-matrix/**/*.txt
+            ${{ runner.temp }}/usb-controller-campaigns/**/*.json
   windows-runner:
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Check inventory collection and failure preservation

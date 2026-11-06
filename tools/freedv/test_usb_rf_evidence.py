@@ -40,13 +40,22 @@ class WavTests(unittest.TestCase):
 
 class CollectionTests(unittest.TestCase):
     def collect_fixture(self, root, fault=1, rate=None, decoder_failure=False, rows=None, manifest_fields=None,
-                        active_worker=False, immutable_fault=None, decoded_success=False):
+                        active_worker=False, immutable_fault=None, decoded_success=False,
+                        completion=None, pointer=None, inventory_status='USB_DUPLEX_CANDIDATE',
+                        extra_trace=None, journal=None, mic_frames=480):
         traces=root/'traces';traces.mkdir()
         (root/'proc').mkdir()
         if rows is None:
             rows=[dict(state=5 if fault>1 else 6,fault=fault,rf_tx=False)]
         (traces/'freedv-usb-fixture.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
-        (traces/'freedv-usb-fixture-mic.raw').write_bytes(b'\0\0'*480)
+        (traces/'freedv-usb-fixture-mic.raw').write_bytes(b'\0\0'*mic_frames)
+        if pointer is not None:
+            (traces/'freedv-usb-current.json').write_text(json.dumps(pointer))
+        if completion is not None:
+            (traces/'freedv-usb-fixture-completion.json').write_text(
+                completion if isinstance(completion, str) else json.dumps(completion))
+        if extra_trace is not None:
+            (traces/'freedv-usb-newer.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in extra_trace))
         if immutable_fault:
             (traces/'freedv-usb-fixture-fault.json').write_text(json.dumps(immutable_fault))
             (traces/'freedv-usb-fixture-metadata.json').write_text(json.dumps(dict(kind='session',rf_disabled=True)))
@@ -59,6 +68,11 @@ class CollectionTests(unittest.TestCase):
         manifest.update(manifest_fields or {})
         mapped={'/tmp':traces,'/proc':root/'proc','/opt/freedv-benchmark/bin/freedv_voice_runner':runner,
                 '/opt/freedv-benchmark/lib/librade.so.0.1':library}
+        if journal is not None:
+            directory=root/'journal';directory.mkdir()
+            for name,record in journal.items():
+                (directory/name).write_text(json.dumps(record))
+            mapped['/mnt/freedv-usb-incidents']=directory
         sdr=None
         if rate:
             sdr=root/'input.wav'
@@ -73,7 +87,7 @@ class CollectionTests(unittest.TestCase):
             else:
                 return real_decode(output,manifest,sdr,result)
         with patch.object(subject,'Path',side_effect=lambda p:mapped.get(str(p),Path(p))), \
-             patch.object(subject,'collect',return_value={'status':'USB_DUPLEX_CANDIDATE'}), \
+             patch.object(subject,'collect',return_value={'status':inventory_status}), \
              patch.object(subject,'post_stop_diagnostics',return_value={'scope':'POST_STOP_CURRENT_STATE fixture'}), \
              patch.object(subject,'decode_sdr',side_effect=decode), \
              patch('usb_half_duplex.stream_process',side_effect=subprocess.CalledProcessError(1,['fixture decoder'])) as decoder:
@@ -143,7 +157,9 @@ class CollectionTests(unittest.TestCase):
                   dict(kind='sample',state=6,generation=8,rf_valid=True,rf_tx=False,fault=1,rf_disabled=True,
                        qualification_complete=True,qualification_turns=3)]
             result,_,_=self.collect_fixture(Path(temp),rows=rows)
-            self.assertEqual(result['status'],'READY_FOR_RF_TEST')
+            self.assertEqual(result['status'],'COLLECTED_NO_SDR_RECORDING')
+            self.assertTrue(result['historical_runtime_evidence'])
+            self.assertFalse(result['ready_for_rf_test'])
             self.assertFalse(result['rf_tested'])
             self.assertFalse(result['rf_recording_decoded'])
             self.assertEqual(result['stages']['qualification']['status'],'PASS')
@@ -243,8 +259,197 @@ class CollectionTests(unittest.TestCase):
             self.assertFalse((output/'usb-session.jsonl').exists())
 
 
+class CurrentSessionTests(unittest.TestCase):
+    identity = dict(session_id='freedv-usb-fixture', build_id='fixture-build', source_commit='e'*40)
+
+    def fixture(self, root, rows=None, completion_fields=None, pointer_fields=None,
+                completion_missing=False, pointer_missing=False, completion_raw=None, **kwargs):
+        header = dict(kind='session', schema='x6200.usb-audio.v3', qualification_target=3, **self.identity)
+        final = dict(kind='sample', ms=1000, state=6, generation=8, fault=1, rf_disabled=True,
+                     rf_valid=True, rf_tx=False, rf_clear_confirmed=True, qualification_complete=True,
+                     qualification_turns=3, qualification_target=3)
+        completion = dict(kind='completion', schema='x6200.usb-completion.v1', terminal=True,
+                          trace_complete=True, finalized_ms=1001, last_sample_ms=1000, trace_rows=1, events_dropped=0,
+                          trace_history_truncated=False, storage_errno=0,
+                          **self.identity, **{name:final[name] for name in
+                          ('state','fault','rf_disabled','rf_valid','rf_tx','rf_clear_confirmed',
+                           'qualification_complete','qualification_turns','qualification_target')})
+        completion.update(completion_fields or {})
+        pointer = dict(kind='session-pointer', schema='x6200.usb-current.v1', terminal=False,
+                       trace_basename='freedv-usb-fixture.jsonl', completion_basename='freedv-usb-fixture-completion.json',
+                       **self.identity)
+        pointer.update(pointer_fields or {})
+        manifest = dict(usb_startup_contract_version=3, on_device_readiness_required=True,
+                        firmware_commit=self.identity['source_commit'],build_id=self.identity['build_id'])
+        manifest.update(kwargs.pop('manifest_fields', {}))
+        return CollectionTests.collect_fixture(self, root, rows=rows if rows is not None else [header,final],
+            manifest_fields=manifest, pointer=None if pointer_missing else pointer,
+            completion=None if completion_missing else completion_raw if completion_raw is not None else completion,
+            **kwargs)
+
+    def fault(self, origin='capture-not-resumed-after-preparation', **fields):
+        return dict(kind='first-fault', first_fault=dict(code=17,origin=origin,stream='mic'), **self.identity, **fields)
+
+    def test_current_closed_session_is_ready_without_claiming_rf(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=self.fixture(Path(temp))
+            self.assertEqual(result['status'],'READY_FOR_RF_TEST')
+            self.assertFalse(result['rf_tested'])
+            self.assertEqual(result['stages']['session']['status'],'COMPLETE')
+            self.assertEqual(result['session_identity'],self.identity)
+            self.assertTrue((output/'runtime-completion.json').exists())
+
+    def test_crashed_rx_snapshot_cannot_be_mistaken_for_stopped(self):
+        rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,**self.identity),
+              dict(kind='sample',ms=1000,state=1,generation=8,fault=0,rf_disabled=True,rf_valid=True,rf_tx=False,
+                   rf_clear_confirmed=True,qualification_complete=True,qualification_turns=3,qualification_target=3)]
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=self.fixture(Path(temp),rows=rows)
+            self.assertEqual(result['status'],'BLOCKED')
+            self.assertFalse(result['ready_for_rf_test'])
+            self.assertTrue((output/'usb-session.jsonl').exists())
+            self.assertTrue((output/'mic.wav').exists())
+
+    def test_missing_or_incomplete_completion_never_promotes(self):
+        cases=[dict(completion_missing=True),dict(completion_fields={'terminal':False}),
+               dict(completion_fields={'trace_complete':False}),dict(completion_fields={'last_sample_ms':999}),
+               dict(completion_fields={'finalized_ms':999}),dict(completion_fields={'rf_tx':True}),
+               dict(completion_fields={'qualification_turns':2}),dict(completion_fields={'trace_rows':2}),
+               dict(completion_fields={'events_dropped':1}),dict(completion_fields={'trace_history_truncated':True}),
+               dict(completion_fields={'storage_errno':5}),dict(completion_fields={'storage_errno':False})]
+        for fields in cases:
+            with self.subTest(fields=fields),tempfile.TemporaryDirectory() as temp:
+                result,output,_=self.fixture(Path(temp),**fields)
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertFalse(result['ready_for_rf_test'])
+                self.assertTrue((output/'usb-session.jsonl').exists())
+
+    def test_build_and_session_mismatches_are_preserved_and_blocked(self):
+        cases=[dict(completion_fields={'build_id':'old-build'}),dict(completion_fields={'source_commit':'f'*40}),
+               dict(completion_fields={'session_id':'freedv-usb-other'}),dict(pointer_fields={'build_id':'old-build'}),
+               dict(pointer_fields={'source_commit':'f'*40})]
+        for fields in cases:
+            with self.subTest(fields=fields),tempfile.TemporaryDirectory() as temp:
+                result,output,_=self.fixture(Path(temp),**fields)
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertTrue((output/'runtime-current.json').exists())
+                self.assertTrue((output/'runtime-completion.json').exists())
+                self.assertTrue((output/'usb-session.jsonl').exists())
+
+    def test_current_pointer_overrides_newer_unrelated_trace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=self.fixture(Path(temp),extra_trace=[dict(state=5,fault=2,rf_tx=False)])
+            self.assertEqual(result['status'],'READY_FOR_RF_TEST')
+            self.assertIn('fixture-build',(output/'usb-session.jsonl').read_text())
+
+    def test_no_pointer_or_legacy_fallback_for_current_image(self):
+        for fields in (dict(pointer_missing=True),dict(rows=[dict(state=6,fault=1,rf_tx=False)])):
+            with self.subTest(fields=fields),tempfile.TemporaryDirectory() as temp:
+                result,_,_=self.fixture(Path(temp),**fields)
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertFalse(result['ready_for_rf_test'])
+
+    def test_malformed_current_contract_is_blocked_without_a_type_crash(self):
+        for version in ('3', None, True, 99):
+            with self.subTest(version=version),tempfile.TemporaryDirectory() as temp:
+                result,_,_=self.fixture(Path(temp),manifest_fields={'usb_startup_contract_version':version})
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertFalse(result['ready_for_rf_test'])
+
+    def test_wrongly_typed_terminal_values_cannot_claim_readiness(self):
+        for field,value in (('rf_disabled','false'),('fault',False),('qualification_turns',True)):
+            rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,**self.identity),
+                  dict(kind='sample',ms=1000,state=6,generation=8,fault=1,rf_disabled=True,rf_valid=True,rf_tx=False,
+                       rf_clear_confirmed=True,qualification_complete=True,qualification_turns=3,qualification_target=3)]
+            rows[-1][field]=value
+            with self.subTest(field=field),tempfile.TemporaryDirectory() as temp:
+                result,_,_=self.fixture(Path(temp),rows=rows,completion_fields={field:value})
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertFalse(result['ready_for_rf_test'])
+
+    def test_explicit_bounded_soak_audio_budget_is_shared_with_collector(self):
+        rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,trace_pcm_seconds=40,**self.identity),
+              dict(kind='sample',ms=1000,state=6,generation=8,fault=1,rf_disabled=True,rf_valid=True,rf_tx=False,
+                   rf_clear_confirmed=True,qualification_complete=True,qualification_turns=3,qualification_target=3)]
+        with tempfile.TemporaryDirectory() as temp:
+            result,_,_=self.fixture(Path(temp),rows=rows,mic_frames=48000*31)
+            self.assertEqual(result['status'],'READY_FOR_RF_TEST')
+            self.assertEqual(result['audio_taps']['mic']['seconds'],31)
+
+    def test_audio_cannot_exceed_declared_or_global_evidence_budget(self):
+        for limit,frames in ((30,48000*31),(121,480)):
+            rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,trace_pcm_seconds=limit,**self.identity),
+                  dict(kind='sample',ms=1000,state=6,generation=8,fault=1,rf_disabled=True,rf_valid=True,rf_tx=False,
+                       rf_clear_confirmed=True,qualification_complete=True,qualification_turns=3,qualification_target=3)]
+            with self.subTest(limit=limit),tempfile.TemporaryDirectory() as temp:
+                result,_,_=self.fixture(Path(temp),rows=rows,mic_frames=frames)
+                self.assertEqual(result['status'],'BLOCKED')
+
+    def test_clean_trace_cannot_hide_immutable_fault(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=self.fixture(Path(temp),immutable_fault=self.fault())
+            self.assertEqual(result['status'],'BLOCKED')
+            self.assertEqual(result['reason'],'capture-not-resumed-after-preparation')
+            self.assertEqual(result['first_gui_fault']['code'],17)
+            self.assertTrue((output/'runtime-fault.json').exists())
+
+    def test_disagreeing_fault_records_remain_blocked_with_both_origins(self):
+        rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,**self.identity),
+              dict(kind='sample',ms=1000,state=5,generation=8,fault=17,rf_disabled=True,rf_valid=True,rf_tx=False,
+                   rf_clear_confirmed=True,qualification_complete=False,qualification_turns=0,qualification_target=3,
+                   first_fault=dict(code=17,origin='trace-origin',stream='mic'))]
+        with tempfile.TemporaryDirectory() as temp:
+            result,_,_=self.fixture(Path(temp),rows=rows,immutable_fault=self.fault('sidecar-origin'),
+                completion_fields=dict(state=5,fault=17,qualification_complete=False,qualification_turns=0))
+            self.assertEqual(result['status'],'BLOCKED')
+            self.assertEqual(result['conflicting_faults']['trace']['origin'],'trace-origin')
+            self.assertEqual(result['conflicting_faults']['immutable']['origin'],'sidecar-origin')
+
+    def test_corrupt_completion_bytes_and_trace_remain_available(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=self.fixture(Path(temp),completion_raw='{incomplete publication')
+            self.assertEqual(result['status'],'BLOCKED')
+            self.assertEqual((output/'runtime-completion.json').read_text(),'{incomplete publication')
+            self.assertTrue((output/'usb-session.jsonl').exists())
+
+    def test_returned_incomplete_inventory_cannot_promote_closed_session(self):
+        for status in ('BLOCKED','NO_USB_AUDIO_DEVICE','USB_AUDIO_INCOMPLETE'):
+            with self.subTest(status=status),tempfile.TemporaryDirectory() as temp:
+                result,output,_=self.fixture(Path(temp),inventory_status=status)
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertEqual(result['primary_failure_stage'],'collection')
+                self.assertTrue((output/'usb-session.jsonl').exists())
+
+    def test_reboot_journal_preserves_fault_but_never_replaces_closed_trace(self):
+        slot=7
+        records=dict(metadata=dict(kind='session',schema='x6200.usb-audio.v3',**self.identity),fault=self.fault())
+        journal={'current-session.json':dict(schema='x6200.usb.incident-pointer.v1',slot=slot,session_id=self.identity['session_id'])}
+        journal.update({f'slot-{slot:02d}-{kind}.json':dict(schema='x6200.usb.incident.v1',kind=kind,
+                        session_id=self.identity['session_id'],record=record) for kind,record in records.items()})
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=self.fixture(Path(temp),pointer_missing=True,journal=journal)
+            self.assertEqual(result['status'],'BLOCKED')
+            self.assertFalse(result['ready_for_rf_test'])
+            self.assertEqual(result['first_gui_fault']['origin'],'capture-not-resumed-after-preparation')
+            self.assertEqual(result['persistent_journal']['status'],'COLLECTED')
+            self.assertTrue((output/'persistent-incidents/current-session.json').exists())
+
+    def test_journal_slot_mismatch_is_retained_as_partial_diagnostics(self):
+        slot=7
+        wrong=(slot+1)%16
+        journal={'current-session.json':dict(schema='x6200.usb.incident-pointer.v1',slot=slot,session_id=self.identity['session_id']),
+                 f'slot-{wrong:02d}-fault.json':dict(schema='x6200.usb.incident.v1',kind='fault',
+                     session_id=self.identity['session_id'],record=self.fault())}
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=self.fixture(Path(temp),pointer_missing=True,journal=journal)
+            self.assertEqual(result['status'],'BLOCKED')
+            self.assertEqual(result['persistent_journal']['status'],'PARTIAL')
+            self.assertNotIn('first_gui_fault',result)
+            self.assertTrue((output/f'persistent-incidents/slot-{wrong:02d}-fault.json').exists())
+
+
 class KitContractTests(unittest.TestCase):
-    def test_cli_kit_requires_startup_v2_and_preserves_exact_hashes(self):
+    def test_cli_kit_requires_startup_v3_and_preserves_exact_hashes(self):
         script=Path(subject.__file__).with_name('build_usb_rf_kit.py')
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
@@ -257,15 +462,19 @@ class KitContractTests(unittest.TestCase):
             self.assertFalse((root/'kit.zip').exists())
             manifest.update(usb_startup_contract_version=2,on_device_readiness_required=True)
             path.write_text(json.dumps(manifest))
+            legacy=subprocess.run(command,capture_output=True,text=True,timeout=15)
+            self.assertNotEqual(legacy.returncode,0)
+            manifest.update(usb_startup_contract_version=3,build_id='fixture-build')
+            path.write_text(json.dumps(manifest))
             accepted=subprocess.run(command,capture_output=True,text=True,timeout=15)
             self.assertEqual(accepted.returncode,0,accepted.stderr)
             import zipfile
             with zipfile.ZipFile(root/'kit.zip') as z:
                 kit=json.loads(z.read('rf-test-manifest.json'))
-                self.assertEqual(kit['usb_startup_contract_version'],2)
+                self.assertEqual(kit['usb_startup_contract_version'],3)
                 self.assertTrue(kit['on_device_readiness_required'])
                 self.assertFalse(kit['rf_commands'])
-                for name in ('gui_sha256','runner_sha256','rade_sha256','image_sha256','firmware_commit'):
+                for name in ('gui_sha256','runner_sha256','rade_sha256','image_sha256','firmware_commit','build_id'):
                     self.assertEqual(kit[name],manifest[name])
                 for name,digest in kit['files'].items():
                     self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(),digest)
@@ -273,15 +482,31 @@ class KitContractTests(unittest.TestCase):
 
 @unittest.skipIf(sys.platform == 'win32', 'The radio CLI uses Linux /tmp.')
 class CliTests(unittest.TestCase):
-    def run_cli(self, rows, invalid_sdr=False, damaged_manifest=False):
-        with tempfile.TemporaryDirectory(prefix='usb rf cli ') as temp:
+    def execute_cli(self, root, arguments):
+        adapter=textwrap.dedent('''\
+            import sys
+            from pathlib import Path
+            root=Path(sys.argv[1]);sys.path.insert(0,str(root))
+            import usb_rf_evidence as subject
+            subject.Path=lambda value: {'/tmp':root/'traces','/proc':root/'proc',
+                '/mnt/freedv-usb-incidents':root/'journal'}.get(str(value),Path(value))
+            sys.argv=[str(root/'usb_rf_evidence.py')]+sys.argv[2:]
+            raise SystemExit(subject.main())
+        ''')
+        return subprocess.run([sys.executable,'-c',adapter,str(root),*arguments],capture_output=True,text=True,timeout=15)
+
+    def run_current_cli(self, **fixture_fields):
+        with tempfile.TemporaryDirectory(prefix='usb current cli ') as temp:
             root=Path(temp)
+            # The real CLI, parser, report writer and process exit execute in
+            # the subprocess. Only inventory and runtime filesystem locations
+            # are adapted; no global /tmp pointer or radio is touched.
+            fixture=CurrentSessionTests()
+            fixture.fixture(root, **fixture_fields)
             shutil.copy2(Path(subject.__file__),root/'usb_rf_evidence.py')
-            (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',runner_sha256='fixture',rade_sha256='fixture')))
-            if damaged_manifest:
-                (root/'rf-test-manifest.json').write_text('{damaged transfer')
-            # Only the inventory adapter is synthetic. The actual published CLI,
-            # argument parser, report writer and OS exit contract execute below.
+            (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',
+                usb_startup_contract_version=3,on_device_readiness_required=True,
+                firmware_commit=fixture.identity['source_commit'],build_id=fixture.identity['build_id'])))
             (root/'usb_headset_inventory.py').write_text(textwrap.dedent('''\
                 import hashlib
                 def collect(**kwargs): return {'status':'USB_DUPLEX_CANDIDATE'}
@@ -289,17 +514,61 @@ class CliTests(unittest.TestCase):
                 def command(args, **kwargs):
                     return {'command':args,'exit_code':0,'stdout':'fixture only','stderr':'','timed_out':False,'output_truncated':False}
             '''))
-            trace=Path('/tmp')/('freedv-usb-cli-'+uuid.uuid4().hex+'.jsonl')
+            process=self.execute_cli(root,['--output',str(root/'cli-results')])
+            report=json.loads((root/'cli-results/rf-evidence.json').read_text())
+            self.assertTrue((root/'cli-results/SHA256SUMS').exists())
+            return process,report
+
+    def test_cli_current_closed_session_exits_zero_with_bound_identity(self):
+        process,report=self.run_current_cli()
+        self.assertEqual(process.returncode,0,process.stdout+process.stderr)
+        self.assertEqual(report['status'],'READY_FOR_RF_TEST')
+        self.assertEqual(report['session_identity'],CurrentSessionTests.identity)
+
+    def test_cli_current_missing_completion_exits_one(self):
+        process,report=self.run_current_cli(completion_missing=True)
+        self.assertEqual(process.returncode,1,process.stdout+process.stderr)
+        self.assertEqual(report['status'],'BLOCKED')
+        self.assertFalse(report['ready_for_rf_test'])
+
+    def test_cli_current_sidecar_fault_exits_one_with_original_reason(self):
+        process,report=self.run_current_cli(immutable_fault=CurrentSessionTests().fault())
+        self.assertEqual(process.returncode,1,process.stdout+process.stderr)
+        self.assertEqual(report['reason'],'capture-not-resumed-after-preparation')
+
+    def test_cli_current_mismatched_build_exits_one(self):
+        process,report=self.run_current_cli(completion_fields={'build_id':'older-build'})
+        self.assertEqual(process.returncode,1,process.stdout+process.stderr)
+        self.assertEqual(report['status'],'BLOCKED')
+
+    def run_cli(self, rows, invalid_sdr=False, damaged_manifest=False):
+        with tempfile.TemporaryDirectory(prefix='usb rf cli ') as temp:
+            root=Path(temp)
+            shutil.copy2(Path(subject.__file__),root/'usb_rf_evidence.py')
+            (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',runner_sha256='fixture',rade_sha256='fixture')))
+            if damaged_manifest:
+                (root/'rf-test-manifest.json').write_text('{damaged transfer')
+            # Inventory and filesystem roots are isolated adapters. The actual
+            # published parser, report writer and OS exit contract execute below.
+            (root/'usb_headset_inventory.py').write_text(textwrap.dedent('''\
+                import hashlib
+                def collect(**kwargs): return {'status':'USB_DUPLEX_CANDIDATE'}
+                def sha256(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+                def command(args, **kwargs):
+                    return {'command':args,'exit_code':0,'stdout':'fixture only','stderr':'','timed_out':False,'output_truncated':False}
+            '''))
+            (root/'traces').mkdir();(root/'proc').mkdir()
+            trace=root/'traces'/('freedv-usb-cli-'+uuid.uuid4().hex+'.jsonl')
             trace.write_text(''.join(json.dumps(row)+'\n' for row in rows))
             output=root/'results'
-            args=[sys.executable,str(root/'usb_rf_evidence.py'),'--output',str(output)]
+            args=['--output',str(output)]
             if invalid_sdr:
                 wav=root/'invalid-rate.wav'
                 with wave.open(str(wav),'wb') as w:
                     w.setparams((1,2,22050,0,'NONE','not compressed'));w.writeframes(b'\0\0'*22050)
                 args+=['--sdr-wav',str(wav)]
             try:
-                process=subprocess.run(args,capture_output=True,text=True,timeout=15)
+                process=self.execute_cli(root,args)
                 report=json.loads((output/'rf-evidence.json').read_text())
                 self.assertEqual((output/'usb-session.jsonl').read_text(),trace.read_text())
                 preserved=(output/'sdr-usb-audio.wav').read_bytes() if invalid_sdr else None

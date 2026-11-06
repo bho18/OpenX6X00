@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #define _POSIX_C_SOURCE 200809L
 #include "usb_voice.h"
+#include "usb_evidence_store.h"
 #include <pulse/pulseaudio.h>
 #include <pulse/timeval.h>
+#include <pulse/rtclock.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +12,16 @@
 #include <time.h>
 #include <unistd.h>
 #include <samplerate.h>
+#include <errno.h>
+#ifndef FREEDV_BUILD_ID
+#define FREEDV_BUILD_ID "unqualified-development"
+#endif
+#ifndef FREEDV_SOURCE_COMMIT
+#define FREEDV_SOURCE_COMMIT "unqualified-development"
+#endif
+#if defined(HOST_BUILD)
+extern void usb_test_operation_phase(const char *) __attribute__((weak));
+#endif
 
 #define RATE 48000u
 #define RADIO_RATE 44100u
@@ -42,7 +54,7 @@ struct fd_usb_audio {
     pthread_t worker,watch,control_worker;
     pthread_mutex_t mutex,events_mutex,control_mutex;
     pthread_cond_t control_changed;
-    atomic_bool stop,stopped,armed,rf_disabled,qualification_requested,qualification_running,qualification_complete;
+    atomic_bool stop,stopped,watch_exit,armed,rf_disabled,qualification_requested,qualification_running,qualification_complete;
     atomic_bool qualification_keyed,qualification_loopback,reference_input_active,fault_record_ready;
     atomic_int context_state_id;
     atomic_uint fault,state,qualification_done;
@@ -58,11 +70,12 @@ struct fd_usb_audio {
     pa_operation *drain;int drain_ack;uint64_t drain_started;
     struct { int ack; char name[40];uint64_t start; } operation;
     fd_voice_engine *engine;SRC_STATE *radio_input,*radio_output;
-    uint64_t generation,turns,release,phase_at,rx_sequence,pending_key,pending_clear,qualification_release;
+    uint64_t generation,turns,release,phase_at,rx_sequence,pending_key,pending_clear,qualification_release,qualification_idle_until;
     bool modem_started,headset_started,permit_press,finishing,producer_finished,radio_output_ended,rf_clear_confirmed;
     pcm_queue capture,radio_capture,play;
     stream_metrics metrics[STREAM_COUNT];
-    unsigned gaps;uint64_t submitted_rx,submitted_mic,rendered_rx,rendered_modem,converted_radio,reference_submitted;
+    unsigned gaps,mic_fragment_frames;uint64_t submitted_rx,submitted_mic,rendered_rx,rendered_modem,converted_radio,reference_submitted;
+    uint64_t tx_capture_started,tx_capture_ended,tx_submitted_base;
     int16_t qualification_pcm[RATE*4];unsigned qualification_n,reference_cursor;
     bool qualification_waiting_loopback;
     uint64_t reference_next,reference_started,reference_synthesis_base,reference_underflow_base,reference_headset_base;
@@ -71,7 +84,9 @@ struct fd_usb_audio {
     uint64_t preparation_excluded_ms[2],preparation_excluded_frames[2];
     unsigned qualified_rate_hz[2];
     char source[512],sink[512],source_card[32],sink_card[32];unsigned sources,sinks;
-    FILE *trace,*taps[4];unsigned trace_rows;uint64_t tap_samples[4],last_trace;
+    FILE *trace,*taps[4];unsigned trace_rows;uint64_t tap_samples[4],last_trace,last_sample_ms;
+    char session_id[256]; bool finalizing,trace_complete,trace_history_truncated;
+    fd_voice_stats final_engine; atomic_int storage_error;
 };
 static uint64_t now_ms(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return(uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;}
 static void pause_ms(unsigned n){struct timespec t={n/1000,(long)(n%1000)*1000000};nanosleep(&t,NULL);}
@@ -129,9 +144,11 @@ static unsigned convert(fd_usb_audio *a,SRC_STATE *src,const int16_t *input,unsi
     if(src_process(src,&data)||data.input_frames_used!=(long)count){FAIL(a,U_ENGINE,"resampler-processing");return 0;}
     src_float_to_short_array(out,output,(int)data.output_frames_gen);return(unsigned)data.output_frames_gen;
 }
+static unsigned trace_seconds(fd_usb_audio *a){unsigned seconds=a->c.trace_pcm_seconds?a->c.trace_pcm_seconds:30;return seconds>120?120:seconds;}
 static void tap(fd_usb_audio *a,unsigned slot,const int16_t *p,unsigned n){
-    if(!a->taps[slot]||a->tap_samples[slot]>=RATE*30)return;
-    if(n>RATE*30-a->tap_samples[slot])n=RATE*30-a->tap_samples[slot];
+    uint64_t limit=(uint64_t)RATE*trace_seconds(a);
+    if(!a->taps[slot]||a->tap_samples[slot]>=limit)return;
+    if(n>limit-a->tap_samples[slot])n=(unsigned)(limit-a->tap_samples[slot]);
     if(fwrite(p,2,n,a->taps[slot])!=n)FAIL(a,U_IO,"trace-pcm-write");
     a->tap_samples[slot]+=n;
 }
@@ -211,8 +228,8 @@ static void underflow(pa_stream *s,void *p){
 }
 static void context_state(pa_context *c,void *p){fd_usb_audio *a=p;atomic_store(&a->context_state_id,pa_context_get_state(c));if(!PA_CONTEXT_IS_GOOD(pa_context_get_state(c))&&!atomic_load(&a->stop))fail_at(a,U_DEVICE,"context-state",STREAM_COUNT,pa_context_errno(c),0);}
 static void io_tick(pa_mainloop_api *api,pa_time_event *e,const struct timeval *tv,void *p){
-    (void)tv;fd_usb_audio *a=p;atomic_store(&a->io_heartbeat,now_ms());
-    struct timeval next;pa_gettimeofday(&next);pa_timeval_add(&next,10000);api->time_restart(e,&next);
+    (void)api;(void)tv;fd_usb_audio *a=p;atomic_store(&a->io_heartbeat,now_ms());
+    pa_context_rttime_restart(a->context,e,pa_rtclock_now()+10000);
 }
 static bool physical(pa_proplist *p,const char *driver){const char *bus=pa_proplist_gets(p,"device.bus"),*vendor=pa_proplist_gets(p,"device.vendor.id"),*product=pa_proplist_gets(p,"device.product.id");return driver&&!strncmp(driver,"module-alsa-",12)&&bus&&!strcmp(bus,"usb")&&vendor&&!strcmp(vendor,"3511")&&product&&!strcmp(product,"2b1e");}
 static void source_info(pa_context *c,const pa_source_info *i,int end,void *p){
@@ -299,6 +316,9 @@ static bool direction(fd_usb_audio *a,fd_voice_direction d){
     uint64_t before_ms[2],before_frames[2];
     bool exclude=atomic_load(&a->qualification_running)&&atomic_load(&a->rf_disabled);
     io_lock(a);uint64_t preparation_at=now_ms();for(unsigned i=0;i<2;++i){before_ms[i]=preparation_at;before_frames[i]=atomic_load(&a->metrics[i].captured);}io_unlock(a);
+    #if defined(HOST_BUILD)
+    if(usb_test_operation_phase)usb_test_operation_phase(atomic_load(&a->state)==FD_USB_PREPARE?"initial-rx":d==FD_VOICE_TX?"tx":"rx-return");
+#endif
     event(a,"preparation-start","direction",STREAM_COUNT,d,0,0);
     reset_queues(a);
     if(!stream_op(a,MODEM,false,1)||!stream_op(a,MODEM,true,0)||!stream_op(a,HEADSET,true,0))return false;
@@ -322,6 +342,60 @@ static bool direction(fd_usb_audio *a,fd_voice_direction d){
     return !atomic_load(&a->stop);
 }
 static void json_string(FILE *f,const char *s){fputc('"',f);for(;s&&*s;++s){unsigned char c=(unsigned char)*s;if(c=='"'||c=='\\'){fputc('\\',f);fputc(c,f);}else if(c>=32)fputc(c,f);}fputc('"',f);}
+static void identity(FILE *f,fd_usb_audio *a){
+    fputs("\"session_id\":",f);json_string(f,a->session_id);
+    fputs(",\"build_id\":",f);json_string(f,FREEDV_BUILD_ID);
+    fputs(",\"source_commit\":",f);json_string(f,FREEDV_SOURCE_COMMIT);
+}
+static bool finish_json(FILE *f,const char *temporary,const char *path,bool replace){
+    bool ok=!ferror(f);if(fflush(f)||fsync(fileno(f)))ok=false;if(fclose(f))ok=false;
+    if(ok)ok=replace?rename(temporary,path)==0:link(temporary,path)==0;
+    unlink(temporary);return ok;
+}
+static void persist_record(fd_usb_audio *a,const char *kind,const char *path){
+    if(!a->c.incident_dir)return;
+    char json[16385];FILE *f=fopen(path,"rb");int error=0;
+    if(!f)error=errno;else{
+        size_t n=fread(json,1,sizeof(json)-1,f);json[n]=0;
+        if(ferror(f)||!feof(f))error=EIO;fclose(f);
+        if(!error){int result=fd_usb_evidence_store(a->c.incident_dir,a->session_id,kind,json);if(result<0)error=-result;}
+    }
+    if(error){atomic_store(&a->storage_error,error);fail_at(a,U_IO,"incident-store-write",STREAM_COUNT,error,0);}
+}
+static void current_session(fd_usb_audio *a){
+    char path[768],temporary[800];const char *slash=strrchr(a->c.trace_prefix,'/');
+    size_t n=slash?(size_t)(slash-a->c.trace_prefix+1):0;
+    if(n+sizeof("freedv-usb-current.json")>sizeof(path)){atomic_store(&a->storage_error,ENAMETOOLONG);return;}
+    memcpy(path,a->c.trace_prefix,n);strcpy(path+n,"freedv-usb-current.json");snprintf(temporary,sizeof(temporary),"%s.%ld.tmp",path,(long)getpid());
+    FILE *f=fopen(temporary,"wx");if(!f){atomic_store(&a->storage_error,errno);return;}
+    fputs("{\"kind\":\"session-pointer\",\"schema\":\"x6200.usb-current.v1\",\"terminal\":false,",f);identity(f,a);
+    fputs(",\"trace_basename\":",f);char base[300];snprintf(base,sizeof(base),"%s.jsonl",a->session_id);json_string(f,base);
+    fputs(",\"completion_basename\":",f);snprintf(base,sizeof(base),"%s-completion.json",a->session_id);json_string(f,base);fputs("}\n",f);
+    if(!finish_json(f,temporary,path,true))atomic_store(&a->storage_error,EIO);
+}
+static void completion_payload(FILE *f,fd_usb_audio *a){
+    fd_usb_snapshot s=a->snapshot;
+    fputs("{\"kind\":\"completion\",\"schema\":\"x6200.usb-completion.v1\",",f);identity(f,a);
+    fprintf(f,",\"terminal\":true,\"state\":%u,\"fault\":%u,\"rf_disabled\":%s,\"rf_valid\":%s,\"rf_tx\":%s,\"rf_clear_confirmed\":%s,\"qualification_complete\":%s,\"qualification_turns\":%u,\"qualification_target\":%u,\"last_sample_ms\":%llu,\"finalized_ms\":%llu,\"trace_complete\":%s,\"trace_history_truncated\":%s,\"trace_rows\":%u,\"events_dropped\":%u,\"storage_errno\":%d}\n",
+        s.state,s.fault,s.rf_disabled?"true":"false",s.rf_valid?"true":"false",s.rf_tx?"true":"false",s.rf_clear_confirmed?"true":"false",s.qualification_complete?"true":"false",s.qualification_turns,s.qualification_target,
+        (unsigned long long)a->last_sample_ms,(unsigned long long)now_ms(),a->trace_complete?"true":"false",a->trace_history_truncated?"true":"false",a->trace_rows,a->event_dropped,atomic_load(&a->storage_error));
+}
+static void completion(fd_usb_audio *a){
+    if(!a->c.trace_prefix)return;
+    char path[768],temporary[800];snprintf(path,sizeof(path),"%s-completion.json",a->c.trace_prefix);snprintf(temporary,sizeof(temporary),"%s.%ld.tmp",path,(long)getpid());
+    FILE *f=fopen(temporary,"wx");if(!f){atomic_store(&a->storage_error,errno);return;}
+    completion_payload(f,a);bool ok=!ferror(f);if(fflush(f)||fsync(fileno(f)))ok=false;if(fclose(f))ok=false;
+    if(!ok){atomic_store(&a->storage_error,EIO);unlink(temporary);return;}
+    /* The authoritative local receipt includes the outcome of persistent
+     * completion storage. An earlier intentional Stop cannot hide its error. */
+    int before=atomic_load(&a->storage_error);persist_record(a,"completion",temporary);
+    if(atomic_load(&a->storage_error)!=before){
+        f=fopen(temporary,"w");if(!f){unlink(temporary);return;}
+        completion_payload(f,a);ok=!ferror(f);if(fflush(f)||fsync(fileno(f)))ok=false;if(fclose(f))ok=false;
+    }
+    if(!ok||link(temporary,path)){atomic_store(&a->storage_error,EIO);}
+    unlink(temporary);
+}
 static void describe_streams(fd_usb_audio *a){
     if(!a->trace)return;
     for(unsigned i=0;i<STREAM_COUNT;++i){
@@ -342,7 +416,8 @@ static bool prepare(fd_usb_audio *a){
     io_lock(a);uint64_t until=now_ms()+5000;
     while(pa_context_get_state(a->context)!=PA_CONTEXT_READY&&!atomic_load(&a->stop)&&now_ms()<until){io_unlock(a);atomic_store(&a->heartbeat,now_ms());pause_ms(1);io_lock(a);}
     if(pa_context_get_state(a->context)!=PA_CONTEXT_READY){io_unlock(a);return false;}
-    pa_mainloop_api *api=pa_threaded_mainloop_get_api(a->loop);struct timeval next;pa_gettimeofday(&next);pa_timeval_add(&next,10000);a->io_timer=api->time_new(api,&next,io_tick,a);
+    a->io_timer=pa_context_rttime_new(a->context,pa_rtclock_now()+10000,io_tick,a);
+    if(!a->io_timer){io_unlock(a);return false;}
     if(a->c.source&&a->c.sink){snprintf(a->source,sizeof(a->source),"%s",a->c.source);snprintf(a->sink,sizeof(a->sink),"%s",a->c.sink);}else{
         bool ok=wait_operation_locked(a,pa_context_get_source_info_list(a->context,source_info,a),"discover-sources",MIC,false)&&wait_operation_locked(a,pa_context_get_sink_info_list(a->context,sink_info,a),"discover-sinks",HEADSET,false);
         if(!ok||a->sources!=1||a->sinks!=1||strcmp(a->source_card,a->sink_card)){io_unlock(a);FAIL(a,U_IDENTITY,"endpoint-identity");return false;}
@@ -363,6 +438,9 @@ static bool prepare(fd_usb_audio *a){
     until=now_ms()+5000;bool ready=false;
     while(ok&&!ready&&!atomic_load(&a->stop)&&now_ms()<until){ready=true;for(unsigned i=0;i<STREAM_COUNT;++i)if(pa_stream_get_state(a->streams[i])!=PA_STREAM_READY)ready=false;io_unlock(a);atomic_store(&a->heartbeat,now_ms());pause_ms(1);io_lock(a);}
     io_unlock(a);if(!ready)return false;
+    io_lock(a);const pa_buffer_attr *mic_attr=pa_stream_get_buffer_attr(a->streams[MIC]);
+    a->mic_fragment_frames=mic_attr&&mic_attr->fragsize!=UINT32_MAX?mic_attr->fragsize/2:0;io_unlock(a);
+    if(!a->mic_fragment_frames){FAIL(a,U_PREPARE,"microphone-fragment-size");return false;}
     describe_streams(a);if(!direction(a,FD_VOICE_RX))return false;
     until=now_ms()+1500;
     while((!atomic_load(&a->metrics[MIC].first)||!atomic_load(&a->metrics[RADIO_RX].first))&&!atomic_load(&a->stop)&&now_ms()<until){atomic_store(&a->heartbeat,now_ms());pause_ms(1);}
@@ -419,12 +497,26 @@ static fd_usb_inputs effective_inputs(fd_usb_audio *a,fd_usb_inputs actual){
     if(!atomic_load(&a->qualification_running))return actual;
     fd_usb_inputs result=actual;unsigned st=atomic_load(&a->state);
     result.pressed=st==FD_USB_START||st==FD_USB_KEY_PENDING||(st==FD_USB_TX&&now_ms()-a->phase_at<1200);
-    if(st==FD_USB_RX)result.pressed=!atomic_load(&a->qualification_loopback)&&now_ms()-a->phase_at>=250;
+    if(st==FD_USB_RX)result.pressed=!atomic_load(&a->qualification_loopback)&&now_ms()>=a->qualification_idle_until&&now_ms()-a->phase_at>=250;
     if(st==FD_USB_TX&&!result.pressed)result.release=++a->qualification_release;
     else result.release=a->qualification_release;
     result.rf_tx=atomic_load(&a->qualification_keyed);return result;
 }
 static void drain_done(pa_stream *s,int success,void *p){(void)s;((fd_usb_audio *)p)->drain_ack=success?1:-1;}
+/* A healthy modem/sink trace cannot reveal speech that disappeared before
+ * encoding. Screen accepted microphone frames against the active wall-time
+ * window before emitting EOO or counting a completed turn. One percent is a
+ * delivery tolerance, not a measured hardware oscillator specification; two
+ * negotiated capture fragments cover the two callback boundary blocks. */
+static bool capture_accounting(fd_usb_audio *a){
+    uint64_t elapsed=a->tx_capture_ended>=a->tx_capture_started?a->tx_capture_ended-a->tx_capture_started:0;
+    uint64_t accepted=a->submitted_mic-a->tx_submitted_base,expected=elapsed*RATE/1000;
+    uint64_t boundary=(uint64_t)a->mic_fragment_frames*2,required=expected*99/100;
+    required=required>boundary?required-boundary:0;bool evaluated=elapsed>=750,passed=!evaluated||accepted>=required;
+    if(a->trace)fprintf(a->trace,"{\"kind\":\"source-accounting\",\"ms\":%llu,\"turn\":%llu,\"active_ms\":%llu,\"accepted_mic_frames\":%llu,\"expected_mic_frames\":%llu,\"required_mic_frames\":%llu,\"boundary_frames\":%llu,\"delivery_tolerance_percent\":1,\"evaluated\":%s,\"passed\":%s}\n",
+        (unsigned long long)now_ms(),(unsigned long long)(a->turns+1),(unsigned long long)elapsed,(unsigned long long)accepted,(unsigned long long)expected,(unsigned long long)required,(unsigned long long)boundary,evaluated?"true":"false",passed?"true":"false");
+    if(!passed){FAIL(a,U_CAPTURE_RATE,"tx-microphone-frame-deficit");return false;}return true;
+}
 static void process_audio(fd_usb_audio *a,unsigned st){
     int16_t pcm[4096],converted[4608];unsigned n=0;
     io_lock(a);n=pop(st==FD_USB_RX?&a->radio_capture:&a->capture,pcm,st==FD_USB_RX?441:480);io_unlock(a);
@@ -449,7 +541,7 @@ static void process_audio(fd_usb_audio *a,unsigned st){
         }
     }
     io_lock(a);bool input_empty=!a->capture.n;unsigned play_n=a->play.n;io_unlock(a);
-    if(st==FD_USB_DRAIN&&input_empty&&!a->finishing){if(!fd_voice_finish(a->engine,a->generation)){FAIL(a,U_ENGINE,"codec-finish");return;}a->finishing=true;}
+    if(st==FD_USB_DRAIN&&input_empty&&!a->finishing){if(!capture_accounting(a))return;if(!fd_voice_finish(a->engine,a->generation)){FAIL(a,U_ENGINE,"codec-finish");return;}a->finishing=true;}
     unsigned limit=st==FD_USB_RX?QMAX:RADIO_RATE/2;
     if(play_n>limit){FAIL(a,U_QUEUE,"render-queue-limit");return;}
     unsigned room=limit-play_n;if(room>4096)room=4096;
@@ -492,6 +584,7 @@ static unsigned measured_rate(fd_usb_audio *a,unsigned stream,uint64_t *window){
     return *window?(unsigned)(frames*1000/(*window)):0;
 }
 static bool finish_qualification(fd_usb_audio *a){
+    if(atomic_load(&a->storage_error)){FAIL(a,U_IO,"evidence-storage-not-ready");return false;}
     uint64_t mw=0,rw=0;unsigned mr=measured_rate(a,MIC,&mw),rr=measured_rate(a,RADIO_RX,&rw);
     if(mw<3000||rw<3000||mr<RATE*95/100||mr>RATE*105/100){FAIL(a,U_CAPTURE_RATE,"microphone-measured-rate");return false;}
     if(rr<RADIO_RATE*95/100||rr>RADIO_RATE*105/100){FAIL(a,U_CAPTURE_RATE,"radio-rx-measured-rate");return false;}
@@ -501,7 +594,7 @@ static bool finish_qualification(fd_usb_audio *a){
 }
 static void publish(fd_usb_audio *a,fd_usb_inputs in){
     uint64_t now=now_ms();fd_usb_snapshot s={.state=atomic_load(&a->state),.fault=atomic_load(&a->fault),.generation=a->generation,.turns=a->turns,.heartbeat_ms=atomic_load(&a->heartbeat),
-        .armed=atomic_load(&a->armed),.pressed=in.pressed,.rf_valid=in.rf_valid,.rf_tx=in.rf_tx,.stopped=atomic_load(&a->stopped),
+        .armed=atomic_load(&a->armed),.pressed=in.pressed,.rf_valid=in.rf_valid,.rf_tx=in.rf_tx,.stopped=atomic_load(&a->stopped)||a->finalizing,
         .rf_disabled=atomic_load(&a->rf_disabled),.qualification_complete=atomic_load(&a->qualification_complete),.qualification_running=atomic_load(&a->qualification_running),
         .qualification_target=a->c.qualification_turns,.qualification_turns=atomic_load(&a->qualification_done),.qualification_loopback=atomic_load(&a->qualification_loopback),.rf_clear_confirmed=a->rf_clear_confirmed,
         .mic_age_ms=age(now,atomic_load(&a->metrics[MIC].last)),.rx_age_ms=age(now,atomic_load(&a->metrics[RADIO_RX].last)),
@@ -509,7 +602,9 @@ static void publish(fd_usb_audio *a,fd_usb_inputs in){
         .mic_discarded=atomic_load(&a->metrics[MIC].discarded),.rx_discarded=atomic_load(&a->metrics[RADIO_RX].discarded),
         .mic_max_gap_ms=atomic_load(&a->metrics[MIC].max_gap),.rx_max_gap_ms=atomic_load(&a->metrics[RADIO_RX].max_gap),
         .mic_holes=atomic_load(&a->metrics[MIC].holes),.rx_holes=atomic_load(&a->metrics[RADIO_RX].holes),
-        .headset_underflows=atomic_load(&a->metrics[HEADSET].underflows),.modem_underflows=atomic_load(&a->metrics[MODEM].payload_underflows),.engine=fd_voice_observe(a->engine)};
+        .headset_underflows=atomic_load(&a->metrics[HEADSET].underflows),.modem_underflows=atomic_load(&a->metrics[MODEM].payload_underflows),.engine=a->engine?fd_voice_observe(a->engine):a->final_engine};
+    s.submitted_mic=a->submitted_mic;s.rendered_modem=a->rendered_modem;s.modem_tap_samples=a->tap_samples[2];
+    s.qualification_idle_remaining_ms=atomic_load(&a->qualification_running)&&now<a->qualification_idle_until?(unsigned)(a->qualification_idle_until-now):0;
     s.mic_rate_hz=measured_rate(a,MIC,&s.mic_rate_window_ms);s.rx_rate_hz=measured_rate(a,RADIO_RX,&s.rx_rate_window_ms);
     if(a->loop){io_lock(a);s.input_queue=a->capture.n+(a->radio_capture.n*RATE+RADIO_RATE-1)/RADIO_RATE;s.output_queue=a->play.n;s.gaps=a->gaps;io_unlock(a);}
     s.holes=s.mic_holes+s.rx_holes;s.underflows=s.headset_underflows+s.modem_underflows;
@@ -518,10 +613,11 @@ static void publish(fd_usb_audio *a,fd_usb_inputs in){
     trace_event events[EVENT_MAX];unsigned count;
     pthread_mutex_lock(&a->events_mutex);count=a->event_n;for(unsigned i=0;i<count;++i)events[i]=a->events[(a->event_head+i)%EVENT_MAX];a->event_head=(a->event_head+count)%EVENT_MAX;a->event_n=0;pthread_mutex_unlock(&a->events_mutex);
     if(a->trace){
-        for(unsigned i=0;i<count&&a->trace_rows<7000;++i){trace_event *e=&events[i];++a->trace_rows;
+        unsigned emitted=0;for(;emitted<count&&a->trace_rows<6999;++emitted){trace_event *e=&events[emitted];++a->trace_rows;
             fprintf(a->trace,"{\"kind\":\"event\",\"ms\":%llu,\"state\":%u,\"event\":\"%s\",\"operation\":\"%s\",\"stream\":\"%s\",\"status\":%d,\"pa_errno\":%d,\"duration_ms\":%llu}\n",(unsigned long long)e->ms,e->state,e->event,e->operation,e->stream,e->status,e->error,(unsigned long long)e->duration);
         }
-        if((s.stopped||now-a->last_trace>=100)&&a->trace_rows<7000){a->last_trace=now;++a->trace_rows;
+        if(emitted<count||(!a->finalizing&&now-a->last_trace>=100&&a->trace_rows>=6999))a->trace_history_truncated=true;
+        if(a->finalizing||((s.stopped||now-a->last_trace>=100)&&a->trace_rows<6999)){a->last_trace=now;a->last_sample_ms=now;++a->trace_rows;
             fprintf(a->trace,"{\"kind\":\"sample\",\"ms\":%llu,\"state\":%u,\"fault\":%u,\"generation\":%llu,\"turns\":%llu,\"rf_valid\":%s,\"rf_tx\":%s,\"ptt\":%s,\"capture\":%u,\"playback\":%u,\"engine_in\":%u,\"engine_out\":%u,\"eoo\":%llu,\"sync\":%s,\"gaps\":%u,\"underflows\":%u,\"rf_disabled\":%s,\"qualification_running\":%s,\"qualification_complete\":%s,\"qualification_loopback\":%s,\"qualification_target\":%u,\"qualification_turns\":%u,\"rf_clear_confirmed\":%s,\"mic_age_ms\":%llu,\"rx_age_ms\":%llu,\"mic_rate_hz\":%u,\"rx_rate_hz\":%u,\"mic_rate_window_ms\":%llu,\"rx_rate_window_ms\":%llu,\"mic_captured\":%llu,\"rx_captured\":%llu,\"mic_discarded\":%llu,\"rx_discarded\":%llu,\"mic_holes\":%u,\"rx_holes\":%u,\"headset_underflows\":%u,\"modem_underflows\":%u,\"submitted_rx\":%llu,\"submitted_mic\":%llu,\"rendered_rx\":%llu,\"rendered_modem\":%llu,\"io_heartbeat_age_ms\":%u,\"mic_suspended\":%d,\"rx_suspended\":%d,\"headset_suspended\":%d,\"modem_suspended\":%d,\"preparation_excluded_ms\":[%llu,%llu],\"preparation_excluded_frames\":[%llu,%llu],\"first_fault\":{\"code\":%u,\"origin\":\"%s\",\"stream\":\"%s\",\"pa_errno\":%u,\"operation_ms\":%llu,\"mic_age_ms\":%llu,\"rx_age_ms\":%llu,\"io_heartbeat_age_ms\":%llu}}\n",
                 (unsigned long long)now,s.state,s.fault,(unsigned long long)s.generation,(unsigned long long)s.turns,in.rf_valid?"true":"false",in.rf_tx?"true":"false",in.pressed?"true":"false",s.input_queue,s.output_queue,s.engine.input_depth,s.engine.output_depth,(unsigned long long)s.engine.eoo_count,s.engine.synchronized?"true":"false",s.gaps,s.underflows,s.rf_disabled?"true":"false",s.qualification_running?"true":"false",s.qualification_complete?"true":"false",s.qualification_loopback?"true":"false",s.qualification_target,s.qualification_turns,s.rf_clear_confirmed?"true":"false",(unsigned long long)s.mic_age_ms,(unsigned long long)s.rx_age_ms,s.mic_rate_hz,s.rx_rate_hz,(unsigned long long)s.mic_rate_window_ms,(unsigned long long)s.rx_rate_window_ms,(unsigned long long)s.mic_captured,(unsigned long long)s.rx_captured,(unsigned long long)s.mic_discarded,(unsigned long long)s.rx_discarded,s.mic_holes,s.rx_holes,s.headset_underflows,s.modem_underflows,(unsigned long long)a->submitted_rx,(unsigned long long)a->submitted_mic,(unsigned long long)a->rendered_rx,(unsigned long long)a->rendered_modem,age(now,atomic_load(&a->io_heartbeat)),atomic_load(&a->metrics[MIC].suspended),atomic_load(&a->metrics[RADIO_RX].suspended),atomic_load(&a->metrics[HEADSET].suspended),atomic_load(&a->metrics[MODEM].suspended),(unsigned long long)a->preparation_excluded_ms[MIC],(unsigned long long)a->preparation_excluded_ms[RADIO_RX],(unsigned long long)a->preparation_excluded_frames[MIC],(unsigned long long)a->preparation_excluded_frames[RADIO_RX],s.first_fault_code,s.first_fault_origin,s.first_fault_stream,s.first_fault_pa_error,(unsigned long long)s.first_fault_operation_ms,(unsigned long long)s.first_fault_mic_age_ms,(unsigned long long)s.first_fault_rx_age_ms,(unsigned long long)first_fault_io_age);
         }
@@ -531,9 +627,12 @@ static void publish(fd_usb_audio *a,fd_usb_inputs in){
 static void *run(void *p){
     fd_usb_audio *a=p;fd_usb_inputs actual={0};
     if(a->c.trace_prefix){
-        char path[256];snprintf(path,sizeof(path),"%s.jsonl",a->c.trace_prefix);a->trace=fopen(path,"wx");
+        char path[1024];snprintf(path,sizeof(path),"%s.jsonl",a->c.trace_prefix);a->trace=fopen(path,"wx");
         static const char *const names[]={"mic","radio-rx","modem","decoded"};for(unsigned i=0;i<4;++i){snprintf(path,sizeof(path),"%s-%s.raw",a->c.trace_prefix,names[i]);a->taps[i]=fopen(path,"wbx");}
-        if(a->trace)fprintf(a->trace,"{\"kind\":\"session\",\"schema\":\"x6200.usb-audio.v2\",\"rf_disabled\":%s,\"qualification_target\":%u,\"operation_timeout_ms\":%u,\"capture_timeout_ms\":%u,\"preparation_capture_timeout_ms\":%u}\n",atomic_load(&a->rf_disabled)?"true":"false",a->c.qualification_turns,OP_TIMEOUT_MS,CAPTURE_TIMEOUT_MS,PREPARATION_CAPTURE_TIMEOUT_MS);
+        if(a->trace){fputs("{\"kind\":\"session\",\"schema\":\"x6200.usb-audio.v3\",",a->trace);identity(a->trace,a);
+            fprintf(a->trace,",\"rf_disabled\":%s,\"qualification_target\":%u,\"qualification_idle_ms\":%u,\"trace_pcm_seconds\":%u,\"operation_timeout_ms\":%u,\"capture_timeout_ms\":%u,\"preparation_capture_timeout_ms\":%u}\n",atomic_load(&a->rf_disabled)?"true":"false",a->c.qualification_turns,a->c.qualification_idle_ms,trace_seconds(a),OP_TIMEOUT_MS,CAPTURE_TIMEOUT_MS,PREPARATION_CAPTURE_TIMEOUT_MS);
+            fflush(a->trace);current_session(a);char metadata[768];snprintf(metadata,sizeof(metadata),"%s.jsonl",a->c.trace_prefix);persist_record(a,"metadata",metadata);}
+
     }
     if(!prepare(a)){if(!atomic_load(&a->fault))FAIL(a,U_PREPARE,"initial-audio-preparation");goto done;}
     a->permit_press=false;a->rf_clear_confirmed=true;state(a,FD_USB_RX);
@@ -544,7 +643,7 @@ static void *run(void *p){
             if(atomic_load(&a->state)!=FD_USB_RX||!atomic_load(&a->rf_disabled)||actual.pressed||actual.rf_tx){FAIL(a,U_PREPARE,"evaluation-start-state");break;}
             atomic_store(&a->qualification_done,0);atomic_store(&a->qualification_complete,false);
             io_lock(a);for(unsigned i=0;i<2;++i){a->rate_start_ms[i]=atomic_load(&a->metrics[i].last);a->rate_start_count[i]=atomic_load(&a->metrics[i].captured);a->preparation_excluded_ms[i]=a->preparation_excluded_frames[i]=0;}io_unlock(a);
-            a->qualification_rate_started=true;atomic_store(&a->qualification_running,true);a->permit_press=true;state(a,FD_USB_RX);event(a,"qualification-start",NULL,STREAM_COUNT,0,0,0);
+            a->qualification_rate_started=true;a->qualification_idle_until=now_ms()+a->c.qualification_idle_ms;atomic_store(&a->qualification_running,true);a->permit_press=true;state(a,FD_USB_RX);event(a,"qualification-start",NULL,STREAM_COUNT,0,0,0);
         }
         fd_usb_inputs in=effective_inputs(a,actual);unsigned st=atomic_load(&a->state);uint64_t now=now_ms();
         unsigned required=st==FD_USB_RX?RADIO_RX:MIC;
@@ -570,15 +669,16 @@ static void *run(void *p){
             bool ok=false,done_key=key_complete(a,&ok);
             if(!in.pressed||in.release!=a->release){a->pending_clear=request_clear(a,false);a->rx_sequence=actual.sequence;state(a,FD_USB_UNKEY);}
             else if(done_key&&!ok){FAIL(a,U_CONTROL,"key-request-failed");break;}
-            else if(done_key&&in.rf_tx){state(a,FD_USB_TX);}
+            else if(done_key&&in.rf_tx){a->tx_capture_started=now_ms();a->tx_capture_ended=0;a->tx_submitted_base=a->submitted_mic;state(a,FD_USB_TX);}
             else if(now-a->phase_at>2000){FAIL(a,U_KEY,"tx-acknowledgement-timeout");break;}
         }else if(st==FD_USB_TX){
             if(!in.rf_tx){FAIL(a,U_STATUS,"tx-status-disappeared");break;}
-            if(!in.pressed||in.release!=a->release){state(a,FD_USB_DRAIN);a->finishing=false;}
+            if(!in.pressed||in.release!=a->release){a->tx_capture_ended=now_ms();state(a,FD_USB_DRAIN);a->finishing=false;}
         }
         st=atomic_load(&a->state);
         if(st==FD_USB_RX||st==FD_USB_TX||st==FD_USB_DRAIN)process_audio(a,st);
         if(st==FD_USB_DRAIN){
+            if(!in.rf_tx){FAIL(a,U_STATUS,"tx-status-disappeared-during-drain");break;}
             io_lock(a);int ack=a->drain_ack;io_unlock(a);
             if(now_ms()-a->phase_at>3000){FAIL(a,U_DRAIN,"modem-drain-timeout");break;}
             if(ack<0){FAIL(a,U_DRAIN,"modem-drain-rejected");break;}
@@ -648,28 +748,36 @@ done:
         if(a->context){pa_context_set_state_callback(a->context,NULL,NULL);pa_context_disconnect(a->context);pa_context_unref(a->context);a->context=NULL;}
         io_unlock(a);pa_threaded_mainloop_stop(a->loop);
     }
-    state(a,atomic_load(&a->fault)>U_STOP?FD_USB_FAULT:FD_USB_DONE);atomic_store(&a->stopped,true);publish(a,actual);
-    fd_voice_destroy(a->engine);a->engine=NULL;if(a->radio_input)src_delete(a->radio_input);if(a->radio_output)src_delete(a->radio_output);
+    a->final_engine=fd_voice_observe(a->engine);fd_voice_destroy(a->engine);a->engine=NULL;
+    if(a->radio_input)src_delete(a->radio_input);if(a->radio_output)src_delete(a->radio_output);
     if(a->loop){pa_threaded_mainloop_free(a->loop);a->loop=NULL;}
-    if(a->trace)fclose(a->trace);
-    for(unsigned i=0;i<4;++i)if(a->taps[i])fclose(a->taps[i]);
+    /* All metadata writers finish before the terminal receipt is formed.
+     * In particular, a late persistent first-fault error cannot appear after
+     * a completion that claims storage succeeded. */
+    atomic_store(&a->watch_exit,true);pthread_join(a->watch,NULL);
+    for(unsigned i=0;i<4;++i)if(a->taps[i]){if(fclose(a->taps[i]))atomic_store(&a->storage_error,EIO);a->taps[i]=NULL;}
+    a->finalizing=true;state(a,atomic_load(&a->fault)>U_STOP?FD_USB_FAULT:FD_USB_DONE);publish(a,actual);
+    a->trace_complete=a->trace&&!ferror(a->trace);
+    if(a->trace){if(fclose(a->trace))a->trace_complete=false;a->trace=NULL;}
+    completion(a);atomic_store(&a->stopped,true);
     return NULL;
 }
 static void fault_sidecar(fd_usb_audio *a){
     if(!a->c.trace_prefix)return;
-    char path[256],temporary[272];snprintf(path,sizeof(path),"%s-fault.json",a->c.trace_prefix);snprintf(temporary,sizeof(temporary),"%s.tmp",path);
+    char path[1024],temporary[1080];snprintf(path,sizeof(path),"%s-fault.json",a->c.trace_prefix);snprintf(temporary,sizeof(temporary),"%s.tmp",path);
     FILE *f=fopen(temporary,"wx");if(!f)return;
     /* The release/acquire fault_record_ready fence makes these first-fault
      * fields immutable here. Storage I/O holds no shared runtime mutex. */
-    fprintf(f,"{\"kind\":\"first-fault\",\"ms\":%llu,\"state\":%u,\"rf_disabled\":%s,\"first_fault\":{\"code\":%u,\"origin\":\"%s\",\"stream\":\"%s\",\"pa_errno\":%u,\"operation_ms\":%llu,\"mic_age_ms\":%llu,\"rx_age_ms\":%llu,\"io_heartbeat_age_ms\":%llu},\"context_state\":%d,\"mic_state\":%d,\"rx_state\":%d,\"headset_state\":%d,\"modem_state\":%d,\"mic_suspended\":%d,\"rx_suspended\":%d,\"headset_suspended\":%d,\"modem_suspended\":%d,\"mic_holes\":%u,\"rx_holes\":%u,\"mic_captured\":%llu,\"rx_captured\":%llu}\n",
+    fputs("{",f);identity(f,a);
+    fprintf(f,",\"kind\":\"first-fault\",\"ms\":%llu,\"state\":%u,\"rf_disabled\":%s,\"first_fault\":{\"code\":%u,\"origin\":\"%s\",\"stream\":\"%s\",\"pa_errno\":%u,\"operation_ms\":%llu,\"mic_age_ms\":%llu,\"rx_age_ms\":%llu,\"io_heartbeat_age_ms\":%llu},\"context_state\":%d,\"mic_state\":%d,\"rx_state\":%d,\"headset_state\":%d,\"modem_state\":%d,\"mic_suspended\":%d,\"rx_suspended\":%d,\"headset_suspended\":%d,\"modem_suspended\":%d,\"mic_holes\":%u,\"rx_holes\":%u,\"mic_captured\":%llu,\"rx_captured\":%llu}\n",
         (unsigned long long)now_ms(),a->first_fault_state,atomic_load(&a->rf_disabled)?"true":"false",a->first_fault_code,a->first_fault_origin,a->first_fault_stream,a->first_fault_pa_error,(unsigned long long)a->first_fault_operation_ms,(unsigned long long)a->first_fault_mic_age,(unsigned long long)a->first_fault_rx_age,(unsigned long long)a->first_fault_io_age,atomic_load(&a->context_state_id),atomic_load(&a->metrics[MIC].state),atomic_load(&a->metrics[RADIO_RX].state),atomic_load(&a->metrics[HEADSET].state),atomic_load(&a->metrics[MODEM].state),atomic_load(&a->metrics[MIC].suspended),atomic_load(&a->metrics[RADIO_RX].suspended),atomic_load(&a->metrics[HEADSET].suspended),atomic_load(&a->metrics[MODEM].suspended),atomic_load(&a->metrics[MIC].holes),atomic_load(&a->metrics[RADIO_RX].holes),(unsigned long long)atomic_load(&a->metrics[MIC].captured),(unsigned long long)atomic_load(&a->metrics[RADIO_RX].captured));
     bool written=!ferror(f);if(fclose(f)!=0)written=false;
-    if(written)(void)link(temporary,path); /* Atomic publication, never replace an older record. */
+    if(written&&link(temporary,path)==0)persist_record(a,"fault",path); /* Immutable first fault. */
     (void)unlink(temporary);
 }
 static void *watch(void *p){
     fd_usb_audio *a=p;bool recorded=false;
-    while(!atomic_load(&a->stopped)){
+    while(!atomic_load(&a->watch_exit)){
         uint64_t now=now_ms(),tx=atomic_load(&a->tx_at),beat=atomic_load(&a->heartbeat),io=atomic_load(&a->io_heartbeat);
         if(!atomic_load(&a->stop)){
             if(tx&&now>=tx&&now-tx>20000)FAIL(a,U_TIMEOUT,"turn-deadline");
@@ -684,14 +792,23 @@ static void *watch(void *p){
 }
 fd_usb_audio *fd_usb_audio_open(const fd_usb_config *c){
     if(!c||!c->control.observe||!c->control.key||!c->control.clear)return NULL;
-    fd_usb_audio *a=calloc(1,sizeof(*a));if(!a)return NULL;a->c=*c;
+    fd_usb_audio *a=calloc(1,sizeof(*a));if(!a)return NULL;a->c=*c;const char *base=c->trace_prefix?strrchr(c->trace_prefix,'/'):NULL;snprintf(a->session_id,sizeof(a->session_id),"%s",c->trace_prefix?(base?base+1:c->trace_prefix):"untraced");
     pthread_mutex_init(&a->mutex,NULL);pthread_mutex_init(&a->events_mutex,NULL);pthread_mutex_init(&a->control_mutex,NULL);pthread_cond_init(&a->control_changed,NULL);
     atomic_store(&a->heartbeat,now_ms());atomic_store(&a->io_heartbeat,now_ms());atomic_store(&a->rf_disabled,c->rf_disabled);
-    if(pthread_create(&a->control_worker,NULL,control_run,a)){free(a);return NULL;}
-    if(pthread_create(&a->worker,NULL,run,a)){pthread_mutex_lock(&a->control_mutex);a->control_exit=true;pthread_cond_signal(&a->control_changed);pthread_mutex_unlock(&a->control_mutex);pthread_join(a->control_worker,NULL);free(a);return NULL;}
-    if(pthread_create(&a->watch,NULL,watch,a)){fd_usb_audio_stop(a);pthread_join(a->worker,NULL);free(a);return NULL;}
+    if(pthread_create(&a->control_worker,NULL,control_run,a))goto sync_failure;
+    /* Create the monitor first so even an immediate preparation failure has
+     * a valid monitor handle and a complete evidence-writer join boundary. */
+    if(pthread_create(&a->watch,NULL,watch,a))goto control_failure;
+    if(pthread_create(&a->worker,NULL,run,a)){
+        atomic_store(&a->watch_exit,true);pthread_join(a->watch,NULL);goto control_failure;
+    }
     return a;
+control_failure:
+    pthread_mutex_lock(&a->control_mutex);a->control_exit=true;pthread_cond_signal(&a->control_changed);pthread_mutex_unlock(&a->control_mutex);pthread_join(a->control_worker,NULL);
+sync_failure:
+    pthread_cond_destroy(&a->control_changed);pthread_mutex_destroy(&a->control_mutex);pthread_mutex_destroy(&a->events_mutex);pthread_mutex_destroy(&a->mutex);free(a);return NULL;
 }
+
 void fd_usb_audio_arm(fd_usb_audio *a,bool armed){if(a&&!atomic_load(&a->stop)&&!atomic_load(&a->rf_disabled))atomic_store(&a->armed,armed);}
 bool fd_usb_audio_start_qualification(fd_usb_audio *a){
     if(!a||atomic_load(&a->stop)||!a->c.qualification_turns||!atomic_load(&a->rf_disabled)||atomic_load(&a->qualification_running))return false;
@@ -718,6 +835,6 @@ fd_usb_snapshot fd_usb_audio_snapshot(fd_usb_audio *a){
 }
 void fd_usb_audio_close(fd_usb_audio *a){
     if(!a||!atomic_load(&a->stopped))return;
-    pthread_join(a->worker,NULL);pthread_join(a->watch,NULL);
+    pthread_join(a->worker,NULL);
     pthread_cond_destroy(&a->control_changed);pthread_mutex_destroy(&a->control_mutex);pthread_mutex_destroy(&a->events_mutex);pthread_mutex_destroy(&a->mutex);free(a);
 }

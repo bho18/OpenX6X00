@@ -5,6 +5,7 @@ from array import array
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,8 @@ from usb_headset_inventory import collect, command, sha256
 
 
 ERRORS = (OSError, ValueError, KeyError, EOFError, wave.Error, subprocess.SubprocessError)
+DIAGNOSTIC_LIMIT = 4 * 1024 * 1024
+IDENTITY_FIELDS = ('session_id', 'build_id', 'source_commit')
 
 
 class ActiveUsbWorkerError(ValueError):
@@ -104,9 +107,152 @@ def summarize_trace(rows):
                              turns=turns, target=target, rf_tested=False,
                              loopback=completed.get('qualification_loopback', False),
                              listening='UNASSESSED')
-    return dict(last=states[-1], first_fault=first_fault, metadata=metadata, streams=streams[-32:],
+    return dict(last=states[-1], sample_count=len(states),
+                trace_rows=sum(isinstance(row, dict) and row.get('kind') in ('event', 'sample') for row in rows),
+                first_fault=first_fault, metadata=metadata, streams=streams[-32:],
                 rf_disabled=rf_disabled, qualification=qualification,
                 unexpected_qualification_tx=any(row.get('rf_disabled') is True and row.get('rf_tx') is True for row in states))
+
+
+def strict_contract(manifest):
+    version = manifest.get('usb_startup_contract_version', 1)
+    return type(version) is int and version >= 3
+
+
+def collect_persistent_journal(output):
+    """Keep bounded incident metadata across reboot, never qualify from it."""
+    directory = Path('/mnt/freedv-usb-incidents')
+    report = dict(scope='PERSISTENT_DIAGNOSTICS_ONLY; missing original completed trace cannot be promoted',
+                  status='UNAVAILABLE', entries=[], errors=[])
+    if not directory.is_dir() or directory.is_symlink():
+        return report
+    destination = output / 'persistent-incidents'
+    destination.mkdir()
+    records = {}
+    names = ['current-session.json'] + [f'slot-{slot:02d}-{kind}.json'
+             for slot in range(16) for kind in ('metadata', 'fault', 'completion', 'aborted')]
+    for name in names:
+        path = directory / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError('Nonregular persistent incident artifact: ' + name)
+            with path.open('rb') as source:
+                data = source.read(16385)
+            if len(data) > 16384:
+                raise ValueError('Persistent incident exceeds 16 KiB bound: ' + name)
+            (destination / name).write_bytes(data)
+            record = json.loads(data)
+            if not isinstance(record, dict):
+                raise ValueError('Persistent incident must be an object: ' + name)
+            session_id = record.get('session_id')
+            if not isinstance(session_id, str) or re.fullmatch(r'freedv-usb-[A-Za-z0-9_-]{1,160}', session_id) is None:
+                raise ValueError('Persistent incident has invalid session identity: ' + name)
+            if name == 'current-session.json':
+                if (record.get('schema') != 'x6200.usb.incident-pointer.v1' or
+                        type(record.get('slot')) is not int or not 0 <= record['slot'] < 16):
+                    raise ValueError('Persistent current-session pointer is invalid.')
+            else:
+                match = re.fullmatch(r'slot-(\d{2})-(metadata|fault|completion|aborted)\.json', name)
+                nested = record.get('record')
+                if (record.get('schema') != 'x6200.usb.incident.v1' or not 0 <= int(match[1]) < 16 or
+                        record.get('kind') != match[2] or not isinstance(nested, dict) or nested.get('session_id') != session_id or
+                        (match[2] != 'aborted' and not all(isinstance(nested.get(field), str) and
+                            0 < len(nested[field]) <= 200 for field in IDENTITY_FIELDS))):
+                    raise ValueError('Persistent incident slot/kind/session mismatch: ' + name)
+            records[name] = record
+            report['entries'].append(name)
+        except ERRORS as error:
+            report['errors'].append(str(error))
+    for name,record in list(records.items()):
+        match=re.fullmatch(r'slot-(\d{2})-(fault|completion|aborted)\.json',name)
+        if match:
+            metadata=records.get(f'slot-{int(match[1]):02d}-metadata.json')
+            if (not metadata or metadata['session_id'] != record['session_id'] or any(
+                    field in record['record'] and record['record'][field] != metadata['record'].get(field)
+                    for field in ('build_id', 'source_commit'))):
+                report['errors'].append('Persistent incident has no matching retained metadata: ' + name)
+                del records[name]
+    pointer = records.get('current-session.json')
+    if pointer:
+        selected = {}
+        for kind in ('metadata', 'fault', 'completion', 'aborted'):
+            record = records.get(f"slot-{pointer['slot']:02d}-{kind}.json")
+            if record and record['session_id'] == pointer['session_id']:
+                selected[kind] = record['record']
+        if 'metadata' in selected:
+            report['current_session'] = dict(session_id=pointer['session_id'], records=selected)
+        else:
+            report['errors'].append('Persistent pointer has no matching metadata record.')
+    report['status'] = 'PARTIAL' if report['errors'] else 'COLLECTED'
+    return report
+
+
+def validate_identity(record, manifest, session_id=None):
+    if not isinstance(record, dict):
+        raise ValueError('Runtime identity record must be a JSON object.')
+    for name in IDENTITY_FIELDS:
+        value = record.get(name)
+        if not isinstance(value, str) or not value or len(value) > 200:
+            raise ValueError('Runtime identity is missing or invalid: ' + name)
+    if session_id is not None and record['session_id'] != session_id:
+        raise ValueError('Runtime records refer to different sessions.')
+    if record['source_commit'] != manifest.get('firmware_commit'):
+        raise ValueError('Runtime session source does not match the image/kit.')
+    if record['build_id'] != manifest.get('build_id'):
+        raise ValueError('Runtime session build does not match the image/kit.')
+
+
+def validate_completion(summary, manifest, completion):
+    """A parseable last sample is not proof that a worker completed teardown."""
+    sessions = [row for row in summary['metadata'] if row.get('kind') == 'session']
+    if len(sessions) != 1 or sessions[0].get('schema') != 'x6200.usb-audio.v3':
+        raise ValueError('Current image requires exactly one v3 runtime session header.')
+    session = sessions[0]
+    validate_identity(session, manifest)
+    validate_identity(completion, manifest, session['session_id'])
+    if (completion.get('kind') != 'completion' or
+            completion.get('schema') != 'x6200.usb-completion.v1' or
+            completion.get('terminal') is not True or completion.get('trace_complete') is not True):
+        raise ValueError('Runtime session has no complete immutable terminal record.')
+    last = summary['last']
+    for field in ('state', 'fault', 'qualification_turns', 'qualification_target', 'ms'):
+        if type(last.get(field)) is not int or last[field] < 0:
+            raise ValueError('Runtime final snapshot has an invalid integer field: ' + field)
+        if field != 'ms' and (type(completion.get(field)) is not int or completion[field] < 0):
+            raise ValueError('Runtime completion has an invalid integer field: ' + field)
+    for field in ('rf_disabled', 'rf_valid', 'rf_tx', 'rf_clear_confirmed', 'qualification_complete'):
+        if type(last.get(field)) is not bool or type(completion.get(field)) is not bool:
+            raise ValueError('Runtime terminal records have an invalid boolean field: ' + field)
+    if (type(session.get('qualification_target')) is not int or session['qualification_target'] < 1 or
+            last['qualification_target'] != session['qualification_target']):
+        raise ValueError('Runtime qualification target conflicts with its session header.')
+    if last.get('state') not in (5, 6) or completion.get('state') != last.get('state'):
+        raise ValueError('Runtime trace does not end in the recorded terminal state.')
+    fields = ('fault', 'rf_disabled', 'rf_valid', 'rf_tx', 'rf_clear_confirmed',
+              'qualification_complete', 'qualification_turns', 'qualification_target')
+    for field in fields:
+        if field not in last or field not in completion or last[field] != completion[field]:
+            raise ValueError('Runtime completion conflicts with final snapshot: ' + field)
+    if type(completion.get('last_sample_ms')) is not int or completion['last_sample_ms'] != last['ms']:
+        raise ValueError('Runtime completion does not identify the final snapshot.')
+    if type(completion.get('finalized_ms')) is not int or completion['finalized_ms'] < last['ms']:
+        raise ValueError('Runtime completion has invalid finalization timing.')
+    if type(completion.get('trace_rows')) is not int or completion['trace_rows'] != summary['trace_rows']:
+        raise ValueError('Runtime completion row count does not match the collected trace.')
+    if type(completion.get('events_dropped')) is not int or completion['events_dropped'] != 0:
+        raise ValueError('Runtime event history is incomplete.')
+    if completion.get('trace_history_truncated') is not False:
+        raise ValueError('Runtime trace history was truncated or its completeness is unknown.')
+    if type(completion.get('storage_errno')) is not int or completion['storage_errno'] != 0:
+        raise ValueError('Runtime incident persistence did not complete successfully.')
+    if last['state'] == 5 and fault_code(last) <= 1:
+        raise ValueError('Runtime terminal fault state has no matching fault.')
+    if last['state'] == 6 and fault_code(last) > 1:
+        raise ValueError('Runtime terminal done state conflicts with its fault.')
+    summary['session_identity'] = {name: session[name] for name in IDENTITY_FIELDS}
+    summary['completion'] = completion
 
 
 def preserve_immutable_diagnostics(prefix, output):
@@ -116,28 +262,55 @@ def preserve_immutable_diagnostics(prefix, output):
     Validate the bounded bytes once before saving, so a partial JSON write is
     not presented as an immutable first-fault snapshot.
     """
-    for suffix in ('fault.json', 'metadata.json', 'config.json', 'configuration.json'):
+    errors = []
+    for suffix in ('fault.json', 'completion.json', 'metadata.json', 'config.json', 'configuration.json'):
         path = Path(str(prefix) + '-' + suffix)
         if not path.exists():
             continue
-        if path.stat().st_size > 4 * 1024 * 1024:
-            raise ValueError('Immutable runtime diagnostics exceed collection bound: ' + suffix)
-        data = path.read_bytes()
-        if len(data) > 4 * 1024 * 1024:
-            raise ValueError('Immutable runtime diagnostics exceed collection bound: ' + suffix)
-        record = json.loads(data)
-        if not isinstance(record, dict):
-            raise ValueError('Immutable runtime diagnostics must be a JSON object: ' + suffix)
-        (output / ('runtime-' + suffix)).write_bytes(data)
+        try:
+            with path.open('rb') as source:
+                data = source.read(DIAGNOSTIC_LIMIT + 1)
+            if len(data) > DIAGNOSTIC_LIMIT:
+                (output / ('runtime-' + suffix + '.header')).write_bytes(data[:4096])
+                raise ValueError('Immutable runtime diagnostics exceed collection bound: ' + suffix)
+            # Preserve bounded corrupt/partial records as evidence too.
+            (output / ('runtime-' + suffix)).write_bytes(data)
+            record = json.loads(data)
+            if not isinstance(record, dict):
+                raise ValueError('Immutable runtime diagnostics must be a JSON object: ' + suffix)
+        except ERRORS as error:
+            errors.append(str(error))
+    return errors
 
 
-def collect_trace(output):
-    sessions = sorted(Path('/tmp').glob('freedv-usb-*.jsonl'), key=lambda p: p.stat().st_mtime)
-    if not sessions:
-        raise ValueError('No GUI USB-mode trace found. Complete a USB-mode test first.')
-    trace = sessions[-1]
+def collect_trace(output, manifest=None):
+    manifest = manifest or {}
+    runtime = Path('/tmp')
+    pointer = None
+    if strict_contract(manifest):
+        path = runtime / 'freedv-usb-current.json'
+        with path.open('rb') as source:
+            data = source.read(DIAGNOSTIC_LIMIT + 1)
+        if len(data) > DIAGNOSTIC_LIMIT:
+            raise ValueError('Current-session pointer exceeds collection bound.')
+        (output / 'runtime-current.json').write_bytes(data)
+        pointer = json.loads(data)
+        if not isinstance(pointer, dict) or pointer.get('kind') != 'session-pointer' or pointer.get('schema') != 'x6200.usb-current.v1':
+            raise ValueError('Current image requires an explicit runtime session pointer.')
+        session_id = pointer.get('session_id')
+        if not isinstance(session_id, str) or re.fullmatch(r'freedv-usb-[A-Za-z0-9_-]{1,160}', session_id) is None:
+            raise ValueError('Current-session pointer has an invalid session identifier.')
+        if (pointer.get('trace_basename') != session_id + '.jsonl' or
+                pointer.get('completion_basename') != session_id + '-completion.json'):
+            raise ValueError('Current-session pointer has inconsistent artifact names.')
+        trace = runtime / pointer['trace_basename']
+    else:
+        sessions = sorted(runtime.glob('freedv-usb-*.jsonl'), key=lambda p: p.stat().st_mtime)
+        if not sessions:
+            raise ValueError('No GUI USB-mode trace found. Complete a USB-mode test first.')
+        trace = sessions[-1]
     prefix = trace.with_suffix('')
-    preserve_immutable_diagnostics(prefix, output)
+    diagnostic_errors = preserve_immutable_diagnostics(prefix, output)
     for process in Path('/proc').glob('[0-9]*/fd'):
         for fd in process.glob('*'):
             try:
@@ -145,17 +318,41 @@ def collect_trace(output):
                     raise ActiveUsbWorkerError('USB audio worker is still running. Immutable diagnostics retained; Stop/Exit before collecting its mutable trace and audio.')
             except OSError:
                 pass
-    if trace.stat().st_size > 4 * 1024 * 1024:
+    if trace.stat().st_size > DIAGNOSTIC_LIMIT:
         raise ValueError('Trace exceeds collection bound.')
-    shutil.copy2(trace, output / 'usb-session.jsonl')
-    rows = [json.loads(line) for line in trace.read_text().splitlines() if line.strip()]
+    data = trace.read_bytes()
+    if len(data) > DIAGNOSTIC_LIMIT:
+        raise ValueError('Trace exceeds collection bound.')
+    (output / 'usb-session.jsonl').write_bytes(data)
+    rows = [json.loads(line) for line in data.decode('utf-8').splitlines() if line.strip()]
     summary = summarize_trace(rows)
+    if strict_contract(manifest):
+        try:
+            validate_identity(pointer, manifest)
+            completion = output / 'runtime-completion.json'
+            if not completion.exists():
+                raise ValueError('Current image requires an immutable runtime completion record.')
+            validate_completion(summary, manifest, json.loads(completion.read_text()))
+            if summary['session_identity']['session_id'] != pointer['session_id']:
+                raise ValueError('Runtime trace conflicts with the explicit current-session pointer.')
+            summary['current_session'] = pointer
+        except ERRORS as error:
+            diagnostic_errors.append(str(error))
     summary['audio_taps'] = {}
+    pcm_seconds = 30
+    if strict_contract(manifest):
+        sessions = [row for row in summary['metadata'] if row.get('kind') == 'session']
+        if len(sessions) == 1:
+            limit = sessions[0].get('trace_pcm_seconds', 30)
+            if type(limit) is not int or not 1 <= limit <= 120:
+                diagnostic_errors.append('Runtime PCM evidence budget must be an integer from 1 to 120 seconds.')
+            else:
+                pcm_seconds = limit
     for name in ('mic', 'radio-rx', 'modem', 'decoded'):
         path = Path(str(prefix) + '-' + name + '.raw')
         if path.exists():
             size = path.stat().st_size
-            if size > 48000 * 2 * 30 or size % 2:
+            if size > 48000 * 2 * pcm_seconds or size % 2:
                 raise ValueError('Unexpected trace PCM length: ' + name)
             wrap(path.read_bytes(), output / (name + '.wav'))
             summary['audio_taps'][name] = dict(frames=size // 2, rate=48000, seconds=size / 96000)
@@ -167,6 +364,8 @@ def collect_trace(output):
             if path.stat().st_size > 4 * 1024 * 1024:
                 raise ValueError('Runtime diagnostics exceed collection bound: ' + suffix)
             shutil.copy2(path, output / ('runtime-' + suffix))
+    if diagnostic_errors:
+        raise ValueError('; '.join(diagnostic_errors))
     return summary
 
 
@@ -239,12 +438,20 @@ def collect_evidence(output, manifest, sdr=None):
     summary = None
     try:
         try:
+            result['persistent_journal'] = collect_persistent_journal(output)
+        except ERRORS as error:
+            result['persistent_journal'] = dict(status='PARTIAL', scope='PERSISTENT_DIAGNOSTICS_ONLY', error=str(error))
+        try:
             if manifest.get('_load_error'):
                 raise ValueError('Kit manifest unavailable: ' + manifest['_load_error'])
+            if type(manifest.get('usb_startup_contract_version', 1)) is not int or manifest.get('usb_startup_contract_version', 1) not in (1, 2, 3):
+                raise ValueError('Unsupported USB startup contract version.')
             inventory = collect(expected_gui=manifest['gui_sha256'])
             save(output / 'inventory.json', inventory)
             result['inventory_status'] = inventory['status']
             identity_ok = True
+            if inventory['status'] != 'USB_DUPLEX_CANDIDATE':
+                raise ValueError('Current USB endpoint inventory is incomplete: ' + str(inventory['status']))
         except ERRORS as error:
             blocker('collection', error)
         try:
@@ -253,7 +460,7 @@ def collect_evidence(output, manifest, sdr=None):
             # Supplementary diagnostic commands may be unavailable after a fault.
             save(output / 'post-stop-diagnostics.json', dict(scope='COLLECTION_TIME_CURRENT_STATE', error=str(error)))
         try:
-            summary = collect_trace(output)
+            summary = collect_trace(output, manifest)
             result['last_gui_state'] = summary['last']
             result['gui_session_fault'] = fault_code(summary['first_fault'] or summary['last'])
             result['rf_disabled'] = summary['rf_disabled']
@@ -262,6 +469,14 @@ def collect_evidence(output, manifest, sdr=None):
                 result['runtime_metadata'] = summary['metadata']
             if summary['streams']:
                 result['runtime_stream_configuration'] = summary['streams']
+            if summary.get('session_identity'):
+                result['session_identity'] = summary['session_identity']
+                result['runtime_completion'] = summary['completion']
+                result['stages']['session'] = dict(status='COMPLETE', identity=summary['session_identity'])
+            else:
+                result['historical_runtime_evidence'] = True
+                result['stages']['session'] = dict(status='HISTORICAL_ONLY',
+                    reason='Legacy trace has no current session/build identity and immutable completion contract.')
             if summary['first_fault']:
                 record_gui_fault(summary['first_fault'])
             else:
@@ -269,8 +484,9 @@ def collect_evidence(output, manifest, sdr=None):
                 # A fault-free stop alone is not an audio continuity qualification.
                 result['stages']['audio'] = dict(status='UNASSESSED', reason='Review per-stream runtime continuity counters and phase events.')
             last = summary['last']
-            contract_v2 = manifest.get('usb_startup_contract_version') == 2 or any(
-                row.get('schema') == 'x6200.usb-audio.v2' for row in summary['metadata'])
+            version = manifest.get('usb_startup_contract_version', 1)
+            contract_v2 = (type(version) is int and version >= 2) or any(
+                row.get('schema') in ('x6200.usb-audio.v2', 'x6200.usb-audio.v3') for row in summary['metadata'])
             confirmed_rx = last.get('rf_clear_confirmed') is True and last.get('rf_valid') is True and last.get('rf_tx') is False
             if confirmed_rx:
                 result['stages']['control_completion'] = dict(status='CONFIRMED_RX',
@@ -303,19 +519,45 @@ def collect_evidence(output, manifest, sdr=None):
         except ERRORS as error:
             blocker('collection', error)
             result['worker_active'] = isinstance(error, ActiveUsbWorkerError)
-            # The coordinator may be blocked after the independent watchdog has
-            # already published its first-fault snapshot. Keep its origin as the
-            # primary GUI failure without reading a changing event/PCM file.
-            fault_path = output / 'runtime-fault.json'
-            if fault_path.exists():
-                try:
-                    record = json.loads(fault_path.read_text())
-                    result['immutable_first_fault_snapshot'] = record
-                    fault = record.get('first_fault', record.get('fault', record))
-                    if isinstance(fault, dict) and fault_code(fault) > 1:
+        # Reconcile the atomic first-fault record on every path. A clean-looking
+        # or truncated trace must never hide an independently published failure.
+        fault_path = output / 'runtime-fault.json'
+        if fault_path.exists():
+            try:
+                record = json.loads(fault_path.read_text())
+                result['immutable_first_fault_snapshot'] = record
+                if strict_contract(manifest):
+                    pointer_path = output / 'runtime-current.json'
+                    pointer = json.loads(pointer_path.read_text())
+                    validate_identity(pointer, manifest)
+                    validate_identity(record, manifest, pointer['session_id'])
+                fault = record.get('first_fault', record.get('fault', record))
+                if isinstance(fault, dict) and fault_code(fault) > 1:
+                    previous = result.get('first_gui_fault')
+                    if previous and (fault_code(previous) != fault_code(fault) or any(
+                            previous.get(key) and fault.get(key) and previous[key] != fault[key]
+                            for key in ('origin', 'stream'))):
+                        result['conflicting_faults'] = dict(trace=previous, immutable=fault)
+                        blocker('collection', 'Runtime trace conflicts with immutable first-fault evidence.')
+                    elif not previous:
                         record_gui_fault(fault)
-                except ERRORS as sidecar_error:
-                    result['immutable_fault_error'] = str(sidecar_error)
+            except ERRORS as sidecar_error:
+                result['immutable_fault_error'] = str(sidecar_error)
+                blocker('collection', 'Immutable first-fault evidence could not be reconciled: ' + str(sidecar_error))
+        if not summary and not result.get('first_gui_fault'):
+            # A reboot can remove /tmp. Preserve the previous incident's reason
+            # without treating persistent metadata as a completed live test.
+            stored = result.get('persistent_journal', {}).get('current_session', {})
+            record = stored.get('records', {}).get('fault')
+            if isinstance(record, dict):
+                try:
+                    validate_identity(record, manifest, stored.get('session_id'))
+                    fault = record.get('first_fault')
+                    if isinstance(fault, dict) and fault_code(fault) > 1:
+                        result['persistent_first_fault_snapshot'] = record
+                        record_gui_fault(fault)
+                except ERRORS as error:
+                    result['persistent_fault_identity_error'] = str(error)
         if sdr:
             try:
                 result['sdr_file'] = preserve_sdr(output, sdr)
@@ -339,7 +581,7 @@ def collect_evidence(output, manifest, sdr=None):
             primary = min(result['blockers'], key=lambda item: priority[item['stage']])
             result['reason'] = primary['reason']
             result['primary_failure_stage'] = primary['stage']
-        elif summary and summary['rf_disabled']:
+        elif summary and summary['rf_disabled'] and strict_contract(manifest):
             result['status'] = 'READY_FOR_RF_TEST'
             result['ready_for_rf_test'] = True
         elif result['rf_recording_decoded']:
