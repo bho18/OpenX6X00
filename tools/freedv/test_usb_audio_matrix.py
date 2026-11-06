@@ -50,8 +50,13 @@ COVERAGE = {
     'drain_rf_ownership': {'drain-tx-loss'},
     'full_lifecycle': {'full-session'},
     'source_continuity': {'mic-valid-drop300', 'normal', 'many-turns'},
+    'negotiated_buffers': {'buffer-contract-reject', 'io-pause150', 'rx-pause150'},
+    'service_jitter': {'io-pause150', 'rx-pause150'},
+    'receive_sink': {'rx-pause150'},
+    'short_payload': {'short-turn200'},
 }
-DURABILITY_CASES = {'many-turns', 'reopen', 'cold-idle', 'drain-tx-loss', 'full-session', 'mic-valid-drop300'}
+DURABILITY_CASES = {'many-turns', 'reopen', 'cold-idle', 'drain-tx-loss', 'full-session', 'mic-valid-drop300',
+                    'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'short-turn200'}
 CASE_TIMEOUTS = {'many-turns': 150, 'reopen': 210, 'cold-idle': 130, 'drain-tx-loss': 60, 'full-session': 120}
 
 
@@ -173,6 +178,9 @@ def main():
                        'case_record_sha256': sha(details_path) if details_path.exists() else None,
                        'harness': details.get('harness'), 'identity': details.get('identity'),
                        'collector_contract':details.get('collector_contract'),
+                       'audio_buffer_contract':details.get('audio_buffer_contract'),
+                       'io_service_pause':details.get('io_service_pause'),
+                       'actual_headset_output':details.get('actual_headset_output'),
                        'actual_sink_turns': details.get('actual_sink_turns', []),
                        'decoded_speech_blocks': details.get('actual_sink_decode', {}).get('synthesis_blocks', 0)}
                 if passed:
@@ -193,6 +201,21 @@ def main():
                             any(turn.get('status') != 'PASS' for turn in turns)):
                         run['status'] = 'FAIL'
                         run.setdefault('reason', 'Required per-turn actual sink decoding evidence is missing')
+                if passed and name in {'io-pause150','rx-pause150','buffer-contract-reject','short-turn200'}:
+                    expected_budget = 'FAIL' if name == 'buffer-contract-reject' else 'PASS'
+                    if (run['audio_buffer_contract'] or {}).get('status') != expected_budget:
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason', 'Negotiated buffer contract proof is missing')
+                    if name in {'io-pause150','rx-pause150'} and (run['io_service_pause'] or {}).get('count') != 1:
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason', 'Controlled servicing pause proof is missing')
+                    if name == 'rx-pause150' and (run['actual_headset_output'] or {}).get('status') != 'PASS':
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason', 'Complete actual receive headset output proof is missing')
+                    if name == 'short-turn200' and (not run['actual_sink_turns'] or
+                            any(turn.get('status') != 'PASS' for turn in run['actual_sink_turns'])):
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason', 'Complete short-payload delivery proof is missing')
                 contract = run['collector_contract'] or {}
                 mutations = contract.get('mutations', {})
                 if passed and (contract.get('status') != 'PASS' or contract.get('radio_accessed') is not False or

@@ -20,6 +20,7 @@ and the blocked native hand-mic contract remain separate.
 | A decoded SDR file could obscure an earlier GUI failure | Preserve the earliest runtime fault and report collection, controller, qualification and RF decode independently. |
 | A successful 743 ms uncork left captures stale; delivery resumed about 30 ms later | Test operation acknowledgment and subsequent fresh valid samples as separate events, including missing recovery and release/Stop during recovery. |
 | The failed device run followed about 20 seconds in RX | Exercise idle histories as well as rapid turns. An injected pause models a failure; it is not proof of real device suspension/resume. |
+| Application PCM was queued while the negotiated Pulse playback reserve was only 50 ms | Require a measured buffer contract on all four streams, then test controlled servicing pauses at both actual output sinks. |
 | A host run underrun was followed by a clean replay | Retain every attempt. A replay cannot remove the failure or establish scheduling margin. |
 | Polling refreshed the fake packet clock | Advance fake telemetry independently of observation so stale-status tests exercise real loss of freshness. |
 | An operation injection could fire during the wrong phase | Require the intended phase/state and observed injected operation; startup coverage cannot substitute for TX or RX-return coverage. |
@@ -60,6 +61,22 @@ Current controller timing boundaries are 1,000 ms per preparation operation,
 capture loss and 1,500 ms for the fresh RX acknowledgment after recovery.
 These are software policy bounds, not measured RF-off guarantees. Exercise
 both sides of each bound. Do not extend them to make a failing test pass.
+The screened I/O servicing pause is 150 ms. Each playback stream must provide
+at least 300 ms of usable negotiated reserve (`tlength - minreq`) and prebuffer:
+150 ms of servicing delay, a 120 ms codec block and 30 ms of margin. Both outputs
+request a 450 ms target and one-second capacity; admission checks the actual
+grant, rather than trusting the request. Capture capacity must cover 150 ms plus
+two negotiated fragments. The one-second transport capacity does not expand the
+existing application backlog or capture-loss limits. This buffering adds startup
+and tail latency; hardware conversation latency remains unmeasured.
+
+Controlled TX and RX servicing pauses must preserve the complete modem and
+headset waveforms respectively. A below-budget grant must block keying. A short
+200 ms accepted turn checks underfilled prebuffer, EOO, drain and RX return;
+it does not count as a complete intelligible speech test. Explicit acknowledged
+prebuffer/trigger operations finish such short payloads without relaxing the
+drain deadline or suppressing an underrun.
+
 Rate accounting excludes only declared RF-disabled preparation intervals and
 matching frames; prior or active-delivery gaps remain measured. At least three
 seconds of accumulated steady measurement and the existing ±5% rate gate are

@@ -18,7 +18,8 @@ import wave
 from usb_test_support import (ProcessSupervisor, completed_turns, require, run_bounded,
                               save_json, validate_turn_decode, modem_waveform_match,
                               validate_operation_phase, validate_session_identity, microphone_frame_budget,
-                              PulseTestRuntime, require_unix_socket_path, pulse_startup_failure)
+                              PulseTestRuntime, require_unix_socket_path, pulse_startup_failure,
+                              audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait)
 
 
 class SupervisorTests(unittest.TestCase):
@@ -54,6 +55,14 @@ class SupervisorTests(unittest.TestCase):
         record = supervisor.close()
         self.assertEqual(len(record['children']), 1)
         self.assertEqual(record['children'][0]['exit_code'], 12)
+
+    def test_planned_fixture_eof_still_rejects_a_failed_process(self):
+        supervisor=ProcessSupervisor(self.root,os.environ.copy())
+        child=supervisor.start('finite-source',[sys.executable,'-c','raise SystemExit(7)'])
+        supervisor.expect_exit(child,exit_code=0);child.wait(timeout=2)
+        with self.assertRaisesRegex(RuntimeError,'instead of 0'):
+            supervisor.require_running()
+        supervisor.close()
 
     def test_cleanup_reaps_all_children(self):
         supervisor = ProcessSupervisor(self.root, os.environ.copy())
@@ -163,6 +172,16 @@ class SinkOracleTests(unittest.TestCase):
         result=modem_waveform_match(reference,8000,observed,8000)
         self.assertGreater(result['correlation'],.95)
 
+    def test_headset_half_volume_gain_and_native_sample_phase(self):
+        rng=random.Random(11);reference=array('h')
+        for frame in range(120):
+            amplitude=rng.randrange(500,15000)
+            reference.extend(round(amplitude*math.sin(2*math.pi*6000*i/48000)) for i in range(480))
+        observed=array('h',[0]*4801+[round(value*.125) for value in reference])
+        result=modem_waveform_match(reference.tobytes(),48000,observed.tobytes(),48000,expected_gain=.125)
+        self.assertGreater(result['correlation'],.95)
+
+
     def test_same_duration_valid_but_stale_turn_is_rejected(self):
         validate_turn_decode(self.record(),self.record(),2)
         with self.assertRaisesRegex(ValueError,'waveform differs'):
@@ -203,7 +222,54 @@ class SinkOracleTests(unittest.TestCase):
                     microphone_frame_budget(active_ms,accepted,960)
 
 
+class AudioReserveTests(unittest.TestCase):
+    def descriptors(self):
+        rows=[]
+        for name,rate in [('mic',48000),('radio-rx',44100),('headset',48000),('modem',44100)]:
+            rows.append(dict(kind='stream',stream=name,rate=rate,channels=1,maxlength=rate*2,
+                tlength=round(rate*.45)*2,minreq=round(rate*.02)*2,prebuf=round(rate*.43)*2,fragsize=round(rate*.02)*2))
+        return rows
+
+    def test_four_stream_profile_covers_pause_codec_quantum_and_margin(self):
+        self.assertEqual(audio_buffer_contract(self.descriptors())['status'],'PASS')
+
+    def test_old_70ms_modem_contract_is_insufficient(self):
+        rows=self.descriptors();rows[-1].update(maxlength=17640,tlength=6174,minreq=1764,prebuf=4412)
+        result=audio_buffer_contract(rows)
+        self.assertEqual(result['status'],'FAIL')
+        self.assertAlmostEqual(result['streams']['modem']['usable_ms'],50)
+
+    def test_headset_reserve_and_each_capture_capacity_are_required(self):
+        for name in ('mic','radio-rx','headset'):
+            rows=self.descriptors();row=next(row for row in rows if row['stream']==name)
+            if name=='headset':row['prebuf']=0
+            else:row['maxlength']=round(row['rate']*.15)*2
+            with self.subTest(stream=name):
+                self.assertEqual(audio_buffer_contract(rows)['status'],'FAIL')
+
+    def test_finite_fixture_must_end_normally_after_its_full_duration(self):
+        self.assertEqual(planned_fixture_eof(0,9.984,10.01)['status'],'PLANNED_EOF')
+        for code,elapsed in [(1,10.01),(0,8.5)]:
+            with self.assertRaises(ValueError):planned_fixture_eof(code,9.984,elapsed)
+
+
+
 class IdentityAndPhaseTests(unittest.TestCase):
+    def drain_wait(self, dropped=150, turns=0):
+        rows=[{'kind':'event','event':'operation-start','operation':'modem-trigger','state':4,'ms':101},
+              {'kind':'event','event':'operation-end','operation':'modem-trigger','state':4,'ms':751,'status':1},
+              {'kind':'event','event':'first-fault','operation':'tx-status-disappeared-during-drain','state':4,'ms':752,'status':4}]
+        harness={'fault':4,'turns':turns,'physical_tx':False}
+        log='RF_DROP_DURING_TRIGGER_WAIT started_ms=100 drop_ms='+str(dropped)+' ack_ms=750'
+        return rows,harness,log
+
+    def test_rf_loss_during_successful_delayed_trigger_blocks_completion(self):
+        self.assertEqual(validate_drain_loss_wait(*self.drain_wait())['successful_ack_wait_ms'],650)
+
+    def test_rf_loss_before_wait_or_a_counted_turn_cannot_credit_the_boundary(self):
+        for values in [self.drain_wait(dropped=99),self.drain_wait(turns=1)]:
+            with self.assertRaises(ValueError):validate_drain_loss_wait(*values)
+
     def trace(self):
         rows=[{'kind':'session','session_id':'one','source_commit':'source','build_id':'build'},
               {'kind':'sample','ms':12,'state':6,'fault':1}]

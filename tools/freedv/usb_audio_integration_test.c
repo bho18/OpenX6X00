@@ -11,12 +11,18 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <unistd.h>
 #include <limits.h>
 #include <unistd.h>
 
 /* Weak test-only symbols are resolved by the selected LD_PRELOAD injector. */
 extern unsigned long long usb_test_cold_ack_ms(void) __attribute__((weak));
 extern unsigned usb_test_cold_recovered(void) __attribute__((weak));
+extern unsigned usb_test_io_pause_count(void) __attribute__((weak));
+extern unsigned long long usb_test_io_pause_duration_ms(void) __attribute__((weak));
+extern unsigned long long usb_test_io_pause_started_ms(void) __attribute__((weak));
+extern unsigned long long usb_test_trigger_started_ms(void) __attribute__((weak));
+extern unsigned long long usb_test_trigger_ack_ms(void) __attribute__((weak));
 static bool cold_case,cold_rx_case,cold_late_tx_case;
 static atomic_uint recovered_observations;
 typedef struct {
@@ -158,7 +164,7 @@ static void result(const char *directory,const char *scenario,fake *f,fd_usb_sna
     for(unsigned i=0;i<durability_sessions;++i)fprintf(out,"%s{\"fds\":%u,\"threads\":%u}",i?",":"",closed_fds[i],closed_tasks[i]);
     fputs("],\"turn_records\":[",out);
     for(unsigned i=0;i<turn_record_n;++i){turn_record *r=&turn_records[i];fprintf(out,"%s{\"session\":\"%s\",\"turn\":%u,\"accepted_mic_samples\":%llu,\"rendered_modem_samples\":%llu,\"modem_tap_start\":%llu,\"modem_tap_end\":%llu,\"started_ms\":%llu,\"ended_ms\":%llu}",i?",":"",r->session,r->turn,(unsigned long long)r->accepted_mic,(unsigned long long)r->rendered_modem,(unsigned long long)r->modem_tap_start,(unsigned long long)r->modem_tap_end,(unsigned long long)r->started_ms,(unsigned long long)r->ended_ms);}
-    fputs("]}\n",out);fclose(out);stop_telemetry(f);
+    fprintf(out,"],\"io_service_pause\":{\"count\":%u,\"started_ms\":%llu,\"duration_ms\":%llu}}\n",usb_test_io_pause_count?usb_test_io_pause_count():0,usb_test_io_pause_started_ms?usb_test_io_pause_started_ms():0,usb_test_io_pause_duration_ms?usb_test_io_pause_duration_ms():0);fclose(out);stop_telemetry(f);
 }
 int main(int argc,char **argv) {
     assert(argc==2 || argc==3);const char *scenario=argc==3?argv[2]:"--normal";
@@ -179,7 +185,7 @@ int main(int argc,char **argv) {
     assert(incident_length>0&&(size_t)incident_length<sizeof(incident_dir));
     bool full_session=!strcmp(scenario,"--full-session");
     bool qualification=full_session||!strcmp(scenario,"--rf-disabled") || !strcmp(scenario,"--qualification-physical-tx") ||
-                       !strcmp(scenario,"--qualification-held-ptt") || !strcmp(scenario,"--cold-qualification") || !strcmp(scenario,"--cold-idle") || !strncmp(scenario,"--storage-",10);
+                       !strcmp(scenario,"--qualification-held-ptt") || !strcmp(scenario,"--cold-qualification") || !strcmp(scenario,"--cold-idle") || !strncmp(scenario,"--storage-",10) || !strcmp(scenario,"--rx-pause150");
     cold_case=!strncmp(scenario,"--cold-",7)&&strcmp(scenario,"--cold-idle");
     cold_rx_case=!strcmp(scenario,"--cold-rx-resume");
     cold_late_tx_case=!strcmp(scenario,"--cold-prekey-unexpected-tx");
@@ -191,6 +197,10 @@ int main(int argc,char **argv) {
         .trace_pcm_seconds=!strcmp(scenario,"--many-turns")?120:30};
     if(!strcmp(scenario,"--storage-start-fails")){assert(!mkdir(incident_dir,0500));}
     fd_usb_audio *audio=fd_usb_audio_open(&config);assert(audio);
+    if(!strcmp(scenario,"--buffer-contract-reject")){
+        fd_usb_snapshot last=wait_stopped(audio,10000);assert(last.fault==13&&!strcmp(last.first_fault_origin,"modem-buffer-budget"));
+        assert(!atomic_load(&f.keys)&&!atomic_load(&f.physical_tx));result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
+    }
     if(!strcmp(scenario,"--storage-start-fails")){
         fd_usb_snapshot last=wait_stopped(audio,10000);assert(last.fault==18&&!atomic_load(&f.keys)&&!last.qualification_complete);
         assert(!chmod(incident_dir,0700));result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
@@ -203,6 +213,27 @@ int main(int argc,char **argv) {
     if(!strcmp(scenario,"--storage-completion-fails")){
         assert(!chmod(incident_dir,0500));fd_usb_audio_stop(audio);fd_usb_snapshot last=wait_stopped(audio,10000);
         assert(last.fault==1&&!last.qualification_complete&&!atomic_load(&f.keys));assert(!chmod(incident_dir,0700));
+        result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
+    }
+    if(!strcmp(scenario,"--rx-pause150")){
+        assert(usb_test_io_pause_count&&usb_test_io_pause_duration_ms&&usb_test_io_pause_started_ms);
+        puts("RX_FIXTURE_READY");fflush(stdout);uint64_t until=ms()+20000;
+        while((!usb_test_io_pause_count()||!usb_test_io_pause_duration_ms())&&ms()<until){assert(!fd_usb_audio_snapshot(audio).fault);pause_ms(5);}
+        assert(usb_test_io_pause_count()==1&&usb_test_io_pause_duration_ms()>=150&&usb_test_io_pause_duration_ms()<500);
+        puts("RX_SOURCE_TO_SILENCE");fflush(stdout);char ack[1024];snprintf(ack,sizeof(ack),"%s/rx-source-silenced",argv[1]);
+        const char *fixture_setting=getenv("USB_TEST_RX_FIXTURE_MS");unsigned long fixture_ms=fixture_setting?strtoul(fixture_setting,NULL,10):30000;if(fixture_ms>30000)fixture_ms=30000;until=ms()+fixture_ms+5000;
+        while(access(ack,F_OK)&&ms()<until){assert(!fd_usb_audio_snapshot(audio).fault);pause_ms(5);}assert(!access(ack,F_OK));
+        pause_ms(1500);uint64_t synthesis=fd_usb_audio_snapshot(audio).engine.synthesis_blocks;pause_ms(500);
+        fd_usb_snapshot last=fd_usb_audio_snapshot(audio);assert(!last.fault&&!last.output_queue&&!last.engine.output_depth&&last.engine.synthesis_blocks>=4&&last.engine.synthesis_blocks==synthesis);
+        fd_usb_audio_stop(audio);last=wait_stopped(audio,10000);assert(last.fault==1&&!atomic_load(&f.keys)&&!atomic_load(&f.physical_tx));
+        result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
+    }
+    if(!strcmp(scenario,"--io-pause150")||!strcmp(scenario,"--short-turn200")){
+        fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);
+        pause_ms(!strcmp(scenario,"--short-turn200")?200:2000);release_ptt(&f);fd_usb_snapshot last=wait_state(audio,FD_USB_RX,10000);
+        assert(last.turns==1&&last.engine.eoo_count==1&&last.rf_clear_confirmed);
+        if(!strcmp(scenario,"--io-pause150"))assert(usb_test_io_pause_count&&usb_test_io_pause_duration_ms&&usb_test_io_pause_count()==1&&usb_test_io_pause_duration_ms()>=150&&usb_test_io_pause_duration_ms()<500);
+        fd_usb_audio_stop(audio);last=wait_stopped(audio,10000);assert(last.fault==1&&atomic_load(&f.keys)==1&&!atomic_load(&f.physical_tx));
         result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
     }
     if(!strcmp(scenario,"--many-turns")||!strcmp(scenario,"--reopen")){
@@ -235,8 +266,12 @@ int main(int argc,char **argv) {
     }
     if(!strcmp(scenario,"--drain-tx-loss")){
         fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);pause_ms(1250);release_ptt(&f);
-        wait_state(audio,FD_USB_DRAIN,10000);atomic_store(&f.physical_tx,false);
+        wait_state(audio,FD_USB_DRAIN,10000);assert(usb_test_trigger_started_ms&&usb_test_trigger_ack_ms);uint64_t until=ms()+5000;
+        while(!usb_test_trigger_started_ms()&&ms()<until)pause_ms(1);assert(usb_test_trigger_started_ms());pause_ms(50);
+        uint64_t dropped=ms();assert(!usb_test_trigger_ack_ms());atomic_store(&f.physical_tx,false);
         fd_usb_snapshot last=wait_stopped(audio,10000);assert(last.fault==4&&!strcmp(last.first_fault_origin,"tx-status-disappeared-during-drain"));
+        uint64_t started=usb_test_trigger_started_ms(),acked=usb_test_trigger_ack_ms();assert(acked>=started+650&&started<dropped&&dropped<acked);
+        printf("RF_DROP_DURING_TRIGGER_WAIT started_ms=%llu drop_ms=%llu ack_ms=%llu\n",(unsigned long long)started,(unsigned long long)dropped,(unsigned long long)acked);
         assert(!last.turns&&!atomic_load(&f.physical_tx));result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
     }
     if(!strcmp(scenario,"--rx-signal")) {

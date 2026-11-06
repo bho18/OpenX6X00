@@ -30,6 +30,13 @@ extern void usb_test_operation_phase(const char *) __attribute__((weak));
 #define OP_TIMEOUT_MS 1000u
 #define CAPTURE_TIMEOUT_MS 750u
 #define PREPARATION_CAPTURE_TIMEOUT_MS 1500u
+/* Declared service budget, not a measured hardware timing guarantee. */
+#define IO_SERVICE_BUDGET_MS 150u
+#define CODEC_QUANTUM_MS 120u
+#define BUFFER_MARGIN_MS 30u
+#define OUTPUT_RESERVE_MS (IO_SERVICE_BUDGET_MS+CODEC_QUANTUM_MS+BUFFER_MARGIN_MS)
+#define OUTPUT_TARGET_MS 450u
+#define STREAM_CAPACITY_MS 1000u
 
 typedef struct { int16_t p[QMAX]; unsigned head,n; } pcm_queue;
 enum {
@@ -221,10 +228,12 @@ static void write_pcm(pa_stream *s,size_t bytes,void *p){
 static void underflow(pa_stream *s,void *p){
     fd_usb_audio *a=p;unsigned i=stream_index(a,s);if(i>=STREAM_COUNT)return;
     atomic_fetch_add(&a->metrics[i].underflows,1);
-    bool payload=i==MODEM?a->modem_started:a->headset_started;
-    if(!payload||atomic_load(&a->stop)||pa_stream_get_underflow_index(s)<=0||(i==MODEM&&a->drain))return;
+    bool payload=i==MODEM?a->modem_started:a->headset_started;unsigned st=atomic_load(&a->state);
+    bool required=i==MODEM?(st==FD_USB_TX||st==FD_USB_DRAIN):st==FD_USB_RX;
+    if(!payload||!required||atomic_load(&a->stop)||pa_stream_get_underflow_index(s)<=0||(i==MODEM&&a->drain))return;
     atomic_fetch_add(&a->metrics[i].payload_underflows,1);
     if(i==MODEM)fail_at(a,U_DRAIN,"modem-payload-underflow",MODEM,0,0);
+    if(i==HEADSET)fail_at(a,U_DRAIN,"headset-payload-underflow",HEADSET,0,0);
 }
 static void context_state(pa_context *c,void *p){fd_usb_audio *a=p;atomic_store(&a->context_state_id,pa_context_get_state(c));if(!PA_CONTEXT_IS_GOOD(pa_context_get_state(c))&&!atomic_load(&a->stop))fail_at(a,U_DEVICE,"context-state",STREAM_COUNT,pa_context_errno(c),0);}
 static void io_tick(pa_mainloop_api *api,pa_time_event *e,const struct timeval *tv,void *p){
@@ -275,6 +284,7 @@ static void reset_queues(fd_usb_audio *a){
     pa_stream_set_write_callback(a->streams[MODEM],write_pcm,a);io_unlock(a);
 }
 static bool actual_inputs(fd_usb_audio *a,fd_usb_inputs *in);
+static bool buffer_contract(fd_usb_audio *a,const char *phase);
 /* An operation ACK and READY stream states do not establish that the server
  * has resumed sample delivery. A cold sink can pause both captures while it
  * wakes. Reacquire new valid frames after preparation, with RF still denied;
@@ -329,8 +339,12 @@ static bool direction(fd_usb_audio *a,fd_voice_direction d){
     if(!ok){FAIL(a,U_TRANSITION,"codec-direction");return false;}
     /* Uncork before RF admission. Automatic PA prebuffering holds an empty
      * modem stream until the accepted speech/modem prefill becomes available. */
-    if(d==FD_VOICE_TX&&!stream_op(a,MODEM,false,0))return false;
-    if(!preparation_capture_ready(a,d))return false;
+    if(d==FD_VOICE_TX){
+        io_lock(a);a->operation.ack=0;
+        bool prebuffered=wait_operation_locked(a,pa_stream_prebuf(a->streams[MODEM],op_done,a),"modem-prebuf",MODEM,true);io_unlock(a);
+        if(!prebuffered||!stream_op(a,MODEM,false,0))return false;
+    }
+    if(!preparation_capture_ready(a,d)||!buffer_contract(a,atomic_load(&a->state)==FD_USB_PREPARE?"initial-rx":d==FD_VOICE_TX?"tx":"rx-return"))return false;
     if(exclude){
         io_lock(a);for(unsigned i=0;i<2;++i){
             uint64_t last=atomic_load(&a->metrics[i].last);
@@ -342,6 +356,31 @@ static bool direction(fd_usb_audio *a,fd_voice_direction d){
     return !atomic_load(&a->stop);
 }
 static void json_string(FILE *f,const char *s){fputc('"',f);for(;s&&*s;++s){unsigned char c=(unsigned char)*s;if(c=='"'||c=='\\'){fputc('\\',f);fputc(c,f);}else if(c>=32)fputc(c,f);}fputc('"',f);}
+static bool buffer_contract(fd_usb_audio *a,const char *phase){
+    pa_buffer_attr attrs[STREAM_COUNT];pa_sample_spec specs[STREAM_COUNT];bool ready[STREAM_COUNT];
+    io_lock(a);
+    for(unsigned i=0;i<STREAM_COUNT;++i){
+        const pa_buffer_attr *p=pa_stream_get_buffer_attr(a->streams[i]);const pa_sample_spec *s=pa_stream_get_sample_spec(a->streams[i]);
+        ready[i]=p&&s&&pa_stream_get_state(a->streams[i])==PA_STREAM_READY;
+        attrs[i]=p?*p:(pa_buffer_attr){0};specs[i]=s?*s:(pa_sample_spec){0};
+    }
+    io_unlock(a);unsigned failed=STREAM_COUNT;
+    for(unsigned i=0;i<STREAM_COUNT;++i){
+        pa_buffer_attr p=attrs[i];pa_sample_spec s=specs[i];bool capture=i<=RADIO_RX;
+        uint64_t bytes_per_second=(uint64_t)s.rate*s.channels*2;
+        uint64_t required_reserve=(bytes_per_second*OUTPUT_RESERVE_MS+999)/1000;
+        uint64_t required_capture=(bytes_per_second*IO_SERVICE_BUDGET_MS+999)/1000+(uint64_t)p.fragsize*2;
+        uint64_t usable=p.tlength>p.minreq?(uint64_t)p.tlength-p.minreq:0;
+        bool good=ready[i]&&s.format==PA_SAMPLE_S16LE&&s.channels==1&&s.rate==(i==RADIO_RX||i==MODEM?RADIO_RATE:RATE)&&p.maxlength&&p.maxlength!=UINT32_MAX;
+        if(capture)good=good&&p.fragsize&&p.fragsize!=UINT32_MAX&&!(p.fragsize%2)&&p.maxlength>=required_capture;
+        else good=good&&p.tlength&&p.tlength!=UINT32_MAX&&p.minreq&&p.minreq!=UINT32_MAX&&p.prebuf!=UINT32_MAX&&p.maxlength>=p.tlength&&p.tlength>=p.prebuf&&usable>=required_reserve&&p.prebuf>=required_reserve;
+        if(!good&&failed==STREAM_COUNT)failed=i;
+        if(a->trace)fprintf(a->trace,"{\"kind\":\"audio-budget\",\"ms\":%llu,\"phase\":\"%s\",\"stream\":\"%s\",\"rate\":%u,\"channels\":%u,\"maxlength\":%u,\"tlength\":%u,\"prebuf\":%u,\"minreq\":%u,\"fragsize\":%u,\"capture\":%s,\"io_service_budget_ms\":%u,\"codec_quantum_ms\":%u,\"margin_ms\":%u,\"requested_target_ms\":%u,\"requested_capacity_ms\":%u,\"required_reserve_bytes\":%llu,\"usable_reserve_bytes\":%llu,\"required_capture_bytes\":%llu,\"passed\":%s}\n",
+            (unsigned long long)now_ms(),phase,stream_names[i],s.rate,s.channels,p.maxlength,p.tlength,p.prebuf,p.minreq,p.fragsize,capture?"true":"false",IO_SERVICE_BUDGET_MS,CODEC_QUANTUM_MS,BUFFER_MARGIN_MS,OUTPUT_TARGET_MS,STREAM_CAPACITY_MS,(unsigned long long)required_reserve,(unsigned long long)usable,(unsigned long long)required_capture,good?"true":"false");
+    }
+    if(failed<STREAM_COUNT){char origin[40];snprintf(origin,sizeof(origin),"%s-buffer-budget",stream_names[failed]);fail_at(a,U_PREPARE,origin,failed,0,0);return false;}
+    return true;
+}
 static void identity(FILE *f,fd_usb_audio *a){
     fputs("\"session_id\":",f);json_string(f,a->session_id);
     fputs(",\"build_id\":",f);json_string(f,FREEDV_BUILD_ID);
@@ -432,9 +471,10 @@ static bool prepare(fd_usb_audio *a){
     pa_stream_set_write_callback(a->streams[HEADSET],write_pcm,a);pa_stream_set_write_callback(a->streams[MODEM],write_pcm,a);
     pa_stream_set_underflow_callback(a->streams[HEADSET],underflow,a);pa_stream_set_underflow_callback(a->streams[MODEM],underflow,a);
     pa_stream_flags_t flags=PA_STREAM_DONT_MOVE|PA_STREAM_ADJUST_LATENCY|PA_STREAM_AUTO_TIMING_UPDATE;
-    pa_buffer_attr attr={.maxlength=19200,.tlength=9600,.prebuf=0,.minreq=1920,.fragsize=1920};pa_cvolume volume;pa_cvolume_set(&volume,1,PA_VOLUME_NORM/2);
+    pa_buffer_attr attr={.maxlength=RATE*2*STREAM_CAPACITY_MS/1000,.tlength=RATE*2*OUTPUT_TARGET_MS/1000,.prebuf=(uint32_t)-1,.minreq=RATE*2/50,.fragsize=RATE*2/50};
+    pa_cvolume volume;pa_cvolume_set(&volume,1,PA_VOLUME_NORM/2);
     bool ok=pa_stream_connect_record(a->streams[MIC],a->source,&attr,flags)>=0&&pa_stream_connect_playback(a->streams[HEADSET],a->sink,&attr,flags,&volume,NULL)>=0;
-    attr=(pa_buffer_attr){.maxlength=17640,.tlength=8820,.prebuf=(uint32_t)-1,.minreq=1764,.fragsize=1764};pa_cvolume_set(&volume,1,PA_VOLUME_NORM);
+    attr=(pa_buffer_attr){.maxlength=RADIO_RATE*2*STREAM_CAPACITY_MS/1000,.tlength=RADIO_RATE*2*OUTPUT_TARGET_MS/1000,.prebuf=(uint32_t)-1,.minreq=RADIO_RATE*2/50,.fragsize=RADIO_RATE*2/50};pa_cvolume_set(&volume,1,PA_VOLUME_NORM);
     ok=ok&&pa_stream_connect_record(a->streams[RADIO_RX],a->c.radio_source,&attr,flags)>=0&&pa_stream_connect_playback(a->streams[MODEM],a->c.radio_sink,&attr,flags|PA_STREAM_START_CORKED,&volume,NULL)>=0;
     until=now_ms()+5000;bool ready=false;
     while(ok&&!ready&&!atomic_load(&a->stop)&&now_ms()<until){ready=true;for(unsigned i=0;i<STREAM_COUNT;++i)if(pa_stream_get_state(a->streams[i])!=PA_STREAM_READY)ready=false;io_unlock(a);atomic_store(&a->heartbeat,now_ms());pause_ms(1);io_lock(a);}
@@ -442,7 +482,7 @@ static bool prepare(fd_usb_audio *a){
     io_lock(a);const pa_buffer_attr *mic_attr=pa_stream_get_buffer_attr(a->streams[MIC]);
     a->mic_fragment_frames=mic_attr&&mic_attr->fragsize!=UINT32_MAX?mic_attr->fragsize/2:0;io_unlock(a);
     if(!a->mic_fragment_frames){FAIL(a,U_PREPARE,"microphone-fragment-size");return false;}
-    describe_streams(a);if(!direction(a,FD_VOICE_RX))return false;
+    describe_streams(a);if(!buffer_contract(a,"initial-rx")||!direction(a,FD_VOICE_RX))return false;
     until=now_ms()+1500;
     while((!atomic_load(&a->metrics[MIC].first)||!atomic_load(&a->metrics[RADIO_RX].first))&&!atomic_load(&a->stop)&&now_ms()<until){atomic_store(&a->heartbeat,now_ms());pause_ms(1);}
     if(!atomic_load(&a->metrics[MIC].first)||!atomic_load(&a->metrics[RADIO_RX].first)){
@@ -569,6 +609,13 @@ static void process_audio(fd_usb_audio *a,unsigned st){
         pa_stream_set_write_callback(a->streams[MODEM],NULL,NULL);a->drain_ack=0;
         a->drain_started=now_ms();event(a,"operation-start","modem-drain",MODEM,0,0,0);a->drain=pa_stream_drain(a->streams[MODEM],drain_done,a);
         if(!a->drain)fail_at(a,U_PA_REJECT,"modem-drain",MODEM,pa_context_errno(a->context),0);
+        else{
+            /* A complete short payload can be smaller than the prebuffer.
+             * Register drain first, then release that final finite payload;
+             * no further live samples are required to finish it. */
+            a->operation.ack=0;
+            (void)wait_operation_locked(a,pa_stream_trigger(a->streams[MODEM],op_done,a),"modem-trigger",MODEM,true);
+        }
     }
     io_unlock(a);
 }
@@ -678,7 +725,13 @@ static void *run(void *p){
         }
         st=atomic_load(&a->state);
         if(st==FD_USB_RX||st==FD_USB_TX||st==FD_USB_DRAIN)process_audio(a,st);
+        /* Trigger/prebuffer acknowledgements can yield while RF is active.
+         * Never count a drain using the observation from before that wait,
+         * or advance a turn after an operation failed or Stop was requested. */
+        if(atomic_load(&a->stop)||atomic_load(&a->fault))break;
         if(st==FD_USB_DRAIN){
+            if(!actual_inputs(a,&actual))break;
+            in=effective_inputs(a,actual);
             if(!in.rf_tx){FAIL(a,U_STATUS,"tx-status-disappeared-during-drain");break;}
             io_lock(a);int ack=a->drain_ack;io_unlock(a);
             if(now_ms()-a->phase_at>3000){FAIL(a,U_DRAIN,"modem-drain-timeout");break;}

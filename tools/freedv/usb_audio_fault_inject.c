@@ -20,6 +20,7 @@ typedef struct {
     void *userdata;
     unsigned long long issued;
     atomic_int real_done, success, delivered;
+    bool is_trigger;
 } delayed_operation;
 static delayed_operation pending;
 static unsigned matches;
@@ -28,6 +29,14 @@ static int phase_code(const char *name){return !strcmp(name,"tx")?1:!strcmp(name
 void usb_test_operation_phase(const char *name){atomic_store(&current_phase,phase_code(name));}
 static const char *phase_name(void){int phase=atomic_load(&current_phase);return phase==1?"tx":phase==2?"rx-return":"initial-rx";}
 static int hole_delivered;
+static atomic_ullong io_payload_started,io_pause_started,io_pause_duration,trigger_started,trigger_acked;
+unsigned long long usb_test_trigger_started_ms(void){return atomic_load(&trigger_started);}
+unsigned long long usb_test_trigger_ack_ms(void){return atomic_load(&trigger_acked);}
+static atomic_uint io_pause_count;
+static atomic_int buffer_reject_reported;
+unsigned usb_test_io_pause_count(void){return atomic_load(&io_pause_count);}
+unsigned long long usb_test_io_pause_duration_ms(void){return atomic_load(&io_pause_duration);}
+unsigned long long usb_test_io_pause_started_ms(void){return atomic_load(&io_pause_started);}
 static atomic_int cold_started,cold_recovered;
 static atomic_ullong cold_ack,cold_resume;
 /* Test harness coordination only; these symbols are absent from radio builds. */
@@ -60,7 +69,8 @@ static void completed(pa_stream *stream,int success,void *unused) {
 }
 static void begin(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata,const char *action) {
     if(getenv("USB_TEST_COLD_CAPTURE"))atomic_store(&cold_started,1);
-    pending=(delayed_operation){.stream=stream,.callback=callback,.userdata=userdata,.issued=now_ms()};
+    pending=(delayed_operation){.stream=stream,.callback=callback,.userdata=userdata,.issued=now_ms(),.is_trigger=!strcmp(action,"trigger")};
+    if(pending.is_trigger)atomic_store(&trigger_started,pending.issued);
     fprintf(stderr,"INJECT PA %s mode=%s device=%s delay=%sms phase=%s\n",action,
             setting("USB_TEST_PA_MODE",""),pa_stream_get_device_name(stream),setting("USB_TEST_PA_DELAY_MS","650"),phase_name());
 }
@@ -77,6 +87,11 @@ pa_operation *pa_stream_cork(pa_stream *stream,int cork,pa_stream_success_cb_t c
     begin(stream,callback,userdata,action);
     pending.operation=real(stream,cork,completed,NULL);return pending.operation;
 }
+pa_operation *pa_stream_trigger(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata){
+    pa_operation *(*real)(pa_stream*,pa_stream_success_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_trigger");
+    if(!selected(stream,"trigger"))return real(stream,callback,userdata);
+    begin(stream,callback,userdata,"trigger");pending.operation=real(stream,completed,NULL);return pending.operation;
+}
 pa_operation_state_t pa_operation_get_state(const pa_operation *operation) {
     pa_operation_state_t (*real)(const pa_operation*)=dlsym(RTLD_NEXT,"pa_operation_get_state");
     pa_operation_state_t state=real(operation);
@@ -87,6 +102,7 @@ pa_operation_state_t pa_operation_get_state(const pa_operation *operation) {
     if(now_ms()-pending.issued<strtoul(setting("USB_TEST_PA_DELAY_MS","650"),NULL,10))return PA_OPERATION_RUNNING;
     if(pending.real_done && !pending.delivered) {
         pending.delivered=1;
+        if(pending.is_trigger)atomic_store(&trigger_acked,now_ms());
         if(atomic_load(&cold_started)){
             unsigned long long now=now_ms();atomic_store(&cold_ack,now);
             atomic_store(&cold_resume,now+strtoul(setting("USB_TEST_COLD_RESUME_MS","30"),NULL,10));
@@ -151,4 +167,36 @@ void pa_stream_set_read_callback(pa_stream *stream,pa_stream_request_cb_t callba
     if(!registration){real(stream,callback,userdata);return;}
     *registration=(read_registration){.stream=stream,.callback=callback,.userdata=userdata};
     real(stream,deliver_read,registration);
+}
+
+/* A service interruption holds the real client PA lock; the server continues
+ * consuming its actual negotiated reserve and retaining incoming capture. */
+int pa_stream_write(pa_stream *stream,const void *data,size_t bytes,pa_free_cb_t free_cb,int64_t offset,pa_seek_mode_t seek){
+    int (*real)(pa_stream*,const void*,size_t,pa_free_cb_t,int64_t,pa_seek_mode_t)=dlsym(RTLD_NEXT,"pa_stream_write");
+    const char *device=pa_stream_get_device_name(stream),*target=getenv("USB_TEST_IO_PAUSE_DEVICE");
+    if(device&&target&&!strcmp(device,target)&&bytes){
+        const unsigned char *pcm=data;bool nonzero=false;for(size_t i=0;i<bytes;++i)if(pcm[i]){nonzero=true;break;}
+        unsigned long long now=now_ms(),first=atomic_load(&io_payload_started);
+        if(nonzero&&!first){atomic_store(&io_payload_started,now);first=now;}
+        unsigned expected=0;
+        if(first&&now-first>=strtoull(setting("USB_TEST_IO_PAUSE_AFTER_MS","600"),NULL,10)&&atomic_compare_exchange_strong(&io_pause_count,&expected,1)){
+            atomic_store(&io_pause_started,now);unsigned delay=(unsigned)strtoul(setting("USB_TEST_IO_PAUSE_MS","150"),NULL,10);
+            fprintf(stderr,"INJECT IO service pause device=%s requested_ms=%u after_payload_ms=%llu\n",device,delay,now-first);
+            struct timespec span={delay/1000,(long)(delay%1000)*1000000};nanosleep(&span,NULL);
+            unsigned long long elapsed=now_ms()-now;atomic_store(&io_pause_duration,elapsed);
+            fprintf(stderr,"INJECT IO service resumed device=%s elapsed_ms=%llu no-discard=1\n",device,elapsed);
+        }
+    }
+    return real(stream,data,bytes,free_cb,offset,seek);
+}
+const pa_buffer_attr *pa_stream_get_buffer_attr(pa_stream *stream){
+    const pa_buffer_attr *(*real)(pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_get_buffer_attr");
+    const pa_buffer_attr *value=real(stream);const char *device=pa_stream_get_device_name(stream);
+    if(value&&getenv("USB_TEST_BUFFER_REJECT")&&device&&!strcmp(device,"radio_sink_fixture")){
+        if(!atomic_exchange(&buffer_reject_reported,1))fprintf(stderr,"INJECT negotiated buffer rejection device=%s tlength=6174 minreq=1764 prebuf=4412\n",device);
+        static _Thread_local pa_buffer_attr insufficient;
+        insufficient=*value;insufficient.maxlength=17640;insufficient.tlength=6174;insufficient.prebuf=4412;insufficient.minreq=1764;
+        return &insufficient;
+    }
+    return value;
 }

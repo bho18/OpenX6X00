@@ -7,6 +7,7 @@ from array import array
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -149,12 +150,24 @@ class ProcessSupervisor:
     def require_running(self, except_process=None):
         for child in self.children:
             process = child['process']
-            if process is except_process or child['expected_exit']:
+            if process is except_process:
                 continue
             code = process.poll()
+            if child['expected_exit']:
+                if code is not None and child.get('expected_exit_code') is not None and code!=child['expected_exit_code']:
+                    raise RuntimeError('Planned fixture '+child['name']+' exited with '+str(code)+' instead of '+str(child['expected_exit_code']))
+                continue
             if code is not None:
                 raise RuntimeError('Fixture process ' + child['name'] + ' exited unexpectedly with ' + str(code) +
                                    '; inspect ' + str(self.root / (child['name'] + '.log')))
+
+    def expect_exit(self, process, exit_code=0):
+        for child in self.children:
+            if child['process'] is process:
+                child['expected_exit']=True
+                child['expected_exit_code']=exit_code
+                return
+        raise ValueError('Only a supervised fixture can have a planned exit')
 
     def stop(self, process, grace=2.0):
         for child in self.children:
@@ -247,6 +260,29 @@ def validate_operation_phase(rows, phase, mode):
             'observed_status':observed['status'],'duration_ms':observed['duration_ms']}
 
 
+def validate_drain_loss_wait(rows, harness, log_text):
+    witness=re.search(r'RF_DROP_DURING_TRIGGER_WAIT started_ms=(\d+) drop_ms=(\d+) ack_ms=(\d+)',log_text)
+    require(witness is not None,'RF loss during the delayed trigger wait was not retained')
+    started,dropped,acknowledged=map(int,witness.groups())
+    require(started<dropped<acknowledged and acknowledged-started>=650,
+            'RF loss did not occur inside the requested successful 650ms trigger ACK wait')
+    starts=[row for row in rows if row.get('kind')=='event' and row.get('event')=='operation-start'
+            and row.get('operation')=='modem-trigger' and row.get('state')==4]
+    endings=[row for row in rows if row.get('kind')=='event' and row.get('event')=='operation-end'
+             and row.get('operation')=='modem-trigger' and row.get('state')==4 and row.get('status')==1]
+    require(any(started<=begin['ms']<dropped<acknowledged<=end['ms'] for begin in starts for end in endings),
+            'The trace does not place RF loss inside the successful DRAIN trigger operation')
+    faults=[row for row in rows if row.get('event')=='first-fault' and row.get('status')==4
+            and row.get('operation')=='tx-status-disappeared-during-drain' and row.get('state')==4]
+    require(faults and min(row['ms'] for row in faults)>=acknowledged,
+            'Fresh RF state was not rejected after the delayed trigger returned')
+    require(harness['fault']==4 and harness['turns']==0 and not harness['physical_tx'],
+            'A turn with RF loss during the trigger wait was counted as complete')
+    return {'status':'PASS','operation':'modem-trigger','phase':'tx','state':4,
+            'started_ms':started,'rf_drop_ms':dropped,'acknowledged_ms':acknowledged,
+            'successful_ack_wait_ms':acknowledged-started,'completed_turns':0}
+
+
 def validate_session_identity(rows, completion, expected_source=None, expected_build=None, expected_storage_error=False):
     headers = [row for row in rows if row.get('kind') == 'session']
     samples = [row for row in rows if row.get('kind') == 'sample']
@@ -271,7 +307,7 @@ def validate_session_identity(rows, completion, expected_source=None, expected_b
     return {name:header[name] for name in ('session_id','source_commit','build_id')}
 
 
-def microphone_frame_budget(active_ms, accepted_frames, fragment_frames, rate=48000):
+def microphone_frame_budget(active_ms, accepted_frames, fragment_frames, rate=48000, stream='microphone'):
     expected = active_ms * rate / 1000
     boundary = 2 * fragment_frames
     lower = max(0, math.floor(expected * .99) - boundary)
@@ -279,15 +315,15 @@ def microphone_frame_budget(active_ms, accepted_frames, fragment_frames, rate=48
     evaluated = active_ms >= 750
     if evaluated:
         require(lower <= accepted_frames <= upper,
-                'Accepted microphone frames differ from active TX wall time: '+str(accepted_frames)+
+                'Accepted '+stream+' frames differ from the observed wall time: '+str(accepted_frames)+
                 ' frames; required '+str(lower)+'..'+str(upper))
-    return {'status':'PASS','active_ms':active_ms,'accepted_frames':accepted_frames,
+    return {'status':'PASS','stream':stream,'active_ms':active_ms,'accepted_frames':accepted_frames,
             'expected_frames':expected,'minimum_frames':lower,'maximum_frames':upper,
             'fragment_frames':fragment_frames,'boundary_frames':boundary,
             'delivery_tolerance_percent':1,'evaluated':evaluated}
 
 
-def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_rate):
+def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_rate, expected_gain=.25):
     """Verify the complete transmitted waveform, independently of vocoder phase.
 
     A fixed alignment is selected once, then checked across the full reference
@@ -322,7 +358,8 @@ def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_r
                 if xx > 1e-9 and yy > 1e-9 else 0.0)
 
     left = at_rate(samples(reference_pcm),reference_rate,8000)[40:-40]
-    right = at_rate(samples(observed_pcm),observed_rate,32000)
+    observed = samples(observed_pcm)
+    right = at_rate(observed,observed_rate,32000)
     require(len(left) >= 800, 'Modem reference is too short for a complete waveform check')
     n = len(left)
     indexes = [round(index*(n-1)/95) for index in range(96)]
@@ -338,13 +375,30 @@ def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_r
         score = correlation(probe,[right[lag+index*4] for index in indexes])
         if score > best_score:
             best_score,best_lag = score,lag
-    aligned = [right[best_lag+index*4] for index in range(n)]
+    # Refine against the native monitor samples. A 32k grid alone cannot
+    # represent every 48k headphone sample phase, especially for wideband audio.
+    def native_at(position):
+        index=int(position);fraction=position-index
+        return observed[index]*(1-fraction)+observed[index+1]*fraction
+    fine_rate=observed_rate*4
+    center=best_lag*fine_rate/32000
+    fine_best=(-1.0,0)
+    for lag in range(max(0,math.floor(center-fine_rate/32000)),math.ceil(center+fine_rate/32000)+1):
+        if lag/fine_rate+(n-1)/8000 >= (len(observed)-1)/observed_rate:
+            continue
+        score=correlation(probe,[native_at((lag/fine_rate+index/8000)*observed_rate) for index in indexes])
+        if score>fine_best[0]:
+            fine_best=score,lag
+    require(fine_best[0]>=0,'Monitor recording omitted the aligned reference')
+    delay=fine_best[1]/fine_rate
+    require(delay<=1,'Waveform alignment exceeded its one-second bound')
+    aligned=[native_at((delay+index/8000)*observed_rate) for index in range(n)]
     score = correlation(left,aligned)
     require(score >= .95, 'Sink modem waveform differs from its reference; correlation '+str(round(score,5)))
     energy = sum(value*value for value in left)
     require(energy > 0, 'Modem reference contains no signal')
     gain = sum(a*b for a,b in zip(left,aligned))/energy
-    require(.24 <= gain <= .26, 'Sink modem gain differs from the required quarter-amplitude path')
+    require(expected_gain*.96 <= gain <= expected_gain*1.04, 'Sink waveform gain differs from its declared path gain')
     rms = math.sqrt(energy/n)*abs(gain)
     windows = list(range(0,n-799,400))
     if windows[-1] != n-800:
@@ -354,11 +408,51 @@ def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_r
     maximum_error = max(errors)
     require(maximum_error <= .35, 'Sink modem waveform has a missing, duplicated or corrupted region')
     return {'status':'PASS','method':'full_modem_waveform_and_100ms_windows','correlation':score,
-            'lag_ms':best_lag/32,'fitted_gain':gain,'minimum_correlation':.95,
+            'lag_ms':delay*1000,'fitted_gain':gain,'expected_gain':expected_gain,'minimum_correlation':.95,
             'maximum_lag_ms':1000,'resampler_edge_allowance_ms':5,
             'maximum_window_normalized_error':maximum_error,'allowed_window_normalized_error':.35,
             'reference_frames_compared_at_8k':n,'complete_reference_covered':True,
             'intelligibility':'UNASSESSED'}
+
+
+def audio_buffer_contract(rows):
+    """Derive four-stream reserve from negotiated attributes, not requests."""
+    streams={row['stream']:row for row in rows if row.get('kind')=='stream'}
+    require(set(streams)=={'mic','radio-rx','headset','modem'},'All four negotiated audio descriptors are required')
+    report={'status':'PASS','service_pause_budget_ms':150,'codec_quantum_ms':120,'margin_ms':30,
+            'minimum_output_reserve_ms':300,'streams':{},'violations':[]}
+    for name,stream in streams.items():
+        require(stream['channels']==1 and stream['rate'] in (44100,48000),'Unexpected stream framing')
+        per_second=stream['rate']*2
+        for field in ('maxlength','tlength','prebuf','minreq','fragsize'):
+            require(type(stream[field]) is int and stream[field]>=0,'Invalid negotiated buffer attribute')
+        maximum=stream['maxlength']*1000/per_second
+        value={'maximum_ms':maximum}
+        if name in ('modem','headset'):
+            usable=(stream['tlength']-stream['minreq'])*1000/per_second
+            prebuffer=stream['prebuf']*1000/per_second
+            value.update(usable_ms=usable,prebuffer_ms=prebuffer)
+            if usable<300 or prebuffer<300 or maximum>1000 or stream['tlength']>stream['maxlength']:
+                report['violations'].append(name+' output reserve or prebuffer is outside the declared profile')
+        else:
+            fragment=stream['fragsize']*1000/per_second
+            minimum=150+2*fragment
+            value.update(fragment_ms=fragment,minimum_capture_ms=minimum)
+            if not 0<fragment<1000 or maximum<minimum or maximum>1000:
+                report['violations'].append(name+' capture cannot retain the service pause and both fragment boundaries')
+        report['streams'][name]=value
+    if report['violations']:
+        report['status']='FAIL'
+    return report
+
+
+def planned_fixture_eof(exit_code, expected_seconds, elapsed_seconds):
+    require(0<expected_seconds<=30,'Finite RX fixture must fit the bounded 30-second input contract')
+    require(exit_code==0,'Finite RX fixture did not finish and drain normally')
+    require(elapsed_seconds>=expected_seconds-.1,'Finite RX fixture ended before its complete payload duration')
+    return {'status':'PLANNED_EOF','exit_code':exit_code,'input_seconds':expected_seconds,
+            'elapsed_seconds':elapsed_seconds,'repeated':False,
+            'method':'Finite paplay input; normal exit follows its playback drain'}
 
 
 def validate_turn_decode(reference, observed, turn_number, tolerance_seconds=.14):
