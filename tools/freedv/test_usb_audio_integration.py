@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import sys
 import subprocess
 import tempfile
 import time
@@ -20,7 +21,7 @@ import wave
 
 from usb_test_support import (ProcessSupervisor, completed_turns, require,
                               run_bounded, save_json, validate_turn_decode, validate_session_identity, modem_waveform_match,
-                              validate_operation_phase, microphone_frame_budget)
+                              validate_operation_phase, microphone_frame_budget, PulseTestRuntime, pulse_startup_failure)
 from usb_collector_contract import validate_collector_contract
 
 CASES = (
@@ -193,10 +194,9 @@ def run_case(args):
               'runner_sha256': sha(args.runner) if args.runner else None,
               'fault_injector_sha256': sha(args.fault_inject_so) if args.fault_inject_so else None,
               'commands': commands}
-    env = dict(os.environ, PULSE_SERVER=f'unix:{root}/native', PULSE_RUNTIME_PATH=str(root),
-               PULSE_STATE_PATH=str(root), XDG_CONFIG_HOME=str(root))
+    env = os.environ.copy()
     supervisor = ProcessSupervisor(root, env)
-    recording = cleanup = None
+    recording = cleanup = pulse_runtime = None
     previous_term = signal.getsignal(signal.SIGTERM)
 
     def interrupted(signum, frame):
@@ -206,6 +206,10 @@ def run_case(args):
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
+        pulse_runtime = PulseTestRuntime(root)
+        env.update(pulse_runtime.environment())
+        record['pulse_runtime'] = pulse_runtime.identity()
+        save_json(root/'pulse-runtime-identity.json',record['pulse_runtime'])
         expected = {name:os.environ.get(variable) for name,variable in
                     [('source_commit','USB_TEST_EXPECTED_SOURCE_COMMIT'),('build_id','USB_TEST_EXPECTED_BUILD_ID'),
                      ('binary_sha256','USB_TEST_EXPECTED_BINARY_SHA256')]}
@@ -213,7 +217,7 @@ def run_case(args):
             require(all(expected.values()), 'Campaign supplied incomplete controller identity')
             require(record['test_binary_sha256'] == expected['binary_sha256'], 'Invoked controller binary differs from the campaign')
         conf = root / 'default.pa'
-        conf.write_text('.fail\n' + f'load-module module-native-protocol-unix socket={root}/native auth-anonymous=1\n' +
+        conf.write_text('.fail\n' + f'load-module module-native-protocol-unix socket={pulse_runtime.socket} auth-anonymous=1\n' +
             'load-module module-null-sink sink_name=mic_fixture rate=16000 channels=1 format=s16le norewinds=1\n' +
             'load-module module-remap-source source_name=alsa_input.usb-fixture master=mic_fixture.monitor rate=16000 channels=1\n' +
             'load-module module-null-sink sink_name=rf_fixture rate=44100 channels=2 format=s16le norewinds=1\n' +
@@ -243,6 +247,8 @@ def run_case(args):
             if result['exit_code'] == 0:
                 ready = True
                 break
+            fatal = pulse_startup_failure((root/'pulse.log').read_text(errors='replace'))
+            require(fatal is None, 'Private Pulse startup failed: '+str(fatal))
             attempt += 1
             time.sleep(.05)
         require(ready, 'Private Pulse did not become ready')
@@ -284,7 +290,11 @@ def run_case(args):
                                                          '--format=s16le', '--channels=1', '--latency-msec=20'], stdout=recording)
         child_env = dict(env, **injection_environment(args.case, root, args.fault_inject_so))
         # Only the controller process receives the interposer, never Pulse/fixtures.
-        test = supervisor.start('test', [args.binary, root/'result', '--'+args.case], env=child_env)
+        # Keep the controller's bounded trace-prefix buffers independent of
+        # immutable attempt path depth, just as the private Pulse socket is.
+        record['controller_working_directory'] = str(root/'result')
+        record['controller_output_argument'] = '.'
+        test = supervisor.start('test', [args.binary, '.', '--'+args.case], env=child_env, cwd=root/'result')
         until = time.monotonic() + CASE_TIMEOUTS.get(args.case, 75)
         changed = False
         while test.poll() is None:
@@ -399,8 +409,20 @@ def run_case(args):
         record['process_cleanup'] = cleanup
         if recording:
             recording.close()
+        if pulse_runtime is not None:
+            try:
+                pulse_runtime.close()
+            except Exception as error:
+                cleanup['errors'].append('Private Pulse runtime cleanup: '+str(error))
+            record['pulse_runtime'] = pulse_runtime.identity()
+            save_json(root/'pulse-runtime-identity.json',record['pulse_runtime'])
+        if cleanup['errors']:
+            record['status'] = 'FAIL'
+            record.setdefault('error','Fixture cleanup failed: '+str(cleanup['errors']))
         signal.signal(signal.SIGTERM, previous_term)
         save_json(root/'case-result.json', record)
+        if cleanup['errors'] and sys.exc_info()[0] is None:
+            raise RuntimeError(record['error'])
     return root
 
 

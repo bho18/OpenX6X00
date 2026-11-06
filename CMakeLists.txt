@@ -117,6 +117,10 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_test_support.py)
                 add_test(NAME freedv_usb_test_campaign COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_campaign.py)
+                add_test(NAME freedv_usb_controller_build COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_controller_build.py)
+                add_test(NAME freedv_usb_ci_diagnostics COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_ci_diagnostics.py)
                 add_executable(freedv_native_contract_test tools/freedv/native_contract_test.c)
                 target_compile_options(freedv_native_contract_test PRIVATE -UNDEBUG)
                 add_test(NAME freedv_native_contract COMMAND freedv_native_contract_test)

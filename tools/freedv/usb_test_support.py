@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -32,6 +33,50 @@ def save_json(path, value):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def require_unix_socket_path(path):
+    """Linux sockaddr_un has 108 bytes, including the terminating NUL."""
+    require(len(os.fsencode(path)) <= 107, 'Private Pulse Unix socket path exceeds the 107-byte Linux limit')
+
+
+class PulseTestRuntime:
+    """Keep Unix sockets independent of arbitrarily deep evidence directories."""
+    def __init__(self, evidence_directory):
+        self.evidence_directory = Path(evidence_directory)
+        self.temporary = tempfile.TemporaryDirectory(prefix='x6pa-', dir='/tmp')
+        self.directory = Path(self.temporary.name)
+        self.socket = self.directory/'native'
+        self.cleanup_attempted = False
+        try:
+            require_unix_socket_path(self.socket)
+            (self.directory/'config').mkdir(mode=0o700)
+            (self.directory/'state').mkdir(mode=0o700)
+        except BaseException:
+            self.temporary.cleanup()
+            raise
+
+    def environment(self):
+        return {'PULSE_SERVER':'unix:'+str(self.socket), 'PULSE_RUNTIME_PATH':str(self.directory),
+                'PULSE_STATE_PATH':str(self.directory/'state'), 'XDG_CONFIG_HOME':str(self.directory/'config')}
+
+    def identity(self):
+        return {'scope':'Private host Pulse runtime; immutable evidence remains in the attempt directory',
+                'directory':str(self.directory), 'socket':str(self.socket),
+                'socket_path_bytes':len(os.fsencode(self.socket)), 'maximum_socket_path_bytes':107,
+                'evidence_directory':str(self.evidence_directory),
+                'cleanup_attempted':self.cleanup_attempted, 'directory_removed':not self.directory.exists()}
+
+    def close(self):
+        self.cleanup_attempted = True
+        self.temporary.cleanup()
+
+
+def pulse_startup_failure(log_text):
+    """Mandatory module failures cannot recover through readiness polling."""
+    markers = ('Failed to load module ', 'Failed to open module ', 'Failed to bind socket',
+               'AF_UNIX path too long', 'Daemon startup failed')
+    return next((line for line in log_text.splitlines() if any(marker in line for marker in markers)), None)
 
 
 def _stop_group(process, grace):
@@ -87,17 +132,18 @@ class ProcessSupervisor:
         self.root, self.env = Path(root), env
         self.children = []
 
-    def start(self, name, command, stdout=None, env=None):
+    def start(self, name, command, stdout=None, env=None, cwd=None):
         log = (self.root / (name + '.log')).open('w')
         output = stdout if stdout is not None else log
         try:
             process = subprocess.Popen([str(x) for x in command], env=self.env if env is None else env,
-                                       stdout=output, stderr=log)
+                                       stdout=output, stderr=log, cwd=cwd)
         except BaseException:
             log.close()
             raise
         self.children.append({'name': name, 'process': process, 'log': log,
-                              'command': [str(x) for x in command], 'expected_exit': False})
+                              'command': [str(x) for x in command], 'expected_exit': False,
+                              'cwd':str(cwd) if cwd is not None else None})
         return process
 
     def require_running(self, except_process=None):
@@ -155,7 +201,7 @@ class ProcessSupervisor:
             except Exception as error:
                 errors.append(child['name'] + ' log: ' + str(error))
         return {'errors': errors, 'children': [
-            {'name': c['name'], 'exit_code': c['process'].returncode, 'command': c['command']}
+            {'name': c['name'], 'exit_code': c['process'].returncode, 'command': c['command'], 'cwd':c.get('cwd')}
             for c in self.children]}
 
 

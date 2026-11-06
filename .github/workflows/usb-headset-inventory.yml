@@ -21,6 +21,8 @@ jobs:
           python tools/freedv/test_usb_test_support.py
           python -O tools/freedv/test_usb_test_support.py
           python tools/freedv/test_usb_campaign.py
+          python tools/freedv/test_usb_controller_build.py
+          python tools/freedv/test_usb_ci_diagnostics.py
       - name: Install private PulseAudio test dependencies
         run: sudo apt-get update && sudo apt-get install -y libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils
       - name: Check PCM streams and endpoint loss on private virtual devices
@@ -28,6 +30,7 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -O2 tools/freedv/usb_headset_pcm.c -lpulse -o /tmp/usb_headset_pcm
           gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only tools/freedv/usb_half_duplex.c
           gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only src/freedv/usb_audio.c
+          gcc -std=c11 -Wall -Wextra -Werror -DHOST_BUILD=1 -fsyntax-only src/freedv/usb_audio.c
           gcc -std=c11 -Wall -Wextra -Werror tools/freedv/usb_panel_test.c -o /tmp/usb_panel_test
           /tmp/usb_panel_test
           gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared tools/freedv/test_usb_headset_drop_drain.c -lpulse -ldl -o /tmp/drop-drain.so
@@ -55,7 +58,11 @@ jobs:
           python3 tools/freedv/build_usb_controller_host.py --prepare-codec \
             --work "$RUNNER_TEMP/usb-controller-build" --jobs 2 \
             --build-id "usb-controller-ci-${GITHUB_SHA}" \
-            > "$RUNNER_TEMP/usb-controller-build.log" 2>&1
+            > "$RUNNER_TEMP/usb-controller-build.log" 2>&1 || {
+              task_status=$?
+              python3 tools/freedv/usb_ci_diagnostics.py --work-root "$RUNNER_TEMP"
+              exit "$task_status"
+            }
       - name: Run complete controller regression and lifecycle cases on private PulseAudio
         timeout-minutes: 15
         run: |
@@ -69,7 +76,17 @@ jobs:
             --output "$RUNNER_TEMP/usb-controller-matrix" --profile regression \
             --campaign-root "$RUNNER_TEMP/usb-controller-campaigns" \
             --source-commit "$GITHUB_SHA" --build-id "usb-controller-ci-${GITHUB_SHA}" \
-            > "$RUNNER_TEMP/usb-controller-matrix.log" 2>&1
+            > "$RUNNER_TEMP/usb-controller-matrix.log" 2>&1 || {
+              task_status=$?
+              python3 tools/freedv/usb_ci_diagnostics.py --work-root "$RUNNER_TEMP"
+              exit "$task_status"
+            }
+      - name: Retain bounded PCM only from failed public-fixture cases
+        if: failure()
+        timeout-minutes: 2
+        run: |
+          python3 tools/freedv/usb_ci_diagnostics.py --work-root "$RUNNER_TEMP" \
+            --output "$RUNNER_TEMP/usb-controller-failure-fixtures"
       - name: Retain successful and failed build/campaign evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -87,6 +104,7 @@ jobs:
             ${{ runner.temp }}/usb-controller-matrix/**/*.log
             ${{ runner.temp }}/usb-controller-matrix/**/*.txt
             ${{ runner.temp }}/usb-controller-campaigns/**/*.json
+            ${{ runner.temp }}/usb-controller-failure-fixtures/
   windows-runner:
     runs-on: windows-latest
     timeout-minutes: 15

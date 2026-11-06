@@ -40,6 +40,13 @@ def snapshot():
     return files, tree
 
 
+def host_definitions(build_id, revision):
+    """The controller must expose the same host instrumentation as CMake."""
+    return ['-DHOST_BUILD=1', '-DRADE_ACQ_PARALLEL=1',
+            '-DFREEDV_BUILD_ID="' + build_id + '"',
+            '-DFREEDV_SOURCE_COMMIT="' + revision + '"']
+
+
 def codec_layout(codec):
     """Reject a serial/unpatched codec or a different speech/model fixture."""
     source = codec / 'sources/rade_c'
@@ -165,12 +172,23 @@ def main():
             name: sha(codec / 'sources/rade_c' / name)
             for name in json.loads((ROOT / 'tools/freedv/patches/rade-acq-parallel.json').read_text())['candidate_files']}
         record['compiler'] = subprocess.check_output([args.cc, '--version'], text=True, timeout=30).splitlines()[0]
-        common = [args.cc, '-std=c11', '-O2', '-g', '-UNDEBUG', '-pthread', '-DRADE_ACQ_PARALLEL=1',
-                  '-DFREEDV_BUILD_ID="' + build_id + '"', '-DFREEDV_SOURCE_COMMIT="' + revision + '"',
+        definitions = host_definitions(build_id, revision)
+        record['compile_definitions'] = definitions
+        common = [args.cc, '-std=c11', '-O2', '-g', '-UNDEBUG', '-pthread', *definitions,
                   '-I' + str(ROOT), '-I' + str(paths['rade_source']),
                   '-I' + str(paths['opus_build']), '-I' + str(paths['opus_build'] / 'include'),
                   '-I' + str(paths['opus_build'] / 'dnn'), '-I' + str(paths['opus_build'] / 'celt'),
                   '-I' + str(paths['samplerate_include']), '-include', str(paths['opus_build'] / 'config.h')]
+        preprocessed = work / 'controller-preprocessed.c'
+        run([*common, '-E', ROOT / 'src/freedv/usb_audio.c', '-o', preprocessed],
+            'controller-preprocess.log', timeout=60)
+        hook_mentions = len(re.findall(r'\busb_test_operation_phase\s*\(', preprocessed.read_text()))
+        record['host_instrumentation'] = {
+            'host_build': True, 'phase_hook': 'usb_test_operation_phase',
+            'phase_hook_declaration_and_call_observed': hook_mentions >= 2,
+            'preprocessed_controller_sha256': sha(preprocessed)}
+        if hook_mentions < 2:
+            raise ValueError('Host controller lacks the operation-phase instrumentation exercised by the matrix')
         engine = [ROOT / 'src/freedv/voice_engine.c', ROOT / 'tools/freedv/rade_stream.c', ROOT / 'src/freedv/capture_ring.c']
         links = [paths['rade_library'], paths['opus_library'], paths['samplerate_library'],
                  '-Wl,-rpath,' + str(paths['rade_library'].parent), '-lpulse', '-lm']

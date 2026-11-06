@@ -357,7 +357,8 @@ static void persist_record(fd_usb_audio *a,const char *kind,const char *path){
     char json[16385];FILE *f=fopen(path,"rb");int error=0;
     if(!f)error=errno;else{
         size_t n=fread(json,1,sizeof(json)-1,f);json[n]=0;
-        if(ferror(f)||!feof(f))error=EIO;fclose(f);
+        if(ferror(f)||!feof(f))error=EIO;
+        fclose(f);
         if(!error){int result=fd_usb_evidence_store(a->c.incident_dir,a->session_id,kind,json);if(result<0)error=-result;}
     }
     if(error){atomic_store(&a->storage_error,error);fail_at(a,U_IO,"incident-store-write",STREAM_COUNT,error,0);}
@@ -749,7 +750,8 @@ done:
         io_unlock(a);pa_threaded_mainloop_stop(a->loop);
     }
     a->final_engine=fd_voice_observe(a->engine);fd_voice_destroy(a->engine);a->engine=NULL;
-    if(a->radio_input)src_delete(a->radio_input);if(a->radio_output)src_delete(a->radio_output);
+    if(a->radio_input)src_delete(a->radio_input);
+    if(a->radio_output)src_delete(a->radio_output);
     if(a->loop){pa_threaded_mainloop_free(a->loop);a->loop=NULL;}
     /* All metadata writers finish before the terminal receipt is formed.
      * In particular, a late persistent first-fault error cannot appear after

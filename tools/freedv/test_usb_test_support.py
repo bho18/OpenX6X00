@@ -5,6 +5,7 @@ from array import array
 import math
 import os
 import random
+import socket
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,8 @@ import wave
 
 from usb_test_support import (ProcessSupervisor, completed_turns, require, run_bounded,
                               save_json, validate_turn_decode, modem_waveform_match,
-                              validate_operation_phase, validate_session_identity, microphone_frame_budget)
+                              validate_operation_phase, validate_session_identity, microphone_frame_budget,
+                              PulseTestRuntime, require_unix_socket_path, pulse_startup_failure)
 
 
 class SupervisorTests(unittest.TestCase):
@@ -84,6 +86,42 @@ class SupervisorTests(unittest.TestCase):
         pid=int(nested.read_text().strip())
         with self.assertRaises(ProcessLookupError):
             os.kill(pid,0)
+
+
+class PulseRuntimeTests(unittest.TestCase):
+    def test_long_evidence_path_uses_short_real_unix_socket_without_path_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence=Path(temporary)/('attempt-'+'x'*72)/('case-'+'y'*72)
+            evidence.mkdir(parents=True)
+            invalid=evidence/'native'
+            self.assertGreater(len(os.fsencode(invalid)),107)
+            with socket.socket(socket.AF_UNIX) as rejected:
+                with self.assertRaisesRegex(OSError,'AF_UNIX path too long'):
+                    rejected.bind(str(invalid))
+            with self.assertRaisesRegex(ValueError,'107-byte'):
+                require_unix_socket_path(invalid)
+            with mock.patch.dict(os.environ,{'PATH':''}):
+                runtime=PulseTestRuntime(evidence)
+                try:
+                    with socket.socket(socket.AF_UNIX) as server:
+                        server.bind(str(runtime.socket));server.listen(1)
+                        with socket.socket(socket.AF_UNIX) as client:
+                            client.connect(str(runtime.socket));client.sendall(b'preflight')
+                            peer,_=server.accept()
+                            with peer:
+                                self.assertEqual(peer.recv(9),b'preflight')
+                    save_json(evidence/'pulse-runtime-identity.json',runtime.identity())
+                finally:
+                    runtime.close()
+            self.assertFalse(runtime.directory.exists())
+            self.assertTrue((evidence/'pulse-runtime-identity.json').is_file())
+            self.assertLessEqual(len(os.fsencode(runtime.socket)),107)
+
+    def test_mandatory_module_failure_is_fatal_but_system_bus_noise_is_not(self):
+        ordinary='E: [null-sink] util.c: Failed to connect to system bus: No such file or directory'
+        self.assertIsNone(pulse_startup_failure(ordinary))
+        fatal='E: [pulseaudio] module.c: Failed to load module "module-native-protocol-unix": initialization failed.'
+        self.assertEqual(pulse_startup_failure(ordinary+'\n'+fatal),fatal)
 
 
 class SinkOracleTests(unittest.TestCase):
@@ -211,17 +249,27 @@ class DriverFailureTests(unittest.TestCase):
                 wav.setparams((1,2,16000,0,'NONE','not compressed'))
                 wav.writeframes(b'\0'*320)
             modem=root/'modem.raw';modem.write_bytes(b'\0'*320)
-            args=SimpleNamespace(output=root/'case',binary=Path(sys.executable),speech=speech,
+            args=SimpleNamespace(output=root/('attempt-'+'a'*72)/('case-'+'b'*72),binary=Path(sys.executable),speech=speech,
                                  modem=modem,runner=None,fault_inject_so=None,case='normal')
 
             class RealChildren(ProcessSupervisor):
-                def start(self, name, command, stdout=None, env=None):
+                def start(self, name, command, stdout=None, env=None, cwd=None):
                     # Real child lifetimes, with fake services so this regression
                     # needs neither Pulse nor a codec build.
                     script='import time;time.sleep(60)'
-                    if name=='test':
-                        script='import time;print("TX_ACTIVE",flush=True);time.sleep(60)'
-                    return super().start(name,[sys.executable,'-c',script],stdout=stdout,env=env)
+                    if name=='pulse':
+                        script=('import os,socket,time;server=socket.socket(socket.AF_UNIX);'
+                                'server.bind(os.environ["PULSE_SERVER"].split("unix:",1)[1]);'
+                                'server.listen(1);peer,_=server.accept();peer.close();time.sleep(60)')
+                    elif name=='test':
+                        proof={'requested_output_argument':str(command[1])}
+                        script=('import time,json,os;from pathlib import Path;'
+                                'record='+repr(proof)+';record["cwd"]=os.getcwd();'
+                                'Path("incidents").mkdir();'
+                                'record["incident_directory"]=str(Path.cwd()/"incidents");'
+                                'Path("freedv-usb-namespace-proof.json").write_text(json.dumps(record));'
+                                'print("TX_ACTIVE",flush=True);time.sleep(60)')
+                    return super().start(name,[sys.executable,'-c',script],stdout=stdout,env=env,cwd=cwd)
 
             endpoint_text=('alsa_input.usb-fixture null 1ch 16000Hz\n'
                            'alsa_output.usb-fixture null 2ch 48000Hz\n'
@@ -230,11 +278,18 @@ class DriverFailureTests(unittest.TestCase):
             def command(command, case_root, name, commands, env, timeout=3, check=True):
                 if name.startswith('endpoints-active'):
                     raise RuntimeError('primary endpoint failure')
+                if name.startswith('pulse-ready'):
+                    with socket.socket(socket.AF_UNIX) as client:
+                        try:
+                            client.connect(env['PULSE_SERVER'].split('unix:',1)[1])
+                        except OSError:
+                            return {'exit_code':1,'timed_out':False}, 'socket not ready'
                 return {'exit_code':0,'timed_out':False}, endpoint_text
 
             with mock.patch.object(driver,'ProcessSupervisor',RealChildren), \
                  mock.patch.object(driver,'check_command',command), \
-                 mock.patch.object(driver.shutil,'which',return_value=sys.executable):
+                 mock.patch.object(driver.shutil,'which',return_value=sys.executable), \
+                 mock.patch.dict(os.environ,{'PATH':''}):
                 with self.assertRaisesRegex(RuntimeError,'primary endpoint failure'):
                     driver.run_case(args)
             import json
@@ -245,6 +300,19 @@ class DriverFailureTests(unittest.TestCase):
             children=record['process_cleanup']['children']
             self.assertTrue(any(child['name']=='test' for child in children))
             self.assertTrue(all(child['exit_code'] is not None for child in children))
+            self.assertGreater(len(os.fsencode(args.output/'native')),107)
+            self.assertLessEqual(record['pulse_runtime']['socket_path_bytes'],107)
+            self.assertTrue(record['pulse_runtime']['cleanup_attempted'])
+            self.assertTrue(record['pulse_runtime']['directory_removed'])
+            self.assertIn('socket='+record['pulse_runtime']['socket'],(args.output/'default.pa').read_text())
+            self.assertTrue((args.output/'pulse-runtime-identity.json').is_file())
+            proof=json.loads((args.output/'result/freedv-usb-namespace-proof.json').read_text())
+            self.assertEqual(proof['requested_output_argument'],'.')
+            self.assertEqual(proof['cwd'],str(args.output/'result'))
+            self.assertEqual(proof['incident_directory'],str(args.output/'result/incidents'))
+            self.assertEqual(record['controller_output_argument'],'.')
+            self.assertEqual(record['controller_working_directory'],str(args.output/'result'))
+            self.assertTrue((args.output/'result/incidents').is_dir())
 
 
 if __name__=='__main__':

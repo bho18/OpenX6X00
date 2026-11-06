@@ -11,6 +11,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <limits.h>
+#include <unistd.h>
 
 /* Weak test-only symbols are resolved by the selected LD_PRELOAD injector. */
 extern unsigned long long usb_test_cold_ack_ms(void) __attribute__((weak));
@@ -166,7 +168,15 @@ int main(int argc,char **argv) {
     atomic_store(&f.freeze,true);pause_ms(30);uint64_t seq=atomic_load(&f.sequence),packet_at=atomic_load(&f.packet_at);fd_usb_inputs probe;
     for(unsigned i=0;i<200;++i)assert(observe(&f,&probe));
     assert(atomic_load(&f.sequence)==seq&&atomic_load(&f.packet_at)==packet_at);atomic_store(&f.freeze,false);
-    char incident_dir[768];snprintf(incident_dir,sizeof(incident_dir),"%s/incidents",argv[1]);
+    /* The driver runs us inside the evidence directory with argv[1]="." so
+     * trace filenames stay short. Persistence requires an absolute directory.
+     * Preserve direct absolute-output invocations for diagnostic use too. */
+    char incident_dir[PATH_MAX],working_directory[PATH_MAX];
+    assert(getcwd(working_directory,sizeof(working_directory)));
+    int incident_length=argv[1][0]=='/'?snprintf(incident_dir,sizeof(incident_dir),"%s/incidents",argv[1]):
+        !strcmp(argv[1],".")?snprintf(incident_dir,sizeof(incident_dir),"%s/incidents",working_directory):
+        snprintf(incident_dir,sizeof(incident_dir),"%s/%s/incidents",working_directory,argv[1]);
+    assert(incident_length>0&&(size_t)incident_length<sizeof(incident_dir));
     bool full_session=!strcmp(scenario,"--full-session");
     bool qualification=full_session||!strcmp(scenario,"--rf-disabled") || !strcmp(scenario,"--qualification-physical-tx") ||
                        !strcmp(scenario,"--qualification-held-ptt") || !strcmp(scenario,"--cold-qualification") || !strcmp(scenario,"--cold-idle") || !strncmp(scenario,"--storage-",10);
