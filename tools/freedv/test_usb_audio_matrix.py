@@ -394,6 +394,7 @@ def main():
             except (OSError, ValueError, TypeError, KeyError) as error:
                 record['promotion_eligible'] = False
                 record['promotion_error'] = str(error)
+                print('FAIL: USB promotion validation: '+str(error),flush=True)
                 result_code = 1
             finally:
                 campaign.close()

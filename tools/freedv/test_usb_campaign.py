@@ -275,6 +275,7 @@ def capture_case_fixture(case,root):
         result={'harness':{'turns':count,'total_turns':count,'eoo':count,'fault':1},'capture_close':capture_close_fixture(count)}
     if case in WAVEFORM_CASES:
         result['actual_sink_turns']=sink_turn_fixture(result['capture_close'],case in SPEECH_CASES,root)
+    else:result['actual_sink_turns']=[]  # Match the matrix summary's explicit default.
     return result
 
 
@@ -354,6 +355,46 @@ class CampaignTests(unittest.TestCase):
         report = self.finish(campaign, self.result(evidence))
         self.assertTrue(validate_campaign(report, ['normal'])['promotion_eligible'])
         self.assertEqual(report['campaign']['ledger_head']['sequence'], 1)
+
+    def optional_sink_report(self,retained='ABSENT',summary=None):
+        """Use the real matrix default for a case with no sink oracle."""
+        name='stop-during-key'
+        self.plan.update(expected_cases=[name],selected_cases=[name],case_timeout_seconds={name:90})
+        campaign,evidence=self.begin();result=self.result(evidence)
+        runs=result['cases'].pop('normal')['runs']
+        for run in runs:
+            extra=capture_case_fixture(name,Path(run['case_record_path']).parent)
+            details={'status':'PASS',**extra}
+            if retained=='ABSENT':details.pop('actual_sink_turns',None)
+            else:details['actual_sink_turns']=copy.deepcopy(retained)
+            atomic_json(run['case_record_path'],details)
+            run.update(extra,actual_sink_turns=[] if summary is None else copy.deepcopy(summary),
+                       case_record_sha256=sha(run['case_record_path']))
+        result['cases']={name:{'status':'PASS','runs':runs}}
+        result['expected_executions']=result['executed']=[name+'@1',name+'@2']
+        return self.finish(campaign,result)
+
+    def test_optional_sink_absence_matches_only_the_matrix_empty_list_default(self):
+        report=self.optional_sink_report()
+        validate_campaign(report,['stop-during-key'])
+        self.assertEqual(report['cases']['stop-during-key']['runs'][0]['actual_sink_turns'],[])
+        self.assertNotIn('actual_sink_turns',json.loads(Path(report['cases']['stop-during-key']['runs'][0]['case_record_path']).read_text()))
+
+    def test_explicit_optional_null_nonempty_and_stale_summary_are_not_normalized(self):
+        for retained,summary in ((None,[]),([{'status':'PASS'}],[]),('ABSENT',[{'status':'PASS'}])):
+            report=self.optional_sink_report(retained,summary)
+            with self.subTest(retained=retained,summary=summary),self.assertRaisesRegex(ValueError,'retained per-turn'):
+                validate_campaign(report,['stop-during-key'])
+
+    def test_required_positive_sink_absence_still_blocks_retained_binding(self):
+        campaign,evidence=self.begin();result=self.result(evidence)
+        run=result['cases']['normal']['runs'][0]
+        details=json.loads(Path(run['case_record_path']).read_text());details.pop('actual_sink_turns')
+        atomic_json(run['case_record_path'],details)
+        run.update(actual_sink_turns=[],case_record_sha256=sha(run['case_record_path']))
+        report=self.finish(campaign,result)
+        with self.assertRaisesRegex(ValueError,'Required per-turn'):
+            validate_campaign(report,['normal'])
 
     def test_run_summary_cannot_replace_different_retained_sink_proof(self):
         campaign,evidence=self.begin()
@@ -713,6 +754,15 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.assertEqual(record['executed'],['normal@1','normal@2'])
         self.assertEqual(len(record['infrastructure_prerequisites']),1)
         self.assertIn('infrastructure_failure_preservation',record['coverage'])
+
+    def test_promotion_validation_failure_is_printed_and_retained(self):
+        with mock.patch.object(matrix,'validate_campaign',side_effect=ValueError('sentinel promotion failure')), \
+                mock.patch('builtins.print') as printed:
+            status,record=self.invoke()
+        self.assertEqual(status,1)
+        self.assertEqual(record['promotion_error'],'sentinel promotion failure')
+        self.assertFalse(record['promotion_eligible'])
+        printed.assert_any_call('FAIL: USB promotion validation: sentinel promotion failure',flush=True)
 
     def test_outer_hung_case_retains_timeout_and_unexecuted_repeat(self):
         self.hang = True

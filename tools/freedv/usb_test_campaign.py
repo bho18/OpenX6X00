@@ -314,7 +314,11 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 details=_load(run['case_record_path'])
                 for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
                             'capture_close_failure','tail_backpressure'):
-                    if run.get(key)!=details.get(key):
+                    retained=details.get(key)
+                    if key=='actual_sink_turns' and key not in details:
+                        from test_usb_audio_integration import WAVEFORM_CASES
+                        if name not in WAVEFORM_CASES:retained=[]
+                    if run.get(key)!=retained:
                         raise ValueError('USB campaign summary differs from retained per-turn case evidence: '+name)
     campaign = matrix.get('campaign', {})
     if campaign.get('plan') != plan or not matrix.get('promotion_eligible'):
