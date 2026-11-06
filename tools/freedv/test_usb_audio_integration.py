@@ -22,7 +22,7 @@ import wave
 from usb_test_support import (ProcessSupervisor, completed_turns, require,
                               run_bounded, save_json, validate_turn_decode, validate_session_identity, modem_waveform_match,
                               validate_operation_phase, microphone_frame_budget, PulseTestRuntime, pulse_startup_failure,
-                              audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait)
+                              audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait, validate_tail_backpressure)
 from usb_collector_contract import validate_collector_contract
 
 CASES = (
@@ -38,17 +38,18 @@ CASES = (
     'mic-valid-drop300',
     'full-session',
     'io-pause150', 'buffer-contract-reject', 'rx-pause150', 'short-turn200',
+    'eoo-backpressure',
 )
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
 SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale',
                 'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled', 'cold-resume',
-                'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session', 'io-pause150'}
+                'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session', 'io-pause150', 'eoo-backpressure'}
 WAVEFORM_CASES = SPEECH_CASES | {'short-turn200'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
 PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
             for prefix, phase in [('', 'tx'), ('initial-', 'initial-rx'), ('return-', 'rx-return')]
             for mode in ('delay', 'reject', 'missing')}
-INJECT_CASES = COLD_CASES | set(PA_CASES) | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss'}
+INJECT_CASES = COLD_CASES | set(PA_CASES) | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure'}
 CASE_TIMEOUTS = {'many-turns': 120, 'reopen': 180, 'cold-idle': 100, 'drain-tx-loss': 60, 'full-session':120}
 
 
@@ -62,7 +63,9 @@ def injection_environment(case, root, library):
         return {}
     require(library and library.is_file(), 'This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
-    if case=='drain-tx-loss':
+    if case=='eoo-backpressure':
+        result.update(USB_TEST_RENDER_HOLD_TRIGGER=str(root/'result/inject-render-hold'),USB_TEST_RENDER_HOLD_MS='150')
+    elif case=='drain-tx-loss':
         result.update(USB_TEST_PA_MODE='delay',USB_TEST_PA_DEVICE='radio_sink_fixture',
                       USB_TEST_PA_ACTION='trigger',USB_TEST_PA_PHASE='tx',USB_TEST_PA_DELAY_MS='650')
     elif case in {'io-pause150','rx-pause150'}:
@@ -221,6 +224,32 @@ def headset_oracle(root, trace_path, recording_started):
     return {'status':'PASS','scope':'Actual private-Pulse headphone monitor vs complete decoded tap; no RF',
             'waveform':matched,'capture_frame_budget':progression,'rendered_frames':len(reference)//2,
             'leading_monitor_context_ms':200,'intelligibility':'UNASSESSED'}
+
+
+def retain_failed_controller(root, args, record):
+    """Grade available failure receipts without replacing the primary failure."""
+    runtime=root/'result'
+    failure=runtime/'harness-failure.json'
+    if failure.is_file():
+        data=failure.read_bytes()
+        require(len(data)<=16384,'Harness failure descriptor exceeds its bound')
+        value=json.loads(data)
+        require(isinstance(value,dict) and value.get('status')=='FAIL','Invalid harness failure descriptor')
+        record['harness_failure']=value
+    pointer=runtime/'freedv-usb-current.json'
+    if not pointer.is_file():
+        return
+    current=json.loads(pointer.read_text())
+    completion=runtime/current['completion_basename']
+    if not completion.is_file():
+        record['failure_collection_error']='The failed controller did not finish its terminal receipt'
+        return
+    terminal=json.loads(completion.read_text())
+    source=os.environ.get('USB_TEST_EXPECTED_SOURCE_COMMIT') or terminal['source_commit']
+    build=os.environ.get('USB_TEST_EXPECTED_BUILD_ID') or terminal['build_id']
+    record['failure_collector_contract']=validate_collector_contract(
+        runtime,root/'failure-collector-contract',args.binary,source,build,record['test_binary_sha256'],
+        storage_failure_expected=args.case in {'storage-start-fails','storage-completion-fails'})
 
 
 def run_case(args):
@@ -385,6 +414,7 @@ def run_case(args):
         supervisor.require_running(except_process=test)
         text = (root/'test.log').read_text()
         print(text, flush=True)
+        record['controller_exit_code']=test.returncode
         require(test.returncode == 0, 'Controller scenario failed with exit '+str(test.returncode))
         harness = json.loads((root/'result/harness-result.json').read_text())
         require(harness['status'] == 'PASS' and not harness['physical_tx'], str(harness))
@@ -425,6 +455,8 @@ def run_case(args):
             require('INJECT PA trigger' in text and 'phase=tx' in text,
                     'The injected wait did not target the TX trigger operation')
             record['drain_loss_wait']=validate_drain_loss_wait(rows,harness,text)
+        if args.case=='eoo-backpressure':
+            record['tail_backpressure']=validate_tail_backpressure(rows,harness,text)
         if args.case == 'mic-valid-drop300':
             require('no-hole=1' in text and 'valid capture resumed' in text,
                     'The finite microphone-only valid-data deletion was not exercised')
@@ -535,6 +567,11 @@ def run_case(args):
         if cleanup['errors']:
             record['status'] = 'FAIL'
             record.setdefault('error','Fixture cleanup failed: '+str(cleanup['errors']))
+        if record['status']=='FAIL':
+            try:
+                retain_failed_controller(root,args,record)
+            except Exception as error:
+                record['failure_collection_error']=str(error)
         signal.signal(signal.SIGTERM, previous_term)
         save_json(root/'case-result.json', record)
         if cleanup['errors'] and sys.exc_info()[0] is None:

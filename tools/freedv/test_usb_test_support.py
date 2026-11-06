@@ -19,7 +19,8 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require, run_b
                               save_json, validate_turn_decode, modem_waveform_match,
                               validate_operation_phase, validate_session_identity, microphone_frame_budget,
                               PulseTestRuntime, require_unix_socket_path, pulse_startup_failure,
-                              audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait)
+                              audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait,
+                              render_capacity_audit, validate_tail_backpressure)
 
 
 class SupervisorTests(unittest.TestCase):
@@ -306,6 +307,19 @@ class IdentityAndPhaseTests(unittest.TestCase):
 
 
 class DriverFailureTests(unittest.TestCase):
+    def test_failed_controller_without_terminal_receipt_stays_incomplete(self):
+        import test_usb_audio_integration as driver
+        import json
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);runtime=root/'result';runtime.mkdir()
+            (runtime/'harness-failure.json').write_text(json.dumps({'status':'FAIL','primary_fault':6}))
+            (runtime/'freedv-usb-current.json').write_text(json.dumps({'completion_basename':'session-completion.json'}))
+            record={'status':'FAIL','error':'primary render-queue-limit'}
+            driver.retain_failed_controller(root,SimpleNamespace(),record)
+            self.assertEqual(record['error'],'primary render-queue-limit')
+            self.assertEqual(record['harness_failure']['primary_fault'],6)
+            self.assertIn('did not finish',record['failure_collection_error'])
+
     def test_endpoint_failure_preserves_primary_error_and_reaps_running_controller(self):
         import test_usb_audio_integration as driver
         with tempfile.TemporaryDirectory() as temporary:
@@ -379,6 +393,59 @@ class DriverFailureTests(unittest.TestCase):
             self.assertEqual(record['controller_output_argument'],'.')
             self.assertEqual(record['controller_working_directory'],str(args.output/'result'))
             self.assertTrue((args.output/'result/incidents').is_dir())
+
+
+class InfrastructureFailureTests(unittest.TestCase):
+    def test_infrastructure_prerequisite_cannot_pass_a_successful_or_hung_driver(self):
+        import usb_harness_failure_selftest as subject
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);inputs=[]
+            for name in ('binary','speech','modem','runner','injector'):
+                path=root/name;path.write_bytes(name.encode());inputs.append(path)
+            for number,execution in enumerate([{'exit_code':0,'timed_out':False},{'exit_code':-9,'timed_out':True}]):
+                with mock.patch.object(subject,'run_bounded',return_value=execution):
+                    result=subject.run_failure_preservation(*inputs,root/str(number),'source','build',subject.sha(inputs[0]))
+                self.assertEqual(result['status'],'FAIL')
+                self.assertFalse(result['checks'])
+
+
+class RenderCapacityTests(unittest.TestCase):
+    def evidence(self):
+        def row(stage,ms,reserved,before,generated):
+            return dict(kind='render-queue',stage=stage,ms=ms,reserved_from_frames=reserved,
+                queue_before_frames=before,generated_frames=generated,queue_after_frames=before+generated,
+                input_frames=0,output_capacity_frames=4608,queue_limit_frames=22050)
+        rows=[row('regular-wait',120,18000,18000,0),row('regular',260,17000,17000,4000),
+              row('src-final',280,100,100,19),row('src-final',282,100,100,0)]
+        harness={'render_hold':{'started_ms':100,'ended_ms':250,'hits':9},
+                 'render_queue':{'limit_frames':22050,'output_bound_frames':4608,'high_water_frames':21000,
+                    'deferred_calls':1,'final_deferred_calls':0,'final_flush_calls':2,'final_flush_frames':19,
+                    'generated_frames':4019,'written_frames':4019}}
+        log='INJECT render hold started no-discard=1\nINJECT render hold ended no-discard=1'
+        return rows,harness,log
+
+    def test_bounded_backpressure_preserves_the_complete_tail(self):
+        result=validate_tail_backpressure(*self.evidence())
+        self.assertEqual(result['render_audit']['final_flush_frames'],19)
+
+    def test_old_stale_capacity_counterexample_is_rejected(self):
+        rows,_,_=self.evidence()
+        rows[-1].update(reserved_from_frames=21921,queue_before_frames=22040,
+                        generated_frames=19,queue_after_frames=22059)
+        with self.assertRaisesRegex(ValueError,'bounded queue'):
+            render_capacity_audit(rows)
+
+    def test_unreserved_conversion_cannot_credit_a_safe_final_count(self):
+        rows,_,_=self.evidence()
+        rows[1].update(reserved_from_frames=19000,queue_before_frames=17000)
+        with self.assertRaisesRegex(ValueError,'reserving'):
+            render_capacity_audit(rows)
+
+    def test_discarded_tail_or_pressure_outside_the_gate_is_rejected(self):
+        rows,harness,log=self.evidence();harness['render_queue']['written_frames']-=19
+        with self.assertRaises(ValueError):validate_tail_backpressure(rows,harness,log)
+        rows,harness,log=self.evidence();rows[0]['ms']=90
+        with self.assertRaises(ValueError):validate_tail_backpressure(rows,harness,log)
 
 
 if __name__=='__main__':

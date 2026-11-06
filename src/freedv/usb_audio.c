@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "usb_voice.h"
 #include "usb_evidence_store.h"
+#include "usb_render_budget.h"
 #include <pulse/pulseaudio.h>
 #include <pulse/timeval.h>
 #include <pulse/rtclock.h>
@@ -37,6 +38,8 @@ extern void usb_test_operation_phase(const char *) __attribute__((weak));
 #define OUTPUT_RESERVE_MS (IO_SERVICE_BUDGET_MS+CODEC_QUANTUM_MS+BUFFER_MARGIN_MS)
 #define OUTPUT_TARGET_MS 450u
 #define STREAM_CAPACITY_MS 1000u
+_Static_assert(FD_USB_TX_QUEUE_FRAMES==RADIO_RATE/2,"Transport queue uses 44.1 kHz frames");
+_Static_assert(FD_USB_RENDER_OUTPUT_FRAMES<=QMAX,"A complete conversion fits the bounded queue");
 
 typedef struct { int16_t p[QMAX]; unsigned head,n; } pcm_queue;
 enum {
@@ -81,7 +84,8 @@ struct fd_usb_audio {
     bool modem_started,headset_started,permit_press,finishing,producer_finished,radio_output_ended,rf_clear_confirmed;
     pcm_queue capture,radio_capture,play;
     stream_metrics metrics[STREAM_COUNT];
-    unsigned gaps,mic_fragment_frames;uint64_t submitted_rx,submitted_mic,rendered_rx,rendered_modem,converted_radio,reference_submitted;
+    unsigned gaps,mic_fragment_frames,render_queue_high_water,render_deferred_count,render_final_deferred_count,render_final_flush_calls,render_audit_rows;
+    bool render_backpressured,render_final_backpressured;uint64_t transport_tail_frames;uint64_t submitted_rx,submitted_mic,rendered_rx,rendered_modem,converted_radio,reference_submitted;
     uint64_t tx_capture_started,tx_capture_ended,tx_submitted_base;
     int16_t qualification_pcm[RATE*4];unsigned qualification_n,reference_cursor;
     bool qualification_waiting_loopback;
@@ -145,9 +149,9 @@ static void push(fd_usb_audio *a,pcm_queue *q,const int16_t *p,unsigned n){
 }
 static unsigned pop(pcm_queue *q,int16_t *p,unsigned n){if(n>q->n)n=q->n;for(unsigned i=0;i<n;++i)p[i]=q->p[(q->head+i)%QMAX];q->head=(q->head+n)%QMAX;q->n-=n;return n;}
 static unsigned convert(fd_usb_audio *a,SRC_STATE *src,const int16_t *input,unsigned count,int16_t *output,double ratio,bool final){
-    float in[4096],out[4608];if(count>4096){FAIL(a,U_ENGINE,"resampler-input-size");return 0;}
+    float in[FD_USB_RENDER_INPUT_FRAMES],out[FD_USB_RENDER_OUTPUT_FRAMES];if(count>FD_USB_RENDER_INPUT_FRAMES){FAIL(a,U_ENGINE,"resampler-input-size");return 0;}
     for(unsigned i=0;i<count;++i)in[i]=input[i]/32768.f;
-    SRC_DATA data={.data_in=in,.data_out=out,.input_frames=count,.output_frames=4608,.src_ratio=ratio,.end_of_input=final};
+    SRC_DATA data={.data_in=in,.data_out=out,.input_frames=count,.output_frames=FD_USB_RENDER_OUTPUT_FRAMES,.src_ratio=ratio,.end_of_input=final};
     if(src_process(src,&data)||data.input_frames_used!=(long)count){FAIL(a,U_ENGINE,"resampler-processing");return 0;}
     src_float_to_short_array(out,output,(int)data.output_frames_gen);return(unsigned)data.output_frames_gen;
 }
@@ -279,7 +283,8 @@ static bool stream_op(fd_usb_audio *a,unsigned i,bool flush,int cork){
 }
 static void reset_queues(fd_usb_audio *a){
     io_lock(a);a->capture.n=a->capture.head=a->play.n=a->play.head=a->radio_capture.n=a->radio_capture.head=0;
-    a->headset_started=a->modem_started=a->producer_finished=a->radio_output_ended=false;a->drain_ack=0;a->drain_started=0;
+    a->headset_started=a->modem_started=a->producer_finished=a->radio_output_ended=false;
+    a->render_backpressured=a->render_final_backpressured=false;a->drain_ack=0;a->drain_started=0;
     if(a->drain){pa_operation_cancel(a->drain);pa_operation_unref(a->drain);a->drain=NULL;}
     pa_stream_set_write_callback(a->streams[MODEM],write_pcm,a);io_unlock(a);
 }
@@ -558,8 +563,15 @@ static bool capture_accounting(fd_usb_audio *a){
         (unsigned long long)now_ms(),(unsigned long long)(a->turns+1),(unsigned long long)elapsed,(unsigned long long)accepted,(unsigned long long)expected,(unsigned long long)required,(unsigned long long)boundary,evaluated?"true":"false",passed?"true":"false");
     if(!passed){FAIL(a,U_CAPTURE_RATE,"tx-microphone-frame-deficit");return false;}return true;
 }
+static void render_audit(fd_usb_audio *a,const char *stage,unsigned reserved_from,unsigned before,unsigned produced,unsigned after,unsigned input_frames){
+    if(after>a->render_queue_high_water)a->render_queue_high_water=after;
+    if(!a->trace)return;
+    if(a->render_audit_rows>=1024){a->trace_history_truncated=true;return;}++a->render_audit_rows;
+    fprintf(a->trace,"{\"kind\":\"render-queue\",\"ms\":%llu,\"stage\":\"%s\",\"input_rate\":48000,\"output_rate\":44100,\"reserved_from_frames\":%u,\"queue_before_frames\":%u,\"input_frames\":%u,\"generated_frames\":%u,\"queue_after_frames\":%u,\"output_capacity_frames\":%u,\"queue_limit_frames\":%u,\"deferred_calls\":%u,\"final_deferred_calls\":%u}\n",
+        (unsigned long long)now_ms(),stage,reserved_from,before,input_frames,produced,after,FD_USB_RENDER_OUTPUT_FRAMES,FD_USB_TX_QUEUE_FRAMES,a->render_deferred_count,a->render_final_deferred_count);
+}
 static void process_audio(fd_usb_audio *a,unsigned st){
-    int16_t pcm[4096],converted[4608];unsigned n=0;
+    int16_t pcm[FD_USB_RENDER_OUTPUT_FRAMES],converted[FD_USB_RENDER_OUTPUT_FRAMES];unsigned n=0;
     io_lock(a);n=pop(st==FD_USB_RX?&a->radio_capture:&a->capture,pcm,st==FD_USB_RX?441:480);io_unlock(a);
     bool reference=st==FD_USB_RX&&atomic_load(&a->qualification_loopback);
     if(n){
@@ -583,9 +595,15 @@ static void process_audio(fd_usb_audio *a,unsigned st){
     }
     io_lock(a);bool input_empty=!a->capture.n;unsigned play_n=a->play.n;io_unlock(a);
     if(st==FD_USB_DRAIN&&input_empty&&!a->finishing){if(!capture_accounting(a))return;if(!fd_voice_finish(a->engine,a->generation)){FAIL(a,U_ENGINE,"codec-finish");return;}a->finishing=true;}
-    unsigned limit=st==FD_USB_RX?QMAX:RADIO_RATE/2;
+    unsigned limit=st==FD_USB_RX?QMAX:FD_USB_TX_QUEUE_FRAMES;
     if(play_n>limit){FAIL(a,U_QUEUE,"render-queue-limit");return;}
-    unsigned room=limit-play_n;if(room>4096)room=4096;
+    unsigned room=st==FD_USB_RX?limit-play_n:fd_usb_tx_render_room(play_n)?FD_USB_RENDER_INPUT_FRAMES:0;
+    if(room>FD_USB_RENDER_INPUT_FRAMES)room=FD_USB_RENDER_INPUT_FRAMES;
+    if(st!=FD_USB_RX&&!room){
+        ++a->render_deferred_count;
+        if(!a->render_backpressured)render_audit(a,"regular-wait",play_n,play_n,0,play_n,0);
+        a->render_backpressured=true;
+    }else a->render_backpressured=false;
     if(room){
         n=fd_voice_receive(a->engine,a->generation,pcm,room);
         if(n){tap(a,st==FD_USB_RX?3:2,pcm,n);
@@ -593,14 +611,29 @@ static void process_audio(fd_usb_audio *a,unsigned st){
                 if(n>RATE*4-a->qualification_n){FAIL(a,U_QUEUE,"qualification-recording-bound");return;}
                 memcpy(a->qualification_pcm+a->qualification_n,pcm,n*2);a->qualification_n+=n;
             }
-            if(st!=FD_USB_RX){n=convert(a,a->radio_output,pcm,n,converted,(double)RADIO_RATE/RATE,false);memcpy(pcm,converted,n*2);a->rendered_modem+=n;}else a->rendered_rx+=n;
-            io_lock(a);push(a,&a->play,pcm,n);io_unlock(a);
+            unsigned engine_frames=n;const int16_t *rendered=pcm;
+            if(st!=FD_USB_RX){n=convert(a,a->radio_output,pcm,n,converted,(double)RADIO_RATE/RATE,false);rendered=converted;a->rendered_modem+=n;}else a->rendered_rx+=n;
+            io_lock(a);unsigned before=a->play.n;push(a,&a->play,rendered,n);unsigned after=a->play.n;io_unlock(a);
+            if(st!=FD_USB_RX)render_audit(a,"regular",play_n,before,n,after,engine_frames);
         }
     }
     fd_voice_stats stats=fd_voice_observe(a->engine);
     if(stats.failures||stats.cancelled){FAIL(a,U_ENGINE,"codec-worker");return;}
-    if(stats.finished&&!stats.output_depth&&!a->radio_output_ended&&play_n<RADIO_RATE/2-128){
-        n=convert(a,a->radio_output,NULL,0,converted,(double)RADIO_RATE/RATE,true);io_lock(a);push(a,&a->play,converted,n);io_unlock(a);a->radio_output_ended=true;
+    if(st!=FD_USB_RX&&stats.finished&&!stats.output_depth&&!a->radio_output_ended){
+        /* The regular conversion above may have consumed the former headroom.
+         * Reserve a complete output buffer again using current queue frames.
+         * Zero-input SRC is complete only when it actually emits zero frames. */
+        io_lock(a);unsigned reserved=a->play.n;io_unlock(a);
+        if(fd_usb_tx_render_room(reserved)){
+            a->render_final_backpressured=false;
+            n=convert(a,a->radio_output,NULL,0,converted,(double)RADIO_RATE/RATE,true);++a->render_final_flush_calls;
+            io_lock(a);unsigned before=a->play.n;push(a,&a->play,converted,n);unsigned after=a->play.n;io_unlock(a);
+            a->transport_tail_frames+=n;a->radio_output_ended=n==0;
+            render_audit(a,"src-final",reserved,before,n,after,0);
+        }else{++a->render_final_deferred_count;
+            if(!a->render_final_backpressured)render_audit(a,"src-final-wait",reserved,reserved,0,reserved,0);
+            a->render_final_backpressured=true;
+        }
     }
     io_lock(a);a->producer_finished=stats.finished&&!stats.output_depth&&a->radio_output_ended;
     if(st!=FD_USB_RX&&!a->drain){size_t writable=pa_stream_writable_size(a->streams[MODEM]);if(writable==(size_t)-1)fail_at(a,U_IO,"modem-writable-size",MODEM,pa_context_errno(a->context),0);else if(writable)write_pcm(a->streams[MODEM],writable,a);}
@@ -652,6 +685,7 @@ static void publish(fd_usb_audio *a,fd_usb_inputs in){
         .mic_holes=atomic_load(&a->metrics[MIC].holes),.rx_holes=atomic_load(&a->metrics[RADIO_RX].holes),
         .headset_underflows=atomic_load(&a->metrics[HEADSET].underflows),.modem_underflows=atomic_load(&a->metrics[MODEM].payload_underflows),.engine=a->engine?fd_voice_observe(a->engine):a->final_engine};
     s.submitted_mic=a->submitted_mic;s.rendered_modem=a->rendered_modem;s.modem_tap_samples=a->tap_samples[2];
+    s.render_queue_high_water=a->render_queue_high_water;s.render_deferred_count=a->render_deferred_count;s.render_final_deferred_count=a->render_final_deferred_count;s.render_final_flush_calls=a->render_final_flush_calls;s.transport_tail_frames=a->transport_tail_frames;s.modem_written_frames=atomic_load(&a->metrics[MODEM].captured);
     s.qualification_idle_remaining_ms=atomic_load(&a->qualification_running)&&now<a->qualification_idle_until?(unsigned)(a->qualification_idle_until-now):0;
     s.mic_rate_hz=measured_rate(a,MIC,&s.mic_rate_window_ms);s.rx_rate_hz=measured_rate(a,RADIO_RX,&s.rx_rate_window_ms);
     if(a->loop){io_lock(a);s.input_queue=a->capture.n+(a->radio_capture.n*RATE+RADIO_RATE-1)/RADIO_RATE;s.output_queue=a->play.n;s.gaps=a->gaps;io_unlock(a);}

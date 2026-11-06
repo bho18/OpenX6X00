@@ -15,6 +15,9 @@ import uuid
 MATRIX_SCHEMA = 'x6200.usb.integration.matrix.v3'
 CAMPAIGN_SCHEMA = 'x6200.usb.campaign.v1'
 MIN_QUALIFICATION_REPEATS = 2
+INFRASTRUCTURE_PREREQUISITES = ('unexpected_runtime_failure',)
+INFRASTRUCTURE_CHECKS = ('driver_failed', 'harness_failed', 'terminal_fault_retained', 'collector_blocked')
+INFRASTRUCTURE_FILES = ('case_result', 'harness_failure', 'completion', 'collector_report', 'first_fault', 'trace')
 
 
 def encoded(value):
@@ -255,6 +258,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
         raise ValueError('USB promotion requires the declared repeated qualification profile')
     if not expected or len(expected) != len(set(expected)):
         raise ValueError('USB expected-case registry is empty or duplicated')
+    validate_infrastructure_prerequisites(matrix, verify_files=verify_files)
     if plan.get('expected_cases') != expected or plan.get('selected_cases') != expected:
         raise ValueError('USB qualification case plan differs from the complete registry')
     required = [name + '@' + str(repeat + 1)
@@ -274,6 +278,8 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 any(run.get('status') != 'PASS' for run in runs)):
             raise ValueError('USB qualification case did not pass every repetition: ' + name)
         for repeat, run in enumerate(runs,1):
+            if name == 'eoo-backpressure':
+                validate_tail_backpressure_run(run)
             if run.get('repeat') != repeat:
                 raise ValueError('USB qualification has a missing or duplicated repetition: '+name)
             for key in ('log_path','case_record_path'):
@@ -291,6 +297,102 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
     bare = {key: value for key, value in matrix.items() if key not in ('campaign', 'promotion_eligible')}
     validate_history(campaign, matrix.get('identity'), bare, verify_files=verify_files)
     return campaign
+
+
+def validate_tail_backpressure_run(run):
+    """A nominal case PASS cannot substitute for exercising finite SRC pressure."""
+    proof = run.get('tail_backpressure', {})
+    queue, hold, audit = (proof.get(key, {}) for key in ('render_queue','render_hold','render_audit'))
+    if proof.get('status') != 'PASS' or audit.get('status') != 'PASS':
+        raise ValueError('Tail backpressure exercise or independent render audit is missing')
+    required = ('limit_frames','output_bound_frames','high_water_frames','deferred_calls',
+                'final_flush_calls','final_flush_frames','generated_frames','written_frames')
+    if (any(type(queue.get(key)) is not int for key in required) or
+            queue['limit_frames'] != 22050 or queue['output_bound_frames'] != 4608 or
+            not 17442 < queue['high_water_frames'] <= 22050 or queue['deferred_calls'] <= 0 or
+            queue['final_flush_calls'] < 2 or queue['final_flush_frames'] <= 0 or
+            queue['generated_frames'] <= 0 or queue['generated_frames'] != queue['written_frames']):
+        raise ValueError('Tail backpressure did not exercise the declared full-capacity SRC bound and complete flush')
+    if (any(type(hold.get(key)) is not int for key in ('started_ms','ended_ms','hits')) or
+            hold['ended_ms']-hold['started_ms'] < 150 or hold['hits'] <= 0 or audit.get('count',0) <= 0 or
+            any(audit.get(key) != queue[key] for key in ('generated_frames','final_flush_calls','final_flush_frames'))):
+        raise ValueError('Tail backpressure hold, audit and final counters disagree')
+    harness = run.get('harness', {})
+    if (harness.get('render_queue') != queue or harness.get('render_hold') != hold or
+            harness.get('turns') != 1 or harness.get('eoo') != 1 or harness.get('rf_clear_confirmed') is not True):
+        raise ValueError('Tail backpressure proof does not match the completed controller turn')
+    turns = run.get('actual_sink_turns', [])
+    if (len(turns) != 1 or turns[0].get('status') != 'PASS' or
+            turns[0].get('content_match',{}).get('status') != 'PASS' or
+            turns[0].get('content_match',{}).get('method') != 'full_modem_waveform_and_100ms_windows' or
+            turns[0].get('content_match',{}).get('complete_reference_covered') is not True):
+        raise ValueError('Tail backpressure lacks complete actual-sink waveform evidence')
+    return proof
+
+
+def validate_infrastructure_prerequisites(matrix, verify_files=True):
+    """Prove that a real unexpected runtime fault remains a failed child test.
+
+    This is a prerequisite about the test machinery. Its expected-negative
+    child must never be counted as a passing functional controller case.
+    """
+    if matrix.get('plan', {}).get('infrastructure_prerequisites') != list(INFRASTRUCTURE_PREREQUISITES):
+        raise ValueError('USB campaign omits its mandatory infrastructure failure-preservation prerequisite')
+    prerequisites = matrix.get('infrastructure_prerequisites', {})
+    if set(prerequisites) != set(INFRASTRUCTURE_PREREQUISITES):
+        raise ValueError('USB infrastructure prerequisite evidence is missing')
+    identity = matrix.get('identity', {})
+    for name in INFRASTRUCTURE_PREREQUISITES:
+        entry = prerequisites[name]
+        proof = entry.get('record', {})
+        if (entry.get('status') != 'PASS' or entry.get('supervision',{}).get('exit_code') != 0 or
+                entry.get('supervision',{}).get('timed_out') is not False or proof.get('status') != 'PASS' or
+                proof.get('schema') != 'x6200.usb.infrastructure.v1' or
+                proof.get('kind') != 'unexpected-runtime-failure' or
+                entry.get('record_sha256') != digest(proof) or proof.get('radio_accessed') is not False):
+            raise ValueError('USB infrastructure prerequisite is not a valid expected-negative proof')
+        expected_identity = {'source_commit': identity.get('source_commit'), 'build_id': identity.get('build_id'),
+                             'controller_binary_sha256': identity.get('test_binary_sha256'),
+                             'runner_sha256': identity.get('runner_sha256'),
+                             'fault_injector_sha256': matrix.get('fault_injector_sha256'),
+                             'fixture_sha256': {'speech': identity.get('speech_sha256'), 'modem': identity.get('modem_sha256')}}
+        if any(proof.get(key) != value for key, value in expected_identity.items()):
+            raise ValueError('USB infrastructure proof belongs to a different source, build, binary or fixture')
+        checks = proof.get('checks', {})
+        if set(checks) != set(INFRASTRUCTURE_CHECKS) or any(checks[key] is not True for key in INFRASTRUCTURE_CHECKS):
+            raise ValueError('USB infrastructure failure was not preserved at every required stage')
+        if (type(proof.get('driver_exit_code')) is not int or proof['driver_exit_code'] == 0 or
+                proof.get('driver_status') != 'FAIL' or type(proof.get('harness_exit_code')) is not int or
+                proof['harness_exit_code'] <= 0 or proof.get('harness_status') != 'FAIL' or
+                proof.get('terminal_fault_code') != 13 or proof.get('terminal_fault_origin') != 'modem-buffer-budget' or
+                proof.get('collector_status') != 'BLOCKED'):
+            raise ValueError('Unexpected runtime failure was converted into a successful functional test')
+        files = proof.get('evidence_files', {})
+        if not set(INFRASTRUCTURE_FILES) <= set(files):
+            raise ValueError('USB infrastructure proof did not retain its failed child evidence')
+        if verify_files:
+            report = Path(entry['report_path'])
+            if (sha(report) != entry.get('report_sha256') or _load(report) != proof or
+                    sha(entry['log_path']) != entry.get('log_sha256')):
+                raise ValueError('USB infrastructure report was removed or changed')
+            for filename in INFRASTRUCTURE_FILES:
+                item = files[filename]
+                if sha(item['path']) != item.get('sha256'):
+                    raise ValueError('USB infrastructure child evidence changed: ' + filename)
+            case = _load(files['case_result']['path'])
+            failure = _load(files['harness_failure']['path'])
+            completion = _load(files['completion']['path'])
+            collector = _load(files['collector_report']['path'])
+            fault = _load(files['first_fault']['path']).get('first_fault', {})
+            if (case.get('status') != 'FAIL' or case.get('controller_exit_code') != proof['harness_exit_code'] or
+                    failure.get('status') != 'FAIL' or failure.get('exit_code') != proof['harness_exit_code'] or
+                    failure.get('primary_fault') != 13 or failure.get('primary_origin') != 'modem-buffer-budget' or
+                    any(failure.get(key) is not True for key in ('cleanup_requested','stopped','closed')) or
+                    completion.get('terminal') is not True or completion.get('fault') != 13 or
+                    collector.get('status') != 'BLOCKED' or collector.get('ready_for_rf_test') is not False or
+                    fault.get('code') != 13 or fault.get('origin') != 'modem-buffer-budget'):
+                raise ValueError('Retained infrastructure child artifacts contradict the failure-preservation proof')
+    return prerequisites
 
 
 def validate_history(campaign, identity, current_result, verify_files=True):

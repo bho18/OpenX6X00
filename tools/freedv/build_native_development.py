@@ -276,7 +276,7 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
         record['commands'].append(command)
         log_path = attempt / log_name
         try:
-            outcome = run_bounded(command, log_path, timeout, cwd=ROOT, env=env, terminate_grace=12.0)
+            outcome = run_bounded(command, log_path, timeout, cwd=ROOT, env=env, terminate_grace=24.0)
             record['command_results'].append(outcome)
         except BaseException as error:
             record['command_results'].append({'command':command,'error':str(error),'interrupted':True})

@@ -17,7 +17,8 @@ import sys
 from build_native_development import source_snapshot
 from test_usb_audio_integration import CASES, SPEECH_CASES
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEATS,
-                               atomic_json, sha, validate_campaign)
+                               atomic_json, digest, sha, validate_campaign,
+                               INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run)
 from usb_test_support import run_bounded
 
 COVERAGE = {
@@ -54,9 +55,10 @@ COVERAGE = {
     'service_jitter': {'io-pause150', 'rx-pause150'},
     'receive_sink': {'rx-pause150'},
     'short_payload': {'short-turn200'},
+    'tail_backpressure': {'eoo-backpressure'},
 }
 DURABILITY_CASES = {'many-turns', 'reopen', 'cold-idle', 'drain-tx-loss', 'full-session', 'mic-valid-drop300',
-                    'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'short-turn200'}
+                    'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'short-turn200', 'eoo-backpressure'}
 CASE_TIMEOUTS = {'many-turns': 150, 'reopen': 210, 'cold-idle': 130, 'drain-tx-loss': 60, 'full-session': 120}
 
 
@@ -105,11 +107,13 @@ def main():
     timeouts = {name: args.case_timeout or CASE_TIMEOUTS.get(name, 90) for name in selected}
     plan = {'profile': args.profile, 'repetitions': repetitions,
             'expected_cases': expected, 'selected_cases': selected,
-            'debug_subset': bool(args.only), 'case_timeout_seconds': timeouts}
+            'debug_subset': bool(args.only), 'case_timeout_seconds': timeouts,
+            'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES)}
     executions = [name + '@' + str(repeat + 1) for repeat in range(repetitions) for name in selected]
     record = {'schema': MATRIX_SCHEMA, 'status': 'FAIL', 'plan': plan,
               'scope': 'Actual codec and four-stream controller; fake RF transport, never hardware qualification',
               'radio_accessed': False, 'hardware_qualified': False, 'cases': {}, 'coverage': [],
+              'infrastructure_prerequisites':{},
               'complete_matrix': False, 'expected_executions': executions, 'started': [], 'executed': [],
               'not_executed': list(executions), 'skipped': sorted(set(expected) - set(selected))}
     campaign = None
@@ -135,6 +139,7 @@ def main():
                     'test_tools_sha256': {name: sha(here / name) for name in
                         ('test_usb_audio_matrix.py', 'test_usb_audio_integration.py', 'usb_test_support.py',
                          'usb_test_campaign.py', 'usb_collector_contract.py', 'usb_rf_evidence.py',
+                         'usb_harness_failure_selftest.py',
                          'usb_audio_fault_inject.c', 'usb_audio_integration_test.c')}}
         record.update(identity=identity, source_commit=revision, source_tree_sha256=tree,
                       build_id=args.build_id, test_binary_sha256=identity['test_binary_sha256'])
@@ -152,6 +157,29 @@ def main():
                          USB_TEST_EXPECTED_SOURCE_COMMIT=revision,
                          USB_TEST_EXPECTED_BUILD_ID=args.build_id,
                          USB_TEST_EXPECTED_BINARY_SHA256=identity['test_binary_sha256'])
+        # This expected-negative checks test infrastructure, not the radio
+        # functional case registry. It must finish before any functional case.
+        infrastructure = output/'infrastructure'/'unexpected-runtime-failure'
+        command = [sys.executable, str(here/'usb_harness_failure_selftest.py'),
+                   str(args.binary.resolve()),str(args.speech.resolve()),str(args.modem.resolve()),
+                   '--runner',str(args.runner.resolve()),'--fault-inject-so',str(injector),
+                   '--output',str(infrastructure),'--source-commit',revision,'--build-id',args.build_id,
+                   '--expected-binary-sha256',identity['test_binary_sha256']]
+        infrastructure_log = output/'infrastructure-self-test.log'
+        supervision = run_bounded(command,infrastructure_log,120,env=child_env,terminate_grace=16.0)
+        report_path = infrastructure/'infrastructure-result.json'
+        proof = json.loads(report_path.read_text()) if report_path.is_file() else {}
+        entry = {'status':'PASS' if not supervision['timed_out'] and supervision['exit_code']==0 and proof.get('status')=='PASS'
+                          else 'TIMEOUT' if supervision['timed_out'] else 'FAIL',
+                 'record':proof,'record_sha256':digest(proof),
+                 'report_path':str(report_path),'report_sha256':sha(report_path) if report_path.is_file() else None,
+                 'log_path':str(infrastructure_log),'log_sha256':sha(infrastructure_log),'supervision':supervision}
+        record['infrastructure_prerequisites']['unexpected_runtime_failure'] = entry
+        atomic_json(output/'progress.json',record)
+        if entry['status'] != 'PASS':
+            record['status'] = entry['status']
+        validate_infrastructure_prerequisites(record)
+        record['infrastructure_verified'] = True
         for repeat in range(repetitions):
             repeat_dir = output / ('repeat-%02d' % (repeat + 1))
             repeat_dir.mkdir()
@@ -181,6 +209,7 @@ def main():
                        'audio_buffer_contract':details.get('audio_buffer_contract'),
                        'io_service_pause':details.get('io_service_pause'),
                        'actual_headset_output':details.get('actual_headset_output'),
+                       'tail_backpressure':details.get('tail_backpressure'),
                        'actual_sink_turns': details.get('actual_sink_turns', []),
                        'decoded_speech_blocks': details.get('actual_sink_decode', {}).get('synthesis_blocks', 0)}
                 if passed:
@@ -216,6 +245,12 @@ def main():
                             any(turn.get('status') != 'PASS' for turn in run['actual_sink_turns'])):
                         run['status'] = 'FAIL'
                         run.setdefault('reason', 'Complete short-payload delivery proof is missing')
+                if passed and name == 'eoo-backpressure':
+                    try:
+                        validate_tail_backpressure_run(run)
+                    except ValueError as error:
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason',str(error))
                 contract = run['collector_contract'] or {}
                 mutations = contract.get('mutations', {})
                 if passed and (contract.get('status') != 'PASS' or contract.get('radio_accessed') is not False or
@@ -238,7 +273,8 @@ def main():
                     raise RuntimeError('USB integration case failed: ' + execution + '; inspect ' + str(log_path))
         passed = {name for name, case in record['cases'].items()
                   if case['status'] == 'PASS' and len(case['runs']) == repetitions}
-        record['coverage'] = sorted(name for name, cases in COVERAGE.items() if cases <= passed)
+        record['coverage'] = sorted([name for name, cases in COVERAGE.items() if cases <= passed] +
+                                    ['infrastructure_failure_preservation'])
         _, after_tree = source_snapshot()
         rechecked = {'test_binary_sha256':sha(args.binary.resolve()), 'runner_sha256':sha(args.runner.resolve()),
                      'speech_sha256':sha(args.speech.resolve()), 'modem_sha256':sha(args.modem.resolve()),

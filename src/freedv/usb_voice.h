@@ -33,7 +33,8 @@ typedef struct {
     bool armed,pressed,rf_valid,rf_tx,stopped;
     bool rf_disabled,qualification_complete,qualification_running,qualification_loopback,rf_clear_confirmed;
     unsigned qualification_target,qualification_turns,mic_rate_hz,rx_rate_hz,qualification_idle_remaining_ms;
-    uint64_t submitted_mic,rendered_modem,modem_tap_samples;
+    uint64_t submitted_mic,rendered_modem,modem_tap_samples,transport_tail_frames,modem_written_frames;
+    unsigned render_queue_high_water,render_deferred_count,render_final_deferred_count,render_final_flush_calls;
     uint64_t mic_rate_window_ms,rx_rate_window_ms;
     unsigned first_fault_code,first_fault_pa_error;
     uint64_t first_fault_operation_ms,first_fault_mic_age_ms,first_fault_rx_age_ms,mic_age_ms,rx_age_ms;

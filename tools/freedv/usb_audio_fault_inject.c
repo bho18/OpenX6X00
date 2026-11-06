@@ -34,6 +34,11 @@ unsigned long long usb_test_trigger_started_ms(void){return atomic_load(&trigger
 unsigned long long usb_test_trigger_ack_ms(void){return atomic_load(&trigger_acked);}
 static atomic_uint io_pause_count;
 static atomic_int buffer_reject_reported;
+static atomic_ullong render_hold_started,render_hold_ended;
+static atomic_uint render_hold_hits;
+unsigned long long usb_test_render_hold_started_ms(void){return atomic_load(&render_hold_started);}
+unsigned long long usb_test_render_hold_ended_ms(void){return atomic_load(&render_hold_ended);}
+unsigned usb_test_render_hold_hits(void){return atomic_load(&render_hold_hits);}
 unsigned usb_test_io_pause_count(void){return atomic_load(&io_pause_count);}
 unsigned long long usb_test_io_pause_duration_ms(void){return atomic_load(&io_pause_duration);}
 unsigned long long usb_test_io_pause_started_ms(void){return atomic_load(&io_pause_started);}
@@ -169,6 +174,33 @@ void pa_stream_set_read_callback(pa_stream *stream,pa_stream_request_cb_t callba
     real(stream,deliver_read,registration);
 }
 
+static bool render_hold(pa_stream *stream){
+    const char *trigger=getenv("USB_TEST_RENDER_HOLD_TRIGGER"),*device=pa_stream_get_device_name(stream);
+    if(!trigger||!device||strcmp(device,"radio_sink_fixture")||access(trigger,F_OK))return false;
+    unsigned long long now=now_ms(),start=atomic_load(&render_hold_started);
+    if(!start){atomic_store(&render_hold_started,now);start=now;fprintf(stderr,"INJECT render hold started_ms=%llu device=%s no-discard=1\n",start,device);}
+    unsigned delay=(unsigned)strtoul(setting("USB_TEST_RENDER_HOLD_MS","150"),NULL,10);
+    if(now-start<delay){atomic_fetch_add(&render_hold_hits,1);return true;}
+    if(!atomic_load(&render_hold_ended)){atomic_store(&render_hold_ended,now);fprintf(stderr,"INJECT render hold ended_ms=%llu elapsed_ms=%llu hits=%u no-discard=1\n",now,now-start,atomic_load(&render_hold_hits));}
+    return false;
+}
+size_t pa_stream_writable_size(const pa_stream *stream){
+    size_t (*real)(const pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_writable_size");
+    if(render_hold((pa_stream *)stream))return 0;
+    return real(stream);
+}
+typedef struct {pa_stream *stream;pa_stream_request_cb_t callback;void *userdata;} write_registration;
+static write_registration writers[8];
+static void deliver_write(pa_stream *stream,size_t bytes,void *userdata){
+    write_registration *r=userdata;if(!render_hold(stream)&&r->callback)r->callback(stream,bytes,r->userdata);
+}
+void pa_stream_set_write_callback(pa_stream *stream,pa_stream_request_cb_t callback,void *userdata){
+    void (*real)(pa_stream*,pa_stream_request_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_set_write_callback");
+    if(!callback){for(unsigned i=0;i<8;++i)if(writers[i].stream==stream)memset(&writers[i],0,sizeof(writers[i]));real(stream,NULL,userdata);return;}
+    write_registration *r=NULL;for(unsigned i=0;i<8;++i)if(writers[i].stream==stream){r=&writers[i];break;}
+    if(!r)for(unsigned i=0;i<8;++i)if(!writers[i].stream){r=&writers[i];break;}
+    if(!r){real(stream,callback,userdata);return;}*r=(write_registration){stream,callback,userdata};real(stream,deliver_write,r);
+}
 /* A service interruption holds the real client PA lock; the server continues
  * consuming its actual negotiated reserve and retaining incoming capture. */
 int pa_stream_write(pa_stream *stream,const void *data,size_t bytes,pa_free_cb_t free_cb,int64_t offset,pa_seek_mode_t seek){

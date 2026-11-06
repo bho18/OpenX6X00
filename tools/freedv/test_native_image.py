@@ -14,7 +14,8 @@ from fetch_native_baseline import unpack_sdk
 from verify_native_abi import same_sdk_build
 from prepare_native_image import prepare
 from build_voice_candidate import verify_usb_integration, USB_REQUIRED_COVERAGE, USB_CONTROLLER_CASES
-from usb_test_campaign import Campaign, MATRIX_SCHEMA, sha as campaign_sha
+from usb_test_campaign import Campaign, MATRIX_SCHEMA, sha as campaign_sha, INFRASTRUCTURE_PREREQUISITES
+from test_usb_campaign import infrastructure_fixture, tail_backpressure_fixture
 
 
 class UsbReleaseGateTests(unittest.TestCase):
@@ -22,10 +23,13 @@ class UsbReleaseGateTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='synthetic-usb-gate-')
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        identity = {'source_commit':'a'*40, 'source_tree_sha256':'b'*64, 'build_id':'synthetic-gate-unit'}
+        identity = {'source_commit':'a'*40, 'source_tree_sha256':'b'*64, 'build_id':'synthetic-gate-unit',
+                    'test_binary_sha256':'c'*64,'runner_sha256':'d'*64,'speech_sha256':'e'*64,
+                    'modem_sha256':'f'*64,'fault_injector_sha256':'1'*64}
         expected = list(USB_CONTROLLER_CASES)
         plan = {'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
-                'selected_cases':expected, 'debug_subset':False}
+                'selected_cases':expected, 'debug_subset':False,
+                'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES)}
         executions = [name+'@'+str(repeat+1) for repeat in range(2) for name in expected]
         cases = {}
         for name in expected:
@@ -34,16 +38,19 @@ class UsbReleaseGateTests(unittest.TestCase):
                 log = root/(name+'-'+str(repeat)+'.log')
                 log.write_text('Synthetic metadata gate fixture; no controller executed.\n')
                 case_record = root/(name+'-'+str(repeat)+'.json')
-                case_record.write_text('{"synthetic":true}\n')
+                extra=tail_backpressure_fixture() if name=='eoo-backpressure' else {}
+                case_record.write_text(json.dumps({'synthetic':True,**extra})+'\n')
                 runs.append({'status':'PASS', 'repeat':repeat, 'log_path':str(log),
                              'log_sha256':campaign_sha(log), 'case_record_path':str(case_record),
-                             'case_record_sha256':campaign_sha(case_record)})
+                             'case_record_sha256':campaign_sha(case_record),**extra})
             cases[name] = {'status':'PASS', 'runs':runs}
         matrix = {'schema':MATRIX_SCHEMA, 'status':'PASS', 'identity':identity, **identity,
                   'plan':plan, 'complete_matrix':True, 'skipped':[], 'not_executed':[],
                   'expected_executions':executions, 'executed':executions,
                   'coverage':sorted(USB_REQUIRED_COVERAGE),
-                  'cases':cases}
+                  'cases':cases,
+                  'infrastructure_prerequisites':{'unexpected_runtime_failure':infrastructure_fixture(
+                      root/'infrastructure',identity,identity['fault_injector_sha256'])}}
         campaign = Campaign(root/'history',identity,plan,root/'evidence')
         try:
             snapshot = campaign.finish(matrix)
@@ -56,10 +63,11 @@ class UsbReleaseGateTests(unittest.TestCase):
     def test_old_pass_and_incomplete_or_failed_evaluation_cannot_release(self):
         with self.assertRaises(ValueError):
             verify_usb_integration({'usb_integration': {'status': 'PASS'}})
-        for mutation in ('coverage', 'case', 'cli'):
+        for mutation in ('coverage', 'case', 'cli', 'infrastructure'):
             evidence = self.evidence()
             if mutation == 'coverage': evidence['usb_integration']['matrix']['coverage'].remove('rf_disabled')
             elif mutation == 'case': evidence['usb_integration']['matrix']['cases'][USB_CONTROLLER_CASES[0]]['status'] = 'SKIPPED'
+            elif mutation == 'infrastructure': evidence['usb_integration']['matrix']['infrastructure_prerequisites']={}
             else: evidence['usb_integration']['evidence_cli']['status'] = 'FAIL'
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 verify_usb_integration(evidence)

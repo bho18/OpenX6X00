@@ -283,6 +283,51 @@ def validate_drain_loss_wait(rows, harness, log_text):
             'successful_ack_wait_ms':acknowledged-started,'completed_turns':0}
 
 
+def render_capacity_audit(rows):
+    audits=[row for row in rows if row.get('kind')=='render-queue']
+    require(audits,'Render-capacity evidence is missing')
+    total=final_frames=final_calls=maximum=0
+    for row in audits:
+        limit,bound=row['queue_limit_frames'],row['output_capacity_frames']
+        before,generated,after=row['queue_before_frames'],row['generated_frames'],row['queue_after_frames']
+        require(limit==22050 and bound==4608,'The declared render queue bounds changed')
+        require(all(type(value) is int and value>=0 for value in (before,generated,after,row['reserved_from_frames'])),
+                'Render capacity counters are invalid')
+        require(after==before+generated and after<=limit and generated<=bound,'Rendered output exceeded its bounded queue')
+        if row['stage'] in ('regular','src-final'):
+            require(row['reserved_from_frames']+bound<=limit and before<=row['reserved_from_frames'],
+                    'Conversion consumed input before reserving its worst-case output capacity')
+            total+=generated
+        else:
+            require(row['stage'] in ('regular-wait','src-final-wait') and generated==0,
+                    'Deferred render step unexpectedly generated output')
+        if row['stage']=='src-final':
+            final_calls+=1;final_frames+=generated
+        maximum=max(maximum,after)
+    return {'status':'PASS','count':len(audits),'generated_frames':total,'final_flush_calls':final_calls,
+            'final_flush_frames':final_frames,'high_water_frames':maximum}
+
+
+def validate_tail_backpressure(rows,harness,log_text):
+    queue,hold=harness['render_queue'],harness['render_hold']
+    require('INJECT render hold started' in log_text and 'INJECT render hold ended' in log_text and 'no-discard=1' in log_text,
+            'Lossless output backpressure was not injected')
+    require(hold['ended_ms']-hold['started_ms']>=150 and hold['hits']>0,'The output gate did not hold for 150ms')
+    require(queue['limit_frames']==22050 and queue['output_bound_frames']==4608 and
+            17442<queue['high_water_frames']<=22050 and queue['deferred_calls']>0,
+            'EOO did not exercise bounded render-queue pressure')
+    require(queue['final_flush_calls']>=2 and queue['final_flush_frames']>0 and
+            queue['generated_frames']==queue['written_frames'], 'The final SRC tail was not fully emitted and written')
+    audit=render_capacity_audit(rows)
+    require(audit['generated_frames']==queue['generated_frames'] and
+            audit['final_flush_frames']==queue['final_flush_frames'] and
+            audit['final_flush_calls']==queue['final_flush_calls'], 'Render audit and final counters disagree')
+    require(any(row.get('kind')=='render-queue' and row.get('stage') in ('regular-wait','src-final-wait') and
+                hold['started_ms']<=row['ms']<=hold['ended_ms'] for row in rows),
+            'The EOO producer did not reach backpressure while output submission was gated')
+    return {'status':'PASS','render_queue':queue,'render_hold':hold,'render_audit':audit}
+
+
 def validate_session_identity(rows, completion, expected_source=None, expected_build=None, expected_storage_error=False):
     headers = [row for row in rows if row.get('kind') == 'session']
     samples = [row for row in rows if row.get('kind') == 'sample']

@@ -33,6 +33,8 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -DHOST_BUILD=1 -fsyntax-only src/freedv/usb_audio.c
           gcc -std=c11 -Wall -Wextra -Werror tools/freedv/usb_panel_test.c -o /tmp/usb_panel_test
           /tmp/usb_panel_test
+          gcc -std=c11 -Wall -Wextra -Werror -I. tools/freedv/usb_render_budget_test.c -lsamplerate -lm -o /tmp/usb_render_budget_test
+          /tmp/usb_render_budget_test
           gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared tools/freedv/test_usb_headset_drop_drain.c -lpulse -ldl -o /tmp/drop-drain.so
           TEST_PULSE_DROP_DRAIN_ACK_SO=/tmp/drop-drain.so python tools/freedv/test_usb_headset_pcm.py /tmp/usb_headset_pcm
   usb-controller-regression:

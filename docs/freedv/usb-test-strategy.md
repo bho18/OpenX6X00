@@ -21,6 +21,7 @@ and the blocked native hand-mic contract remain separate.
 | A successful 743 ms uncork left captures stale; delivery resumed about 30 ms later | Test operation acknowledgment and subsequent fresh valid samples as separate events, including missing recovery and release/Stop during recovery. |
 | The failed device run followed about 20 seconds in RX | Exercise idle histories as well as rapid turns. An injected pause models a failure; it is not proof of real device suspension/resume. |
 | Application PCM was queued while the negotiated Pulse playback reserve was only 50 ms | Require a measured buffer contract on all four streams, then test controlled servicing pauses at both actual output sinks. |
+| A second full-pass RX/TX case exceeded the render queue during its final modem tail | Reserve current output-frame capacity for every resampler call, including its final flush; test tail backpressure with complete payload delivery. |
 | A host run underrun was followed by a clean replay | Retain every attempt. A replay cannot remove the failure or establish scheduling margin. |
 | Polling refreshed the fake packet clock | Advance fake telemetry independently of observation so stale-status tests exercise real loss of freshness. |
 | An operation injection could fire during the wrong phase | Require the intended phase/state and observed injected operation; startup coverage cannot substitute for TX or RX-return coverage. |
@@ -76,6 +77,13 @@ headset waveforms respectively. A below-budget grant must block keying. A short
 it does not count as a complete intelligible speech test. Explicit acknowledged
 prebuffer/trigger operations finish such short payloads without relaxing the
 drain deadline or suppressing an underrun.
+
+Queue accounting must use the rate at each boundary. Available 44.1 kHz output
+frames are not interchangeable with 48 kHz codec input frames, and a resampler
+can release retained history at its final flush. Recheck capacity after each
+producer step and reserve its bounded output before taking more codec data.
+Backpressure must preserve order and the complete tail without enlarging queue
+limits or discarding samples.
 
 Rate accounting excludes only declared RF-disabled preparation intervals and
 matching frames; prior or active-delivery gaps remain measured. At least three
@@ -136,6 +144,39 @@ scheduling. Its null sinks do not reproduce the physical ALSA driver, USB bus,
 Loop110 wireless link, baseband MODEM routing or RF. RF-disabled evaluation
 also does not exercise real MODEM-on admission. RF receive qualification needs
 a transmitting peer; an SDR receiver alone supplies initial TX evidence.
+
+## Reproduce the software qualification
+
+Run from the repository root with the pinned host dependencies, LVGL submodule
+and host codec build prepared. Commit the source first; `git status --porcelain`
+must print nothing. Record the full commit ID. Replace the example paths and
+build ID below with the retained release inputs; `--work` must be outside the
+source checkout.
+
+```sh
+git status --porcelain
+git rev-parse HEAD
+python3 tools/freedv/build_native_development.py \
+  --variant host-native-validation \
+  --usb-test \
+  --work /path/to/retained-usb-validation \
+  --codec /path/to/pinned-host-codec-build \
+  --codec-fixture /path/to/pinned-fixtures/rade-modem.raw \
+  --build-id usb-rf-development-example
+```
+
+This builds the host GUI/controller and actual codec integration, then runs the
+complete `qualification` profile automatically, including the declared full
+repetitions and lifecycle cases. It does not access or qualify radio hardware.
+CI/debug `regression`, `durability` or selected-case runs are useful diagnostics;
+they do not replace the full qualifying campaign and cannot promote an image.
+
+Keep the same persistent work/history location across attempts. Preserve its
+`attempts/`, `build-campaigns/` and `usb-campaigns/` directories, including failed
+and interrupted attempts. `build-record.json` is a derived latest record, not a
+replacement for that history. Do not remove failed attempts, reset the history
+root or choose a new label to obtain a green result. Resolve the recorded cause
+through a reviewed source/configuration change and retain the original failure.
 
 ## Durable results and promotion
 

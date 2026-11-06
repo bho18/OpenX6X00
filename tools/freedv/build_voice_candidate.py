@@ -28,6 +28,8 @@ USB_REQUIRED_COVERAGE = {
     'many_turns', 'session_reopen', 'cold_idle', 'drain_rf_ownership',
     'full_lifecycle', 'source_continuity', 'collector_contract',
     'negotiated_buffers', 'service_jitter', 'receive_sink', 'short_payload',
+    'tail_backpressure',
+    'infrastructure_failure_preservation',
 }
 
 
