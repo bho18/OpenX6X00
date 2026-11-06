@@ -441,13 +441,14 @@ def backend_failure_fixture(case,root,identity=None):
     interval=run['capture_close']['turns'][0];interval['rf_completed']=False;run['capture_close']['completed_rf_turns']=0
     run['actual_sink_turns']=[]
     harness=run['harness'];harness.update(status='PASS',scenario='--'+case,turns=0,total_turns=0,eoo=1,total_eoo=1,
-        fault=fault,first_fault_origin=origin,first_fault_operation_ms=1001 if mode=='missing' else 0,
+        fault=fault,first_fault_origin=origin,first_fault_operation_ms=1000 if mode=='missing' else 0,
         keys=1,physical_tx=False,rf_valid=True,rf_tx=False,rf_clear_confirmed=True)
     entry=run['output_contract']['sessions'][0];path=root/'result'/entry['trace_file'];cp=root/'result'/entry['completion_file']
     rows=[json.loads(line) for line in path.read_text().splitlines()]
     rows=[row for row in rows if not(row.get('event')=='state' and row.get('state')==8)]
-    receipt=next(row for row in rows if row.get('kind')=='backend-tail');request=receipt['timing_issued_ms'];ack=request+1
-    fault_ms=request+1001 if mode=='missing' else ack+1
+    receipt=next(row for row in rows if row.get('kind')=='backend-tail');issued=receipt['timing_issued_ms']
+    request=issued+1 if mode=='missing' else issued;ack=request+1
+    fault_ms=issued+1000 if mode=='missing' else ack+1
     receipt.update(complete=False,rf_tx_confirmed=False,completed_us=0)
     if mode in ('missing','stop-before-timing'):
         receipt.update(timing_ack_ms=0,timing_ack_us=0,wait_usec=0,wait_until_us=0)
@@ -459,7 +460,8 @@ def backend_failure_fixture(case,root,identity=None):
     if mode=='stop-during-wait':
         before=receipt['timing_ack_us']*1000+100000
         text+='BACKEND_STOP_DURING_WAIT request_before_ns='+str(before)+' request_after_ns='+str(before+1000)+' wait_started_ms='+str(receipt['timing_ack_ms'])+' wait_until_us='+str(receipt['wait_until_us'])+'\n'
-    first={'kind':'event','event':'first-fault','state':4,'status':fault,'operation':origin,'ms':fault_ms}
+    first={'kind':'event','event':'first-fault','state':4,'status':fault,'operation':origin,'ms':fault_ms,
+           'duration_ms':1000 if mode=='missing' else 0}
     rows.insert(-1,first);rows[-1].update(turns=0,rf_valid=True,rf_tx=False,state=6 if fault==1 else 5,fault=fault,ms=fault_ms+10)
     path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
     completion=json.loads(cp.read_text());completion.update(turns=0,playback_tail_completed_intervals=0,
