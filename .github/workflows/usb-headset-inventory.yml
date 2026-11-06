@@ -1,4 +1,4 @@
-# External CI recovery only. Product source remains pinned to d43701fce21b7ba586447e2eee0ef797d6ed8103.
+# External CI recovery only. Product source remains pinned to 47da64ba4375ac5b4fe17e5922f52dc9804a2ce0.
 name: Frozen USB beta source validation
 'on':
   push:
@@ -18,7 +18,7 @@ jobs:
         git config --global core.autocrlf false
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
-        ref: d43701fce21b7ba586447e2eee0ef797d6ed8103
+        ref: 47da64ba4375ac5b4fe17e5922f52dc9804a2ce0
     - name: Assert and record actual frozen product source
       shell: python {0}
       run: |
@@ -179,7 +179,7 @@ jobs:
         task_apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2)
         sudo apt-get "${task_apt_options[@]}" update
         sudo env DEBIAN_FRONTEND=noninteractive apt-get "${task_apt_options[@]}" install -y --no-install-recommends \
-          build-essential libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils
+          build-essential libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils e2fsprogs binutils
     - name: Check USB duplex endpoint identification without devices
       run: python tools/freedv/test_usb_headset_inventory.py
     - name: Check validation guards and partial evidence
@@ -198,6 +198,9 @@ jobs:
         python tools/freedv/test_usb_host_resources.py
         python tools/freedv/test_usb_controller_build.py
         python tools/freedv/test_usb_ci_diagnostics.py
+    - name: Check image promotion and offline image guards
+      run: |
+        python3 tools/freedv/test_native_image.py
     - name: Check PCM streams and endpoint loss on private virtual devices
       run: |
         gcc -std=c11 -Wall -Wextra -Werror -O2 tools/freedv/usb_headset_pcm.c -lpulse -o /tmp/usb_headset_pcm
@@ -231,7 +234,7 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
         fetch-depth: 0
-        ref: d43701fce21b7ba586447e2eee0ef797d6ed8103
+        ref: 47da64ba4375ac5b4fe17e5922f52dc9804a2ce0
     - name: Assert and record actual frozen product source
       shell: python {0}
       run: |
@@ -466,7 +469,7 @@ jobs:
         git config --global core.autocrlf false
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       with:
-        ref: d43701fce21b7ba586447e2eee0ef797d6ed8103
+        ref: 47da64ba4375ac5b4fe17e5922f52dc9804a2ce0
     - name: Assert and record actual frozen product source
       shell: python {0}
       run: |
@@ -540,4 +543,4 @@ jobs:
         if-no-files-found: error
         path: ${{ runner.temp }}/tested-source-windows-runner.json
 env:
-  TESTED_SOURCE_COMMIT: d43701fce21b7ba586447e2eee0ef797d6ed8103
+  TESTED_SOURCE_COMMIT: 47da64ba4375ac5b4fe17e5922f52dc9804a2ce0
