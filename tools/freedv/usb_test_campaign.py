@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 import time
 import uuid
+from usb_host_resources import PRESSURE_COUNTERS, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES
 
 MATRIX_SCHEMA = 'x6200.usb.integration.matrix.v3'
 CAMPAIGN_SCHEMA = 'x6200.usb.campaign.v1'
@@ -19,6 +20,14 @@ MIN_QUALIFICATION_REPEATS = 2
 INFRASTRUCTURE_PREREQUISITES = ('unexpected_runtime_failure',)
 INFRASTRUCTURE_CHECKS = ('driver_failed', 'harness_failed', 'terminal_fault_retained', 'collector_blocked')
 INFRASTRUCTURE_FILES = ('case_result', 'harness_failure', 'completion', 'collector_report', 'first_fault', 'trace')
+
+
+def host_resource_configuration(profile='qualification', reclaim_roots=(), min_start=MIN_START_HEADROOM_BYTES, min_end=MIN_END_HEADROOM_BYTES):
+    return {'profile':profile,'reclaim_roots':sorted(set(str(Path(root).absolute()) for root in reclaim_roots)),
+            'min_headroom_bytes':min_start,'min_end_headroom_bytes':min_end,'max_seconds':20,
+            'max_files':200000,'max_advised_bytes':64*1024**3,'min_file_bytes':1024**2,
+            'min_file_age_seconds':60,'pressure_counter_policy':list(PRESSURE_COUNTERS),
+            'method':'explicit_readonly_regular_file_DONTNEED'}
 
 
 def encoded(value):
@@ -259,6 +268,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
         raise ValueError('USB promotion requires the declared repeated qualification profile')
     if not expected or len(expected) != len(set(expected)):
         raise ValueError('USB expected-case registry is empty or duplicated')
+    validate_host_resources(matrix, verify_files=verify_files)
     validate_infrastructure_prerequisites(matrix, verify_files=verify_files)
     if plan.get('expected_cases') != expected or plan.get('selected_cases') != expected:
         raise ValueError('USB qualification case plan differs from the complete registry')
@@ -505,69 +515,172 @@ def validate_tail_backpressure_run(run):
     return proof
 
 
-def validate_infrastructure_prerequisites(matrix, verify_files=True):
-    """Prove that a real unexpected runtime fault remains a failed child test.
+def _known_host_snapshot(snapshot,minimum):
+    memory,cpu=snapshot.get('memory',{}),snapshot.get('cpu',{})
+    current,maximum,high=(memory.get(key) for key in ('current_bytes','max_bytes','high_bytes'))
+    if (snapshot.get('status')!='KNOWN_BOUNDED' or not snapshot.get('cgroup_path') or snapshot.get('errors') or
+            type(current) is not int or current<0 or type(maximum) is not int or maximum<=0 or
+            (high is not None and (type(high) is not int or high<=0))):
+        raise ValueError('Qualification requires a known bounded cgroup resource snapshot')
+    effective=min(maximum,high) if high is not None else maximum
+    headroom=max(0,effective-current)
+    if (memory.get('effective_limit_bytes')!=effective or memory.get('headroom_bytes')!=headroom or
+            snapshot.get('headroom_bytes')!=headroom or headroom<minimum):
+        raise ValueError('Observed host headroom does not meet the declared resource contract')
+    for component,names in ((memory.get('events',{}),('high','max','oom','oom_kill')),
+                            (memory.get('stat',{}),('anon','file','shmem','pgscan_direct','pgsteal_direct')),
+                            (cpu.get('stat',{}),('usage_usec','nr_throttled','throttled_usec'))):
+        if any(type(component.get(key)) is not int or component[key]<0 for key in names):
+            raise ValueError('Qualification resource counters are missing or invalid')
+    if (type(cpu.get('period_us')) is not int or cpu['period_us']<=0 or
+            (cpu.get('quota_us') is not None and (type(cpu['quota_us']) is not int or cpu['quota_us']<=0))):
+        raise ValueError('Qualification CPU quota observation is invalid')
+    return snapshot
 
-    This is a prerequisite about the test machinery. Its expected-negative
-    child must never be counted as a passing functional controller case.
-    """
-    if matrix.get('plan', {}).get('infrastructure_prerequisites') != list(INFRASTRUCTURE_PREREQUISITES):
+
+def validate_host_resources(matrix, verify_files=True, require_end=True):
+    """Resource admission never changes an actual controller failure verdict."""
+    host=matrix.get('host_resources',{});config=matrix.get('plan',{}).get('host_resource_configuration',{})
+    identity=matrix.get('identity',{})
+    if (host.get('schema')!='x6200.usb.host-resource-contract.v1' or host.get('configuration')!=config or
+            identity.get('host_resource_configuration')!=config or config.get('profile')!='qualification' or
+            type(config.get('min_headroom_bytes')) is not int or config['min_headroom_bytes']<MIN_START_HEADROOM_BYTES or
+            type(config.get('min_end_headroom_bytes')) is not int or config['min_end_headroom_bytes']<MIN_END_HEADROOM_BYTES or
+            config.get('method')!='explicit_readonly_regular_file_DONTNEED' or
+            config.get('pressure_counter_policy')!=list(PRESSURE_COUNTERS) or
+            any(host.get(key)!=identity.get(key) for key in ('source_commit','source_tree_sha256','build_id','test_binary_sha256'))):
+        raise ValueError('Source-bound host resource configuration or fixed qualification thresholds are missing')
+    pre=host.get('preflight',{})
+    if (pre.get('schema')!='x6200.usb.host-resources.v1' or pre.get('phase')!='preflight' or
+            pre.get('profile')!='qualification' or pre.get('status')!='PASS' or pre.get('assessment')!='PASS' or
+            pre.get('promotion_eligible') is not True or pre.get('configuration')!=config or pre.get('reasons') or
+            pre.get('min_headroom_bytes')!=config['min_headroom_bytes'] or pre.get('min_end_headroom_bytes')!=config['min_end_headroom_bytes']):
+        raise ValueError('Host resource preflight did not admit the qualification campaign')
+    _known_host_snapshot(pre.get('before',{}),0)
+    baseline=_known_host_snapshot(pre.get('after',{}),config['min_headroom_bytes'])
+    reclaim=pre.get('reclaim',{})
+    if (reclaim.get('status') in ('BLOCKED','ERROR') or reclaim.get('timed_out') is not False or
+            reclaim.get('contents_modified') is not False or reclaim.get('worker_still_running',False) is not False or
+            reclaim.get('rejected_roots') or not set(reclaim.get('roots',[]))<=set(config.get('reclaim_roots',[])) or
+            pre.get('headroom_bytes')!=baseline['headroom_bytes']):
+        raise ValueError('Host cache preparation did not remain within its explicit read-only bounds')
+    if verify_files:
+        if sha(host['preflight_report_path'])!=host.get('preflight_report_sha256') or _load(host['preflight_report_path'])!=pre:
+            raise ValueError('Host resource preflight receipt changed')
+    if not require_end:return host
+    end=host.get('end',{})
+    if (host.get('status')!='PASS' or end.get('schema')!='x6200.usb.host-resources.v1' or end.get('phase')!='end' or
+            end.get('profile')!='qualification' or end.get('status')!='PASS' or end.get('assessment')!='PASS' or
+            end.get('promotion_eligible') is not True or end.get('configuration')!=config or end.get('reasons') or
+            end.get('before')!=baseline or end.get('min_headroom_bytes')!=config['min_end_headroom_bytes'] or
+            end.get('new_memory_pressure') or end.get('cpu_throttling_is_diagnostic_only') is not True):
+        raise ValueError('Host resource end observation is missing or records pressure during qualification')
+    after=_known_host_snapshot(end.get('after',{}),config['min_end_headroom_bytes'])
+    if (after.get('cgroup_path')!=baseline.get('cgroup_path') or end.get('headroom_bytes')!=after['headroom_bytes'] or
+            any(baseline[component].get(key)!=after[component].get(key) for component,keys in
+                (('memory',('max_bytes','high_bytes','effective_limit_bytes')),('cpu',('quota_us','period_us'))) for key in keys)):
+        raise ValueError('Host resource limits changed during qualification')
+    for key in PRESSURE_COUNTERS:
+        component,bank,counter=key.split('.')
+        change=after[component][bank][counter]-baseline[component][bank][counter]
+        if change!=0 or end.get('counter_deltas',{}).get(key)!=change:
+            raise ValueError('New or reset host memory pressure counters invalidate qualification')
+    if verify_files:
+        if sha(host['end_report_path'])!=host.get('end_report_sha256') or _load(host['end_report_path'])!=end:
+            raise ValueError('Host resource end receipt changed')
+    return host
+
+
+def validate_infrastructure_prerequisites(matrix, verify_files=True):
+    """Both startup and active-qualification runtime failures must stay failed."""
+    if matrix.get('plan',{}).get('infrastructure_prerequisites')!=list(INFRASTRUCTURE_PREREQUISITES):
         raise ValueError('USB campaign omits its mandatory infrastructure failure-preservation prerequisite')
-    prerequisites = matrix.get('infrastructure_prerequisites', {})
-    if set(prerequisites) != set(INFRASTRUCTURE_PREREQUISITES):
+    prerequisites=matrix.get('infrastructure_prerequisites',{})
+    if set(prerequisites)!=set(INFRASTRUCTURE_PREREQUISITES):
         raise ValueError('USB infrastructure prerequisite evidence is missing')
-    identity = matrix.get('identity', {})
-    for name in INFRASTRUCTURE_PREREQUISITES:
-        entry = prerequisites[name]
-        proof = entry.get('record', {})
-        if (entry.get('status') != 'PASS' or entry.get('supervision',{}).get('exit_code') != 0 or
-                entry.get('supervision',{}).get('timed_out') is not False or proof.get('status') != 'PASS' or
-                proof.get('schema') != 'x6200.usb.infrastructure.v1' or
-                proof.get('kind') != 'unexpected-runtime-failure' or
-                entry.get('record_sha256') != digest(proof) or proof.get('radio_accessed') is not False):
+    identity=matrix.get('identity',{})
+    expected={'source_commit':identity.get('source_commit'),'build_id':identity.get('build_id'),
+              'controller_binary_sha256':identity.get('test_binary_sha256'),'runner_sha256':identity.get('runner_sha256'),
+              'fault_injector_sha256':matrix.get('fault_injector_sha256'),
+              'fixture_sha256':{'speech':identity.get('speech_sha256'),'modem':identity.get('modem_sha256')},'radio_accessed':False}
+    specs={'initial_buffer':('normal',13,'modem-buffer-budget',False),
+           'qualification_telemetry':('rf-disabled',4,'radio-packet-stale',True)}
+    for entry in prerequisites.values():
+        proof=entry.get('record',{})
+        if (entry.get('status')!='PASS' or entry.get('supervision',{}).get('exit_code')!=0 or
+                entry.get('supervision',{}).get('timed_out') is not False or proof.get('status')!='PASS' or
+                proof.get('schema')!='x6200.usb.infrastructure.v2' or proof.get('kind')!='unexpected-runtime-failures' or
+                entry.get('record_sha256')!=digest(proof)):
             raise ValueError('USB infrastructure prerequisite is not a valid expected-negative proof')
-        expected_identity = {'source_commit': identity.get('source_commit'), 'build_id': identity.get('build_id'),
-                             'controller_binary_sha256': identity.get('test_binary_sha256'),
-                             'runner_sha256': identity.get('runner_sha256'),
-                             'fault_injector_sha256': matrix.get('fault_injector_sha256'),
-                             'fixture_sha256': {'speech': identity.get('speech_sha256'), 'modem': identity.get('modem_sha256')}}
-        if any(proof.get(key) != value for key, value in expected_identity.items()):
+        if any(proof.get(key)!=value for key,value in expected.items()):
             raise ValueError('USB infrastructure proof belongs to a different source, build, binary or fixture')
-        checks = proof.get('checks', {})
-        if set(checks) != set(INFRASTRUCTURE_CHECKS) or any(checks[key] is not True for key in INFRASTRUCTURE_CHECKS):
-            raise ValueError('USB infrastructure failure was not preserved at every required stage')
-        if (type(proof.get('driver_exit_code')) is not int or proof['driver_exit_code'] == 0 or
-                proof.get('driver_status') != 'FAIL' or type(proof.get('harness_exit_code')) is not int or
-                proof['harness_exit_code'] <= 0 or proof.get('harness_status') != 'FAIL' or
-                proof.get('terminal_fault_code') != 13 or proof.get('terminal_fault_origin') != 'modem-buffer-budget' or
-                proof.get('collector_status') != 'BLOCKED'):
-            raise ValueError('Unexpected runtime failure was converted into a successful functional test')
-        files = proof.get('evidence_files', {})
-        if not set(INFRASTRUCTURE_FILES) <= set(files):
-            raise ValueError('USB infrastructure proof did not retain its failed child evidence')
-        if verify_files:
-            report = Path(entry['report_path'])
-            if (sha(report) != entry.get('report_sha256') or _load(report) != proof or
-                    sha(entry['log_path']) != entry.get('log_sha256')):
-                raise ValueError('USB infrastructure report was removed or changed')
-            for filename in INFRASTRUCTURE_FILES:
-                item = files[filename]
-                if sha(item['path']) != item.get('sha256'):
-                    raise ValueError('USB infrastructure child evidence changed: ' + filename)
-            case = _load(files['case_result']['path'])
-            failure = _load(files['harness_failure']['path'])
-            completion = _load(files['completion']['path'])
-            collector = _load(files['collector_report']['path'])
-            fault = _load(files['first_fault']['path']).get('first_fault', {})
-            if (case.get('status') != 'FAIL' or case.get('controller_exit_code') != proof['harness_exit_code'] or
-                    failure.get('status') != 'FAIL' or failure.get('exit_code') != proof['harness_exit_code'] or
-                    failure.get('primary_fault') != 13 or failure.get('primary_origin') != 'modem-buffer-budget' or
-                    any(failure.get(key) is not True for key in ('cleanup_requested','stopped','closed')) or
-                    completion.get('terminal') is not True or completion.get('fault') != 13 or
-                    collector.get('status') != 'BLOCKED' or collector.get('ready_for_rf_test') is not False or
-                    fault.get('code') != 13 or fault.get('origin') != 'modem-buffer-budget'):
-                raise ValueError('Retained infrastructure child artifacts contradict the failure-preservation proof')
+        if set(proof.get('variants',{}))!=set(specs):
+            raise ValueError('USB infrastructure did not exercise both real failure paths')
+        _failure_checks(proof)
+        if verify_files and (sha(entry['report_path'])!=entry.get('report_sha256') or
+                _load(entry['report_path'])!=proof or sha(entry['log_path'])!=entry.get('log_sha256')):
+            raise ValueError('USB infrastructure report was removed or changed')
+        for name,(case,code,origin,disabled) in specs.items():
+            variant=proof['variants'][name]
+            if (variant.get('status')!='PASS' or variant.get('schema')!='x6200.usb.infrastructure.v1' or
+                    variant.get('kind')!='unexpected-runtime-failure' or variant.get('variant')!=name or
+                    variant.get('driver_case')!=case or variant.get('rf_disabled') is not disabled or variant.get('keys')!=0 or
+                    any(variant.get(key)!=value for key,value in expected.items())):
+                raise ValueError('USB infrastructure failure variant identity or RF policy is invalid')
+            _failure_checks(variant)
+            if (type(variant.get('driver_exit_code')) is not int or variant['driver_exit_code']==0 or
+                    variant.get('driver_status')!='FAIL' or type(variant.get('harness_exit_code')) is not int or
+                    variant['harness_exit_code']<=0 or variant.get('harness_status')!='FAIL' or
+                    variant.get('terminal_fault_code')!=code or variant.get('terminal_fault_origin')!=origin or
+                    variant.get('collector_status')!='BLOCKED'):
+                raise ValueError('Unexpected runtime failure was converted into a successful functional test')
+            files=variant.get('evidence_files',{})
+            required=set(INFRASTRUCTURE_FILES)|({'injection_witness'} if disabled else set())
+            if not required<=set(files):raise ValueError('USB infrastructure proof did not retain its failed child evidence')
+            if disabled:
+                q=variant.get('qualification_failure',{})
+                keys=('qualification_started_ms','freeze_started_ms','packet_ms','sequence','freeze_duration_ms','fault_ms','recovered_ms')
+                if (any(type(q.get(key)) is not int or q[key]<0 for key in keys) or q['sequence']<1 or
+                        q['freeze_duration_ms']!=350 or q['packet_ms']>q['freeze_started_ms'] or
+                        q['qualification_started_ms']>q['fault_ms'] or q['fault_ms']<q['packet_ms']+250 or
+                        q['recovered_ms']<q['freeze_started_ms']+350 or q.get('qualification_complete') is not False or q.get('keys')!=0):
+                    raise ValueError('Active RF-disabled qualification failure was not exercised and recovered')
+            if verify_files:
+                for filename in required:
+                    item=files[filename]
+                    if sha(item['path'])!=item.get('sha256'):raise ValueError('USB infrastructure child evidence changed: '+filename)
+                child=_load(files['case_result']['path']);failure=_load(files['harness_failure']['path'])
+                completion=_load(files['completion']['path']);collector=_load(files['collector_report']['path'])
+                faultfile=_load(files['first_fault']['path']);fault=faultfile.get('first_fault',{})
+                if (child.get('status')!='FAIL' or child.get('controller_exit_code')!=variant['harness_exit_code'] or
+                        failure.get('status')!='FAIL' or failure.get('exit_code')!=variant['harness_exit_code'] or
+                        failure.get('primary_fault')!=code or failure.get('primary_origin')!=origin or failure.get('keys')!=0 or
+                        failure.get('rf_disabled') is not disabled or
+                        any(failure.get(key) is not True for key in ('cleanup_requested','stopped','closed')) or
+                        completion.get('terminal') is not True or completion.get('fault')!=code or
+                        completion.get('trace_complete') is not True or completion.get('rf_clear_confirmed') is not True or
+                        completion.get('rf_disabled') is not disabled or collector.get('status')!='BLOCKED' or
+                        collector.get('ready_for_rf_test') is not False or fault.get('code')!=code or fault.get('origin')!=origin):
+                    raise ValueError('Retained infrastructure child artifacts contradict the failure-preservation proof')
+                if disabled:
+                    marker=_load(files['injection_witness']['path'])
+                    rows=[json.loads(line) for line in Path(files['trace']['path']).read_text().splitlines() if line.strip()]
+                    if (marker.get('kind')!='test-telemetry-freeze' or marker.get('qualification_running') is not True or
+                            marker.get('keys')!=0 or marker.get('duration_ms')!=350 or marker.get('ms')!=q['freeze_started_ms'] or
+                            marker.get('packet_ms')!=q['packet_ms'] or marker.get('sequence')!=q['sequence'] or
+                            completion.get('qualification_complete') is not False or
+                            not any(row.get('event')=='qualification-start' and row.get('ms')==q['qualification_started_ms'] for row in rows) or
+                            not any(row.get('event')=='first-fault' and row.get('status')==4 and row.get('operation')==origin and
+                                    row.get('ms')==q['fault_ms'] for row in rows) or
+                            not any(row.get('kind')=='sample' and row.get('qualification_running') is True for row in rows)):
+                        raise ValueError('Qualification failure witness does not match the actual active-stage trace')
     return prerequisites
+
+
+def _failure_checks(proof):
+    checks=proof.get('checks',{})
+    if set(checks)!=set(INFRASTRUCTURE_CHECKS) or any(checks[key] is not True for key in INFRASTRUCTURE_CHECKS):
+        raise ValueError('USB infrastructure failure was not preserved at every required stage')
 
 
 def validate_history(campaign, identity, current_result, verify_files=True):

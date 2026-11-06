@@ -21,6 +21,7 @@ jobs:
           python tools/freedv/test_usb_test_support.py
           python -O tools/freedv/test_usb_test_support.py
           python tools/freedv/test_usb_campaign.py
+          python tools/freedv/test_usb_host_resources.py
           python tools/freedv/test_usb_controller_build.py
           python tools/freedv/test_usb_ci_diagnostics.py
       - name: Install private PulseAudio test dependencies

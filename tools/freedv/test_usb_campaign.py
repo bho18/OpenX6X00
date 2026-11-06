@@ -15,38 +15,92 @@ import test_usb_audio_matrix as matrix
 import build_native_development as builder
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
                                immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run, validate_capture_close_run,
-                               validate_capture_source_boundary_run, validate_capture_close_failure_run)
+                               validate_capture_source_boundary_run, validate_capture_close_failure_run,
+                               host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS)
+
+
+def resource_fixture(root,identity,configuration=None):
+    root=Path(root);root.mkdir(parents=True,exist_ok=True)
+    config=configuration or identity.get('host_resource_configuration') or host_resource_configuration()
+    def snapshot(current):
+        limit=16*1024**3;head=limit-current
+        return {'status':'KNOWN_BOUNDED','errors':[],'cgroup_path':'/sys/fs/cgroup/unit-fixture',
+            'headroom_bytes':head,'memory':{'current_bytes':current,'max_bytes':limit,'high_bytes':None,
+                'effective_limit_bytes':limit,'headroom_bytes':head,
+                'events':{'high':3,'max':7,'oom':0,'oom_kill':0},
+                'stat':{'anon':50*1024**2,'file':5*1024**3,'shmem':0,'pgscan_direct':11,'pgsteal_direct':9}},
+            'cpu':{'quota_us':400000,'period_us':100000,'quota_cores':4.,'affinity_cores':4,
+                   'stat':{'usage_usec':100,'nr_throttled':2,'throttled_usec':10}}}
+    qualified=config['profile']=='qualification'
+    pre={'schema':'x6200.usb.host-resources.v1','phase':'preflight','profile':config['profile'],
+         'configuration':config,'status':'PASS' if qualified else 'RECORDED_NONPROMOTABLE','assessment':'PASS',
+         'promotion_eligible':qualified,'min_headroom_bytes':config['min_headroom_bytes'],
+         'min_end_headroom_bytes':config['min_end_headroom_bytes'],'pressure_counter_policy':list(PRESSURE_COUNTERS),
+         'before':snapshot(10*1024**3),'after':snapshot(6*1024**3),'headroom_bytes':10*1024**3,
+         'reclaim':{'status':'COMPLETE' if config['reclaim_roots'] else 'NOT_REQUESTED',
+                    'roots':config['reclaim_roots'],'rejected_roots':[],'timed_out':False,'contents_modified':False,
+                    'worker_still_running':False},'reasons':[]}
+    end={'schema':'x6200.usb.host-resources.v1','phase':'end','profile':config['profile'],'configuration':config,
+         'status':'PASS' if qualified else 'RECORDED_NONPROMOTABLE','assessment':'PASS','promotion_eligible':qualified,
+         'min_headroom_bytes':config['min_end_headroom_bytes'],'before':pre['after'],'after':snapshot(7*1024**3),
+         'headroom_bytes':9*1024**3,'counter_deltas':{key:0 for key in PRESSURE_COUNTERS},
+         'new_memory_pressure':{},'reasons':[],'cpu_throttling_is_diagnostic_only':True}
+    pp=root/'host-resource-preflight.json';ep=root/'host-resource-end.json';atomic_json(pp,pre);atomic_json(ep,end)
+    return {'schema':'x6200.usb.host-resource-contract.v1','status':'PASS' if qualified else 'RECORDED_NONPROMOTABLE',
+            'configuration':config,'preflight':pre,'end':end,'preflight_report_path':str(pp),'preflight_report_sha256':sha(pp),
+            'end_report_path':str(ep),'end_report_sha256':sha(ep),
+            **{key:identity[key] for key in ('source_commit','source_tree_sha256','build_id','test_binary_sha256')}}
 
 
 def infrastructure_fixture(root, identity, injector_sha):
     """Synthetic metadata for gate unit negatives; never actual C evidence."""
     root=Path(root);root.mkdir(parents=True,exist_ok=True)
-    bodies={
-        'case_result':{'status':'FAIL','case':'normal','controller_exit_code':2},
-        'harness_failure':{'status':'FAIL','exit_code':2,'primary_fault':13,'primary_origin':'modem-buffer-budget',
-                           'cleanup_requested':True,'stopped':True,'closed':True},
-        'completion':{'terminal':True,'fault':13,'trace_complete':True,'rf_clear_confirmed':True},
-        'collector_report':{'status':'BLOCKED','ready_for_rf_test':False},
-        'first_fault':{'first_fault':{'code':13,'origin':'modem-buffer-budget'}},
-        'trace':{'kind':'sample','state':5,'fault':13},
-    }
-    files={}
-    for name,body in bodies.items():
-        path=root/(name+'.json');atomic_json(path,body)
-        files[name]={'path':str(path),'sha256':sha(path)}
-    proof={'schema':'x6200.usb.infrastructure.v1','kind':'unexpected-runtime-failure','status':'PASS',
-           'radio_accessed':False,'source_commit':identity['source_commit'],'build_id':identity['build_id'],
-           'controller_binary_sha256':identity['test_binary_sha256'],'runner_sha256':identity['runner_sha256'],
-           'fixture_sha256':{'speech':identity['speech_sha256'],'modem':identity['modem_sha256']},
-           'fault_injector_sha256':injector_sha,
-           'checks':{name:True for name in INFRASTRUCTURE_CHECKS},
-           'driver_exit_code':1,'driver_status':'FAIL','harness_exit_code':2,'harness_status':'FAIL',
-           'terminal_fault_code':13,'terminal_fault_origin':'modem-buffer-budget','collector_status':'BLOCKED',
-           'evidence_files':files}
+    shared={'radio_accessed':False,'source_commit':identity['source_commit'],'build_id':identity['build_id'],
+            'controller_binary_sha256':identity['test_binary_sha256'],'runner_sha256':identity['runner_sha256'],
+            'fixture_sha256':{'speech':identity['speech_sha256'],'modem':identity['modem_sha256']},
+            'fault_injector_sha256':injector_sha}
+    variants={}
+    for name,case,code,origin,disabled in (('initial_buffer','normal',13,'modem-buffer-budget',False),
+                                          ('qualification_telemetry','rf-disabled',4,'radio-packet-stale',True)):
+        directory=root/name;directory.mkdir()
+        bodies={
+            'case_result':{'status':'FAIL','case':case,'controller_exit_code':2},
+            'harness_failure':{'status':'FAIL','exit_code':2,'primary_fault':code,'primary_origin':origin,
+                               'cleanup_requested':True,'stopped':True,'closed':True,'rf_disabled':disabled,'keys':0},
+            'completion':{'terminal':True,'fault':code,'trace_complete':True,'rf_clear_confirmed':True,
+                          'rf_disabled':disabled,'qualification_complete':False},
+            'collector_report':{'status':'BLOCKED','ready_for_rf_test':False},
+            'first_fault':{'first_fault':{'code':code,'origin':origin}},
+        }
+        rows=[{'kind':'sample','state':5,'fault':code}]
+        q=None
+        if disabled:
+            q={'qualification_started_ms':1000,'freeze_started_ms':1100,'packet_ms':1090,'sequence':7,
+               'freeze_duration_ms':350,'fault_ms':1341,'recovered_ms':1450,'qualification_complete':False,'keys':0}
+            bodies['injection_witness']={'kind':'test-telemetry-freeze','qualification_running':True,'keys':0,
+                'duration_ms':350,'ms':1100,'packet_ms':1090,'sequence':7}
+            rows=[{'kind':'event','event':'qualification-start','ms':1000},
+                  {'kind':'sample','qualification_running':True,'rf_disabled':True,'ms':1100},
+                  {'kind':'event','event':'first-fault','status':4,'operation':origin,'ms':1341}]
+        files={}
+        for filename,body in bodies.items():
+            path=directory/(filename+'.json');atomic_json(path,body)
+            files[filename]={'path':str(path),'sha256':sha(path)}
+        trace=directory/'trace.jsonl';trace.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+        files['trace']={'path':str(trace),'sha256':sha(trace)}
+        variant={'schema':'x6200.usb.infrastructure.v1','kind':'unexpected-runtime-failure','status':'PASS',
+                 **shared,'variant':name,'driver_case':case,'rf_disabled':disabled,'keys':0,
+                 'checks':{key:True for key in INFRASTRUCTURE_CHECKS},'driver_exit_code':1,'driver_status':'FAIL',
+                 'harness_exit_code':2,'harness_status':'FAIL','terminal_fault_code':code,
+                 'terminal_fault_origin':origin,'collector_status':'BLOCKED','evidence_files':files}
+        if q:variant['qualification_failure']=q
+        variants[name]=variant;atomic_json(directory/'variant-result.json',variant)
+    proof={'schema':'x6200.usb.infrastructure.v2','kind':'unexpected-runtime-failures','status':'PASS',
+           **shared,'checks':{key:True for key in INFRASTRUCTURE_CHECKS},'variants':variants}
     report=root/'infrastructure-result.json';atomic_json(report,proof)
-    log=root/'infrastructure.log';log.write_text('Expected failed child preserved; unit fixture only\n')
-    return {'status':'PASS','record':proof,'record_sha256':digest(proof),
-            'report_path':str(report),'report_sha256':sha(report),'log_path':str(log),'log_sha256':sha(log),
+    log=root/'infrastructure.log';log.write_text('Expected failed children preserved; unit fixture only\n')
+    return {'status':'PASS','record':proof,'record_sha256':digest(proof),'report_path':str(report),
+            'report_sha256':sha(report),'log_path':str(log),'log_sha256':sha(log),
             'supervision':{'exit_code':0,'timed_out':False}}
 
 
@@ -161,10 +215,12 @@ class CampaignTests(unittest.TestCase):
                          'build_id': 'campaign-test', 'test_binary_sha256': 'c' * 64,
                          'runner_sha256': 'd' * 64, 'speech_sha256': 'e' * 64,
                          'modem_sha256': 'f' * 64, 'fault_injector_sha256': '1' * 64}
+        self.identity['host_resource_configuration']=host_resource_configuration()
         self.plan = {'profile': 'qualification', 'repetitions': 2,
                      'expected_cases': ['normal'], 'selected_cases': ['normal'],
                      'debug_subset': False, 'case_timeout_seconds': {'normal': 90},
-                     'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES)}
+                     'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
+                     'host_resource_configuration':self.identity['host_resource_configuration']}
         self.counter = 0
 
     def begin(self, label=None):
@@ -191,6 +247,7 @@ class CampaignTests(unittest.TestCase):
                   'expected_executions': ['normal@1', 'normal@2'],
                   'executed': ['normal@1', 'normal@2'], 'not_executed': [], 'skipped': [],
                   'cases': {'normal': {'status': status, 'runs': runs}},
+                  'host_resources':resource_fixture(evidence,self.identity),
                   'fault_injector_sha256':self.identity['fault_injector_sha256'],
                   'infrastructure_prerequisites':{'unexpected_runtime_failure':infrastructure_fixture(
                       evidence/'infrastructure',self.identity,self.identity['fault_injector_sha256'])}}
@@ -221,7 +278,7 @@ class CampaignTests(unittest.TestCase):
         campaign,evidence=self.begin()
         result=self.result(evidence)
         entry=result['infrastructure_prerequisites']['unexpected_runtime_failure']
-        entry['record']['driver_exit_code']=0
+        entry['record']['variants']['initial_buffer']['driver_exit_code']=0
         atomic_json(entry['report_path'],entry['record'])
         entry['report_sha256']=sha(entry['report_path']);entry['record_sha256']=digest(entry['record'])
         report=self.finish(campaign,result)
@@ -232,7 +289,7 @@ class CampaignTests(unittest.TestCase):
         campaign,evidence=self.begin()
         report=self.finish(campaign,self.result(evidence))
         proof=report['infrastructure_prerequisites']['unexpected_runtime_failure']['record']
-        Path(proof['evidence_files']['completion']['path']).write_text('{}\n')
+        Path(proof['variants']['initial_buffer']['evidence_files']['completion']['path']).write_text('{}\n')
         with self.assertRaisesRegex(ValueError,'child evidence changed'):
             validate_campaign(report,['normal'])
 
@@ -240,7 +297,7 @@ class CampaignTests(unittest.TestCase):
         campaign,evidence=self.begin()
         result=self.result(evidence)
         entry=result['infrastructure_prerequisites']['unexpected_runtime_failure']
-        item=entry['record']['evidence_files']['case_result']
+        item=entry['record']['variants']['initial_buffer']['evidence_files']['case_result']
         atomic_json(item['path'],{'status':'PASS','controller_exit_code':0})
         item['sha256']=sha(item['path'])
         atomic_json(entry['report_path'],entry['record'])
@@ -248,6 +305,25 @@ class CampaignTests(unittest.TestCase):
         report=self.finish(campaign,result)
         with self.assertRaisesRegex(ValueError,'contradict'):
             validate_campaign(report,['normal'])
+
+    def test_both_startup_and_qualification_failure_paths_are_mandatory(self):
+        campaign,evidence=self.begin();result=self.result(evidence)
+        entry=result['infrastructure_prerequisites']['unexpected_runtime_failure']
+        del entry['record']['variants']['qualification_telemetry']
+        atomic_json(entry['report_path'],entry['record']);entry['report_sha256']=sha(entry['report_path']);entry['record_sha256']=digest(entry['record'])
+        report=self.finish(campaign,result)
+        with self.assertRaisesRegex(ValueError,'both real failure paths'):validate_campaign(report,['normal'])
+
+    def test_qualification_failure_requires_actual_stale_epoch_and_recovery(self):
+        for mutation in ('stale-age','recovery','keys'):
+            campaign,evidence=self.begin();result=self.result(evidence)
+            entry=result['infrastructure_prerequisites']['unexpected_runtime_failure'];variant=entry['record']['variants']['qualification_telemetry']
+            if mutation=='stale-age':variant['qualification_failure']['fault_ms']=1200
+            elif mutation=='recovery':variant['qualification_failure']['recovered_ms']=1200
+            else:variant['keys']=1
+            atomic_json(entry['report_path'],entry['record']);entry['report_sha256']=sha(entry['report_path']);entry['record_sha256']=digest(entry['record'])
+            report=self.finish(campaign,result)
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_campaign(report,['normal'],verify_files=False)
 
     def test_failed_attempt_followed_by_pass_stays_blocked(self):
         first, evidence = self.begin('first-run')
@@ -371,6 +447,26 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.infrastructure_fake_exit = False
         self.infrastructure_wrong_identity = False
         self.counter = 0
+        self.resource_blocked=False
+        self.resource_end_pressure=False
+
+    def resources_start(self,**kwargs):
+        config=host_resource_configuration(kwargs['profile'],kwargs['reclaim_roots'],kwargs['min_headroom_bytes'],kwargs['min_end_headroom_bytes'])
+        identity={'source_commit':'a'*40,'source_tree_sha256':'b'*64,'build_id':'test','test_binary_sha256':sha(self.binary)}
+        self.resource_template=resource_fixture(Path(kwargs['output']).parent,identity,config)
+        pre=self.resource_template['preflight']
+        if self.resource_blocked:pre.update(status='BLOCKED',assessment='BLOCKED',promotion_eligible=False,reasons=['headroom low'])
+        atomic_json(kwargs['output'],pre)
+        return pre
+
+    def resources_end(self,preflight,**kwargs):
+        end=copy.deepcopy(self.resource_template['end']);end['before']=preflight['after']
+        if self.resource_end_pressure:
+            end['after']['memory']['events']['max']+=1
+            end.update(status='BLOCKED',assessment='BLOCKED',promotion_eligible=False,reasons=['pressure'],new_memory_pressure={'memory.events.max':1})
+            end['counter_deltas']['memory.events.max']=1
+        atomic_json(kwargs['output'],end)
+        return end
 
     def supervised(self, command, log_path, timeout, **kwargs):
         expected_env = kwargs.get('env', {})
@@ -389,7 +485,7 @@ class MatrixSupervisionTests(unittest.TestCase):
             entry=infrastructure_fixture(output,identity,sha(Path(command[command.index('--fault-inject-so')+1])))
             proof=entry['record']
             if self.infrastructure_fail: proof['status']='FAIL'
-            if self.infrastructure_fake_exit: proof['driver_exit_code']=0
+            if self.infrastructure_fake_exit: proof['variants']['initial_buffer']['driver_exit_code']=0
             if self.infrastructure_wrong_identity: proof['source_commit']='wrong-source'
             atomic_json(output/'infrastructure-result.json',proof)
             return {'exit_code':1 if self.infrastructure_fail else 0,'timed_out':False,'duration_ms':1}
@@ -431,11 +527,40 @@ class MatrixSupervisionTests(unittest.TestCase):
                 mock.patch.object(matrix, 'CASES', ('normal', 'other') if subset else ('normal',)), \
                 mock.patch.object(matrix, 'SPEECH_CASES', {'normal'} if self.aggregate_only else set()), \
                 mock.patch.object(matrix, 'run_bounded', self.supervised), \
+                mock.patch.object(matrix,'run_resource_preflight',self.resources_start), \
+                mock.patch.object(matrix,'observe_resource_end',self.resources_end), \
                 mock.patch.object(matrix, 'source_snapshot', return_value=({}, 'b'*64)), \
                 mock.patch.object(matrix.subprocess, 'check_output', return_value='a'*40+'\n'), \
                 mock.patch.object(matrix, 'sha', stable_sha):
             status = matrix.main()
         return status, json.loads((output/'matrix-result.json').read_text())
+
+    def test_resource_preflight_blocks_before_any_audio_prerequisite(self):
+        self.resource_blocked=True
+        status,record=self.invoke()
+        self.assertEqual(status,1);self.assertEqual(record['cases'],{})
+        self.assertEqual(record['infrastructure_prerequisites'],{})
+        self.assertFalse(record['promotion_eligible'])
+
+    def test_resource_end_pressure_blocks_otherwise_passing_campaign(self):
+        self.resource_end_pressure=True
+        status,record=self.invoke()
+        self.assertEqual(status,1);self.assertEqual(record['status'],'FAIL')
+        self.assertTrue(all(case['status']=='PASS' for case in record['cases'].values()))
+        self.assertFalse(record['promotion_eligible'])
+
+    def test_end_resource_failure_does_not_replace_original_controller_failure(self):
+        self.fail=True;self.resource_end_pressure=True
+        status,record=self.invoke()
+        self.assertEqual(status,1);self.assertIn('USB integration case failed',record['reason'])
+        self.assertIn('host_resource_error',record)
+        self.assertEqual(record['cases']['normal']['status'],'FAIL')
+
+    def test_resource_counter_change_does_not_reset_same_configuration_history(self):
+        self.resource_blocked=True
+        self.invoke();self.resource_blocked=False
+        status,record=self.invoke()
+        self.assertEqual(status,1);self.assertEqual(record['campaign']['status'],'BLOCKED')
 
     def test_failed_infrastructure_stops_before_functional_cases(self):
         self.infrastructure_fail=True
@@ -538,6 +663,70 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.assertTrue(record['promotion_eligible'])
         self.assertEqual(record['executed'], ['normal@1', 'normal@2'])
         validate_campaign(record, ['normal'])
+
+
+class HostResourceGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name)
+        self.config=host_resource_configuration()
+        self.identity={'source_commit':'a'*40,'source_tree_sha256':'b'*64,'build_id':'unit-resource',
+                       'test_binary_sha256':'c'*64,'host_resource_configuration':self.config}
+
+    def fixture(self):
+        return {'identity':self.identity,'plan':{'host_resource_configuration':self.config},
+                'host_resources':resource_fixture(self.root,self.identity,self.config)}
+
+    def test_known_host_with_past_pressure_and_no_new_pressure_passes(self):
+        validate_host_resources(self.fixture())
+
+    def test_start_end_headroom_are_independent_fixed_minima(self):
+        for phase,current in (('preflight',13*1024**3),('end',16*1024**3-512*1024**2)):
+            evidence=self.fixture();report=evidence['host_resources'][phase];snapshot=report['after']
+            head=16*1024**3-current;snapshot['memory'].update(current_bytes=current,headroom_bytes=head)
+            snapshot['headroom_bytes']=report['headroom_bytes']=head
+            with self.subTest(phase=phase),self.assertRaises(ValueError):validate_host_resources(evidence,verify_files=False)
+
+    def test_unknown_cgroup_does_not_use_unbounded_host_fallback(self):
+        evidence=self.fixture();evidence['host_resources']['preflight']['after']['memory']['max_bytes']=None
+        with self.assertRaises(ValueError):validate_host_resources(evidence,verify_files=False)
+
+    def test_new_or_reset_pressure_counter_cannot_be_hidden_by_pass_flag(self):
+        for delta in (-1,1):
+            evidence=self.fixture();evidence['host_resources']['end']['after']['memory']['events']['max']+=delta
+            with self.subTest(delta=delta),self.assertRaises(ValueError):validate_host_resources(evidence,verify_files=False)
+
+    def test_changed_limits_or_postreclaim_baseline_block_promotion(self):
+        for mutation in ('cpuquota','baseline'):
+            evidence=self.fixture()
+            if mutation=='cpuquota':evidence['host_resources']['end']['after']['cpu']['quota_us']=200000
+            else:evidence['host_resources']['end']['before']=copy.deepcopy(evidence['host_resources']['end']['before']);evidence['host_resources']['end']['before']['memory']['events']['max']=0
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_host_resources(evidence,verify_files=False)
+
+    def test_cpu_throttling_alone_is_diagnostic_not_a_fabricated_audio_fault(self):
+        evidence=self.fixture();cpu=evidence['host_resources']['end']['after']['cpu']['stat']
+        cpu.update(nr_throttled=200,throttled_usec=999999)
+        validate_host_resources(evidence,verify_files=False)
+
+    def test_preflight_alone_cannot_promote(self):
+        evidence=self.fixture();del evidence['host_resources']['end']
+        validate_host_resources(evidence,require_end=False)
+        with self.assertRaises(ValueError):validate_host_resources(evidence)
+
+    def test_cache_preparation_must_remain_readonly_and_bounded(self):
+        for key,value in (('contents_modified',True),('timed_out',True),('worker_still_running',True)):
+            evidence=self.fixture();evidence['host_resources']['preflight']['reclaim'][key]=value
+            with self.subTest(key=key),self.assertRaises(ValueError):validate_host_resources(evidence,verify_files=False)
+
+    def test_thresholds_and_resource_config_cannot_be_weakened(self):
+        for key,value in (('min_headroom_bytes',1024**3),('min_end_headroom_bytes',0)):
+            evidence=self.fixture();evidence['plan']['host_resource_configuration'][key]=value
+            with self.subTest(key=key),self.assertRaises(ValueError):validate_host_resources(evidence,verify_files=False)
+            self.config=host_resource_configuration();self.identity['host_resource_configuration']=self.config
+
+    def test_retained_resource_receipts_cannot_be_replaced(self):
+        evidence=self.fixture();Path(evidence['host_resources']['end_report_path']).write_text('{}\n')
+        with self.assertRaises(ValueError):validate_host_resources(evidence)
 
 
 class CaptureCloseGateTests(unittest.TestCase):

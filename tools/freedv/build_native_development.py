@@ -17,7 +17,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-from usb_test_campaign import Campaign, atomic_json, immutable_json, validate_campaign, validate_history
+from usb_test_campaign import Campaign, atomic_json, immutable_json, validate_campaign, validate_history, host_resource_configuration
 from usb_test_support import run_bounded
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +53,7 @@ def main():
     parser.add_argument('--x6100-prefix', type=Path)
     parser.add_argument('--build-id', default='unqualified-development')
     parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--usb-resource-reclaim-root',type=Path,action='append',default=[],help='Task-owned cache roots passed explicitly to the USB qualification resource prerequisite')
     parser.add_argument('--usb-test', action='store_true', help='Separate GUI USB headset RF development mode')
     args = parser.parse_args()
     if args.usb_test and args.variant not in ('host-native-validation','x6200-diagnostic'):
@@ -160,7 +161,9 @@ def _build_identity(args, revision, tree):
     return {'source_commit': revision, 'source_tree_sha256': tree,
             'variant': args.variant, 'build_id': args.build_id,
             'usb_test_enabled': args.usb_test, 'jobs': args.jobs,
-            'control_pin': CONTROL_PIN, 'dependency_inputs_sha256': inputs}
+            'control_pin': CONTROL_PIN, 'dependency_inputs_sha256': inputs,
+            'usb_host_resource_configuration':host_resource_configuration('qualification',
+                args.usb_resource_reclaim_root or (ROOT,args.work.resolve())) if args.usb_test and args.variant=='host-native-validation' else None}
 
 
 def validate_build_record(record, verify_files=True):
@@ -351,7 +354,9 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
                      '--profile','qualification','--campaign-root',work/'usb-campaigns',
                      '--rade-library',codec/'rade_c/src/librade.so.0.1',
                      '--source-commit',revision,'--source-tree-sha256',tree,
-                     '--build-id',args.build_id], 'usb-matrix.log', timeout=3600)
+                     '--build-id',args.build_id,
+                     *[item for root in (args.usb_resource_reclaim_root or (ROOT,work))
+                       for item in ('--resource-reclaim-root',str(Path(root).absolute()))]], 'usb-matrix.log', timeout=3600)
             finally:
                 if matrix_record.exists():
                     record['usb_matrix']=json.loads(matrix_record.read_text())

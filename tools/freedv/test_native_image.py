@@ -14,8 +14,8 @@ from fetch_native_baseline import unpack_sdk
 from verify_native_abi import same_sdk_build
 from prepare_native_image import prepare
 from build_voice_candidate import verify_usb_integration, USB_REQUIRED_COVERAGE, USB_CONTROLLER_CASES
-from usb_test_campaign import Campaign, MATRIX_SCHEMA, sha as campaign_sha, INFRASTRUCTURE_PREREQUISITES
-from test_usb_campaign import infrastructure_fixture, capture_case_fixture
+from usb_test_campaign import Campaign, MATRIX_SCHEMA, sha as campaign_sha, INFRASTRUCTURE_PREREQUISITES, host_resource_configuration
+from test_usb_campaign import infrastructure_fixture, capture_case_fixture, resource_fixture
 
 
 class UsbReleaseGateTests(unittest.TestCase):
@@ -26,10 +26,12 @@ class UsbReleaseGateTests(unittest.TestCase):
         identity = {'source_commit':'a'*40, 'source_tree_sha256':'b'*64, 'build_id':'synthetic-gate-unit',
                     'test_binary_sha256':'c'*64,'runner_sha256':'d'*64,'speech_sha256':'e'*64,
                     'modem_sha256':'f'*64,'fault_injector_sha256':'1'*64}
+        identity['host_resource_configuration']=host_resource_configuration()
         expected = list(USB_CONTROLLER_CASES)
         plan = {'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
                 'selected_cases':expected, 'debug_subset':False,
-                'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES)}
+                'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
+                'host_resource_configuration':identity['host_resource_configuration']}
         executions = [name+'@'+str(repeat+1) for repeat in range(2) for name in expected]
         cases = {}
         for name in expected:
@@ -49,7 +51,7 @@ class UsbReleaseGateTests(unittest.TestCase):
                   'plan':plan, 'complete_matrix':True, 'skipped':[], 'not_executed':[],
                   'expected_executions':executions, 'executed':executions,
                   'coverage':sorted(USB_REQUIRED_COVERAGE),
-                  'cases':cases,
+                  'cases':cases,'host_resources':resource_fixture(root/'resources',identity),
                   'infrastructure_prerequisites':{'unexpected_runtime_failure':infrastructure_fixture(
                       root/'infrastructure',identity,identity['fault_injector_sha256'])}}
         campaign = Campaign(root/'history',identity,plan,root/'evidence')

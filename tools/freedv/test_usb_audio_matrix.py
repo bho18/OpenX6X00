@@ -19,8 +19,10 @@ from test_usb_audio_integration import CASES, SPEECH_CASES
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEATS,
                                atomic_json, digest, sha, validate_campaign,
                                INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run, validate_capture_close_run,
-                               validate_capture_source_boundary_run, validate_capture_close_failure_run)
+                               validate_capture_source_boundary_run, validate_capture_close_failure_run,
+                               host_resource_configuration, validate_host_resources)
 from usb_test_support import run_bounded
+from usb_host_resources import run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES
 
 COVERAGE = {
     'prekey_audio': {'pa-delay', 'pa-reject', 'pa-missing'},
@@ -86,6 +88,9 @@ def main():
     parser.add_argument('--campaign-root', type=Path, help='Persistent source/configuration attempt history')
     parser.add_argument('--campaign-id', help='Human label only; does not change source/configuration history identity')
     parser.add_argument('--case-timeout', type=float, help='Override the bounded per-case deadline for diagnosis')
+    parser.add_argument('--resource-reclaim-root',type=Path,action='append',default=[],help='Explicit task-owned cache roots; no deletion or global cache flush')
+    parser.add_argument('--resource-min-start-bytes',type=int,default=MIN_START_HEADROOM_BYTES)
+    parser.add_argument('--resource-min-end-bytes',type=int,default=MIN_END_HEADROOM_BYTES)
     parser.add_argument('--source-commit')
     parser.add_argument('--source-tree-sha256')
     parser.add_argument('--build-id', default='unqualified-development')
@@ -96,6 +101,8 @@ def main():
         parser.error('qualification needs at least two repetitions; all profiles need a positive count')
     if args.profile == 'qualification' and (not args.rade_library or not args.rade_library.is_file()):
         parser.error('qualification requires --rade-library with the actual dynamically loaded codec')
+    if args.profile=='qualification' and (args.resource_min_start_bytes<MIN_START_HEADROOM_BYTES or args.resource_min_end_bytes<MIN_END_HEADROOM_BYTES):
+        parser.error('qualification cannot lower the 4GiB start/1GiB end resource contract')
     if args.case_timeout is not None and args.case_timeout <= 0:
         parser.error('--case-timeout must be positive')
     if args.only and len(args.only) != len(set(args.only)):
@@ -110,10 +117,13 @@ def main():
     if not selected:
         parser.error('Selected profile has no registered cases')
     timeouts = {name: args.case_timeout or CASE_TIMEOUTS.get(name, 90) for name in selected}
+    resource_config=host_resource_configuration('qualification' if args.profile=='qualification' else 'regression',
+        args.resource_reclaim_root,args.resource_min_start_bytes,args.resource_min_end_bytes)
     plan = {'profile': args.profile, 'repetitions': repetitions,
             'expected_cases': expected, 'selected_cases': selected,
             'debug_subset': bool(args.only), 'case_timeout_seconds': timeouts,
-            'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES)}
+            'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
+            'host_resource_configuration':resource_config}
     executions = [name + '@' + str(repeat + 1) for repeat in range(repetitions) for name in selected]
     record = {'schema': MATRIX_SCHEMA, 'status': 'FAIL', 'plan': plan,
               'scope': 'Actual codec and four-stream controller; fake RF transport, never hardware qualification',
@@ -122,6 +132,7 @@ def main():
               'complete_matrix': False, 'expected_executions': executions, 'started': [], 'executed': [],
               'not_executed': list(executions), 'skipped': sorted(set(expected) - set(selected))}
     campaign = None
+    resource_preflight = None
     result_code = 1
     old_handler = signal.signal(signal.SIGTERM, _interrupted)
     try:
@@ -139,12 +150,13 @@ def main():
                     'rade_library_sha256': sha(args.rade_library.resolve()) if args.rade_library else None,
                     'fault_injector_source_sha256': sha(here/'usb_audio_fault_inject.c'),
                     'compiler_sha256': sha(Path(compiler).resolve()),
+                    'host_resource_configuration':resource_config,
                     'pulse_tools_sha256': {name: sha(Path(shutil.which(name)).resolve()) for name in
                         ('pulseaudio','paplay','parec','pactl') if shutil.which(name)},
                     'test_tools_sha256': {name: sha(here / name) for name in
                         ('test_usb_audio_matrix.py', 'test_usb_audio_integration.py', 'usb_test_support.py',
                          'usb_test_campaign.py', 'usb_collector_contract.py', 'usb_rf_evidence.py',
-                         'usb_harness_failure_selftest.py',
+                         'usb_harness_failure_selftest.py','usb_host_resources.py',
                          'usb_audio_fault_inject.c', 'usb_audio_integration_test.c')}}
         record.update(identity=identity, source_commit=revision, source_tree_sha256=tree,
                       build_id=args.build_id, test_binary_sha256=identity['test_binary_sha256'])
@@ -158,6 +170,17 @@ def main():
             record['status'] = 'TIMEOUT' if compile_result['timed_out'] else 'FAIL'
             raise ValueError('Fault injector compilation failed or timed out')
         record['fault_injector_sha256'] = sha(injector)
+        resource_path=output/'host-resource-preflight.json'
+        resource_preflight=run_resource_preflight(profile=resource_config['profile'],
+            reclaim_roots=resource_config['reclaim_roots'],min_headroom_bytes=resource_config['min_headroom_bytes'],
+            min_end_headroom_bytes=resource_config['min_end_headroom_bytes'],output=resource_path,
+            **{key:resource_config[key] for key in ('max_seconds','max_files','max_advised_bytes','min_file_bytes','min_file_age_seconds')})
+        record['host_resources']={'schema':'x6200.usb.host-resource-contract.v1','status':'RUNNING',
+            'configuration':resource_config,'preflight':resource_preflight,'preflight_report_path':str(resource_path),
+            'preflight_report_sha256':sha(resource_path),
+            **{key:identity[key] for key in ('source_commit','source_tree_sha256','build_id','test_binary_sha256')}}
+        atomic_json(output/'progress.json',record)
+        if args.profile=='qualification':validate_host_resources(record,require_end=False)
         child_env = dict(os.environ,
                          USB_TEST_EXPECTED_SOURCE_COMMIT=revision,
                          USB_TEST_EXPECTED_BUILD_ID=args.build_id,
@@ -171,7 +194,7 @@ def main():
                    '--output',str(infrastructure),'--source-commit',revision,'--build-id',args.build_id,
                    '--expected-binary-sha256',identity['test_binary_sha256']]
         infrastructure_log = output/'infrastructure-self-test.log'
-        supervision = run_bounded(command,infrastructure_log,120,env=child_env,terminate_grace=16.0)
+        supervision = run_bounded(command,infrastructure_log,240,env=child_env,terminate_grace=16.0)
         report_path = infrastructure/'infrastructure-result.json'
         proof = json.loads(report_path.read_text()) if report_path.is_file() else {}
         entry = {'status':'PASS' if not supervision['timed_out'] and supervision['exit_code']==0 and proof.get('status')=='PASS'
@@ -319,6 +342,23 @@ def main():
         record['reason'] = str(error)
         print('FAIL:', str(error), flush=True)
     finally:
+        if resource_preflight is not None:
+            try:
+                end_path=output/'host-resource-end.json'
+                ending=observe_resource_end(resource_preflight,profile=resource_config['profile'],output=end_path)
+                host=record['host_resources']
+                host.update(end=ending,end_report_path=str(end_path),end_report_sha256=sha(end_path),
+                    status='PASS' if args.profile=='qualification' and resource_preflight.get('status')=='PASS' and ending.get('status')=='PASS'
+                        else 'BLOCKED' if args.profile=='qualification' else 'RECORDED_NONPROMOTABLE')
+                if args.profile=='qualification':
+                    validate_host_resources(record)
+                    record['coverage']=sorted(set(record['coverage'])|{'host_resources'})
+            except Exception as error:
+                record.setdefault('host_resources',{})['status']='BLOCKED'
+                record['host_resource_error']=str(error)
+                if record['status']=='PASS':
+                    record.update(status='FAIL',reason='Host resource contract failed after functional checks: '+str(error))
+                    result_code=1
         record['not_started'] = [item for item in executions if item not in record['started']]
         record['not_completed'] = list(record['not_executed'])
         remaining = {item.rsplit('@', 1)[0] for item in record['not_executed']}

@@ -31,6 +31,8 @@ and the blocked native hand-mic contract remain separate.
 | TX loss during drain could be counted as a completed turn | Keep checking fresh TX status during drain and reject the turn before completed-turn accounting can qualify it. |
 | A delayed MIC callback crossed release and valid speech was discarded in DRAIN | Close a finite indexed capture interval, drain it before EOO, and check its exact PCM against an independent input observer. |
 | Unbounded fixture processes and latest-PASS selection hid failed attempts | Bound commands and child cleanup; retain immutable attempt history and block promotion after failed or unfinished attempts. |
+| All deliveries paused together on a host at its memory limit, without per-case resource counters | Screen host resources before qualification, retain end counters, and keep a resource failure separate from an RF or codec claim. |
+| A qualification-loop assertion bypassed bounded unexpected-fault cleanup | Exercise failed-child evidence preservation during startup and qualification, and use the same bounded cleanup path for unexpected runtime faults. |
 
 ## Contracts checked across every phase
 
@@ -188,12 +190,15 @@ python3 tools/freedv/build_native_development.py \
   --work /path/to/retained-usb-validation \
   --codec /path/to/pinned-host-codec-build \
   --codec-fixture /path/to/pinned-fixtures/rade-modem.raw \
+  --usb-resource-reclaim-root /path/to/task-owned-build-cache \
   --build-id usb-rf-development-example
 ```
 
 This builds the host GUI/controller and actual codec integration, then runs the
 complete `qualification` profile automatically, including the declared full
 repetitions and lifecycle cases. It does not access or qualify radio hardware.
+The optional reclaim root names only this task's cache files; omit it when
+headroom is already sufficient. It never deletes evidence or changes file data.
 CI/debug `regression`, `durability` or selected-case runs are useful diagnostics;
 they do not replace the full qualifying campaign and cannot promote an image.
 
@@ -205,6 +210,16 @@ root or choose a new label to obtain a green result. Resolve the recorded cause
 through a reviewed source/configuration change and retain the original failure.
 
 ## Durable results and promotion
+
+The full software campaign also has a host resource contract. It requires a
+known bounded cgroup, at least 4 GiB of starting memory headroom, at least 1 GiB
+remaining at completion, and no new memory-limit, OOM or direct-reclaim events
+after the preflight baseline. Before the baseline, explicitly named task-owned
+files may receive clean-cache eviction hints; their bytes, hashes and attempt
+history remain intact. Record the roots, limits, counters and deltas. Unknown or
+pressured environments cannot qualify the image. This is a host test profile,
+not an X6200 RAM requirement or a real-time scheduling guarantee. It cannot
+override an actual controller failure. CI regression remains nonpromotable.
 
 Declare profiles, cases, repetitions, fixtures and identities before a campaign
 starts. Store each attempt and its evidence immutably. The matrix records

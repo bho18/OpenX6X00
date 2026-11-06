@@ -567,6 +567,45 @@ class DriverFailureTests(unittest.TestCase):
 
 
 class InfrastructureFailureTests(unittest.TestCase):
+    def child_receipts(self,command,log_path,timeout,env=None,terminate_grace=None):
+        import json
+        case_name=command[command.index('--case')+1]
+        qualification=case_name=='rf-disabled'
+        case=Path(command[command.index('--output')+1]);runtime=case/'result';runtime.mkdir(parents=True)
+        collector=case/'failure-collector-contract/actual';collector.mkdir(parents=True)
+        identity={'source_commit':env['USB_TEST_EXPECTED_SOURCE_COMMIT'],'build_id':env['USB_TEST_EXPECTED_BUILD_ID']}
+        fault=4 if qualification else 13;origin='radio-packet-stale' if qualification else 'modem-buffer-budget'
+        code=-6 if qualification and getattr(self,'abort_qualification',False) else 2
+        session='freedv-usb-session'
+        def write(path,value):path.write_text(json.dumps(value))
+        write(case/'case-result.json',dict(status='FAIL',controller_exit_code=code,failure_collector_contract={'status':'PASS'}))
+        write(runtime/'harness-failure.json',dict(status='FAIL',exit_code=code,cleanup_requested=True,stopped=True,closed=True,
+            primary_fault=fault,primary_origin=origin,rf_disabled=qualification,keys=0,telemetry_freeze_recovered_ms=550))
+        write(runtime/'freedv-usb-current.json',dict(session_id=session,completion_basename=session+'-completion.json',
+            trace_basename=session+'.jsonl',**identity))
+        write(runtime/(session+'-completion.json'),dict(terminal=True,trace_complete=True,rf_clear_confirmed=True,
+            fault=fault,rf_disabled=qualification,qualification_complete=False,**identity))
+        write(runtime/(session+'-fault.json'),dict(first_fault={'code':fault,'origin':origin},**identity))
+        write(collector/'rf-evidence.json',dict(status='BLOCKED',ready_for_rf_test=False))
+        rows=[dict(kind='event',event='first-fault',ms=500,status=fault,operation=origin)]
+        if qualification:
+            rows[:0]=[dict(kind='event',event='qualification-start',ms=100),
+                dict(kind='sample',qualification_running=True,ms=300)]
+            write(runtime/'qualification-status-freeze.json',dict(kind='test-telemetry-freeze',ms=200,packet_ms=190,
+                sequence=10,duration_ms=350,qualification_running=not getattr(self,'freeze_before_qualification',False),keys=0))
+        (runtime/(session+'.jsonl')).write_text(''.join(json.dumps(row)+'\n' for row in rows))
+        (case/'test.log').write_text('INJECT negotiated buffer rejection\n' if not qualification else 'Injected finite telemetry freeze\n')
+        Path(log_path).write_text('Unit receipt adapter: no audio or controller execution\n')
+        return {'exit_code':1,'timed_out':False}
+
+    def run_receipts(self,root):
+        import usb_harness_failure_selftest as subject
+        inputs=[]
+        for name in ('binary','speech','modem','runner','injector'):
+            path=root/name;path.write_bytes(name.encode());inputs.append(path)
+        with mock.patch.object(subject,'run_bounded',side_effect=self.child_receipts):
+            return subject.run_failure_preservation(*inputs,root/'proof','source','build',subject.sha(inputs[0]))
+
     def test_infrastructure_prerequisite_cannot_pass_a_successful_or_hung_driver(self):
         import usb_harness_failure_selftest as subject
         with tempfile.TemporaryDirectory() as temporary:
@@ -578,6 +617,31 @@ class InfrastructureFailureTests(unittest.TestCase):
                     result=subject.run_failure_preservation(*inputs,root/str(number),'source','build',subject.sha(inputs[0]))
                 self.assertEqual(result['status'],'FAIL')
                 self.assertFalse(result['checks'])
+
+    def test_both_initial_and_active_qualification_children_must_preserve_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result=self.run_receipts(Path(temporary))
+        self.assertEqual(result['schema'],'x6200.usb.infrastructure.v2')
+        self.assertEqual(result['status'],'PASS')
+        self.assertEqual(set(result['variants']),{'initial_buffer','qualification_telemetry'})
+        self.assertEqual(result['variants']['qualification_telemetry']['terminal_fault_code'],4)
+
+    def test_initial_failure_preserved_cannot_mask_later_qualification_abort(self):
+        self.abort_qualification=True
+        with tempfile.TemporaryDirectory() as temporary:
+            result=self.run_receipts(Path(temporary))
+        self.assertEqual(result['status'],'FAIL')
+        self.assertEqual(result['variants']['initial_buffer']['status'],'PASS')
+        self.assertEqual(result['variants']['qualification_telemetry']['status'],'FAIL')
+        self.assertIn('aborted',result['reason'])
+        self.assertFalse(result['checks'])
+
+    def test_pre_qualification_freeze_cannot_claim_active_qualification_coverage(self):
+        self.freeze_before_qualification=True
+        with tempfile.TemporaryDirectory() as temporary:
+            result=self.run_receipts(Path(temporary))
+        self.assertEqual(result['status'],'FAIL')
+        self.assertIn('during active',result['reason'])
 
 
 class RenderCapacityTests(unittest.TestCase):

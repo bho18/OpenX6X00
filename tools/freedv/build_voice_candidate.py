@@ -31,6 +31,7 @@ USB_REQUIRED_COVERAGE = {
     'tail_backpressure',
     'infrastructure_failure_preservation',
     'capture_close', 'source_boundary',
+    'host_resources',
 }
 
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Prove an unexpected real-controller failure stays failed and retains evidence.
+"""Prove unexpected controller failures stay failed and retain evidence.
 
 This is an infrastructure prerequisite, never a passing functional radio case.
-The existing normal driver receives an insufficient-buffer getter only in its
-C child. It must exit nonzero after orderly failure reporting and teardown.
+Both initial admission and active RF-disabled qualification must exit nonzero
+after orderly failure reporting and teardown. Neither expected failed child
+counts as a passing functional case.
 """
 import argparse
 import hashlib
@@ -21,37 +22,34 @@ def sha(path):
         return hashlib.file_digest(stream,'sha256').hexdigest()
 
 
-def run_failure_preservation(binary,speech,modem,runner,injector,output,
-                             expected_source_commit,expected_build_id,expected_binary_sha256):
-    binary,speech,modem,runner,injector,output=map(lambda value:Path(value).resolve(),
-                                               (binary,speech,modem,runner,injector,output))
+FAILURE_VARIANTS={
+    'initial_buffer':{'case':'normal','fault':13,'origin':'modem-buffer-budget','rf_disabled':False},
+    'qualification_telemetry':{'case':'rf-disabled','fault':4,'origin':'radio-packet-stale','rf_disabled':True},
+}
+
+
+def _run_variant(name,spec,binary,speech,modem,runner,injector,output,identity):
     output.mkdir(parents=True,exist_ok=False)
     record={'schema':'x6200.usb.infrastructure.v1','kind':'unexpected-runtime-failure','status':'FAIL',
-            'scope':'Expected failed child preserves actual C receipts; not functional qualification or RF evidence',
-            'radio_accessed':False,'source_commit':expected_source_commit,'build_id':expected_build_id,
-            'controller_binary_sha256':sha(binary),'fixture_sha256':{'speech':sha(speech),'modem':sha(modem)},
-            'runner_sha256':sha(runner),'fault_injector_sha256':sha(injector),'checks':{}}
-    previous_term=signal.getsignal(signal.SIGTERM)
-    def interrupted(signum,frame):
-        del signum,frame
-        signal.signal(signal.SIGTERM,signal.SIG_IGN)
-        raise RuntimeError('Infrastructure prerequisite interrupted; preserving failed attempt')
-    signal.signal(signal.SIGTERM,interrupted)
+            'variant':name,'driver_case':spec['case'],**identity,'checks':{}}
     try:
-        require(record['controller_binary_sha256']==expected_binary_sha256,'Infrastructure test received a different controller binary')
-        case=output/'failed-normal'
-        env=dict(os.environ,USB_TEST_EXPECTED_SOURCE_COMMIT=expected_source_commit,
-                 USB_TEST_EXPECTED_BUILD_ID=expected_build_id,USB_TEST_EXPECTED_BINARY_SHA256=expected_binary_sha256)
+        case=output/('failed-'+spec['case'])
+        env=dict(os.environ,USB_TEST_EXPECTED_SOURCE_COMMIT=identity['source_commit'],
+                 USB_TEST_EXPECTED_BUILD_ID=identity['build_id'],
+                 USB_TEST_EXPECTED_BINARY_SHA256=identity['controller_binary_sha256'])
         script='''import sys
 sys.path.insert(0,sys.argv[1])
 import test_usb_audio_integration as driver
 original=driver.injection_environment
-driver.injection_environment=lambda case,root,library:original('buffer-contract-reject',root,library)
-sys.argv=['test_usb_audio_integration.py',*sys.argv[2:]]
+if sys.argv[2]=='initial_buffer':
+    driver.injection_environment=lambda case,root,library:original('buffer-contract-reject',root,library)
+else:
+    driver.injection_environment=lambda case,root,library:{**original(case,root,library),'USB_TEST_QUALIFICATION_STATUS_FREEZE':'1'}
+sys.argv=['test_usb_audio_integration.py',*sys.argv[3:]]
 raise SystemExit(driver.main())
 '''
-        command=[sys.executable,'-c',script,Path(__file__).resolve().parent,binary,speech,modem,
-                 '--case','normal','--output',case,'--runner',runner,'--fault-inject-so',injector]
+        command=[sys.executable,'-c',script,Path(__file__).resolve().parent,name,binary,speech,modem,
+                 '--case',spec['case'],'--output',case,'--runner',runner,'--fault-inject-so',injector]
         executed=run_bounded(command,output/'driver.log',105,env=env,terminate_grace=8)
         record['driver_exit_code']=executed['exit_code'];record['execution']=executed
         require(not executed['timed_out'] and executed['exit_code']!=0,'Unexpected C failure was hidden or the driver hung')
@@ -62,34 +60,93 @@ raise SystemExit(driver.main())
         completion=json.loads(completion_path.read_text())
         fault_path=case/'result'/(pointer['session_id']+'-fault.json')
         fault=json.loads(fault_path.read_text())
+        trace_path=case/'result'/pointer['trace_basename']
+        rows=[json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
         collector_path=case/'failure-collector-contract/actual/rf-evidence.json'
         collected=json.loads(collector_path.read_text())
         record.update(driver_status=result['status'],harness_exit_code=result.get('controller_exit_code'),
                       harness_status=failed.get('status'),terminal_fault_code=completion.get('fault'),
-                      terminal_fault_origin=fault.get('first_fault',{}).get('origin'),collector_status=collected.get('status'))
+                      terminal_fault_origin=fault.get('first_fault',{}).get('origin'),collector_status=collected.get('status'),
+                      rf_disabled=completion.get('rf_disabled'),keys=failed.get('keys'))
         require(record['driver_status']=='FAIL' and record['harness_status']=='FAIL','A failed runtime was represented as PASS')
         require(type(record['harness_exit_code']) is int and record['harness_exit_code']>0 and
                 failed.get('exit_code')==record['harness_exit_code'],'The C harness aborted or hid its orderly failure exit')
         require(failed.get('cleanup_requested') and failed.get('stopped') and failed.get('closed'),
                 'Unexpected fault did not complete bounded normal teardown')
-        require(record['terminal_fault_code']==13 and record['terminal_fault_origin']=='modem-buffer-budget' and
-                failed.get('primary_fault')==13 and failed.get('primary_origin')=='modem-buffer-budget',
-                'Unexpected failure lost its original buffer-admission fault')
+        require(record['terminal_fault_code']==spec['fault'] and record['terminal_fault_origin']==spec['origin'] and
+                failed.get('primary_fault')==spec['fault'] and failed.get('primary_origin')==spec['origin'],
+                'Unexpected failure lost its original '+name+' fault')
+        require(record['rf_disabled'] is spec['rf_disabled'] and failed.get('rf_disabled') is spec['rf_disabled'] and
+                record['keys']==0,'The failure probe reached the wrong RF policy or keyed a transmitter')
         require(completion.get('terminal') is True and completion.get('trace_complete') is True and
                 completion.get('rf_clear_confirmed') is True,'The original terminal fault/RX receipt was not retained')
         for value in (pointer,completion,fault):
-            require(value.get('source_commit')==expected_source_commit and value.get('build_id')==expected_build_id,
+            require(value.get('source_commit')==identity['source_commit'] and value.get('build_id')==identity['build_id'],
                     'Failure receipts identify a different source or build')
         require(record['collector_status']=='BLOCKED' and collected.get('ready_for_rf_test') is False and
                 result.get('failure_collector_contract',{}).get('status')=='PASS',
                 'Production collector did not preserve the failed-controller verdict')
-        require('INJECT negotiated buffer rejection' in (case/'test.log').read_text(),
-                'The unexpected real-controller fault was not actually injected')
-        record['checks']={'driver_failed':True,'harness_failed':True,'terminal_fault_retained':True,'collector_blocked':True}
         paths={'case_result':case/'case-result.json','harness_failure':case/'result/harness-failure.json',
-               'completion':completion_path,'first_fault':fault_path,'collector_report':collector_path,
-               'trace':case/'result'/pointer['trace_basename']}
+               'completion':completion_path,'first_fault':fault_path,'collector_report':collector_path,'trace':trace_path}
+        if name=='initial_buffer':
+            require('INJECT negotiated buffer rejection' in (case/'test.log').read_text(),
+                    'The unexpected real-controller admission fault was not actually injected')
+        else:
+            marker=case/'result/qualification-status-freeze.json';freeze=json.loads(marker.read_text())
+            qualified=[row for row in rows if row.get('event')=='qualification-start']
+            faults=[row for row in rows if row.get('event')=='first-fault' and row.get('status')==4 and
+                    row.get('operation')=='radio-packet-stale']
+            recovered=failed.get('telemetry_freeze_recovered_ms',0)
+            require(freeze.get('kind')=='test-telemetry-freeze' and freeze.get('qualification_running') is True and
+                    freeze.get('keys')==0 and freeze.get('duration_ms')==350 and
+                    freeze['packet_ms']<=freeze['ms'] and freeze.get('sequence',0)>0,
+                    'The telemetry failure was not injected during active RF-disabled qualification')
+            require(qualified and faults and qualified[0]['ms']<=faults[0]['ms'] and
+                    faults[0]['ms']>=freeze['packet_ms']+250 and recovered>=freeze['ms']+350 and
+                    any(row.get('kind')=='sample' and row.get('qualification_running') is True for row in rows) and
+                    completion.get('qualification_complete') is False,
+                    'Active qualification failure or bounded telemetry recovery was not retained')
+            record['qualification_failure']={'qualification_started_ms':qualified[0]['ms'],
+                'freeze_started_ms':freeze['ms'],'packet_ms':freeze['packet_ms'],'sequence':freeze['sequence'],
+                'freeze_duration_ms':350,'fault_ms':faults[0]['ms'],'recovered_ms':recovered,
+                'qualification_complete':False,'keys':0}
+            paths['injection_witness']=marker
+        record['checks']={'driver_failed':True,'harness_failed':True,'terminal_fault_retained':True,'collector_blocked':True}
         record['evidence_files']={name:{'path':str(path),'sha256':sha(path)} for name,path in paths.items()}
+        record['status']='PASS'
+    except Exception as error:
+        record['reason']=str(error)
+    finally:
+        save_json(output/'variant-result.json',record)
+    return record
+
+
+def run_failure_preservation(binary,speech,modem,runner,injector,output,
+                             expected_source_commit,expected_build_id,expected_binary_sha256):
+    binary,speech,modem,runner,injector,output=map(lambda value:Path(value).resolve(),
+                                               (binary,speech,modem,runner,injector,output))
+    output.mkdir(parents=True,exist_ok=False)
+    record={'schema':'x6200.usb.infrastructure.v2','kind':'unexpected-runtime-failures','status':'FAIL',
+            'scope':'Expected failed child preserves actual C receipts; not functional qualification or RF evidence',
+            'radio_accessed':False,'source_commit':expected_source_commit,'build_id':expected_build_id,
+            'controller_binary_sha256':sha(binary),'fixture_sha256':{'speech':sha(speech),'modem':sha(modem)},
+            'runner_sha256':sha(runner),'fault_injector_sha256':sha(injector),'checks':{},'variants':{}}
+    previous_term=signal.getsignal(signal.SIGTERM)
+    def interrupted(signum,frame):
+        del signum,frame
+        signal.signal(signal.SIGTERM,signal.SIG_IGN)
+        raise RuntimeError('Infrastructure prerequisite interrupted; preserving failed attempt')
+    signal.signal(signal.SIGTERM,interrupted)
+    try:
+        require(record['controller_binary_sha256']==expected_binary_sha256,'Infrastructure test received a different controller binary')
+        identity={key:record[key] for key in ('source_commit','build_id','controller_binary_sha256','fixture_sha256',
+                                            'runner_sha256','fault_injector_sha256','radio_accessed')}
+        for name,spec in FAILURE_VARIANTS.items():
+            variant=_run_variant(name,spec,binary,speech,modem,runner,injector,output/name,identity)
+            record['variants'][name]=variant
+            save_json(output/'infrastructure-result.json',record)
+            require(variant['status']=='PASS',name+': '+variant.get('reason','failed preservation proof'))
+        record['checks']={key:True for key in ('driver_failed','harness_failed','terminal_fault_retained','collector_blocked')}
         record['status']='PASS'
     except Exception as error:
         record['reason']=str(error)
