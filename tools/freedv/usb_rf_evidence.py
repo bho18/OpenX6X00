@@ -17,6 +17,8 @@ from usb_output_contract import validate_output_contract
 
 ERRORS = (OSError, ValueError, KeyError, EOFError, wave.Error, subprocess.SubprocessError)
 DIAGNOSTIC_LIMIT = 4 * 1024 * 1024
+MAX_SDR_SECONDS = 120
+MAX_SDR_BYTES = 32 * 1024 * 1024
 IDENTITY_FIELDS = ('session_id', 'build_id', 'source_commit')
 
 
@@ -31,9 +33,14 @@ def save(path, value):
 def read_sdr(path):
     with wave.open(str(path), 'rb') as wav:
         channels, width, rate, frames = wav.getnchannels(), wav.getsampwidth(), wav.getframerate(), wav.getnframes()
-        if channels not in (1, 2) or width != 2 or rate not in (8000, 44100, 48000) or not 0 < frames <= rate * 30:
-            raise ValueError(f'SDR WAV has {channels} channels, {width * 8}-bit samples, {rate} Hz and {frames / rate:.3f} seconds. '
-                             'Use up to 30 seconds of PCM16 mono/stereo at 8, 44.1 or 48 kHz; record demodulated USB audio, not IQ.')
+        if channels not in (1, 2) or width != 2 or rate not in (8000, 44100, 48000):
+            raise ValueError(f'Unsupported SDR WAV format: {channels} channels, {width * 8}-bit samples, {rate} Hz. '
+                             'Use PCM16 mono/stereo audio at 8, 44.1 or 48 kHz.')
+        if not frames:
+            raise ValueError('SDR audio recording contains no samples.')
+        if frames > rate * MAX_SDR_SECONDS:
+            raise ValueError(f'SDR audio duration is {frames / rate:.3f} seconds; '
+                             f'the collector supports up to {MAX_SDR_SECONDS} seconds.')
         raw = wav.readframes(frames)
         if len(raw) != frames * channels * 2:
             raise ValueError('Truncated SDR WAV')
@@ -388,12 +395,12 @@ def collect_trace(output, manifest=None):
 def preserve_sdr(output, sdr):
     size = sdr.stat().st_size
     info = dict(bytes=size, sha256=sha256(sdr))
-    if size <= 16 * 1024 * 1024:
+    if size <= MAX_SDR_BYTES:
         shutil.copy2(sdr, output / 'sdr-usb-audio.wav')
     else:
         with sdr.open('rb') as source:
             (output / 'sdr-header.bin').write_bytes(source.read(4096))
-        raise ValueError('SDR file exceeds the 16 MiB evidence bound; header retained. Export a short demodulated-audio WAV.')
+        raise ValueError(f'SDR file exceeds the {MAX_SDR_BYTES // (1024 * 1024)} MiB evidence bound; header retained.')
     return info
 
 

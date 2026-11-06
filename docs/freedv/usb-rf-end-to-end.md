@@ -49,8 +49,8 @@ normal Exit.
 5. Set the SDR to the same dial frequency in **USB**, with approximately
    100..3100 Hz audio passband. Disable squelch and audio noise processing.
    Prepare to record **demodulated audio**, PCM signed 16-bit mono, preferably
-   48 kHz. Keep the saved recording at most 30 seconds. IQ recordings are not
-   input to this helper.
+   48 kHz. Recordings up to 120 seconds and 32 MiB are accepted without trimming.
+   IQ recordings are not input to this helper.
 
 ## Automatic transition check with RF disabled
 

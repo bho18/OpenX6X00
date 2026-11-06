@@ -29,13 +29,49 @@ class WavTests(unittest.TestCase):
             self.assertEqual(info['rms'],2000)
 
     def test_unsupported_recordings_rejected_before_decode(self):
-        for channels,width,rate,seconds in [(2,4,48000,1),(1,2,22050,1),(1,2,48000,31),(4,2,48000,1)]:
+        for channels,width,rate,seconds in [(2,4,48000,1),(1,2,22050,1),(4,2,48000,1)]:
             with self.subTest(channels=channels,width=width,rate=rate,seconds=seconds),tempfile.TemporaryDirectory() as temp:
                 path=Path(temp)/'bad.wav'
                 with wave.open(str(path),'wb') as w:
                     w.setparams((channels,width,rate,0,'NONE','not compressed'))
                     w.writeframes(b'\0'*(channels*width*rate*seconds))
                 with self.assertRaises(ValueError):subject.read_sdr(path)
+
+    def test_reported_30_364_second_recording_keeps_every_sample(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'sdr.wav';frames=1457456
+            raw=b'\0\0'*(frames-1)+b'\x34\x12'
+            with wave.open(str(path),'wb') as wav:
+                wav.setparams((1,2,48000,0,'NONE','not compressed'));wav.writeframes(raw)
+            pcm,info=subject.read_sdr(path)
+            self.assertEqual(pcm,raw)
+            self.assertEqual(info['frames'],frames)
+            self.assertAlmostEqual(info['seconds'],30.3636666667)
+
+    def test_full_120_second_stereo_recording_fits_preservation_bound(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);path=root/'sdr.wav';frames=120*48000
+            with wave.open(str(path),'wb') as wav:
+                wav.setparams((2,2,48000,0,'NONE','not compressed'))
+                wav.writeframes(b'\0'*((frames-1)*4)+b'\x34\x12\x34\x12')
+            output=root/'results';output.mkdir()
+            preserved=subject.preserve_sdr(output,path)
+            self.assertLessEqual(path.stat().st_size,subject.MAX_SDR_BYTES)
+            self.assertEqual(subject.sha256(output/'sdr-usb-audio.wav'),preserved['sha256'])
+            pcm,info=subject.read_sdr(path)
+            self.assertEqual(info['frames'],frames)
+            self.assertEqual(len(pcm),frames*2)
+            self.assertEqual(pcm[-2:],b'\x34\x12')
+
+    def test_duration_error_identifies_duration_without_iq_claim(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'long.wav'
+            with wave.open(str(path),'wb') as wav:
+                wav.setparams((1,2,8000,0,'NONE','not compressed'))
+                wav.writeframes(b'\0\0'*(120*8000+1))
+            with self.assertRaisesRegex(ValueError,'duration.*120 seconds') as error:
+                subject.read_sdr(path)
+            self.assertNotIn('iq',str(error.exception).lower())
 
 
 class CollectionTests(unittest.TestCase):
