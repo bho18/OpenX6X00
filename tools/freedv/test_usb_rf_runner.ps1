@@ -1,9 +1,32 @@
 # Windows PowerShell 5-compatible evidence handling; mocked SSH/SCP, no radio.
 $ErrorActionPreference='Stop'
-$root=Join-Path ([IO.Path]::GetTempPath()) ('usb rf evidence runner '+[guid]::NewGuid().ToString('N'))
+$workspace=Join-Path ([IO.Path]::GetTempPath()) ('usb rf evidence runner '+[guid]::NewGuid().ToString('N'))
+$root=Join-Path $workspace 'kit'
 New-Item -ItemType Directory -Path $root | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Invoke-UsbRfEvidence.ps1') -Destination $root
-@{files=@{};usb_startup_contract_version=3;build_id='fixture-build';firmware_commit=('e'*40)} | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $root 'rf-test-manifest.json')
+$global:usbRfPython=(Get-Command python -ErrorAction Stop).Source
+$fixture=@{usb_rf_test_ready=$true;software_gates_passed=$true;usb_startup_contract_version=3;
+ on_device_readiness_required=$true;usb_output_contract_version=1;build_id='fixture-build';firmware_commit=('e'*40);
+ gui_sha256=('a'*64);runner_sha256=('b'*64);rade_sha256=('c'*64);image_sha256=('d'*64)}
+$fixturePath=Join-Path $workspace 'image-manifest.json'
+[IO.File]::WriteAllText($fixturePath,($fixture | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+$kit=Join-Path $workspace 'kit.zip'
+& $global:usbRfPython (Join-Path $PSScriptRoot 'build_usb_rf_kit.py') --image-manifest $fixturePath --output $kit
+if($LASTEXITCODE){throw 'Fixture kit packaging failed'}
+Expand-Archive -LiteralPath $kit -DestinationPath $root
+$global:usbRfImportProbe=Join-Path $workspace 'import-probe.py'
+$probe=@'
+import importlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+names = json.loads((root / 'rf-test-manifest.json').read_text(encoding='utf-8-sig'))['files']
+modules = [importlib.import_module(pathlib.Path(name).stem) for name in names if name.endswith('.py')]
+assert sys.flags.isolated and modules
+assert all(pathlib.Path(module.__file__).resolve().parent == root for module in modules)
+'@
+[IO.File]::WriteAllText($global:usbRfImportProbe,$probe,[Text.UTF8Encoding]::new($false))
+$global:usbRfRemote=''
+$global:usbRfImportFailed=$false
+$global:usbRfImportChecks=0
 $global:usbRfEvidenceCase='success'
 $global:usbRfEvidenceCommands=@()
 function global:Read-Host {return 'Mock listening notes; no audio heard or radio contacted'}
@@ -11,13 +34,33 @@ function global:ssh {
  $global:usbRfEvidenceCommands+=([string]$args[-1])
  Write-Output 'synthetic SSH output: no radio contacted'
  $global:LASTEXITCODE=0
- if($global:usbRfEvidenceCase -eq 'helper_failure' -and $args[-1] -like 'python3 *'){
-  $global:LASTEXITCODE=1
+ $command=[string]$args[-1]
+ if($command -match '^umask 077 && mkdir /tmp/(usb-rf-evidence-[a-f0-9]+)$'){
+  $global:usbRfRemote=Join-Path $workspace $Matches[1]
+  New-Item -ItemType Directory -Path $global:usbRfRemote | Out-Null
+  $global:usbRfImportFailed=$false
+ }
+ if($command -like 'python3 *'){
+  # Import the actual uploaded helpers from an isolated fake radio directory.
+  # This executes no collector main, device access, audio or control calls.
+  & $global:usbRfPython -I $global:usbRfImportProbe $global:usbRfRemote
+  $global:usbRfImportChecks++
+  if($LASTEXITCODE){$global:usbRfImportFailed=$true;$global:LASTEXITCODE=1;return}
+  if($global:usbRfEvidenceCase -eq 'helper_failure'){$global:LASTEXITCODE=1}
  }
 }
 function global:scp {
  $global:LASTEXITCODE=0
+ if($args[-1] -like 'root@*:/tmp/*/'){
+  foreach($item in $args[0..($args.Count-2)]){
+   if(Test-Path -LiteralPath $item -PathType Leaf){
+    if($global:usbRfEvidenceCase -eq 'missing_upload_dependency' -and [IO.Path]::GetFileName($item) -eq 'usb_output_contract.py'){continue}
+    Copy-Item -LiteralPath $item -Destination $global:usbRfRemote
+   }
+  }
+ }
  if($args[-2] -like 'root@*:/tmp/*/results'){
+  if($global:usbRfImportFailed){$global:LASTEXITCODE=1;return}
   if($global:usbRfEvidenceCase -eq 'copy_failure'){$global:LASTEXITCODE=1;return}
   $result=Join-Path $args[-1] 'results'
   New-Item -ItemType Directory -Path $result | Out-Null
@@ -43,7 +86,7 @@ function global:scp {
  }
 }
 try {
- foreach($case in @('success','helper_failure','blocked_zero_exit','copy_failure','qualification','invalid_qualification','legacy_qualification','missing_completion','mismatched_identity','truncated_history','persistence_failure')){
+ foreach($case in @('success','helper_failure','blocked_zero_exit','copy_failure','qualification','invalid_qualification','legacy_qualification','missing_completion','mismatched_identity','truncated_history','persistence_failure','missing_upload_dependency')){
   $global:usbRfEvidenceCase=$case
   $before=@(Get-ChildItem -LiteralPath $root -Filter '*.zip').Count
   $rejected=$false;$message=''
@@ -60,18 +103,25 @@ try {
   $expanded=Join-Path $root ('inspect-'+$case)
   Expand-Archive -LiteralPath $latest.FullName -DestinationPath $expanded
   $collection=Get-Content -Raw -LiteralPath (Join-Path $expanded 'collection.json') | ConvertFrom-Json
-  if($collection.collection_completed -ne ($case -ne 'copy_failure')){throw "Collection/test distinction lost: $case"}
+  if($collection.collection_completed -ne ($case -notin @('copy_failure','missing_upload_dependency'))){throw "Collection/test distinction lost: $case"}
   if($collection.test_accepted -ne ($case -in @('success','qualification'))){throw "Acceptance result lost: $case"}
+  if($case -eq 'missing_upload_dependency'){
+   $transport=Get-Content -Raw -LiteralPath (Join-Path $expanded 'transport.txt')
+   if(!$global:usbRfImportFailed -or $transport -notlike '*ModuleNotFoundError*usb_output_contract*'){
+    throw 'Missing transferred dependency was not caught by isolated import'
+   }
+  }
  }
  foreach($command in $global:usbRfEvidenceCommands){
   if($command -notmatch '^(umask 077 && mkdir /tmp/usb-rf-evidence-[a-f0-9]+|python3 -u /tmp/usb-rf-evidence-[a-f0-9]+/usb_rf_evidence.py --output /tmp/usb-rf-evidence-[a-f0-9]+/results)$'){
    throw "Unexpected remote command: $command"
   }
  }
+ if($global:usbRfImportChecks -ne 12){throw 'Not all staged Python import probes ran'}
  $global:LASTEXITCODE=0
- Write-Host 'PASS: primary blocker, real/legacy exit mismatch, qualification scope and partial/copy evidence preservation; mocked SSH/SCP only.'
+ Write-Host 'PASS: actual kit upload/import closure; primary blocker, real/legacy exit mismatch, qualification scope and partial/copy evidence preservation; mocked SSH/SCP only.'
 } finally {
  Remove-Item Function:\ssh,Function:\scp,Function:\Read-Host -ErrorAction SilentlyContinue
- Remove-Variable usbRfEvidenceCase,usbRfEvidenceCommands -Scope Global -ErrorAction SilentlyContinue
- Remove-Item -LiteralPath $root -Recurse -Force
+ Remove-Variable usbRfEvidenceCase,usbRfEvidenceCommands,usbRfPython,usbRfRemote,usbRfImportFailed,usbRfImportChecks,usbRfImportProbe -Scope Global -ErrorAction SilentlyContinue
+ Remove-Item -LiteralPath $workspace -Recurse -Force
 }

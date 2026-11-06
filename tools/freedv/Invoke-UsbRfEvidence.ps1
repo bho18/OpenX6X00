@@ -26,7 +26,8 @@ Write-Host 'Read-only RF evidence collection and optional SDR audio decoding. No
 Write-Host 'Exit USB FreeDV mode on the radio first. Leave all PTT released.'
 try {
  $code=Invoke-UsbRfCommand 'ssh' ($opts+@("root@$RadioIp","umask 077 && mkdir $remote"));if($code){throw 'SSH failed'}
- $files=@('usb_rf_evidence.py','usb_half_duplex.py','usb_headset_validate.py','usb_headset_inventory.py','rf-test-manifest.json') | ForEach-Object {Join-Path $kitDir $_}
+ $files=@($manifest.files.PSObject.Properties | ForEach-Object {Join-Path $kitDir $_.Name})
+ $files+=Join-Path $kitDir 'rf-test-manifest.json'
  $code=Invoke-UsbRfCommand 'scp' (@('-O')+$opts+$files+@("root@${RadioIp}:$remote/"));if($code){throw 'Helper upload failed'}
  $extra=''
  if($SdrWav){
