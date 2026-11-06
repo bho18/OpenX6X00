@@ -301,6 +301,15 @@ int main(int argc,char **argv) {
         assert(!last.turns&&!last.engine.eoo_count&&atomic_load(&f.keys)==1&&!atomic_load(&f.physical_tx)&&last.rf_clear_confirmed);
         result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
     }
+    if(!strcmp(scenario,"--capture-close-tail120")){
+        /* Test-only reported pipeline latency; actual ordered microphone PCM
+         * still has to arrive through the finite indexed production boundary. */
+        fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);
+        release_ptt(&f);fd_usb_snapshot last=wait_state(audio,FD_USB_RX,10000);
+        assert(last.turns==1&&last.engine.eoo_count==1&&last.rf_clear_confirmed&&!last.mic_holes&&!last.rx_holes);
+        fd_usb_audio_stop(audio);last=wait_stopped(audio,10000);assert(last.fault==1&&atomic_load(&f.keys)==1&&!atomic_load(&f.physical_tx));
+        result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
+    }
     if(!strcmp(scenario,"--capture-release-split")||!strcmp(scenario,"--capture-release-held150")){
         assert(usb_test_mic_release_hold_started_ms&&usb_test_mic_barrier_started_ms);
         if(!strcmp(scenario,"--capture-release-split")){assert(usb_test_mic_release_action&&usb_test_mic_release_posted_ms);usb_test_mic_release_action(release_from_callback,&f);}

@@ -22,7 +22,7 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require, run_b
                               audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait,
                               render_capacity_audit, validate_tail_backpressure,
                               capture_close_oracle, indexed_capture_source_match, validate_capture_release_boundary,
-                              validate_capture_close_failure,validate_matched_turn_decode)
+                              validate_capture_close_failure,validate_matched_turn_decode,validate_capture_pipeline_tail)
 from usb_transport_oracle import production_transport_reference,matched_decoder_control,transport_chunks_for_turn
 
 
@@ -380,6 +380,71 @@ class CaptureCloseTests(unittest.TestCase):
     def test_capture_closure_does_not_extend_750ms_deadline(self):
         rows,accepted,_,_=self.fixture();rows[4]['closed_ms']=2751;rows[-1]['ms']=2800;rows[5]['ms']=2752
         with self.assertRaisesRegex(ValueError,'bounded release'):capture_close_oracle(rows,accepted,1)
+
+    def test_measured_5830_frame_tail_is_separate_from_unchanged_active_window_bounds(self):
+        rows,_,_,_=self.fixture();close=rows[4]
+        rows[2]['ms']=rows[3]['ms']=2200;rows[-1]['ms']=2600
+        close.update(start_index=51816,cutoff_index=115246,consumed_index=115246,submitted_first_index=51816,
+            submitted_end_index=115246,mic_tap_end=63430,close_started_ms=2200,timing_issued_ms=2200,
+            frozen_ms=2329,reached_ms=2329,closed_ms=2351,write_index_bytes=218832,source_usec=120348,
+            transport_usec=1106,frontier_extra_frames=5830,tail_frames=5830,release_fence_index=109416)
+        rows[5].update(ms=2351,active_ms=1200,accepted_mic_frames=63430)
+        budget=capture_close_oracle(rows,b'\0'*(63430*2),1)['turns'][0]['microphone_frame_budget']
+        self.assertEqual((budget['minimum_frames'],budget['maximum_frames']),(55104,60096))
+        self.assertEqual((budget['accepted_frames'],budget['pre_fence_frames'],budget['pipeline_tail_frames']),(63430,57600,5830))
+        for total,tail in ((63430,0),(66000,5830),(50000,5830)):
+            with self.assertRaises(ValueError):microphone_frame_budget(1200,total,960,pipeline_tail_frames=tail)
+
+    def test_held_delivery_keeps_lower_bound_on_the_complete_indexed_interval(self):
+        budget=microphone_frame_budget(1200,58000,960,pipeline_tail_frames=4500)
+        self.assertLess(budget['pre_fence_frames'],budget['minimum_frames'])
+        self.assertGreaterEqual(budget['accepted_frames'],budget['minimum_frames'])
+
+    def test_fabricated_tail_or_release_fence_outside_cutoff_cannot_create_headroom(self):
+        for changed in ('tail','fence','outside'):
+            rows,accepted,_,_=self.fixture()
+            if changed=='tail':rows[4]['tail_frames']+=1
+            elif changed=='fence':rows[4].update(release_fence_index=48529,tail_frames=0)
+            else:rows[4].update(release_fence_index=527,tail_frames=48001)
+            with self.assertRaises(ValueError):capture_close_oracle(rows,accepted,1)
+
+    def tail_model(self):
+        source=array('h',((index*37)%50000-25000 if index<87361 else 30001 for index in range(90000)))
+        if sys.byteorder!='little':source.byteswap()
+        source_pcm=source.tobytes();microphone=source_pcm[:87361*2]
+        budget=microphone_frame_budget(1700,87361,960,pipeline_tail_frames=5761)
+        closed=dict(turn=1,start_index=0,cutoff_index=87361,release_fence_index=81600,tail_frames=5761,
+            mic_tap_start=0,mic_tap_end=87361,rf_completed=True,microphone_frame_budget=budget)
+        close=dict(timing_issued_ms=100,frozen_ms=101,source_usec=120000,write_index_bytes=163200,transport_usec=1)
+        blocks=[dict(index_start=start,index_end=end,tap_start=start,tap_frames=end-start,valid=True)
+                for start,end in ((0,80000),(80000,88000),(88000,90000))]
+        log=('INJECT MIC close-timing requested_ms=100 mode=tail120 phase=drain\n'
+             'INJECT MIC close-timing mode=tail120 real_ack_ms=101 success=1 withheld=0 phase=drain\n'
+             'INJECT MIC close-timing tail120 real_source_usec=500 source_usec=120000 write_index_bytes=163200 '
+             'read_index_bytes=163200 transport_usec=1 phase=drain pipeline_model=1')
+        return close,closed,microphone,blocks,source_pcm,log
+
+    def test_real_tail_model_requires_exact_source_and_exposes_original_upper_failure(self):
+        result=validate_capture_pipeline_tail(*self.tail_model())
+        self.assertTrue(result['original_upper_rejected'])
+        self.assertGreater(result['total_accepted_frames'],result['maximum_frames'])
+        self.assertLessEqual(result['pre_fence_frames'],result['maximum_frames'])
+        self.assertTrue(result['source_boundary']['post_cutoff_sentinel_excluded'])
+
+    def test_unmodeled_or_unacknowledged_tail_cannot_claim_pipeline_coverage(self):
+        for change in ('source','bound','phase','gap'):
+            values=list(self.tail_model())
+            if change=='source':values[0]['source_usec']=119999
+            elif change=='bound':values[1]['microphone_frame_budget']['maximum_frames']=99999
+            elif change=='phase':values[-1]=values[-1].replace('phase=drain','phase=tx')
+            else:values[3][1]['index_start']+=1;values[3][1]['tap_frames']-=1
+            with self.assertRaises(ValueError):validate_capture_pipeline_tail(*values)
+
+    def test_timing_ack_can_follow_pending_capture_beyond_the_cutoff_before_trim(self):
+        values=list(self.tail_model());values[-1]=values[-1].replace('read_index_bytes=163200','read_index_bytes=177000')
+        result=validate_capture_pipeline_tail(*values)
+        self.assertGreater(result['read_index_bytes']//2,values[1]['cutoff_index'])
+        self.assertTrue(result['source_boundary']['post_cutoff_sentinel_excluded'])
 
     def test_closed_capture_can_precede_later_rf_drain_failure_without_counting_a_turn(self):
         rows,accepted,_,_=self.fixture();rows[-1]['state']=5

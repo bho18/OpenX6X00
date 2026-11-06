@@ -32,6 +32,7 @@ and the blocked native hand-mic contract remain separate.
 | One global decode could hide a missing or stale later turn | Check the complete raw modem waveform and actual decoder output for each turn against its own reference. |
 | TX loss during drain could be counted as a completed turn | Keep checking fresh TX status during drain and reject the turn before completed-turn accounting can qualify it. |
 | A delayed MIC callback crossed release and valid speech was discarded in DRAIN | Close a finite indexed capture interval, drain it before EOO, and check its exact PCM against an independent input observer. |
+| A release-window upper bound counted a verified capture-pipeline tail as excess active-window input | Keep the lower bound on total accepted frames, apply the unchanged upper bound only before the verified tail, and retain exact source-frontier/cutoff conservation. |
 | Unbounded fixture processes and latest-PASS selection hid failed attempts | Bound commands and child cleanup; retain immutable attempt history and block promotion after failed or unfinished attempts. |
 | All deliveries paused together on a host at its memory limit, without per-case resource counters | Screen host resources before qualification, retain end counters, and keep a resource failure separate from an RF or codec claim. |
 | A qualification-loop assertion bypassed bounded unexpected-fault cleanup | Exercise failed-child evidence preservation during startup and qualification, and use the same bounded cleanup path for unexpected runtime faults. |
@@ -126,6 +127,26 @@ hold. Compare the exact accepted microphone interval with an independent raw
 input observer, exclude post-cutoff sentinel data, and check the complete modem
 payload, one EOO and fresh RX. The 300 ms valid-data-deletion negative must still
 fail even if later microphone samples are available.
+
+The host `capture-budget.v2` oracle keeps the unchanged 99%-minus-two-fragments
+lower bound on total accepted frames. Its unchanged 101%-plus-two-fragments
+upper bound applies to `pre_fence = total_accepted - verified_pipeline_tail`.
+Held pre-fence data can arrive through the valid capture pipeline, so the lower
+bound must remain on the total. The tail must come from the validated raw
+source/transport frontier; a duration estimate alone cannot exempt frames.
+Exact source indices, cutoff/fence conservation, no gaps and all existing
+deadlines remain required. This corrects the test comparison window, not the
+runtime guard, tolerance or deadline.
+
+The deterministic `capture-close-tail120` check demonstrates the distinction:
+87,392 accepted frames exceed the old 84,530 active-window ceiling, while
+81,630 pre-fence frames remain below that same ceiling. The 5,762-frame tail
+comes from the reported 120,000 µs source interval plus 28 µs transport. The
+independent source observer matches the entire accepted interval, 47,119
+post-cutoff sentinel frames are excluded, both matched decoders produce 13
+synthesis blocks, and one EOO returns to fresh RX. Diagnostic regrading of 149
+historical raw closures leaves their original attempt records/status unchanged
+and supplies no promotion credit to the new source.
 
 ## One qualification chain
 
@@ -226,6 +247,14 @@ The optional reclaim root names only this task's cache files; omit it when
 headroom is already sufficient. It never deletes evidence or changes file data.
 CI/debug `regression`, `durability` or selected-case runs are useful diagnostics;
 they do not replace the full qualifying campaign and cannot promote an image.
+
+CI dependency setup is bounded separately from controller qualification. Both
+Linux jobs run the shared Ubuntu-source helper's six fixture tests before APT.
+The helper changes only explicit Azure Ubuntu mirror URI tokens to the canonical
+HTTPS archive; repository fields and signature verification remain unchanged.
+HTTP and HTTPS acquisition timeouts are 30 seconds, with two retries. A mirror
+or installation failure remains an infrastructure failure, not a controller
+pass or permission to omit the campaign.
 
 Keep the same persistent work/history location across attempts. Preserve its
 `attempts/`, `build-campaigns/` and `usb-campaigns/` directories, including failed

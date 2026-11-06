@@ -395,17 +395,24 @@ def validate_session_identity(rows, completion, expected_source=None, expected_b
     return {name:header[name] for name in ('session_id','source_commit','build_id')}
 
 
-def microphone_frame_budget(active_ms, accepted_frames, fragment_frames, rate=48000, stream='microphone'):
+def microphone_frame_budget(active_ms, accepted_frames, fragment_frames, rate=48000, stream='microphone', pipeline_tail_frames=0):
     expected = active_ms * rate / 1000
     boundary = 2 * fragment_frames
     lower = max(0, math.floor(expected * .99) - boundary)
     upper = math.ceil(expected * 1.01) + boundary
+    require(type(pipeline_tail_frames) is int and 0<=pipeline_tail_frames<=accepted_frames,
+            'The measured capture pipeline tail exceeds its accepted finite interval')
+    pre_fence_frames=accepted_frames-pipeline_tail_frames
     evaluated = active_ms >= 750
     if evaluated:
-        require(lower <= accepted_frames <= upper,
+        require(accepted_frames>=lower and pre_fence_frames<=upper,
                 'Accepted '+stream+' frames differ from the observed wall time: '+str(accepted_frames)+
-                ' frames; required '+str(lower)+'..'+str(upper))
-    return {'status':'PASS','stream':stream,'active_ms':active_ms,'accepted_frames':accepted_frames,
+                ' total frames require minimum '+str(lower)+'; '+str(pre_fence_frames)+
+                ' pre-fence frames require maximum '+str(upper)+'; measured pipeline tail '+str(pipeline_tail_frames))
+    return {'schema':'x6200.usb.capture-budget.v2','status':'PASS','stream':stream,
+            'comparison_basis':'minimum_on_total_maximum_on_pre_fence',
+            'active_ms':active_ms,'accepted_frames':accepted_frames,'pre_fence_frames':pre_fence_frames,
+            'pipeline_tail_frames':pipeline_tail_frames,
             'expected_frames':expected,'minimum_frames':lower,'maximum_frames':upper,
             'fragment_frames':fragment_frames,'boundary_frames':boundary,
             'delivery_tolerance_percent':1,'evaluated':evaluated}
@@ -446,6 +453,8 @@ def capture_close_oracle(rows, microphone_pcm, expected_turns):
         require(type(write) is int and write>=0 and write%2==0,'The raw capture write index is invalid')
         require(all(type(close[key]) is int and close[key]>=0 for key in ('source_usec','transport_usec','sink_usec')),
                 'Capture timing inputs are invalid')
+        require(close['source_usec']+close['transport_usec']<=750000,
+                'The raw capture frontier exceeds its existing bounded timing contract')
         extra=((close['source_usec']+close['transport_usec'])*48000+999999)//1000000
         cutoff=write//2+extra
         require(close['frontier_extra_frames']==extra and close['cutoff_index']==cutoff,
@@ -459,7 +468,8 @@ def capture_close_oracle(rows, microphone_pcm, expected_turns):
                 'The accepted capture interval is not retained in the microphone tap')
         accepted=tap_end-tap_start
         require(accepted==cutoff-start,'The accepted PCM does not conserve the exact indexed capture interval')
-        require(close['tail_frames']==max(0,cutoff-close['release_fence_index']) and
+        require(type(close['release_fence_index']) is int and start<=close['release_fence_index']<=cutoff and
+                close['tail_frames']==cutoff-close['release_fence_index'] and
                 close['index_gap'] is False and close['close_timeout_ms']==750,
                 'Capture closure changed its indexed tail, continuity or deadline contract')
         times=[close[key] for key in ('close_started_ms','timing_issued_ms','frozen_ms','reached_ms','closed_ms')]
@@ -477,7 +487,8 @@ def capture_close_oracle(rows, microphone_pcm, expected_turns):
                 'EOO source accounting ran before complete capture closure or disagrees with accepted PCM')
         active_ms=times[0]-close['capture_started_ms']
         require(accounting['active_ms']==active_ms,'The source frame budget changed its capture epoch')
-        budget=microphone_frame_budget(active_ms,accepted,descriptor['fragsize']//2)
+        budget=microphone_frame_budget(active_ms,accepted,descriptor['fragsize']//2,
+                                      pipeline_tail_frames=close['tail_frames'])
         results.append({'status':'PASS','turn':number,'start_index':start,'cutoff_index':cutoff,
             'consumed_index':close['consumed_index'],'accepted_frames':accepted,'mic_tap_start':tap_start,
             'mic_tap_end':tap_end,'close_elapsed_ms':times[-1]-times[0],'write_index_bytes':write,
@@ -526,6 +537,22 @@ def indexed_capture_source_match(close_result, microphone_pcm, source_rows, sour
             'split_block':split,'post_cutoff_excluded':True}
 
 
+def post_cutoff_sentinel_count(closed,microphone_pcm,source_rows,source_pcm):
+    sentinel=0
+    for block in source_rows:
+        if block.get('valid') is not True or block['index_end']<=closed['cutoff_index']:
+            continue
+        offset=max(0,closed['cutoff_index']-block['index_start'])
+        payload=array('h');payload.frombytes(source_pcm[(block['tap_start']+offset)*2:(block['tap_start']+block['tap_frames'])*2])
+        if sys.byteorder!='little':payload.byteswap()
+        sentinel+=sum(sample==30001 for sample in payload)
+    accepted=array('h');accepted.frombytes(microphone_pcm[closed['mic_tap_start']*2:closed['mic_tap_end']*2])
+    if sys.byteorder!='little':accepted.byteswap()
+    require(sentinel>0 and 30001 not in accepted,
+            'Post-cutoff sentinel audio entered the accepted microphone interval or was not observed')
+    return sentinel
+
+
 def validate_capture_release_boundary(close, closed, microphone_pcm, source_rows, source_pcm, log_text, mode):
     pattern=(r'INJECT MIC release mode=(\S+) hold_started_ms=(\d+) hold_ended_ms=(\d+) '
              r'callback_started_ms=(\d+) barrier_started_ms=(\d+) release_observed_ms=(\d+) '
@@ -554,20 +581,40 @@ def validate_capture_release_boundary(close, closed, microphone_pcm, source_rows
     result=indexed_capture_source_match(closed,microphone_pcm,source_rows,source_pcm)
     require(result['split_block'] is not None and result['post_cutoff_frames_observed']>0,
             'The indexed source did not expose both sides of the frozen cutoff')
-    sentinel=0
-    for block in source_rows:
-        if block.get('valid') is not True or block['index_end']<=closed['cutoff_index']:
-            continue
-        offset=max(0,closed['cutoff_index']-block['index_start'])
-        payload=array('h');payload.frombytes(source_pcm[(block['tap_start']+offset)*2:(block['tap_start']+block['tap_frames'])*2])
-        if sys.byteorder!='little':payload.byteswap()
-        sentinel+=sum(sample==30001 for sample in payload)
-    accepted=array('h');accepted.frombytes(microphone_pcm[closed['mic_tap_start']*2:closed['mic_tap_end']*2])
-    if sys.byteorder!='little':accepted.byteswap()
-    require(witness['sentinel_frames']>0 and sentinel==witness['sentinel_frames'] and 30001 not in accepted,
-            'Post-cutoff sentinel audio entered the accepted microphone interval or was not observed')
+    sentinel=post_cutoff_sentinel_count(closed,microphone_pcm,source_rows,source_pcm)
+    require(sentinel==witness['sentinel_frames'],'The independent sentinel observation differs from its injection witness')
     return {**result,'mode':mode,'exercise':witness,'sentinel_value':30001,
             'post_cutoff_sentinel_frames':sentinel,'post_cutoff_sentinel_excluded':True}
+
+
+def validate_capture_pipeline_tail(close,closed,microphone_pcm,source_rows,source_pcm,log_text):
+    requested=re.search(r'INJECT MIC close-timing requested_ms=(\d+) mode=tail120 phase=drain',log_text)
+    acknowledged=re.search(r'INJECT MIC close-timing mode=tail120 real_ack_ms=(\d+) success=1 withheld=0 phase=drain',log_text)
+    model=re.search(r'INJECT MIC close-timing tail120 real_source_usec=(\d+) source_usec=120000 '
+        r'write_index_bytes=(\d+) read_index_bytes=(\d+) transport_usec=(\d+) phase=drain pipeline_model=1',log_text)
+    require(requested and acknowledged and model,'The finite tail model did not target a real acknowledged DRAIN timing query')
+    requested_ms,ack_ms=int(requested[1]),int(acknowledged[1])
+    real_source,write_index,read_index,transport=map(int,model.groups())
+    require(close['timing_issued_ms']<=requested_ms<=ack_ms<=close['frozen_ms'] and
+            close['source_usec']==120000 and close['write_index_bytes']==write_index and
+            close['transport_usec']==transport and read_index%2==0 and
+            closed['release_fence_index']<=read_index//2,
+            'The controlled source frontier does not match the real query indices and finite closure')
+    budget=closed['microphone_frame_budget']
+    require(budget['evaluated'] and budget['accepted_frames']>budget['maximum_frames'] and
+            budget['pre_fence_frames']<=budget['maximum_frames'] and budget['accepted_frames']>=budget['minimum_frames'] and
+            budget['pipeline_tail_frames']==closed['tail_frames'] and closed['rf_completed'] is True,
+            'The tail model did not independently expose the old release-only upper-bound error')
+    boundary=indexed_capture_source_match(closed,microphone_pcm,source_rows,source_pcm)
+    sentinel=post_cutoff_sentinel_count(closed,microphone_pcm,source_rows,source_pcm)
+    boundary.update(sentinel_value=30001,post_cutoff_sentinel_frames=sentinel,post_cutoff_sentinel_excluded=True)
+    return {'schema':'x6200.usb.pipeline-tail.v1','status':'PASS','case':'capture-close-tail120','mode':'tail120',
+        'phase':'drain','requested_ms':requested_ms,'real_ack_ms':ack_ms,'real_source_usec':real_source,
+        'model_source_usec':120000,'write_index_bytes':write_index,'read_index_bytes':read_index,'transport_usec':transport,
+        'original_upper_rejected':True,'total_accepted_frames':budget['accepted_frames'],
+        'pre_fence_frames':budget['pre_fence_frames'],'pipeline_tail_frames':budget['pipeline_tail_frames'],
+        'minimum_frames':budget['minimum_frames'],'maximum_frames':budget['maximum_frames'],'source_boundary':boundary,
+        'physical_latency':'UNMEASURED'}
 
 
 def validate_capture_close_failure(rows,harness,log_text,mode):

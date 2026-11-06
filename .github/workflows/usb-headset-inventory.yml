@@ -14,8 +14,11 @@ jobs:
       - name: Install host unit and private audio test dependencies
         timeout-minutes: 10
         run: |
-          sudo apt-get -o Acquire::Retries=1 update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 install -y --no-install-recommends \
+          python3 tools/freedv/test_ci_ubuntu_sources.py
+          sudo python3 tools/freedv/ci_ubuntu_sources.py
+          task_apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2)
+          sudo apt-get "${task_apt_options[@]}" update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get "${task_apt_options[@]}" install -y --no-install-recommends \
             build-essential libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils
       - name: Check USB duplex endpoint identification without devices
         run: python tools/freedv/test_usb_headset_inventory.py
@@ -55,8 +58,11 @@ jobs:
       - name: Install pinned-codec and private audio test build prerequisites
         timeout-minutes: 10
         run: |
-          sudo apt-get -o Acquire::Retries=1 update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=1 install -y --no-install-recommends \
+          python3 tools/freedv/test_ci_ubuntu_sources.py
+          sudo python3 tools/freedv/ci_ubuntu_sources.py
+          task_apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2)
+          sudo apt-get "${task_apt_options[@]}" update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get "${task_apt_options[@]}" install -y --no-install-recommends \
             build-essential cmake ninja-build autoconf automake libtool pkg-config \
             libpulse-dev libsamplerate0-dev libsndfile1-dev pulseaudio pulseaudio-utils
       - name: Build exact production controller and codec runner without the GUI

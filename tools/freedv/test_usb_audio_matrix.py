@@ -20,7 +20,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEAT
                                atomic_json, digest, sha, validate_campaign,
                                INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
-                               host_resource_configuration, validate_host_resources, validate_sink_turns_run)
+                               host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run)
 from usb_test_support import run_bounded
 from usb_host_resources import run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES
 
@@ -37,6 +37,7 @@ def observed_transport_library():
 
 
 COVERAGE = {
+    'capture_pipeline_tail':{'capture-close-tail120'},
     'matched_decoder_control':set(WAVEFORM_CASES),
     'prekey_audio': {'pa-delay', 'pa-reject', 'pa-missing'},
     'capture_reacquisition': {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-prekey-unexpected-tx', 'cold-rx-resume'},
@@ -255,6 +256,7 @@ def main():
                        'capture_close':details.get('capture_close'),
                        'capture_source_boundary':details.get('capture_source_boundary'),
                        'capture_close_failure':details.get('capture_close_failure'),
+                       'capture_pipeline_tail':details.get('capture_pipeline_tail'),
                        'actual_sink_turns': details.get('actual_sink_turns', []),
                        'decoded_speech_blocks': details.get('actual_sink_decode', {}).get('synthesis_blocks', 0)}
                 if passed:
@@ -292,7 +294,7 @@ def main():
                         run.setdefault('reason', 'Complete short-payload delivery proof is missing')
                 if passed:
                     try:
-                        validate_capture_close_run(run)
+                        validate_capture_close_run(run,verify_files=True)
                     except ValueError as error:
                         run['status'] = 'FAIL'
                         run.setdefault('reason',str(error))
@@ -311,6 +313,12 @@ def main():
                 if passed and name in ('capture-close-missing','capture-close-invalid','capture-close-stop'):
                     try:
                         validate_capture_close_failure_run(run,name)
+                    except ValueError as error:
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason',str(error))
+                if passed and name == 'capture-close-tail120':
+                    try:
+                        validate_capture_pipeline_tail_run(run)
                     except ValueError as error:
                         run['status'] = 'FAIL'
                         run.setdefault('reason',str(error))

@@ -59,7 +59,7 @@ void pa_threaded_mainloop_lock(pa_threaded_mainloop *loop){
 }
 static atomic_uint mic_release_peeks,mic_blocked_peeks;
 static unsigned long long mic_sentinel_frames;
-static atomic_int mic_close_requested,mic_close_invalid;
+static atomic_int mic_close_requested,mic_close_invalid,mic_close_tail;
 static pa_stream_success_cb_t mic_close_callback;static void *mic_close_userdata;
 static void (*mic_close_stop_callback)(void *);static void *mic_close_stop_userdata;
 void usb_test_mic_stop_callback(void (*callback)(void *),void *userdata){mic_close_stop_callback=callback;mic_close_stop_userdata=userdata;}
@@ -135,9 +135,11 @@ static void close_timing_done(pa_stream *stream,int success,void *unused){
     if(!strcmp(mode,"stop")){
         if(mic_close_stop_callback)mic_close_stop_callback(mic_close_stop_userdata);
         fprintf(stderr,"INJECT MIC close-timing stop-before-forward stop_ms=%llu callback_invoked=%u phase=drain\n",now_ms(),mic_close_stop_callback!=NULL);
-    }else atomic_store(&mic_close_invalid,1);
+    }else if(!strcmp(mode,"tail120"))atomic_store(&mic_close_tail,1);
+    else atomic_store(&mic_close_invalid,1);
     if(mic_close_callback)mic_close_callback(stream,success,mic_close_userdata);
     atomic_store(&mic_close_invalid,0);
+    atomic_store(&mic_close_tail,0);
 }
 pa_operation *pa_stream_update_timing_info(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata){
     pa_operation *(*real)(pa_stream*,pa_stream_success_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_update_timing_info");
@@ -150,11 +152,16 @@ pa_operation *pa_stream_update_timing_info(pa_stream *stream,pa_stream_success_c
 const pa_timing_info *pa_stream_get_timing_info(pa_stream *stream){
     const pa_timing_info *(*real)(pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_get_timing_info");
     const pa_timing_info *info=real(stream);
-    if(info&&atomic_load(&mic_close_invalid)){
-        static _Thread_local pa_timing_info invalid;invalid=*info;
-        invalid.write_index=0;invalid.source_usec=invalid.transport_usec=0;
-        fprintf(stderr,"INJECT MIC close-timing retrograde read_index_bytes=%lld write_index_bytes=0 source_usec=0 transport_usec=0 phase=drain\n",(long long)invalid.read_index);
-        return &invalid;
+    if(info&&(atomic_load(&mic_close_invalid)||atomic_load(&mic_close_tail))){
+        static _Thread_local pa_timing_info shadow;shadow=*info;
+        if(atomic_load(&mic_close_tail)){
+            shadow.source_usec=120000;
+            fprintf(stderr,"INJECT MIC close-timing tail120 real_source_usec=%llu source_usec=120000 write_index_bytes=%lld read_index_bytes=%lld transport_usec=%llu phase=drain pipeline_model=1\n",(unsigned long long)info->source_usec,(long long)info->write_index,(long long)info->read_index,(unsigned long long)info->transport_usec);
+        }else{
+            shadow.write_index=0;shadow.source_usec=shadow.transport_usec=0;
+            fprintf(stderr,"INJECT MIC close-timing retrograde read_index_bytes=%lld write_index_bytes=0 source_usec=0 transport_usec=0 phase=drain\n",(long long)shadow.read_index);
+        }
+        return &shadow;
     }
     return info;
 }

@@ -16,7 +16,7 @@ import build_native_development as builder
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
                                immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
-                               host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol)
+                               host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol, validate_capture_pipeline_tail_run)
 
 
 SYNTHETIC_TRANSPORT_LIBRARY=b'synthetic-libsamplerate-gate-fixture'
@@ -131,7 +131,9 @@ def capture_close_fixture(completed_rf_turns=0, extra_failed=False):
             'sink_usec':10000,'frontier_extra_frames':96,'release_fence_index':cutoff-100,'tail_frames':100,
             'cutoff_split_frames':200,'capture_started_ms':1000+epoch,'close_started_ms':3000+epoch,'timing_issued_ms':3000+epoch,
             'frozen_ms':3001+epoch,'reached_ms':3100+epoch,'closed_ms':3150+epoch,'frontier_basis':'Pulse capture production; no monitor playback correction',
-            'physical_latency':'UNMEASURED','microphone_frame_budget':{'status':'PASS','stream':'microphone',
+            'physical_latency':'UNMEASURED','microphone_frame_budget':{'schema':'x6200.usb.capture-budget.v2',
+                'comparison_basis':'minimum_on_total_maximum_on_pre_fence','pre_fence_frames':95900,'pipeline_tail_frames':100,
+                'status':'PASS','stream':'microphone',
                 'active_ms':2000,'accepted_frames':96000,'expected_frames':96000.,'minimum_frames':93120,
                 'maximum_frames':98880,'fragment_frames':960,'boundary_frames':1920,
                 'delivery_tolerance_percent':1,'evaluated':True}})
@@ -253,8 +255,11 @@ def sink_turn_fixture(close,require_speech=True,root=None):
         if root is not None:
             directory.mkdir(parents=True,exist_ok=True)
             for name,raw in bodies.items():Path(artifacts[name]['path']).write_bytes(raw)
-            trace_rows.setdefault(interval['trace_file'],[]).extend(dict(row,kind='render-queue',ms=turn['start_ms']+100+index)
-                                                                   for index,row in enumerate(calls))
+            trace_rows.setdefault(interval['trace_file'],[{'kind':'stream','stream':'mic','rate':48000,'channels':1,'fragsize':1920}]).extend(
+                dict(row,kind='render-queue',ms=turn['start_ms']+100+index) for index,row in enumerate(calls))
+            trace_rows[interval['trace_file']].append(dict(interval,kind='capture-close',complete=True,index_gap=False,
+                close_timeout_ms=750,scope='pulse-capture-pipeline-frontier',submitted_first_index=interval['start_index'],
+                submitted_end_index=interval['cutoff_index']))
             trace_pcm[interval['trace_file']]=trace_pcm.get(interval['trace_file'],b'')+bodies['source48']
         turns.append(turn)
     if root is not None:
@@ -262,11 +267,51 @@ def sink_turn_fixture(close,require_speech=True,root=None):
         for name,rows in trace_rows.items():
             (result/name).write_text(''.join(json.dumps(row)+'\n' for row in rows))
             (result/(Path(name).stem+'-modem.raw')).write_bytes(trace_pcm[name])
+            microphone=result/(Path(name).stem+'-mic.raw')
+            count=max(row['mic_tap_end'] for row in rows if row.get('kind')=='capture-close')
+            if not microphone.exists():microphone.write_bytes(b'\0\0'*count)
     return turns
+
+
+
+def capture_pipeline_tail_fixture(root):
+    """Synthetic actual-index/timing receipts, never live audio evidence."""
+    from usb_test_support import validate_capture_pipeline_tail
+    root=Path(root);result=root/'result';result.mkdir(parents=True,exist_ok=True)
+    close=capture_close_fixture(1);row=close['turns'][0]
+    prefix,tail=95900,5760;accepted_frames=prefix+tail;fence=row['start_index']+prefix;cutoff=fence+tail
+    row.update(release_fence_index=fence,tail_frames=tail,cutoff_index=cutoff,consumed_index=cutoff,
+               accepted_frames=accepted_frames,mic_tap_end=accepted_frames,source_usec=120000,transport_usec=0,
+               frontier_extra_frames=tail,write_index_bytes=fence*2)
+    row['microphone_frame_budget'].update(accepted_frames=accepted_frames,pre_fence_frames=prefix,pipeline_tail_frames=tail)
+    accepted=array('h',((index%30000)-15000 for index in range(accepted_frames)))
+    if sys.byteorder!='little':accepted.byteswap()
+    microphone=accepted.tobytes();source=microphone+(30001).to_bytes(2,'little',signed=True)*200
+    (result/'freedv-usb-session-unit-mic.raw').write_bytes(microphone)
+    pcm=result/'mic-observer.pcm';pcm.write_bytes(source)
+    source_rows=[];cursor=0
+    while cursor<len(source)//2:
+        count=min(960,len(source)//2-cursor)
+        source_rows.append({'valid':True,'index_start':row['start_index']+cursor,'index_end':row['start_index']+cursor+count,
+                            'tap_start':cursor,'tap_frames':count});cursor+=count
+    index=result/'mic-observer.jsonl';index.write_text(''.join(json.dumps(value)+'\n' for value in source_rows))
+    turns=sink_turn_fixture(close,True,root)
+    rows=[json.loads(line) for line in (result/'freedv-usb-session-unit.jsonl').read_text().splitlines()]
+    raw=next(value for value in rows if value.get('kind')=='capture-close')
+    text='INJECT MIC close-timing requested_ms=3000 mode=tail120 phase=drain\n'
+    text+='INJECT MIC close-timing mode=tail120 real_ack_ms=3001 success=1 withheld=0 phase=drain\n'
+    text+='INJECT MIC close-timing tail120 real_source_usec=500 source_usec=120000 write_index_bytes='+str(fence*2)+' read_index_bytes='+str(fence*2)+' transport_usec=0 phase=drain pipeline_model=1\n'
+    (root/'test.log').write_text(text)
+    proof=validate_capture_pipeline_tail(raw,row,microphone,source_rows,source,text)
+    proof.update(observer_pcm_sha256=sha(pcm),observer_index_sha256=sha(index))
+    return {'harness':{'turns':1,'total_turns':1,'eoo':1,'total_eoo':1,'fault':1,'rf_clear_confirmed':True,
+                       'rf_valid':True,'rf_tx':False,'physical_tx':False},
+            'capture_close':close,'capture_pipeline_tail':proof,'actual_sink_turns':turns}
 
 
 def capture_case_fixture(case,root):
     from test_usb_audio_integration import SPEECH_CASES,WAVEFORM_CASES
+    if case=='capture-close-tail120':return capture_pipeline_tail_fixture(root)
     if case in ('capture-release-split','capture-release-held150'):result=capture_source_boundary_fixture(case,root)
     elif case in ('capture-close-missing','capture-close-invalid','capture-close-stop'):result=capture_close_failure_fixture(case,root)
     elif case=='eoo-backpressure':result=tail_backpressure_fixture()
@@ -1131,6 +1176,112 @@ class CaptureCloseGateTests(unittest.TestCase):
         evidence=self.run_fixture(0);evidence['capture_close']['abandoned_intervals']=1
         evidence['harness']['total_turns']=1;evidence['capture_close']['completed_rf_turns']=1
         with self.assertRaises(ValueError):validate_capture_close_run(evidence)
+
+
+class CaptureTailBudgetGateTests(unittest.TestCase):
+    def fixture(self,prefix=57600,tail=5830):
+        close=capture_close_fixture(1);row=close['turns'][0]
+        start=1000;fence=start+prefix;cutoff=fence+tail
+        usec=(tail*1000000)//48000
+        row.update(start_index=start,release_fence_index=fence,cutoff_index=cutoff,consumed_index=cutoff,
+            accepted_frames=prefix+tail,mic_tap_start=0,mic_tap_end=prefix+tail,tail_frames=tail,
+            write_index_bytes=fence*2,source_usec=120348 if tail==5830 else usec,
+            transport_usec=1106 if tail==5830 else 0,frontier_extra_frames=tail,
+            capture_started_ms=1000,close_started_ms=2200,timing_issued_ms=2201,frozen_ms=2330,
+            reached_ms=2350,closed_ms=2351,close_elapsed_ms=151)
+        row['microphone_frame_budget'].update(active_ms=1200,accepted_frames=prefix+tail,expected_frames=57600.,
+            minimum_frames=55104,maximum_frames=60096,pre_fence_frames=prefix,pipeline_tail_frames=tail)
+        return {'harness':{'turns':1,'total_turns':1,'fault':1},'capture_close':close}
+
+    def test_indexed_pipeline_tail_is_separate_from_unchanged_live_upper_bound(self):
+        run=self.fixture();row=run['capture_close']['turns'][0]
+        self.assertGreater(row['accepted_frames'],row['microphone_frame_budget']['maximum_frames'])
+        self.assertEqual(row['microphone_frame_budget']['pre_fence_frames'],57600)
+        validate_capture_close_run(run)
+
+    def test_total_lower_and_live_prefix_upper_are_not_relaxed(self):
+        for prefix,tail in ((52000,2000),(60100,3000)):
+            with self.subTest(prefix=prefix,tail=tail),self.assertRaises(ValueError):
+                validate_capture_close_run(self.fixture(prefix,tail))
+
+    def test_tail_cannot_hide_a_different_fence_or_prefix_deficit(self):
+        for mutation in ('tail','prefix','fence','legacy','basis'):
+            run=self.fixture();row=run['capture_close']['turns'][0];budget=row['microphone_frame_budget']
+            if mutation=='tail':budget['pipeline_tail_frames']+=1
+            elif mutation=='prefix':budget['pre_fence_frames']-=1
+            elif mutation=='fence':row['release_fence_index']+=1
+            elif mutation=='legacy':budget.pop('schema')
+            else:budget['comparison_basis']='maximum_on_total_plus_tolerance'
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_capture_close_run(run)
+
+    def test_source_horizon_and_capture_close_deadline_remain_bounded(self):
+        for mutation in ('horizon','deadline'):
+            run=self.fixture()
+            if mutation=='horizon':
+                row=run['capture_close']['turns'][0];row['source_usec']=750001;row['transport_usec']=0
+            else:run['capture_close']['turns'][0]['close_elapsed_ms']=751
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_capture_close_run(run)
+
+    def test_retained_raw_gap_or_altered_tail_cannot_be_masked_by_budget_receipt(self):
+        for mutation in ('index_gap','release_fence_index','source_usec','submitted_first_index'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture('normal',root);run['case_record_path']=str(root/'case-result.json')
+                path=root/'result/freedv-usb-session-unit.jsonl'
+                rows=[json.loads(line) for line in path.read_text().splitlines()]
+                raw=next(row for row in rows if row.get('kind')=='capture-close')
+                raw[mutation]=True if mutation=='index_gap' else raw[mutation]+1
+                path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                with self.subTest(mutation=mutation),self.assertRaisesRegex(ValueError,'raw finite source receipt'):
+                    validate_capture_close_run(run,verify_files=True)
+
+
+
+class CapturePipelineTailCaseGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name)
+
+    def fixture(self):
+        run=capture_pipeline_tail_fixture(self.root);run['case_record_path']=str(self.root/'case-result.json');return run
+
+    def test_complete_source_model_observer_sink_and_rx_proof_pass(self):
+        validate_capture_pipeline_tail_run(self.fixture())
+
+    def test_read_frontier_can_include_observed_postcutoff_pending_pcm(self):
+        run=self.fixture();proof=run['capture_pipeline_tail'];interval=run['capture_close']['turns'][0]
+        original=proof['read_index_bytes'];proof['read_index_bytes']=(interval['cutoff_index']+890)*2
+        log=self.root/'test.log';log.write_text(log.read_text().replace('read_index_bytes='+str(original),
+                                                                       'read_index_bytes='+str(proof['read_index_bytes'])))
+        validate_capture_pipeline_tail_run(run)
+
+    def test_missing_model_or_old_upper_counterexample_cannot_claim_coverage(self):
+        for mutation in ('missing','phase','model','counterexample','prefix','total','minimum','eoo','rx'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_pipeline_tail_fixture(root);run['case_record_path']=str(root/'case-result.json')
+                proof=run['capture_pipeline_tail']
+                if mutation=='missing':run.pop('capture_pipeline_tail')
+                elif mutation=='phase':proof['phase']='initial-rx'
+                elif mutation=='model':proof['model_source_usec']=119999
+                elif mutation=='counterexample':proof['original_upper_rejected']=False
+                elif mutation=='prefix':proof['pre_fence_frames']+=1
+                elif mutation=='total':proof['total_accepted_frames']-=1
+                elif mutation=='minimum':proof['minimum_frames']-=1
+                elif mutation=='eoo':run['harness']['total_eoo']=0
+                else:run['harness']['rf_tx']=True
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_capture_pipeline_tail_run(run,verify_files=False)
+
+    def test_timing_indices_and_source_sentinel_are_bound_to_actual_artifacts(self):
+        for mutation in ('log','observer','sentinel','boundary','hash'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_pipeline_tail_fixture(root);run['case_record_path']=str(root/'case-result.json')
+                proof=run['capture_pipeline_tail']
+                if mutation=='log':(root/'test.log').write_text('arbitrary success')
+                elif mutation=='observer':(root/'result/mic-observer.pcm').write_bytes(b'wrong')
+                elif mutation=='sentinel':proof['source_boundary']['post_cutoff_sentinel_excluded']=False
+                elif mutation=='boundary':proof['read_index_bytes']+=2
+                else:proof['source_boundary']['expected_source_sha256']=proof['source_boundary']['accepted_sha256']='0'*64
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_capture_pipeline_tail_run(run)
+
 
 
 class CaptureBoundaryProofTests(unittest.TestCase):

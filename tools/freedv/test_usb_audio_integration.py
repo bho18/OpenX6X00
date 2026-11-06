@@ -24,7 +24,8 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require,
                               validate_operation_phase, microphone_frame_budget, PulseTestRuntime, pulse_startup_failure,
                               audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait, validate_tail_backpressure,
                               capture_close_oracle, indexed_capture_source_match, validate_capture_release_boundary,
-                              validate_capture_close_failure,validate_decoder_control_inputs,validate_matched_turn_decode)
+                              validate_capture_close_failure,validate_decoder_control_inputs,validate_matched_turn_decode,
+                              validate_capture_pipeline_tail)
 from usb_transport_oracle import transport_chunks_for_turn,matched_decoder_control
 from usb_collector_contract import validate_collector_contract
 
@@ -44,12 +45,13 @@ CASES = (
     'eoo-backpressure',
     'capture-release-split', 'capture-release-held150',
     'capture-close-missing', 'capture-close-invalid', 'capture-close-stop',
+    'capture-close-tail120',
 )
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
 SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale',
                 'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled', 'cold-resume',
                 'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session', 'io-pause150', 'eoo-backpressure',
-                'capture-release-split','capture-release-held150'}
+                'capture-release-split','capture-release-held150','capture-close-tail120'}
 WAVEFORM_CASES = SPEECH_CASES | {'short-turn200'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
 PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
@@ -57,7 +59,7 @@ PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
             for mode in ('delay', 'reject', 'missing')}
 CAPTURE_RELEASE_CASES={'capture-release-split','capture-release-held150'}
 CAPTURE_FAILURE_CASES={'capture-close-missing','capture-close-invalid','capture-close-stop'}
-INJECT_CASES = COLD_CASES | set(PA_CASES) | CAPTURE_RELEASE_CASES | CAPTURE_FAILURE_CASES | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure'}
+INJECT_CASES = COLD_CASES | set(PA_CASES) | CAPTURE_RELEASE_CASES | CAPTURE_FAILURE_CASES | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure','capture-close-tail120'}
 CASE_TIMEOUTS = {'many-turns': 120, 'reopen': 180, 'cold-idle': 100, 'drain-tx-loss': 60, 'full-session':120}
 
 
@@ -71,7 +73,9 @@ def injection_environment(case, root, library):
         return {}
     require(library and library.is_file(), 'This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
-    if case in CAPTURE_RELEASE_CASES:
+    if case=='capture-close-tail120':
+        result.update(USB_TEST_MIC_CLOSE_MODE='tail120',USB_TEST_MIC_OBSERVER_PREFIX=str(root/'result/mic-observer'))
+    elif case in CAPTURE_RELEASE_CASES:
         result.update(USB_TEST_MIC_OBSERVER_PREFIX=str(root/'result/mic-observer'),
                       USB_TEST_MIC_RELEASE_MODE='held150' if case.endswith('held150') else 'split',
                       USB_TEST_MIC_RELEASE_TRIGGER=str(root/'result/inject-mic-release'))
@@ -584,18 +588,23 @@ def run_case(args):
             expected['source_commit'] or identities[0]['source_commit'],
             expected['build_id'] or identities[0]['build_id'], record['test_binary_sha256'],
             storage_failure_expected=args.case in {'storage-start-fails','storage-completion-fails'})
-        if args.case in CAPTURE_RELEASE_CASES:
+        if args.case in CAPTURE_RELEASE_CASES or args.case=='capture-close-tail120':
             require(len(trace_paths)==1 and len(capture_closes)==1 and harness['turns']==1,
                     'The capture boundary exercise did not complete its single full RF turn')
             observer_pcm=root/'result/mic-observer.pcm';observer_index=root/'result/mic-observer.jsonl'
             source_rows=[json.loads(line) for line in observer_index.read_text().splitlines() if line.strip()]
             microphone=trace_paths[0].with_name(trace_paths[0].stem+'-mic.raw').read_bytes()
             raw_close=next(row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is True)
-            boundary=validate_capture_release_boundary(raw_close,capture_closes[0],microphone,source_rows,
-                observer_pcm.read_bytes(),text,'held150' if args.case.endswith('held150') else 'split')
-            record['capture_source_boundary']={'status':'PASS','case':args.case,'turns':[boundary],
-                'observer_pcm_sha256':sha(observer_pcm),'observer_index_sha256':sha(observer_index),
-                'physical_latency':'UNMEASURED'}
+            if args.case=='capture-close-tail120':
+                record['capture_pipeline_tail']=validate_capture_pipeline_tail(raw_close,capture_closes[0],microphone,
+                    source_rows,observer_pcm.read_bytes(),text)
+                record['capture_pipeline_tail'].update(observer_pcm_sha256=sha(observer_pcm),observer_index_sha256=sha(observer_index))
+            else:
+                boundary=validate_capture_release_boundary(raw_close,capture_closes[0],microphone,source_rows,
+                    observer_pcm.read_bytes(),text,'held150' if args.case.endswith('held150') else 'split')
+                record['capture_source_boundary']={'status':'PASS','case':args.case,'turns':[boundary],
+                    'observer_pcm_sha256':sha(observer_pcm),'observer_index_sha256':sha(observer_index),
+                    'physical_latency':'UNMEASURED'}
         runner = args.runner or (Path(os.environ['USB_RF_REFERENCE_RUNNER']) if os.environ.get('USB_RF_REFERENCE_RUNNER') else None)
         if args.case in WAVEFORM_CASES:
             require(runner is not None, 'Speech cases require the actual codec runner')

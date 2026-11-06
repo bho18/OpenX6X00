@@ -292,7 +292,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 any(run.get('status') != 'PASS' for run in runs)):
             raise ValueError('USB qualification case did not pass every repetition: ' + name)
         for repeat, run in enumerate(runs,1):
-            validate_capture_close_run(run)
+            validate_capture_close_run(run,verify_files=verify_files)
             validate_sink_turns_run(run,name,verify_files=verify_files,expected_transport_sha256=matrix['identity']['transport_library_sha256'])
             if name in ('capture-release-split','capture-release-held150'):
                 validate_capture_source_boundary_run(run,name,verify_files=verify_files)
@@ -300,6 +300,8 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 validate_capture_close_failure_run(run,name,verify_files=verify_files)
             if name == 'eoo-backpressure':
                 validate_tail_backpressure_run(run)
+            if name == 'capture-close-tail120':
+                validate_capture_pipeline_tail_run(run,verify_files=verify_files)
             if run.get('repeat') != repeat:
                 raise ValueError('USB qualification has a missing or duplicated repetition: '+name)
             for key in ('log_path','case_record_path'):
@@ -313,7 +315,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                         raise ValueError('Retained USB case evidence changed: ' + name)
                 details=_load(run['case_record_path'])
                 for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
-                            'capture_close_failure','tail_backpressure'):
+                            'capture_close_failure','tail_backpressure','capture_pipeline_tail'):
                     retained=details.get(key)
                     if key=='actual_sink_turns' and key not in details:
                         from test_usb_audio_integration import WAVEFORM_CASES
@@ -502,7 +504,7 @@ def validate_sink_turns_run(run,case,verify_files=True,expected_transport_sha256
     return turns
 
 
-def validate_capture_close_run(run):
+def validate_capture_close_run(run,verify_files=False):
     """Validate finite capture intervals; this is not physical PTT latency."""
     proof = run.get('capture_close', {})
     harness = run.get('harness', {})
@@ -543,14 +545,15 @@ def validate_capture_close_run(run):
                 turn['consumed_index'] != cutoff or turn['accepted_frames'] != cutoff-start or
                 turn['mic_tap_end']-turn['mic_tap_start'] != cutoff-start or turn['close_elapsed_ms'] > 750):
             raise ValueError('Capture-close PCM does not conserve its raw frozen source frontier')
+        if turn['source_usec']+turn['transport_usec']>750000:
+            raise ValueError('Capture-close source timing exceeded the existing finite 750ms horizon')
         if ('submitted_first_index' in turn or 'submitted_end_index' in turn) and (
                 turn.get('submitted_first_index') != start or turn.get('submitted_end_index') != cutoff):
             raise ValueError('Capture submission omitted or extended its declared finite interval')
-        if 'release_fence_index' in turn or 'tail_frames' in turn:
-            fence = turn.get('release_fence_index')
-            if (type(fence) is not int or not start <= fence <= cutoff or
-                    turn.get('tail_frames') != cutoff-fence):
-                raise ValueError('Capture-close tail differs from its release fence')
+        fence=turn.get('release_fence_index')
+        if (type(fence) is not int or not start<=fence<=cutoff or type(turn.get('tail_frames')) is not int or
+                turn['tail_frames']!=cutoff-fence):
+            raise ValueError('Capture-close tail differs from its release fence')
         time_keys=('capture_started_ms','close_started_ms','timing_issued_ms','frozen_ms','reached_ms','closed_ms')
         if any(key in turn for key in time_keys):
             times=[turn.get(key) for key in time_keys]
@@ -560,17 +563,51 @@ def validate_capture_close_run(run):
                 raise ValueError('Capture-close epoch, asynchronous freeze and finite timing disagree')
         budget = turn.get('microphone_frame_budget', {})
         active, fragment = budget.get('active_ms'), budget.get('fragment_frames')
-        if (budget.get('status') != 'PASS' or type(active) is not int or active < 0 or
+        if (budget.get('schema')!='x6200.usb.capture-budget.v2' or
+                budget.get('comparison_basis')!='minimum_on_total_maximum_on_pre_fence' or
+                budget.get('status') != 'PASS' or type(active) is not int or active < 0 or
                 type(fragment) is not int or fragment <= 0 or budget.get('delivery_tolerance_percent') != 1 or
                 budget.get('boundary_frames') != 2*fragment or budget.get('accepted_frames') != cutoff-start or
+                type(budget.get('pipeline_tail_frames')) is not int or budget['pipeline_tail_frames']!=cutoff-fence or
+                type(budget.get('pre_fence_frames')) is not int or budget['pre_fence_frames']!=fence-start or
                 budget.get('evaluated') is not (active >= 750)):
-            raise ValueError('Capture-close changed or omitted the existing source delivery budget')
+            raise ValueError('Capture-close changed or omitted the versioned total/prefix source delivery budget')
         expected = active*48
         lower, upper = max(0, expected*99//100 - 2*fragment), (expected*101 + 99)//100 + 2*fragment
         if (budget.get('minimum_frames') != lower or budget.get('maximum_frames') != upper or
-                (active >= 750 and not lower <= cutoff-start <= upper)):
-            raise ValueError('Capture-close source delivery did not meet the unchanged 1% plus two-fragment budget')
+                budget.get('expected_frames')!=expected or
+                (active >= 750 and (cutoff-start<lower or fence-start>upper))):
+            raise ValueError('Capture-close total delivery or pre-fence delivery did not meet the unchanged 1% plus two-fragment budget')
+    if verify_files:_validate_capture_close_raw(run,proof)
     return proof
+
+
+
+def _validate_capture_close_raw(run,proof):
+    """Bind the declared tail and continuity to the unchanged C receipts."""
+    root=Path(run['case_record_path']).parent/'result'
+    grouped={}
+    for turn in proof['turns']:grouped.setdefault(turn['trace_file'],[]).append(turn)
+    for trace_file,turns in grouped.items():
+        path=root/trace_file;rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        closes=[row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is True]
+        descriptor=next((row for row in rows if row.get('kind')=='stream' and row.get('stream')=='mic'),{})
+        if (len(closes)!=len(turns) or descriptor.get('rate')!=48000 or descriptor.get('channels')!=1 or
+                type(descriptor.get('fragsize')) is not int or descriptor['fragsize']<=0 or descriptor['fragsize']%2):
+            raise ValueError('Raw finite capture intervals or negotiated microphone descriptor are missing')
+        retained=path.with_name(path.stem+'-mic.raw').stat().st_size
+        if retained%2:raise ValueError('The raw accepted microphone tap is misaligned')
+        for turn,raw in zip(turns,closes):
+            keys=('turn','start_index','cutoff_index','consumed_index','mic_tap_start','mic_tap_end','capture_started_ms',
+                  'release_fence_index','tail_frames','close_started_ms','timing_issued_ms','frozen_ms','reached_ms',
+                  'closed_ms','write_index_bytes','source_usec','transport_usec','sink_usec','frontier_extra_frames','cutoff_split_frames')
+            if (any(raw.get(key)!=turn.get(key) for key in keys) or raw.get('index_gap') is not False or
+                    raw.get('close_timeout_ms')!=750 or raw.get('scope')!='pulse-capture-pipeline-frontier' or
+                    raw.get('submitted_first_index')!=turn['start_index'] or raw.get('submitted_end_index')!=turn['cutoff_index'] or
+                    not 0<=turn['mic_tap_start']<=turn['mic_tap_end']<=retained//2 or
+                    turn['frozen_ms']-turn['timing_issued_ms']>=750 or
+                    turn['microphone_frame_budget']['fragment_frames']!=descriptor['fragsize']//2):
+                raise ValueError('Capture tail, prefix or continuity differs from the exact raw finite source receipt')
 
 
 def validate_capture_source_boundary_run(run, case, verify_files=True):
@@ -630,6 +667,61 @@ def validate_capture_source_boundary_run(run, case, verify_files=True):
         sentinel=(30001).to_bytes(2,'little',signed=True)
         if any(accepted[offset:offset+2]==sentinel for offset in range(0,len(accepted),2)):
             raise ValueError('Post-cutoff sentinel entered the accepted microphone interval')
+    return proof
+
+
+
+def validate_capture_pipeline_tail_run(run,verify_files=True):
+    """Exercise finite captured tail without enlarging either delivery bound."""
+    close=validate_capture_close_run(run,verify_files=verify_files)
+    proof=run.get('capture_pipeline_tail',{});harness=run.get('harness',{})
+    if (proof.get('schema')!='x6200.usb.pipeline-tail.v1' or proof.get('status')!='PASS' or
+            proof.get('case')!='capture-close-tail120' or proof.get('mode')!='tail120' or proof.get('phase')!='drain' or
+            proof.get('model_source_usec')!=120000 or proof.get('physical_latency')!='UNMEASURED' or
+            proof.get('original_upper_rejected') is not True or close['completed_rf_turns']!=1 or
+            close['completed_intervals']!=1 or close['abandoned_intervals']!=0 or
+            harness.get('total_eoo',harness.get('eoo'))!=1 or harness.get('rf_clear_confirmed') is not True or
+            harness.get('rf_valid') is not True or harness.get('rf_tx') is not False or harness.get('physical_tx') is not False):
+        raise ValueError('Controlled capture tail did not complete its acknowledged source-bound RF turn and fresh RX')
+    interval=close['turns'][0];budget=interval['microphone_frame_budget']
+    fields=('requested_ms','real_ack_ms','real_source_usec','write_index_bytes','read_index_bytes','transport_usec')
+    if (any(type(proof.get(key)) is not int or proof[key]<0 for key in fields) or
+            not interval['timing_issued_ms']<=proof['requested_ms']<=proof['real_ack_ms']<=interval['frozen_ms'] or
+            proof['write_index_bytes']!=interval['write_index_bytes'] or proof['read_index_bytes']%2 or
+            proof['read_index_bytes']//2<interval['release_fence_index'] or
+            interval['source_usec']!=120000 or proof['transport_usec']!=interval['transport_usec'] or
+            proof.get('total_accepted_frames')!=budget['accepted_frames'] or
+            any(proof.get(key)!=budget[key] for key in ('pre_fence_frames','pipeline_tail_frames','minimum_frames','maximum_frames')) or
+            budget['evaluated'] is not True or not budget['accepted_frames']>budget['maximum_frames'] or
+            budget['pre_fence_frames']>budget['maximum_frames'] or budget['accepted_frames']<budget['minimum_frames']):
+        raise ValueError('Controlled finite tail did not expose the old total-upper error with unchanged prefix and minimum bounds')
+    boundary=proof.get('source_boundary',{})
+    if (boundary.get('status')!='PASS' or boundary.get('turn')!=interval['turn'] or
+            boundary.get('accepted_frames')!=budget['accepted_frames'] or boundary.get('compared_frames')!=budget['accepted_frames'] or
+            re.fullmatch('[0-9a-f]{64}',str(boundary.get('expected_source_sha256',''))) is None or
+            boundary.get('expected_source_sha256')!=boundary.get('accepted_sha256') or
+            boundary.get('post_cutoff_excluded') is not True or boundary.get('post_cutoff_sentinel_excluded') is not True or
+            boundary.get('sentinel_value')!=30001 or type(boundary.get('post_cutoff_frames_observed')) is not int or
+            type(boundary.get('post_cutoff_sentinel_frames')) is not int or
+            not 0<boundary['post_cutoff_sentinel_frames']<=boundary['post_cutoff_frames_observed'] or
+            any(re.fullmatch('[0-9a-f]{64}',str(proof.get(key,''))) is None
+                for key in ('observer_pcm_sha256','observer_index_sha256'))):
+        raise ValueError('Controlled capture tail omitted exact indexed PCM or post-cutoff sentinel exclusion')
+    if verify_files:
+        from usb_test_support import validate_capture_pipeline_tail
+        root=Path(run['case_record_path']).parent/'result'
+        pcm,index=root/'mic-observer.pcm',root/'mic-observer.jsonl'
+        if sha(pcm)!=proof['observer_pcm_sha256'] or sha(index)!=proof['observer_index_sha256']:
+            raise ValueError('Controlled tail observer evidence changed')
+        rows=[json.loads(line) for line in (root/interval['trace_file']).read_text().splitlines() if line.strip()]
+        raw=next(row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is True)
+        microphone=(root/(Path(interval['trace_file']).stem+'-mic.raw')).read_bytes()
+        source_rows=[json.loads(line) for line in index.read_text().splitlines() if line.strip()]
+        actual=validate_capture_pipeline_tail(raw,interval,microphone,source_rows,pcm.read_bytes(),
+                                            (root.parent/'test.log').read_text())
+        if any(proof.get(key)!=value for key,value in actual.items()):
+            raise ValueError('Controlled tail summary differs from actual timing, source and sentinel witnesses')
+    validate_sink_turns_run(run,'capture-close-tail120',verify_files=verify_files)
     return proof
 
 
