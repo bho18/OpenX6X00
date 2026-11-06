@@ -58,7 +58,7 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
     require(samples, 'Actual C controller produced no state samples for the collector contract')
     original = {str(path.relative_to(runtime)):sha(path) for path in runtime.rglob('*')
                 if path.is_file() and path.suffix in ('.json', '.jsonl')}
-    manifest = dict(usb_startup_contract_version=3, on_device_readiness_required=True,
+    manifest = dict(usb_startup_contract_version=3, usb_output_contract_version=1, on_device_readiness_required=True,
                     firmware_commit=expected_source_commit, build_id=expected_build_id,
                     gui_sha256=expected_binary_sha256)
     output.mkdir(parents=True)

@@ -99,11 +99,12 @@ def production_transport_reference(reference,chunks):
         'input_frames':cursor,'output_frames':len(output),'calls':audit,'eof_complete':True}
 
 
-def matched_decoder_control(reference,chunks,observed,full_waveform):
+def matched_decoder_control(reference,chunks,observed,full_waveform,alignment_budget=None):
     require(full_waveform.get('status')=='PASS' and full_waveform.get('complete_reference_covered') is True,
             'Complete original waveform coverage is required before decoder alignment')
     transported,transport=production_transport_reference(reference,chunks)
-    matched=modem_waveform_match(transported,44100,observed,44100,expected_gain=1)
+    maximum=alignment_budget['maximum_lag_ms'] if alignment_budget else 1000
+    matched=modem_waveform_match(transported,44100,observed,44100,expected_gain=1,maximum_lag_ms=maximum)
     source,actual=pcm(transported),pcm(observed)
     center=round((matched['lag_ms']/1000-.005)*44100)
     indexes=range(220,len(source)-220)
@@ -127,4 +128,5 @@ def matched_decoder_control(reference,chunks,observed,full_waveform):
             'normalized_rms_error':math.sqrt(error/len(indexes))/rms,'complete_transport_covered':True},
         'native_48k_baseline_role':'retained unequal-domain diagnostic source; not the decoded-duration comparator',
         'first_word_intelligibility':'UNASSESSED'}
+    if alignment_budget is not None:proof['alignment_budget']=alignment_budget
     return raw(control),transported,proof

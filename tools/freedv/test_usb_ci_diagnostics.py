@@ -67,6 +67,35 @@ class FailureDiagnosticTests(unittest.TestCase):
         self.assertEqual(record['failed_cases'],[{'case':'pa-delay','repeat':1}])
         self.assertEqual(len(record['copied']),1)
 
+    def test_failed_fifo_monitor_and_indexed_capture_are_retained_with_existing_bounds(self):
+        (self.failed/'result').mkdir()
+        expected = {
+            'fifo-modem.raw': b'paced-fifo-stereo-fixture',
+            'fifo-modem-mono.raw': b'paced-fifo-mono-fixture',
+            'radio-output.raw': b'passive-monitor-fixture',
+            'headset-output.raw': b'passive-headset-fixture',
+            'result/mic-observer.pcm': b'indexed-microphone-fixture'}
+        for name, payload in expected.items():
+            (self.failed/name).write_bytes(payload)
+        (self.failed/'operator-attachment.pcm').write_bytes(b'not-a-known-generated-fixture')
+        (self.good/'fifo-modem.raw').write_bytes(b'successful-fifo-fixture')
+        record,_=self.run_diagnostics()
+        self.assertEqual({item['source'] for item in record['copied']},
+                         {'repeat-01/pa-delay/'+name for name in expected})
+        self.assertEqual(record['copied_bytes'],sum(map(len,expected.values())))
+        for name, payload in expected.items():
+            self.assertEqual((self.root/'output/repeat-01/pa-delay'/name).read_bytes(),payload)
+        self.assertFalse((self.root/'output/repeat-01/normal').exists())
+        self.assertFalse((self.root/'output/repeat-01/pa-delay/operator-attachment.pcm').exists())
+
+    def test_indexed_pcm_cannot_evade_per_file_limit(self):
+        (self.failed/'result').mkdir()
+        (self.failed/'result/mic-observer.pcm').write_bytes(b'12345')
+        record,_=self.run_diagnostics(max_file=4,max_total=8)
+        self.assertEqual(record['copied_bytes'],0)
+        self.assertIn({'source':'repeat-01/pa-delay/result/mic-observer.pcm',
+                       'reason':'per_file_byte_limit','bytes':5},record['omitted'])
+
 
 if __name__ == '__main__':
     unittest.main()

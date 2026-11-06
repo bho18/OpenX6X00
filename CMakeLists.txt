@@ -122,6 +122,19 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                 find_package(Python3 COMPONENTS Interpreter REQUIRED)
                 add_test(NAME freedv_usb_test_support COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_test_support.py)
+                add_test(NAME freedv_usb_output_contract COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_output_contract.py)
+                add_test(NAME freedv_usb_output_contract_optimized COMMAND ${Python3_EXECUTABLE} -O
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_output_contract.py)
+                add_test(NAME freedv_usb_fifo_clock COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_fifo_clock.py)
+                add_test(NAME freedv_usb_backend_observer COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_backend_observer.py)
+                add_test(NAME freedv_usb_backend_observer_optimized COMMAND ${Python3_EXECUTABLE} -O
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_backend_observer.py)
+                set_tests_properties(freedv_usb_output_contract freedv_usb_output_contract_optimized
+                    freedv_usb_fifo_clock freedv_usb_backend_observer
+                    freedv_usb_backend_observer_optimized PROPERTIES TIMEOUT 30)
                 add_test(NAME freedv_usb_test_campaign COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_campaign.py)
                 add_test(NAME freedv_usb_host_resources COMMAND ${Python3_EXECUTABLE}

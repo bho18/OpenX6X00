@@ -453,6 +453,17 @@ class CaptureCloseTests(unittest.TestCase):
         self.assertEqual(result['completed_rf_turns'],0)
         self.assertFalse(result['turns'][0]['rf_completed'])
 
+    def test_stop_after_capture_closure_retains_interval_without_rf_success(self):
+        rows,accepted,_,_=self.fixture();rows[-1]['state']=6
+        rows.insert(-1,dict(kind='event',event='first-fault',state=4,status=1,operation='local-stop',ms=2150))
+        result=capture_close_oracle(rows,accepted,0)
+        turn=result['turns'][0]
+        self.assertFalse(turn['rf_completed'])
+        self.assertEqual(turn['completion_interruption']['schema'],'x6200.usb.capture-interruption.v1')
+        self.assertEqual(turn['completion_interruption']['ms'],2150)
+        rows[-2]['state']=3
+        self.assertNotIn('completion_interruption',capture_close_oracle(rows,accepted,0)['turns'][0])
+
     def boundary(self,mode):
         rows,accepted,blocks,pcm=self.fixture();close=rows[4]
         if mode=='held150':close.update(reached_ms=2110,closed_ms=2111);rows[5]['ms']=2112
@@ -624,6 +635,9 @@ class DriverFailureTests(unittest.TestCase):
             saved=[];closed={'turns':[dict(rf_completed=True,accepted_frames=4,microphone_frame_budget={'status':'PASS'})]}
             with mock.patch.object(driver,'capture_close_oracle',return_value=closed), \
                  mock.patch.object(driver,'transport_chunks_for_turn',return_value=(0,1000,[])), \
+                 mock.patch.object(driver,'output_alignment_budget',return_value={'maximum_lag_ms':1000}), \
+                 mock.patch.object(driver,'monitor_crop',return_value=(0,b'\0'*(44100*3*2))), \
+                 mock.patch.object(driver,'rf_window_proof',return_value={'status':'PASS'}), \
                  mock.patch.object(driver,'modem_waveform_match',return_value={'status':'PASS','complete_reference_covered':True}), \
                  mock.patch.object(driver,'matched_decoder_control',return_value=(b'\0'*1000,b'\1\0'*900,{'status':'PASS'})), \
                  mock.patch.object(driver,'decode_pcm',side_effect=RuntimeError('original decoder failure')):
@@ -684,6 +698,8 @@ class DriverFailureTests(unittest.TestCase):
                            'radio_sink_fixture null 2ch 44100Hz\n')
 
             def command(command, case_root, name, commands, env, timeout=3, check=True):
+                if name=='compile-passive-monitor':
+                    (case_root/'passive-monitor').write_bytes(b'test observer identity')
                 if name.startswith('endpoints-active'):
                     raise RuntimeError('primary endpoint failure')
                 if name.startswith('pulse-ready'):

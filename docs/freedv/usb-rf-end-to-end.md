@@ -1,14 +1,28 @@
 # X6200 USB PTT transition and end-to-end RF development test
 
 Use the release's **replacement image and matching helper kit** on a spare SD
-card. Stock baseband firmware is unchanged. The original native hand-mic mode
-remains blocked. This USB headset/panel-PTT mode first runs an automatic RF-disabled transition
-check, then offers a separate local Enable TX action for the SDR campaign.
+card. The `usb-qualification-20261106.1` image is on HOLD for a reproduced
+startup regression; use the verified `usb-qualification-20261106.2` replacement
+and its matching kit. Stock baseband firmware is unchanged. The original native
+hand-mic mode remains blocked. This USB headset/panel-PTT mode first runs an
+automatic RF-disabled transition check, then offers a separate local Enable TX
+action for the SDR campaign.
 The earlier successful recording, codec and headset playback results remain
 accepted; there is no new basic speech-recording or listening round.
 The [qualification strategy](usb-test-strategy.md) defines the software,
 lifecycle, radio-transition and RF gates and how failed attempts remain in the
 record. This guide is the short operator procedure for the radio stages.
+
+The failed `.1` run stopped before audio or TX because the playback request
+mixed client-buffer and device-latency domains. The replacement corrects that
+request while retaining the 300 ms minimum client reserve, and requests a
+shorter backend service cadence separately from the client-buffer size. Actual
+device latency can differ, so it also waits for a fresh Pulse-reported backend
+interval after protocol drain before normal TX clear. The host tests now cover
+the original startup-grant failure and a separately paced backend that can
+expose a late modem tail. These checks do not establish
+physical USB or RF timing; the short integrated radio check below supplies the
+next evidence.
 
 The RF test requests 1 W and retains a 20-second software limit per press.
 Requested power is not calibrated output power, and Linux TX clearing is not an
@@ -19,7 +33,8 @@ normal Exit.
 
 1. Verify both release ZIPs against `SHA256SUMS`. Flash the image ZIP with your
    usual image-writing tool, boot the spare card, and retain your working card.
-   Do not install a baseband update.
+   Use the `.2` image and kit together; the candidate and kit manifests must
+   declare `usb_output_contract_version: 1`. Do not install a baseband update.
 2. Connect the Shokz Loop110 and power/pair the headset. Set a comfortable
    headset listening volume. Disconnect the hand mic and paddles/other keying
    accessories. Use only the radio's on-device panel PTT for the later RF test.
@@ -83,8 +98,11 @@ after a fault.
    Microphone input before Transmitting is discarded while audio preparation
    and TX acknowledgement settle; do not begin speaking during that transition.
 3. Release PTT. The controller should close its bounded microphone tail,
-   finish accepted speech and the modem tail, drain playback, clear software TX
-   and wait for a newer RX packet.
+   finish accepted speech and the modem tail, acknowledge protocol drain, wait
+   through the conservatively reported playback-backend interval, clear
+   software TX and wait for a newer RX packet. The backend wait remains inside
+   the same total drain deadline; Stop bypasses it and requests clear
+   immediately.
    Allow three seconds after release; if TX persists, select Stop. If it still
    persists, switch the radio off. Packet telemetry is not direct physical
    RF-off instrumentation.
@@ -157,6 +175,13 @@ first-fault metadata and per-stream sample/callback counters support diagnosis.
 Stop fences future TX admission immediately; a blocked hardware transaction can
 still delay delivery of the clear command. The display and trace distinguish a
 requested clear from confirmed fresh RX.
+
+The backend-tail receipt records a wait based on fresh Pulse timing. It is not
+a physical DAC-empty acknowledgment or an independent RF-off measurement.
+Missing or invalid timing blocks normal turn completion. The matching helper
+checks this output contract alongside the session's first fault and terminal
+result; a later decoded file cannot turn a failed controller session into a
+pass.
 
 The integrated transition check evaluates operation of this Linux audio/controller
 implementation on the device. It does not qualify antenna RF, an independent

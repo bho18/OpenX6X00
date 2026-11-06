@@ -18,6 +18,7 @@ from usb_host_resources import PRESSURE_COUNTERS, MIN_START_HEADROOM_BYTES, MIN_
 MATRIX_SCHEMA = 'x6200.usb.integration.matrix.v3'
 CAMPAIGN_SCHEMA = 'x6200.usb.campaign.v1'
 MIN_QUALIFICATION_REPEATS = 2
+USB_OUTPUT_CONTRACT_VERSION = 1
 INFRASTRUCTURE_PREREQUISITES = ('unexpected_runtime_failure',)
 INFRASTRUCTURE_CHECKS = ('driver_failed', 'harness_failed', 'terminal_fault_retained', 'collector_blocked')
 INFRASTRUCTURE_FILES = ('case_result', 'harness_failure', 'completion', 'collector_report', 'first_fault', 'trace')
@@ -267,6 +268,10 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
     if (plan.get('profile') != 'qualification' or plan.get('debug_subset') or
             plan.get('repetitions', 0) < MIN_QUALIFICATION_REPEATS):
         raise ValueError('USB promotion requires the declared repeated qualification profile')
+    if any(type(value) is not int or value!=USB_OUTPUT_CONTRACT_VERSION for value in (
+            matrix.get('usb_output_contract_version'),plan.get('usb_output_contract_version'),
+            matrix.get('identity',{}).get('usb_output_contract_version'))):
+        raise ValueError('USB qualification requires explicit playback output contract version1')
     if not expected or len(expected) != len(set(expected)):
         raise ValueError('USB expected-case registry is empty or duplicated')
     if re.fullmatch('[0-9a-f]{64}',str(matrix.get('identity',{}).get('transport_library_sha256',''))) is None:
@@ -292,6 +297,9 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 any(run.get('status') != 'PASS' for run in runs)):
             raise ValueError('USB qualification case did not pass every repetition: ' + name)
         for repeat, run in enumerate(runs,1):
+            validate_output_contract_run(run,verify_files=verify_files,expected_identity=matrix['identity'])
+            validate_backend_profile_run(run,name,verify_files=verify_files)
+            validate_observer_admission_run(run,name,verify_files=verify_files)
             validate_capture_close_run(run,verify_files=verify_files)
             validate_sink_turns_run(run,name,verify_files=verify_files,expected_transport_sha256=matrix['identity']['transport_library_sha256'])
             if name in ('capture-release-split','capture-release-held150'):
@@ -302,6 +310,8 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 validate_tail_backpressure_run(run)
             if name == 'capture-close-tail120':
                 validate_capture_pipeline_tail_run(run,verify_files=verify_files)
+            if name in ('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'):
+                validate_backend_failure_run(run,name,verify_files=verify_files)
             if run.get('repeat') != repeat:
                 raise ValueError('USB qualification has a missing or duplicated repetition: '+name)
             for key in ('log_path','case_record_path'):
@@ -315,7 +325,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                         raise ValueError('Retained USB case evidence changed: ' + name)
                 details=_load(run['case_record_path'])
                 for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
-                            'capture_close_failure','tail_backpressure','capture_pipeline_tail'):
+                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','observer_admission'):
                     retained=details.get(key)
                     if key=='actual_sink_turns' and key not in details:
                         from test_usb_audio_integration import WAVEFORM_CASES
@@ -331,18 +341,265 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
 
 
 
+
+def validate_output_contract_run(run,verify_files=True,expected_identity=None):
+    try:
+        return _validate_output_contract_run(run,verify_files,expected_identity)
+    except (OSError,KeyError,TypeError,AttributeError) as error:
+        raise ValueError('Required playback completion evidence is missing or malformed: '+str(error)) from error
+
+
+def _validate_output_contract_run(run,verify_files=True,expected_identity=None):
+    """A new build must prove the advertised backend contract in every session."""
+    from usb_output_contract import validate_output_contract,SCOPE
+    proof=run.get('output_contract',{});identity=run.get('identity',{});harness=run.get('harness',{})
+    expected=expected_identity or identity
+    if not all(isinstance(value,dict) for value in (proof,identity,harness,expected)):
+        raise ValueError('Required advertised playback completion contract is missing or malformed')
+    if (type(run.get('usb_output_contract_version')) is not int or run['usb_output_contract_version']!=1 or
+            proof.get('schema')!='x6200.usb.output-contract-set.v1' or proof.get('status')!='PASS' or
+            type(proof.get('usb_output_contract_version')) is not int or proof['usb_output_contract_version']!=1 or
+            identity.get('status')!='PASS' or any(identity.get(key)!=expected.get(key) for key in ('source_commit','build_id'))):
+        raise ValueError('Required advertised playback completion contract is missing or belongs to another build')
+    if 'test_binary_sha256' in expected and identity.get('binary_sha256')!=expected['test_binary_sha256']:
+        raise ValueError('Playback completion contract identifies another controller binary')
+    sessions=proof.get('sessions')
+    if not isinstance(sessions,list) or not sessions:
+        raise ValueError('Playback completion contract omits all controller sessions')
+    completed=0;seen=set();ids=[]
+    for session in sessions:
+        if not isinstance(session,dict):raise ValueError('Playback contract session is malformed')
+        for key in ('trace_file','completion_file'):
+            value=session.get(key)
+            if not isinstance(value,str) or not value or Path(value).name!=value or value in seen:
+                raise ValueError('Playback contract session files are absent, unsafe or reused')
+            seen.add(value)
+        trace=Path(session['trace_file'])
+        if (trace.suffix!='.jsonl' or session['completion_file']!=trace.stem+'-completion.json' or
+                session.get('schema')!='x6200.usb.output-contract.v1' or session.get('status')!='PASS' or
+                type(session.get('usb_output_contract_version')) is not int or session['usb_output_contract_version']!=1 or session.get('scope')!=SCOPE or
+                any(type(session.get(key)) is not int or session[key]<0 for key in
+                    ('completed_turns','completed_intervals','interrupted_intervals','receipt_count')) or
+                session['completed_intervals']<session['completed_turns'] or session['interrupted_intervals']>1 or
+                session['receipt_count'] not in (session['completed_turns'],session['completed_turns']+1) or
+                session['receipt_count']!=session['completed_intervals']+session['interrupted_intervals'] or
+                any(re.fullmatch('[0-9a-f]{64}',str(session.get(key,''))) is None
+                    for key in ('trace_sha256','completion_sha256'))):
+            raise ValueError('Playback contract session lacks complete typed turn/receipt accounting')
+        completed+=session['completed_turns']
+        if verify_files:
+            root=Path(run['case_record_path']).parent/'result'
+            trace_path,completion_path=root/session['trace_file'],root/session['completion_file']
+            if sha(trace_path)!=session['trace_sha256'] or sha(completion_path)!=session['completion_sha256']:
+                raise ValueError('Retained playback completion evidence changed')
+            rows=[json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+            header=next((row for row in rows if row.get('kind')=='session'),{})
+            expected_session={key:expected.get(key) for key in ('source_commit','build_id')}
+            if header.get('session_id')!=trace.stem or header.get('session_id') in ids:
+                raise ValueError('Playback completion session identity was reused or differs from its actual trace basename')
+            expected_session['session_id']=trace.stem
+            actual=validate_output_contract(rows,_load(completion_path),required_version=1,expected_identity=expected_session)
+            if session!={**actual,'trace_file':trace.name,'completion_file':completion_path.name,
+                          'trace_sha256':session['trace_sha256'],'completion_sha256':session['completion_sha256']}:
+                raise ValueError('Playback completion summary differs from the actual typed backend receipts')
+            ids.append(header['session_id'])
+    expected_turns=harness.get('total_turns',harness.get('turns'))
+    if (type(expected_turns) is not int or completed!=expected_turns or
+            ('session_count' in harness and harness['session_count']!=len(sessions)) or
+            (verify_files and identity.get('session_ids')!=ids)):
+        raise ValueError('Playback contract sessions do not cover the controller completed turns and identities')
+    return proof
+
+
+
+def validate_backend_profile_run(run,case,verify_files=True):
+    profile=run.get('backend_profile',{})
+    names=('legacy-low-latency','default','fixed-pipe')
+    expected={'backend-fixed-pipe':'fixed-pipe','io-pause150':'fixed-pipe','rx-pause150':'default'}.get(case,'legacy-low-latency')
+    if (not isinstance(profile,dict) or profile.get('schema')!='x6200.usb.backend-profile.v1' or
+            profile.get('name') not in names or (expected is not None and profile['name']!=expected) or
+            profile.get('passive_monitor') is not (case!='cold-idle') or
+            profile.get('observer_excluded_for_idle') is not (case=='cold-idle') or type(profile.get('competing_monitor')) is not bool or
+            type(profile.get('null_norewinds')) is not bool or
+            profile.get('competing_monitor') is not False or
+            profile.get('modem_sink_module')!=('module-pipe-sink' if profile.get('name')=='fixed-pipe' else 'module-null-sink') or
+            profile.get('null_norewinds') is not (profile.get('name')=='legacy-low-latency')):
+        raise ValueError('USB backend profile is missing or does not exercise the declared buffering/observer configuration')
+    if verify_files:
+        text=(Path(run['case_record_path']).parent/'default.pa').read_text()
+        line=next((line for line in text.splitlines() if line.startswith('load-module ') and 'sink_name=radio_sink_fixture' in line),'')
+        if (profile['modem_sink_module'] not in line or ('norewinds=1' in line)!=profile['null_norewinds']):
+            raise ValueError('Declared backend profile differs from the actual private Pulse sink configuration')
+        seen=set()
+        for session in run['output_contract']['sessions']:
+            rows=[json.loads(value) for value in (Path(run['case_record_path']).parent/'result'/session['trace_file']).read_text().splitlines() if value.strip()]
+            for row in rows:
+                name=row.get('stream')
+                if row.get('kind') not in ('stream','audio-budget') or name not in ('mic','radio-rx','headset','modem'):continue
+                capture=name in ('mic','radio-rx');flags=row.get('requested_flags');seen.add(name)
+                if (type(flags) is not int or flags<0 or type(row.get('adjust_latency')) is not bool or
+                        row['adjust_latency'] is not capture or bool(flags&0x2000) is not capture or
+                        bool(flags&0x4000) is capture or
+                        row.get('request_domain')!=('capture-fragments' if capture else 'per-stream-playback')):
+                    raise ValueError('Playback requires per-stream EARLY_REQUESTS without ADJUST_LATENCY; capture retains its fragment-domain flags')
+                if not capture and case!='buffer-contract-reject':
+                    rate,channels=row.get('rate'),row.get('channels')
+                    if (type(rate) is not int or rate<=0 or channels!=1 or
+                            any(type(row.get(key)) is not int or row[key]<0 for key in ('maxlength','tlength','minreq','prebuf')) or
+                            row['maxlength']>rate*2 or not 0<row['minreq']<row['tlength']<=row['maxlength'] or
+                            (row['tlength']-row['minreq'])*1000<300*rate*2 or row['prebuf']*1000<300*rate*2):
+                        raise ValueError('Actual playback attributes do not preserve the unchanged 300ms reserve contract')
+        if run['harness'].get('total_turns',run['harness'].get('turns',0))>0 and seen!={'mic','radio-rx','headset','modem'}:
+            raise ValueError('Completed output profile omitted a negotiated stream/request-domain descriptor')
+    return profile
+
+
+
+def validate_observer_admission_run(run,case,verify_files=True):
+    from test_usb_audio_integration import WAVEFORM_CASES
+    if case not in WAVEFORM_CASES and case!='rx-pause150':return
+    proof=run.get('observer_admission',{});fixed=run.get('backend_profile',{}).get('name')=='fixed-pipe'
+    if (not isinstance(proof,dict) or proof.get('schema')!='x6200.usb.observer-admission.v1' or
+            proof.get('phase')!='after-initial-RX-before-PTT' or type(proof.get('ready_ns')) is not int or proof['ready_ns']<=0 or
+            proof.get('first_block_required') is not (not fixed) or proof.get('first_block_confirmed') is not (not fixed) or
+            proof.get('independent_fifo_reader') is not fixed or proof.get('cold_idle_unobserved') is not False or
+            any(item.get('on_before_ns',0)<proof['ready_ns'] for item in run['harness'].get('rf_intervals',[]))):
+        raise ValueError('Passive observer admission must follow startup grants and precede every physical PTT/RF interval')
+    if verify_files:
+        root=Path(run['case_record_path']).parent
+        if 'FIXTURE_OUTPUT_READY' not in (root/'test.log').read_text() or (root/'result/output-observer-ready').read_text().strip()!=str(proof['ready_ns']):
+            raise ValueError('Observer admission does not match its actual controller/observer readiness handshake')
+        first=run['output_contract']['sessions'][0]
+        rows=[json.loads(line) for line in (root/'result'/first['trace_file']).read_text().splitlines() if line.strip()]
+        initial=next((row for row in rows if row.get('event')=='state' and row.get('state')==1),{})
+        if type(initial.get('ms')) is not int or initial['ms']*1000000>proof['ready_ns']:
+            raise ValueError('Observer was admitted before initial RX completed')
+        ledger=root/('headset-output.jsonl' if case=='rx-pause150' else 'radio-output.jsonl')
+        records=[json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+        ready=next((row for row in records if row.get('kind')=='ready'),{})
+        flags=ready.get('flags')
+        if (type(flags) is not int or flags<0 or flags&0x6000 or ready.get('adjust_latency') is not False or
+                ready.get('early_requests') is not False or type(ready.get('monotonic_ns')) is not int or
+                ready['monotonic_ns']>proof['ready_ns'] or ready.get('scope')!='passive rendered sink monitor; not physical DAC time'):
+            raise ValueError('Observer requested sink latency or failed to acknowledge passive readiness')
+        if not fixed and not any(row.get('kind')=='block' and type(row.get('received_ns')) is int and
+                                 row['received_ns']<=proof['ready_ns'] for row in records):
+            raise ValueError('Passive monitor had no actual received block before PTT admission')
+    return proof
+
+
 def _bounded_number(value,minimum,maximum):
     return type(value) in (int,float) and math.isfinite(value) and minimum<=value<=maximum
 
 
 
+
+
+def validate_rf_window(turn,interval,run,verify_files=True):
+    """Bind complete modem evidence to effective RF ownership, not a late crop."""
+    proof=turn.get('rf_window',{});harness=run.get('harness',{})
+    if (not isinstance(proof,dict) or proof.get('schema')!='x6200.usb.rf-window.v1' or
+            proof.get('receipt_turn')!=interval['turn'] or proof.get('complete_reference_covered') is not True or
+            re.fullmatch('[0-9a-f]{64}',str(proof.get('receipt_sha256',''))) is None or
+            type(proof.get('backend_completed_ns')) is not int or proof['backend_completed_ns']<=0 or
+            type(turn.get('monitor_frame_start')) is not int or turn['monitor_frame_start']<0):
+        raise ValueError('Every transmitted turn requires its complete source-bound RF-window proof')
+    rf_intervals=harness.get('rf_intervals',[])
+    if not isinstance(rf_intervals,list):raise ValueError('Independent RF ownership intervals are missing')
+    disabled=proof.get('status')=='NOT_APPLICABLE'
+    if disabled:
+        if (proof.get('scope')!='RF-disabled qualification' or proof.get('rf_disabled') is not True or
+                any(item.get('on_after_ns',0)<=(turn['end_ms']+1)*1000000 and
+                    item.get('off_before_ns',0)>=turn['start_ms']*1000000 for item in rf_intervals)):
+            raise ValueError('RF-disabled qualification cannot claim a physical keyed RF interval')
+    else:
+        fields=('rf_on_before_ns','rf_on_after_ns','rf_off_before_ns','rf_off_after_ns')
+        if (proof.get('status')!='PASS' or type(proof.get('rf_key_sequence')) is not int or proof['rf_key_sequence']<1 or
+                any(type(proof.get(key)) is not int or proof[key]<0 for key in fields) or
+                not proof['rf_on_before_ns']<=proof['rf_on_after_ns']<proof['rf_off_before_ns']<=proof['rf_off_after_ns'] or
+                proof['backend_completed_ns']>proof['rf_off_before_ns'] or
+                proof['rf_on_after_ns']>(turn['start_ms']+1)*1000000 or proof['rf_off_before_ns']<turn['start_ms']*1000000 or
+                proof.get('all_signal_consumed_while_rf') is not True or proof.get('finite_deadline_before_rf_off') is not True):
+            raise ValueError('Complete finite modem playback or backend completion crossed the actual RF interval')
+        actual={'key_sequence':proof['rf_key_sequence'],**{key[3:]:proof[key] for key in fields}}
+        if sum(item==actual for item in rf_intervals)!=1:
+            raise ValueError('RF-window proof does not identify one actual controller RF ownership interval')
+        fixed=proof.get('scope')=='paced FIFO backend model; not physical hardware'
+        if fixed:
+            if (proof.get('basis')!='actual_FIFO_read_intervals' or proof.get('late_signal_ns')!=0 or proof.get('early_signal_ns')!=0 or
+                    proof.get('aligned_frame_start')!=turn['monitor_frame_start']+turn['decoder_control']['native_alignment']['offset_frames'] or
+                    proof.get('reference_frames')!=turn['decoder_control']['transport_frames'] or
+                    proof.get('last_signal_read_after_ns',proof['rf_off_before_ns']+1)>proof['rf_off_before_ns'] or
+                    proof.get('first_signal_read_before_ns',0)<proof['rf_on_after_ns'] or
+                    proof.get('finite_last_deadline_ns',proof['rf_off_before_ns']+1)>proof['rf_off_before_ns']):
+                raise ValueError('Paced FIFO signal/EOO and finite tail were not wholly consumed while RF remained keyed')
+            artifacts=proof.get('fifo_artifacts',{})
+            if set(artifacts)!={'raw','timing','mono'} or any(not item.get('path') or
+                    re.fullmatch('[0-9a-f]{64}',str(item.get('sha256',''))) is None for item in artifacts.values()):
+                raise ValueError('Independent FIFO backend evidence is missing')
+        elif proof.get('scope')!='pulse-reported backend model; not physical hardware' or proof.get('basis')!='fresh_backend_tail_before_RF_off':
+            raise ValueError('Unsupported RF playback model or timing scope')
+        if run.get('backend_profile',{}).get('name')=='fixed-pipe' and not fixed:
+            raise ValueError('Fixed backend profile cannot qualify with only the virtual backend model')
+    if verify_files:
+        root=Path(run['case_record_path']).parent
+        rows=[json.loads(line) for line in (root/'result'/turn['trace_file']).read_text().splitlines() if line.strip()]
+        receipt=next((row for row in rows if row.get('kind')=='backend-tail' and row.get('turn')==interval['turn']),{})
+        hashed=hashlib.sha256(json.dumps(receipt,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if (receipt.get('complete') is not True or receipt.get('rf_tx_confirmed') is not True or
+                hashed!=proof['receipt_sha256'] or proof['backend_completed_ns']!=receipt.get('completed_us',-1)*1000 or
+                receipt.get('rf_disabled') is not disabled):
+            raise ValueError('RF-window evidence differs from its exact typed backend completion receipt')
+        if not disabled and proof.get('scope')=='paced FIFO backend model; not physical hardware':
+            artifacts=proof['fifo_artifacts']
+            for item in artifacts.values():
+                path=Path(item['path']).resolve()
+                if not path.is_relative_to(root.resolve()) or sha(path)!=item['sha256']:
+                    raise ValueError('Retained independent FIFO backend artifacts changed')
+            timing=[json.loads(line) for line in Path(artifacts['timing']['path']).read_text().splitlines() if line.strip()]
+            header=next((row for row in timing if row.get('kind')=='session'),{})
+            final=next((row for row in reversed(timing) if row.get('kind')=='terminal'),{})
+            raw=Path(artifacts['raw']['path']).read_bytes();mono=Path(artifacts['mono']['path']).read_bytes()
+            if (header.get('channels')!=2 or header.get('sample_width_bytes')!=2 or header.get('frame_bytes')!=4 or
+                    len(raw)!=final.get('frames',-1)*4 or final.get('raw_bytes')!=len(raw) or len(mono)*2!=len(raw) or
+                    any(raw[index:index+2]!=raw[index+2:index+4] or raw[index:index+2]!=mono[index//2:index//2+2]
+                        for index in range(0,len(raw),4))):
+                raise ValueError('FIFO timing and mono/stereo PCM recordings are inconsistent')
+            begin=turn['monitor_frame_start'];control=turn['decoder_control'];frames=control['control_frames']
+            stimulus=Path(turn['artifacts']['actual_stimulus']['path']).read_bytes()
+            if begin+frames>len(mono)//2 or stimulus!=mono[begin*2:(begin+frames)*2]+b'\0\0'*(turn['observed']['input_frames']-frames):
+                raise ValueError('Matched sink decoder did not consume the declared independent FIFO interval')
+        from test_usb_audio_integration import rf_window_proof
+        transport=Path(turn['artifacts']['transport441']['path']).read_bytes()
+        actual=rf_window_proof(root,rows,turn,interval['turn'],transport,turn['decoder_control'],
+                               turn['monitor_frame_start'],harness,fifo=not disabled and proof.get('basis')=='actual_FIFO_read_intervals')
+        if proof!=actual:raise ValueError('RF-window summary differs from its actual backend/RF/consumption evidence')
+    return proof
+
+
+def validate_alignment_budget(turn):
+    """Alignment derives from actual queues and the existing scheduler budget."""
+    budget=turn.get('alignment_budget',{})
+    if (not isinstance(budget,dict) or budget.get('schema')!='x6200.usb.alignment-budget.v1' or
+            budget.get('basis')!='actual_output_queues_and_existing_scheduler_crop_budgets' or budget.get('stream')!='modem' or
+            not _bounded_number(budget.get('stream_target_ms'),0,1000) or
+            type(budget.get('backend_usec')) is not int or budget['backend_usec']<0 or
+            any(budget.get(key)!=value for key,value in (('io_service_ms',150),('codec_quantum_ms',120),
+                                                       ('margin_ms',30),('crop_context_ms',200))) or
+            type(budget.get('maximum_lag_ms')) is not int or budget['maximum_lag_ms']!=math.ceil(
+                budget['stream_target_ms']+budget['backend_usec']/1000+150+120+30+200)):
+        raise ValueError('Per-turn waveform alignment is not derived from the declared output queues and existing service budgets')
+    return budget
+
+
 def validate_decoder_control(turn,verify_files=True,case_root=None,expected_transport_sha256=None):
     """Bind the same-rate real decoders to a complete independent SRC model."""
+    alignment_budget=validate_alignment_budget(turn);maximum_lag_ms=alignment_budget['maximum_lag_ms']
     proof=turn.get('decoder_control',{})
     if (proof.get('schema')!='x6200.usb.decoder-control.v1' or proof.get('status')!='PASS' or
             proof.get('basis')!='independent_transport_reference' or proof.get('source_rate')!=48000 or
             proof.get('rate')!=44100 or proof.get('channels')!=1 or proof.get('gain_divisor')!=4 or
-            proof.get('source_context')!='fixed_full_waveform_alignment'):
+            proof.get('source_context')!='fixed_full_waveform_alignment' or proof.get('alignment_budget')!=alignment_budget):
         raise ValueError('Per-turn matched transport decoder control is missing or uses a different model')
     keys=('leading_frames','control_frames','source_frames','transport_frames')
     if (any(type(proof.get(key)) is not int or proof[key]<0 for key in keys) or
@@ -378,10 +635,10 @@ def validate_decoder_control(turn,verify_files=True,case_root=None,expected_tran
     waveform=proof.get('matched_waveform',{})
     if (waveform.get('status')!='PASS' or waveform.get('method')!='full_modem_waveform_and_100ms_windows' or
             waveform.get('complete_reference_covered') is not True or waveform.get('expected_gain')!=1 or
-            waveform.get('minimum_correlation')!=.95 or waveform.get('maximum_lag_ms')!=1000 or
+            waveform.get('minimum_correlation')!=.95 or waveform.get('maximum_lag_ms')!=maximum_lag_ms or
             waveform.get('resampler_edge_allowance_ms')!=5 or waveform.get('allowed_window_normalized_error')!=.35 or
             not _bounded_number(waveform.get('correlation'),.95,1.000001) or
-            not _bounded_number(waveform.get('lag_ms'),0,1000) or
+            not _bounded_number(waveform.get('lag_ms'),0,maximum_lag_ms) or
             not _bounded_number(waveform.get('fitted_gain'),.96,1.04) or
             not _bounded_number(waveform.get('maximum_window_normalized_error'),0,.35) or
             type(waveform.get('reference_frames_compared_at_8k')) is not int or waveform['reference_frames_compared_at_8k']<800):
@@ -426,6 +683,9 @@ def validate_decoder_control(turn,verify_files=True,case_root=None,expected_tran
             raise ValueError('Matched decoder counters differ from their retained enriched stats')
         trace=root/'result'/turn['trace_file']
         rows=[json.loads(line) for line in trace.read_text().splitlines() if line.strip()]
+        from usb_test_support import output_alignment_budget
+        if output_alignment_budget(rows,turn)!=alignment_budget:
+            raise ValueError('Waveform alignment budget differs from the actual negotiated outputs and typed backend receipts')
         from usb_transport_oracle import transport_chunks_for_turn
         start,end,chunks=transport_chunks_for_turn(rows,turn)
         if (start!=turn['source_tap_start'] or end!=turn['source_tap_end'] or chunks!=calls):
@@ -453,7 +713,7 @@ def validate_sink_turns_run(run,case,verify_files=True,expected_transport_sha256
     if (type(expected) is not int or expected<=0 or not isinstance(turns,list) or len(turns)!=expected or
             len(completed)!=expected or harness.get('total_eoo',harness.get('eoo'))!=expected):
         raise ValueError('Required per-turn actual sink evidence does not cover every completed RF turn: '+case)
-    artifact_paths=set();source_ends={}
+    artifact_paths=set();source_ends={};rf_seen=set()
     for number,(turn,interval) in enumerate(zip(turns,completed),1):
         if (turn.get('status')!='PASS' or turn.get('turn')!=number or turn.get('trace_file')!=interval['trace_file'] or
                 turn.get('microphone_frame_budget')!=interval['microphone_frame_budget'] or
@@ -461,13 +721,14 @@ def validate_sink_turns_run(run,case,verify_files=True,expected_transport_sha256
                 type(turn.get('start_ms')) is not int or type(turn.get('end_ms')) is not int or
                 not 0<=turn['start_ms']<=turn['end_ms']):
             raise ValueError('Actual sink turn is duplicated, stale or differs from its finite capture interval: '+case)
+        alignment_budget=validate_alignment_budget(turn);maximum_lag_ms=alignment_budget['maximum_lag_ms']
         waveform=turn.get('content_match',{})
         if (waveform.get('status')!='PASS' or waveform.get('method')!='full_modem_waveform_and_100ms_windows' or
                 waveform.get('complete_reference_covered') is not True or waveform.get('minimum_correlation')!=.95 or
-                waveform.get('maximum_lag_ms')!=1000 or waveform.get('resampler_edge_allowance_ms')!=5 or
+                waveform.get('maximum_lag_ms')!=maximum_lag_ms or waveform.get('resampler_edge_allowance_ms')!=5 or
                 waveform.get('allowed_window_normalized_error')!=.35 or waveform.get('expected_gain')!=.25 or
                 not _bounded_number(waveform.get('correlation'),.95,1.000001) or
-                not _bounded_number(waveform.get('lag_ms'),0,1000) or
+                not _bounded_number(waveform.get('lag_ms'),0,maximum_lag_ms) or
                 not _bounded_number(waveform.get('fitted_gain'),.25*.96,.25*1.04) or
                 not _bounded_number(waveform.get('maximum_window_normalized_error'),0,.35) or
                 type(waveform.get('reference_frames_compared_at_8k')) is not int or
@@ -484,6 +745,12 @@ def validate_sink_turns_run(run,case,verify_files=True,expected_transport_sha256
             if path in artifact_paths:
                 raise ValueError('An earlier decoder or PCM artifact was reused by another actual sink turn: '+case)
             artifact_paths.add(path)
+        validate_rf_window(turn,interval,run,verify_files=verify_files)
+        window=turn['rf_window']
+        if window['status']=='PASS':
+            rf_key=(window['rf_key_sequence'],window['rf_on_after_ns'],window['rf_off_before_ns'])
+            if rf_key in rf_seen:raise ValueError('An earlier physical RF interval was reused for another completed voice turn')
+            rf_seen.add(rf_key)
         reference,observed=turn.get('reference',{}),turn.get('observed',{})
         for stats in (reference,observed):
             if (type(stats.get('failures')) is not int or stats['failures']!=0 or
@@ -520,7 +787,9 @@ def validate_capture_close_run(run,verify_files=False):
         raise ValueError('Finite capture-close proof or completed RF interval accounting is missing')
     if len(turns) < expected_rf or sum(turn.get('rf_completed') is True for turn in turns) != expected_rf:
         raise ValueError('A completed RF turn is missing its finite capture interval')
-    if len(turns) > expected_rf and not (type(harness.get('fault')) is int and harness['fault'] > 1):
+    stopped_after_capture=(harness.get('fault')==1 and harness.get('first_fault_origin')=='local-stop' and
+                           type(run.get('usb_output_contract_version')) is int and run['usb_output_contract_version']==1)
+    if len(turns)>expected_rf and not (type(harness.get('fault')) is int and (harness['fault']>1 or stopped_after_capture)):
         raise ValueError('An uncompleted RF interval cannot count as a successful capture/voice turn')
     seen = set()
     per_trace = {}
@@ -578,6 +847,17 @@ def validate_capture_close_run(run,verify_files=False):
                 budget.get('expected_frames')!=expected or
                 (active >= 750 and (cutoff-start<lower or fence-start>upper))):
             raise ValueError('Capture-close total delivery or pre-fence delivery did not meet the unchanged 1% plus two-fragment budget')
+        if not turn['rf_completed'] and harness.get('fault')==1:
+            witness=turn.get('completion_interruption',{})
+            output=run.get('output_contract') or {}
+            session=next((item for item in output.get('sessions',[]) if item.get('trace_file')==turn['trace_file']),{})
+            if (not stopped_after_capture or witness.get('schema')!='x6200.usb.capture-interruption.v1' or
+                    witness.get('status')!='CONFIRMED' or witness.get('fault')!=1 or witness.get('origin')!='local-stop' or
+                    witness.get('state')!=4 or type(witness.get('ms')) is not int or witness['ms']<turn['closed_ms'] or
+                    witness.get('closed_ms')!=turn['closed_ms'] or witness.get('trace_file')!=turn['trace_file'] or
+                    witness.get('trace_sha256')!=session.get('trace_sha256') or
+                    re.fullmatch('[0-9a-f]{64}',str(witness.get('trace_sha256',''))) is None):
+                raise ValueError('A complete capture interrupted by Stop lacks its retained DRAIN chronology')
     if verify_files:_validate_capture_close_raw(run,proof)
     return proof
 
@@ -608,6 +888,13 @@ def _validate_capture_close_raw(run,proof):
                     turn['frozen_ms']-turn['timing_issued_ms']>=750 or
                     turn['microphone_frame_budget']['fragment_frames']!=descriptor['fragsize']//2):
                 raise ValueError('Capture tail, prefix or continuity differs from the exact raw finite source receipt')
+            if not turn['rf_completed'] and run['harness'].get('fault')==1:
+                witness=turn['completion_interruption']
+                faults=[row for row in rows if row.get('kind')=='event' and row.get('event')=='first-fault']
+                if (not faults or witness['trace_sha256']!=sha(path) or faults[0].get('status')!=1 or
+                        faults[0].get('operation')!='local-stop' or faults[0].get('state')!=4 or
+                        faults[0].get('ms')!=witness['ms'] or faults[0]['ms']<turn['closed_ms']):
+                    raise ValueError('Capture Stop interruption summary differs from its first raw DRAIN fault')
 
 
 def validate_capture_source_boundary_run(run, case, verify_files=True):
@@ -722,6 +1009,51 @@ def validate_capture_pipeline_tail_run(run,verify_files=True):
         if any(proof.get(key)!=value for key,value in actual.items()):
             raise ValueError('Controlled tail summary differs from actual timing, source and sentinel witnesses')
     validate_sink_turns_run(run,'capture-close-tail120',verify_files=verify_files)
+    return proof
+
+
+
+def validate_backend_failure_run(run,case,verify_files=True):
+    specs={'backend-timing-missing':('missing',14,'modem-backend-timing'),
+           'backend-timing-invalid':('invalid',9,'modem-backend-timing-invalid'),
+           'backend-stop-before-timing':('stop-before-timing',1,'local-stop'),
+           'backend-stop-during-wait':('stop-during-wait',1,'local-stop')}
+    mode,fault,origin=specs[case];proof=run.get('backend_failure',{});harness=run.get('harness',{})
+    validate_output_contract_run(run,verify_files=verify_files)
+    if (not isinstance(proof,dict) or proof.get('schema')!='x6200.usb.backend-failure.v1' or proof.get('status')!='PASS' or
+            proof.get('mode')!=mode or proof.get('fault')!=fault or proof.get('origin')!=origin or proof.get('state')!=4 or
+            proof.get('requested_phase')!='drain' or proof.get('eoo')!=1 or proof.get('completed_rf_turns')!=0 or
+            proof.get('keys')!=1 or proof.get('physical_tx') is not False or proof.get('rf_clear_confirmed') is not True or
+            proof.get('interrupted_intervals')!=1 or harness.get('fault')!=fault or harness.get('first_fault_origin')!=origin or
+            harness.get('total_turns',harness.get('turns'))!=0 or harness.get('total_eoo',harness.get('eoo'))!=1 or
+            harness.get('keys')!=1 or harness.get('physical_tx') is not False or harness.get('rf_clear_confirmed') is not True or
+            any(type(proof.get(key)) is not int or proof[key]<0 for key in ('protocol_ack_ms','requested_ms','real_ack_ms','first_fault_ms')) or
+            not 0<proof['protocol_ack_ms']<=proof['requested_ms']<=proof['real_ack_ms']<=proof['first_fault_ms'] or
+            re.fullmatch('[0-9a-f]{64}',str(proof.get('raw_log_sha256',''))) is None or
+            sum(item['interrupted_intervals'] for item in run['output_contract']['sessions'])!=1):
+        raise ValueError('Backend interruption did not retain its actual post-EOO DRAIN request, original fault and fresh RF clear')
+    if mode=='missing' and harness.get('first_fault_operation_ms',0)<1000:
+        raise ValueError('Missing backend timing did not exercise the unchanged one-second operation timeout')
+    if mode=='stop-during-wait':
+        fields=('request_before_ns','request_after_ns','wait_started_ms','wait_until_us')
+        if (any(type(proof.get(key)) is not int or proof[key]<0 for key in fields) or
+                not proof['wait_started_ms']*1000000<=proof['request_before_ns']<=proof['request_after_ns']<proof['wait_until_us']*1000 or
+                proof['request_after_ns']-proof['request_before_ns']>=100000000 or
+                not any(0<item.get('off_before_ns',0)<proof['wait_until_us']*1000 for item in harness.get('rf_intervals',[]))):
+            raise ValueError('Local Stop did not clear RF before the unfinished backend wait expired')
+    if verify_files:
+        from usb_test_support import validate_backend_failure
+        root=Path(run['case_record_path']).parent
+        rows=[]
+        for session in run['output_contract']['sessions']:
+            rows.extend(json.loads(line) for line in (root/'result'/session['trace_file']).read_text().splitlines() if line.strip())
+        text=(root/'test.log').read_text()
+        if hashlib.sha256(text.encode()).hexdigest()!=proof['raw_log_sha256'] or validate_backend_failure(rows,harness,text,mode)!=proof:
+            raise ValueError('Backend interruption summary differs from its exact timing/Stop/fault witnesses')
+        if mode=='missing':
+            receipt=next(row for row in rows if row.get('kind')=='backend-tail')
+            if proof['first_fault_ms']-receipt.get('timing_issued_ms',proof['first_fault_ms'])<1000:
+                raise ValueError('Backend timing timeout is not bound to its actual issue epoch')
     return proof
 
 

@@ -60,6 +60,13 @@ void pa_threaded_mainloop_lock(pa_threaded_mainloop *loop){
 static atomic_uint mic_release_peeks,mic_blocked_peeks;
 static unsigned long long mic_sentinel_frames;
 static atomic_int mic_close_requested,mic_close_invalid,mic_close_tail;
+static atomic_int backend_timing_requested,backend_timing_invalid;
+static atomic_ullong backend_wait_started,backend_wait_until;
+static pa_stream_success_cb_t backend_callback;static void *backend_userdata;
+void usb_test_backend_timing_requested(void){atomic_store(&backend_timing_requested,1);}
+void usb_test_backend_tail_wait_started(uint64_t until){atomic_store(&backend_wait_until,until);atomic_store(&backend_wait_started,now_ms());}
+unsigned long long usb_test_backend_wait_started_ms(void){return atomic_load(&backend_wait_started);}
+unsigned long long usb_test_backend_wait_until_us(void){return atomic_load(&backend_wait_until);}
 static pa_stream_success_cb_t mic_close_callback;static void *mic_close_userdata;
 static void (*mic_close_stop_callback)(void *);static void *mic_close_stop_userdata;
 void usb_test_mic_stop_callback(void (*callback)(void *),void *userdata){mic_close_stop_callback=callback;mic_close_stop_userdata=userdata;}
@@ -141,8 +148,26 @@ static void close_timing_done(pa_stream *stream,int success,void *unused){
     atomic_store(&mic_close_invalid,0);
     atomic_store(&mic_close_tail,0);
 }
+static void backend_timing_done(pa_stream *stream,int success,void *unused){
+    (void)unused;const char *mode=setting("USB_TEST_BACKEND_MODE","");
+    fprintf(stderr,"INJECT backend timing mode=%s real_ack_ms=%llu success=%d withheld=%u phase=drain\n",mode,now_ms(),success,!strcmp(mode,"missing"));
+    if(!strcmp(mode,"missing"))return;
+    if(!strcmp(mode,"invalid"))atomic_store(&backend_timing_invalid,1);
+    if(!strcmp(mode,"stop-before-timing")){
+        if(mic_close_stop_callback)mic_close_stop_callback(mic_close_stop_userdata);
+        fprintf(stderr,"INJECT backend timing stop-before-forward stop_ms=%llu action_invoked=%u phase=drain\n",now_ms(),mic_close_stop_callback!=NULL);
+    }
+    if(backend_callback)backend_callback(stream,success,backend_userdata);
+    atomic_store(&backend_timing_invalid,0);
+}
 pa_operation *pa_stream_update_timing_info(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata){
     pa_operation *(*real)(pa_stream*,pa_stream_success_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_update_timing_info");
+    const char *backend=getenv("USB_TEST_BACKEND_MODE");
+    if(backend&&atomic_exchange(&backend_timing_requested,0)){
+        backend_callback=callback;backend_userdata=userdata;
+        fprintf(stderr,"INJECT backend timing requested_ms=%llu mode=%s phase=drain\n",now_ms(),backend);
+        return real(stream,backend_timing_done,NULL);
+    }
     const char *mode=getenv("USB_TEST_MIC_CLOSE_MODE");
     if(!mode||!atomic_exchange(&mic_close_requested,0))return real(stream,callback,userdata);
     mic_close_callback=callback;mic_close_userdata=userdata;
@@ -152,6 +177,10 @@ pa_operation *pa_stream_update_timing_info(pa_stream *stream,pa_stream_success_c
 const pa_timing_info *pa_stream_get_timing_info(pa_stream *stream){
     const pa_timing_info *(*real)(pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_get_timing_info");
     const pa_timing_info *info=real(stream);
+    if(info&&atomic_load(&backend_timing_invalid)){
+        static _Thread_local pa_timing_info invalid;invalid=*info;invalid.write_index=-1;
+        fprintf(stderr,"INJECT backend timing invalid write_index_bytes=-1 phase=drain\n");return &invalid;
+    }
     if(info&&(atomic_load(&mic_close_invalid)||atomic_load(&mic_close_tail))){
         static _Thread_local pa_timing_info shadow;shadow=*info;
         if(atomic_load(&mic_close_tail)){

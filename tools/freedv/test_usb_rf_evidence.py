@@ -262,18 +262,58 @@ class CollectionTests(unittest.TestCase):
 class CurrentSessionTests(unittest.TestCase):
     identity = dict(session_id='freedv-usb-fixture', build_id='fixture-build', source_commit='e'*40)
 
+    def output_rows(self, turns=3):
+        rows=[]
+        for turn in range(1,turns+1):
+            base=100+(turn-1)*200
+            rows.extend([dict(kind='event',event='state',state=3,ms=base),
+                         dict(kind='event',event='state',state=4,ms=base+10),
+                         dict(kind='backend-tail',schema='x6200.usb.playback-tail.v1',turn=turn,
+                              drain_started_ms=base+10,protocol_ack_ms=base+20,
+                              timing_issued_ms=base+21,timing_issued_us=(base+21)*1000,
+                              timing_ack_ms=base+30,timing_ack_us=(base+30)*1000,
+                              write_index_bytes=202,read_index_bytes=200,sink_usec=10000,
+                              transport_usec=5000,configured_sink_usec=50000,protocol_pending_usec=23,
+                              wait_usec=15023,wait_until_us=(base+30)*1000+15024,
+                              completed_us=(base+45)*1000+500,complete=True,
+                              rf_tx_confirmed=True,rf_disabled=True,scope='pulse-reported-backend-tail',
+                              **self.identity),
+                         dict(kind='event',event='state',state=8,ms=base+45)])
+        return rows
+
     def fixture(self, root, rows=None, completion_fields=None, pointer_fields=None,
-                completion_missing=False, pointer_missing=False, completion_raw=None, **kwargs):
+                completion_missing=False, pointer_missing=False, completion_raw=None,
+                output_contract=True, **kwargs):
         header = dict(kind='session', schema='x6200.usb-audio.v3', qualification_target=3, **self.identity)
         final = dict(kind='sample', ms=1000, state=6, generation=8, fault=1, rf_disabled=True,
                      rf_valid=True, rf_tx=False, rf_clear_confirmed=True, qualification_complete=True,
-                     qualification_turns=3, qualification_target=3)
+                     qualification_turns=3, qualification_target=3,turns=3)
+        if output_contract:
+            header['usb_output_contract_version']=1
+        if rows is None:
+            rows=[header,*self.output_rows(),final] if output_contract else [header,final]
+        elif output_contract:
+            rows=[dict(row) for row in rows]
+            for row in rows:
+                if row.get('kind')=='session':row.setdefault('usb_output_contract_version',1)
+                if row.get('kind')=='sample':row.setdefault('turns',row.get('qualification_turns',0))
+            samples=[row for row in rows if row.get('kind')=='sample']
+            turns=samples[-1].get('turns',0) if samples else 0
+            if type(turns) is int and turns>0 and not any(row.get('kind')=='event' for row in rows):
+                rows[1:1]=self.output_rows(turns)
+        samples=[row for row in rows if row.get('kind')=='sample']
+        turns=samples[-1].get('turns',0) if samples else 0
         completion = dict(kind='completion', schema='x6200.usb-completion.v1', terminal=True,
-                          trace_complete=True, finalized_ms=1001, last_sample_ms=1000, trace_rows=1, events_dropped=0,
+                          trace_complete=True, finalized_ms=1001, last_sample_ms=1000,
+                          trace_rows=sum(row.get('kind') in ('event','sample') for row in rows),events_dropped=0,
                           trace_history_truncated=False, storage_errno=0,
                           **self.identity, **{name:final[name] for name in
                           ('state','fault','rf_disabled','rf_valid','rf_tx','rf_clear_confirmed',
                            'qualification_complete','qualification_turns','qualification_target')})
+        if output_contract:
+            completion.update(usb_output_contract_version=1,turns=turns,
+                              playback_tail_completed_intervals=sum(row.get('kind')=='backend-tail' and row.get('complete') is True for row in rows),
+                              playback_tail_interrupted_intervals=sum(row.get('kind')=='backend-tail' and row.get('complete') is False for row in rows))
         completion.update(completion_fields or {})
         pointer = dict(kind='session-pointer', schema='x6200.usb-current.v1', terminal=False,
                        trace_basename='freedv-usb-fixture.jsonl', completion_basename='freedv-usb-fixture-completion.json',
@@ -281,8 +321,9 @@ class CurrentSessionTests(unittest.TestCase):
         pointer.update(pointer_fields or {})
         manifest = dict(usb_startup_contract_version=3, on_device_readiness_required=True,
                         firmware_commit=self.identity['source_commit'],build_id=self.identity['build_id'])
+        if output_contract:manifest['usb_output_contract_version']=1
         manifest.update(kwargs.pop('manifest_fields', {}))
-        return CollectionTests.collect_fixture(self, root, rows=rows if rows is not None else [header,final],
+        return CollectionTests.collect_fixture(self, root, rows=rows,
             manifest_fields=manifest, pointer=None if pointer_missing else pointer,
             completion=None if completion_missing else completion_raw if completion_raw is not None else completion,
             **kwargs)
@@ -298,6 +339,80 @@ class CurrentSessionTests(unittest.TestCase):
             self.assertEqual(result['stages']['session']['status'],'COMPLETE')
             self.assertEqual(result['session_identity'],self.identity)
             self.assertTrue((output/'runtime-completion.json').exists())
+            self.assertEqual(result['output_contract']['completed_turns'],3)
+
+    def test_legacy_startup_v3_remains_diagnostic_without_output_marker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=self.fixture(Path(temp),output_contract=False)
+            self.assertEqual(result['status'],'COLLECTED_NO_SDR_RECORDING')
+            self.assertFalse(result['ready_for_rf_test'])
+            self.assertEqual(result['output_contract']['status'],'DIAGNOSTIC_ONLY')
+            self.assertTrue((output/'usb-session.jsonl').exists())
+
+    def test_required_output_marker_rejects_legacy_header_or_flags_without_receipts(self):
+        for marker in (None,2,True,'1',1):
+            rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,**self.identity),
+                  *self.output_rows(),
+                  dict(kind='sample',ms=1000,state=6,generation=8,fault=1,rf_disabled=True,rf_valid=True,
+                       rf_tx=False,rf_clear_confirmed=True,qualification_complete=True,
+                       qualification_turns=3,qualification_target=3,turns=3)]
+            if marker is not None:rows[0]['usb_output_contract_version']=marker
+            if marker==1 and type(marker) is int:
+                rows=[row for row in rows if row.get('kind')!='backend-tail']
+            with self.subTest(marker=marker),tempfile.TemporaryDirectory() as temp:
+                result,output,_=self.fixture(Path(temp),rows=rows,output_contract=False,
+                    manifest_fields=dict(usb_output_contract_version=1),
+                    completion_fields=dict(usb_output_contract_version=1,turns=3,
+                        playback_tail_completed_intervals=0,playback_tail_interrupted_intervals=0))
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertFalse(result['ready_for_rf_test'])
+                self.assertTrue((output/'usb-session.jsonl').exists())
+
+    def test_unknown_manifest_output_contract_cannot_promote(self):
+        for marker in (None,0,2,True,'1'):
+            with self.subTest(marker=marker),tempfile.TemporaryDirectory() as temp:
+                result,_,_=self.fixture(Path(temp),manifest_fields={'usb_output_contract_version':marker})
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertFalse(result['ready_for_rf_test'])
+
+    def test_output_completion_marker_is_mandatory_for_new_image(self):
+        for marker in (None,0,2,True,'1'):
+            with self.subTest(marker=marker),tempfile.TemporaryDirectory() as temp:
+                result,_,_=self.fixture(Path(temp),completion_fields={'usb_output_contract_version':marker})
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertFalse(result['ready_for_rf_test'])
+
+    def test_receipt_identity_ordinal_and_tail_timing_are_collection_gates(self):
+        for field,value in (('source_commit','f'*40),('session_id','freedv-usb-old'),
+                            ('turn',2),('wait_usec',0),('completed_us',130000),
+                            ('schema','x6200.usb.playback-tail.v0')):
+            rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,**self.identity),
+                  *self.output_rows(),
+                  dict(kind='sample',ms=1000,state=6,generation=8,fault=1,rf_disabled=True,rf_valid=True,
+                       rf_tx=False,rf_clear_confirmed=True,qualification_complete=True,
+                       qualification_turns=3,qualification_target=3,turns=3)]
+            next(row for row in rows if row.get('kind')=='backend-tail')[field]=value
+            with self.subTest(field=field),tempfile.TemporaryDirectory() as temp:
+                result,output,_=self.fixture(Path(temp),rows=rows)
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertEqual(result['primary_failure_stage'],'collection')
+                self.assertFalse(result['ready_for_rf_test'])
+                self.assertTrue((output/'usb-session.jsonl').exists())
+
+    def test_zero_turn_stop_or_fault_has_complete_collection_without_tail(self):
+        for state,fault in ((6,1),(5,9)):
+            rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,**self.identity),
+                  dict(kind='sample',ms=1000,state=state,generation=2,fault=fault,rf_disabled=True,
+                       rf_valid=True,rf_tx=False,rf_clear_confirmed=True,qualification_complete=False,
+                       qualification_turns=0,qualification_target=3,turns=0)]
+            with self.subTest(state=state),tempfile.TemporaryDirectory() as temp:
+                result,_,_=self.fixture(Path(temp),rows=rows,completion_fields=dict(state=state,fault=fault,
+                    qualification_complete=False,qualification_turns=0))
+                self.assertEqual(result['stages']['collection']['status'],'PASS')
+                self.assertEqual(result['stages']['session']['status'],'COMPLETE')
+                self.assertEqual(result['output_contract']['receipt_count'],0)
+                self.assertEqual(result['output_contract']['completed_turns'],0)
+                self.assertFalse(result['ready_for_rf_test'])
 
     def test_crashed_rx_snapshot_cannot_be_mistaken_for_stopped(self):
         rows=[dict(kind='session',schema='x6200.usb-audio.v3',qualification_target=3,**self.identity),
@@ -466,12 +581,23 @@ class KitContractTests(unittest.TestCase):
             self.assertNotEqual(legacy.returncode,0)
             manifest.update(usb_startup_contract_version=3,build_id='fixture-build')
             path.write_text(json.dumps(manifest))
+            for marker in (None,0,2,True,'1'):
+                if marker is None:manifest.pop('usb_output_contract_version',None)
+                else:manifest['usb_output_contract_version']=marker
+                path.write_text(json.dumps(manifest))
+                rejected=subprocess.run(command,capture_output=True,text=True,timeout=15)
+                self.assertNotEqual(rejected.returncode,0)
+                self.assertFalse((root/'kit.zip').exists())
+            manifest['usb_output_contract_version']=1
+            path.write_text(json.dumps(manifest))
             accepted=subprocess.run(command,capture_output=True,text=True,timeout=15)
             self.assertEqual(accepted.returncode,0,accepted.stderr)
             import zipfile
             with zipfile.ZipFile(root/'kit.zip') as z:
                 kit=json.loads(z.read('rf-test-manifest.json'))
                 self.assertEqual(kit['usb_startup_contract_version'],3)
+                self.assertEqual(kit['usb_output_contract_version'],1)
+                self.assertIn('usb_output_contract.py',kit['files'])
                 self.assertTrue(kit['on_device_readiness_required'])
                 self.assertFalse(kit['rf_commands'])
                 for name in ('gui_sha256','runner_sha256','rade_sha256','image_sha256','firmware_commit','build_id'):
@@ -504,8 +630,9 @@ class CliTests(unittest.TestCase):
             fixture=CurrentSessionTests()
             fixture.fixture(root, **fixture_fields)
             shutil.copy2(Path(subject.__file__),root/'usb_rf_evidence.py')
+            shutil.copy2(Path(subject.__file__).with_name('usb_output_contract.py'),root/'usb_output_contract.py')
             (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',
-                usb_startup_contract_version=3,on_device_readiness_required=True,
+                usb_startup_contract_version=3,usb_output_contract_version=1,on_device_readiness_required=True,
                 firmware_commit=fixture.identity['source_commit'],build_id=fixture.identity['build_id'])))
             (root/'usb_headset_inventory.py').write_text(textwrap.dedent('''\
                 import hashlib
@@ -545,6 +672,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='usb rf cli ') as temp:
             root=Path(temp)
             shutil.copy2(Path(subject.__file__),root/'usb_rf_evidence.py')
+            shutil.copy2(Path(subject.__file__).with_name('usb_output_contract.py'),root/'usb_output_contract.py')
             (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',runner_sha256='fixture',rade_sha256='fixture')))
             if damaged_manifest:
                 (root/'rf-test-manifest.json').write_text('{damaged transfer')

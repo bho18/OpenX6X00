@@ -31,7 +31,7 @@ USB_REQUIRED_COVERAGE = {
     'tail_backpressure',
     'infrastructure_failure_preservation',
     'capture_close', 'source_boundary',
-    'host_resources', 'matched_decoder_control', 'release_lock_protocol', 'capture_pipeline_tail',
+    'host_resources', 'matched_decoder_control', 'release_lock_protocol', 'capture_pipeline_tail', 'backend_profiles', 'backend_timing_faults', 'rf_window_integrity',
 }
 
 
@@ -40,6 +40,8 @@ def verify_usb_integration(verification):
     evidence = verification.get('usb_integration', {})
     matrix = evidence.get('matrix', {})
     if (evidence.get('status') != 'PASS' or evidence.get('contract_version') != 3 or
+            type(evidence.get('usb_output_contract_version')) is not int or evidence['usb_output_contract_version']!=1 or
+            type(matrix.get('usb_output_contract_version')) is not int or matrix['usb_output_contract_version']!=1 or
             evidence.get('evidence_cli', {}).get('status') != 'PASS' or
             matrix.get('status') != 'PASS' or
             matrix.get('complete_matrix') is not True or matrix.get('skipped') != [] or
@@ -191,7 +193,7 @@ def main():
                       hardware_status='RF_DISABLED_EVALUATION_REQUIRED',ready_for_guided_hardware_tests=True,
                       usb_rf_test_ready=True,native_mode_status='BLOCKED: unchanged native MCU contract guard',
                       validation_scope='Session-contract v3 repeated software campaign passed; real-device cold-idle evaluation precedes local RF arming and the SDR trial',
-                      usb_startup_contract_version=3,on_device_readiness_required=True,
+                      usb_startup_contract_version=3,usb_output_contract_version=1,on_device_readiness_required=True,
                       rf_arm_policy='Local only, after the shared-core RF-disabled audio evaluation passes; panel PTT only; requested 1 W',
                       stock_baseband_lease_available=False,physical_rf_off_timing='UNMEASURED')
     if a.pulse_probe:record['pulse_probe_sha256']=sha(a.pulse_probe)

@@ -5,6 +5,7 @@ No radio is contacted. Failures retain the original cause and partial evidence.
 Every completed modem turn is checked against its own controller reference.
 """
 import argparse
+from array import array
 import hashlib
 import json
 import math
@@ -25,9 +26,10 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require,
                               audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait, validate_tail_backpressure,
                               capture_close_oracle, indexed_capture_source_match, validate_capture_release_boundary,
                               validate_capture_close_failure,validate_decoder_control_inputs,validate_matched_turn_decode,
-                              validate_capture_pipeline_tail)
+                              validate_capture_pipeline_tail,output_alignment_budget,fifo_rf_window,validate_backend_failure)
 from usb_transport_oracle import transport_chunks_for_turn,matched_decoder_control
 from usb_collector_contract import validate_collector_contract
+from usb_output_contract import validate_output_contract
 
 CASES = (
     'normal', 'rx-signal', 'block-key', 'stop-during-key', 'release-during-key',
@@ -46,12 +48,15 @@ CASES = (
     'capture-release-split', 'capture-release-held150',
     'capture-close-missing', 'capture-close-invalid', 'capture-close-stop',
     'capture-close-tail120',
+    'backend-fixed-pipe',
+    'backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait',
 )
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
 SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale',
                 'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled', 'cold-resume',
                 'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session', 'io-pause150', 'eoo-backpressure',
-                'capture-release-split','capture-release-held150','capture-close-tail120'}
+                'capture-release-split','capture-release-held150','capture-close-tail120',
+                'backend-fixed-pipe'}
 WAVEFORM_CASES = SPEECH_CASES | {'short-turn200'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
 PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
@@ -59,7 +64,11 @@ PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
             for mode in ('delay', 'reject', 'missing')}
 CAPTURE_RELEASE_CASES={'capture-release-split','capture-release-held150'}
 CAPTURE_FAILURE_CASES={'capture-close-missing','capture-close-invalid','capture-close-stop'}
+BACKEND_FAILURE_CASES={'backend-timing-missing':'missing','backend-timing-invalid':'invalid',
+    'backend-stop-before-timing':'stop-before-timing','backend-stop-during-wait':'stop-during-wait'}
+BACKEND_PROFILE_CASES={'backend-fixed-pipe':'fixed-pipe','io-pause150':'fixed-pipe','rx-pause150':'default'}
 INJECT_CASES = COLD_CASES | set(PA_CASES) | CAPTURE_RELEASE_CASES | CAPTURE_FAILURE_CASES | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure','capture-close-tail120'}
+INJECT_CASES |= set(BACKEND_FAILURE_CASES)
 CASE_TIMEOUTS = {'many-turns': 120, 'reopen': 180, 'cold-idle': 100, 'drain-tx-loss': 60, 'full-session':120}
 
 
@@ -73,7 +82,9 @@ def injection_environment(case, root, library):
         return {}
     require(library and library.is_file(), 'This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
-    if case=='capture-close-tail120':
+    if case in BACKEND_FAILURE_CASES:
+        result['USB_TEST_BACKEND_MODE']=BACKEND_FAILURE_CASES[case]
+    elif case=='capture-close-tail120':
         result.update(USB_TEST_MIC_CLOSE_MODE='tail120',USB_TEST_MIC_OBSERVER_PREFIX=str(root/'result/mic-observer'))
     elif case in CAPTURE_RELEASE_CASES:
         result.update(USB_TEST_MIC_OBSERVER_PREFIX=str(root/'result/mic-observer'),
@@ -158,18 +169,65 @@ def decode_pcm(runner, pcm, rate, directory, commands, env):
     return stats
 
 
-def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env, expected_turns, turn_records=(), require_speech=True, progress=None):
+def json_rows(path):
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def monitor_crop(root,turn,rate,stream='radio-output'):
+    """Select contiguous received blocks, without claiming a monitor DAC clock."""
+    blocks=[row for row in json_rows(root/(stream+'.jsonl')) if row.get('kind')=='block']
+    selected=[row for row in blocks if (turn['start_ms']-200)*1000000<=row['received_ns']<=
+              (turn['end_ms']+200)*1000000]
+    require(selected,'Passive monitor has no received blocks for the turn')
+    begin=selected[0]['frame_start'];end=selected[-1]['frame_start']+selected[-1]['frames']
+    pcm=(root/(stream+'.raw')).read_bytes()
+    require(0<=begin<end<=len(pcm)//2,'Passive monitor block ledger is incomplete')
+    return begin,pcm[begin*2:end*2]
+
+
+def rf_window_proof(root,rows,turn,ordinal,transported,proof,begin,harness,fifo=False):
+    receipt=next(row for row in rows if row.get('kind')=='backend-tail' and row.get('turn')==ordinal)
+    require(receipt['complete'] and receipt['rf_tx_confirmed'],'Turn has no complete backend-tail barrier')
+    digest=hashlib.sha256(json.dumps(receipt,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    base={'schema':'x6200.usb.rf-window.v1','receipt_turn':ordinal,'receipt_sha256':digest,
+          'backend_completed_ns':receipt['completed_us']*1000,'complete_reference_covered':True}
+    if receipt['rf_disabled']:
+        require(not any(item['on_before_ns']<turn['end_ms']*1000000 and
+                        item['off_after_ns']>turn['start_ms']*1000000 for item in harness['rf_intervals']),
+                'RF-disabled qualification unexpectedly overlapped a physical key interval')
+        return dict(base,status='NOT_APPLICABLE',scope='RF-disabled qualification',rf_disabled=True)
+    matches=[item for item in harness['rf_intervals'] if item['on_after_ns']<=(turn['start_ms']+1)*1000000 and
+             item['off_before_ns']>=turn['start_ms']*1000000]
+    require(len(matches)==1,'Completed turn has no unique physical RF interval')
+    interval=matches[0]
+    base.update(rf_key_sequence=interval['key_sequence'],**{'rf_'+key:interval[key] for key in
+        ('on_before_ns','on_after_ns','off_before_ns','off_after_ns')})
+    require(base['backend_completed_ns']<=interval['off_before_ns'],'RF was cleared before backend tail completion')
+    if fifo:
+        window=fifo_rf_window(json_rows(root/'fifo-modem.jsonl'),transported,
+            begin+proof['native_alignment']['offset_frames'],interval['on_after_ns'],interval['off_before_ns'])
+        window.update(base)
+        window['fifo_artifacts']={name:{'path':str(root/path),'sha256':sha(root/path)} for name,path in
+            [('raw','fifo-modem.raw'),('timing','fifo-modem.jsonl'),('mono','fifo-modem-mono.raw')]}
+        require(window['status']=='PASS','Finite modem waveform/EOO crossed the actual paced FIFO RF window')
+        return window
+    return dict(base,status='PASS',scope='pulse-reported backend model; not physical hardware',
+        basis='fresh_backend_tail_before_RF_off',all_signal_consumed_while_rf=True,finite_deadline_before_rf_off=True)
+
+
+def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env, expected_turns, turn_records=(), require_speech=True, progress=None,harness=None,fifo=False):
     """Check every sink turn; an earlier successful burst cannot mask a lost turn.
 
-    The monitor is timestamped at launch. A 200 ms crop margin covers negotiated
-    PA monitor buffering. Exact render-input accounting locates each original
+    Passive monitor receive-block timestamps select a contiguous crop; they are
+    not a physical DAC clock. The fixed-pipe profile instead uses independently
+    paced FIFO reads. Exact render-input accounting locates each original
     48k modem span and is checked against retained harness offsets when present.
     Complete waveform coverage precedes an independent 44.1k transport control
     with the same gain, leading context and decoder padding as the actual sink.
     The 48k source is retained as a diagnostic artifact; there are two decodes
     per turn. Comparison allows one 120 ms block plus 20 ms sample rounding.
     """
-    pcm = (root / 'radio-output.raw').read_bytes()
+    pcm = (root / ('fifo-modem-mono.raw' if fifo else 'radio-output.raw')).read_bytes()
     results = []
     for trace_path in trace_paths:
         rows = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
@@ -212,14 +270,21 @@ def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env
                 result.update(source_tap_start=reference_start,source_tap_end=reference_end,
                     reference_boundary_basis='exact_modem_tap_offsets' if exact else 'exact_render_input_accounting',
                     microphone_frame_budget=closed[index]['microphone_frame_budget'])
-                begin=max(0,math.floor((turn['start_ms']/1000-recording_started-.2)*44100))
-                end=math.ceil((turn['end_ms']/1000-recording_started+.2)*44100)
-                require(end>begin and end*2<=len(pcm)+44100,'Monitor recording is missing the complete turn interval')
-                observed=pcm[begin*2:min(len(pcm),end*2)]
-                result['content_match']=modem_waveform_match(reference_turn,48000,observed,44100)
+                budget=output_alignment_budget(rows,turn);result['alignment_budget']=budget
+                if fifo:
+                    origin=next(row['clock_origin_ns'] for row in json_rows(root/'fifo-modem.jsonl') if row.get('kind')=='session')
+                    begin=max(0,math.floor(((turn['start_ms']-200)*1000000-origin)*44100/1000000000))
+                    end=min(len(pcm)//2,math.ceil(((turn['end_ms']+200)*1000000-origin)*44100/1000000000))
+                    observed=pcm[begin*2:end*2]
+                else:
+                    begin,observed=monitor_crop(root,turn,44100)
+                result['monitor_frame_start']=begin
+                result['content_match']=modem_waveform_match(reference_turn,48000,observed,44100,maximum_lag_ms=budget['maximum_lag_ms'])
                 persist()  # A later decoder failure cannot erase complete waveform evidence.
-                control,transported,proof=matched_decoder_control(reference_turn,chunks,observed,result['content_match'])
+                control,transported,proof=matched_decoder_control(reference_turn,chunks,observed,result['content_match'],alignment_budget=budget)
                 transport_path.write_bytes(transported);result['decoder_control']=proof;persist()
+                result['rf_window']=rf_window_proof(root,rows,turn,index+1,transported,proof,begin,harness,fifo)
+                persist()
                 reference_stats=decode_pcm(runner,control,44100,reference_dir,commands,env)
                 result['reference']=reference_stats;proof['reference_stimulus_sha256']=reference_stats['input_sha256'];persist()
                 observed_stats=decode_pcm(runner,observed,44100,actual_dir,commands,env)
@@ -251,15 +316,17 @@ def headset_oracle(root, trace_path, recording_started):
     pcm=(root/'headset-output.raw').read_bytes()
     # The complete reference remains intact; only leading monitor silence is
     # cropped. Two hundred milliseconds precede the first positive counter.
-    begin=max(0,math.floor((rendered['ms']/1000-recording_started-.2)*48000))
-    matched=modem_waveform_match(reference,48000,pcm[begin*2:],48000,expected_gain=.125)
+    turn={'start_ms':rendered['ms'],'end_ms':samples[-1]['ms']}
+    begin,observed=monitor_crop(root,turn,48000,'headset-output')
+    budget=output_alignment_budget(rows,turn,'headset')
+    matched=modem_waveform_match(reference,48000,observed,48000,expected_gain=.125,maximum_lag_ms=budget['maximum_lag_ms'])
     descriptor=next(row for row in rows if row.get('kind')=='stream' and row.get('stream')=='radio-rx')
     progression=microphone_frame_budget(samples[-1]['ms']-samples[0]['ms'],
         samples[-1]['rx_captured']-samples[0]['rx_captured'],descriptor['fragsize']//2,rate=44100,stream='radio-rx')
     require(samples[-1]['rx_holes']==0,'RX capture contained a hole')
     return {'status':'PASS','scope':'Actual private-Pulse headphone monitor vs complete decoded tap; no RF',
             'waveform':matched,'capture_frame_budget':progression,'rendered_frames':len(reference)//2,
-            'leading_monitor_context_ms':200,'intelligibility':'UNASSESSED'}
+            'leading_monitor_context_ms':200,'monitor_frame_start':begin,'alignment_budget':budget,'intelligibility':'UNASSESSED'}
 
 
 def retain_failed_controller(root, args, record):
@@ -302,6 +369,11 @@ def run_case(args):
               'runner_sha256': sha(args.runner) if args.runner else None,
               'fault_injector_sha256': sha(args.fault_inject_so) if args.fault_inject_so else None,
               'commands': commands}
+    profile=BACKEND_PROFILE_CASES.get(args.case,'legacy-low-latency')
+    record['backend_profile']={'schema':'x6200.usb.backend-profile.v1','name':profile,'passive_monitor':args.case!='cold-idle',
+        'observer_excluded_for_idle':args.case=='cold-idle',
+        'competing_monitor':False,'modem_sink_module':'module-pipe-sink' if profile=='fixed-pipe' else 'module-null-sink',
+        'null_norewinds':profile=='legacy-low-latency'}
     env = os.environ.copy()
     supervisor = ProcessSupervisor(root, env)
     recording = headset_recording = cleanup = pulse_runtime = None
@@ -325,13 +397,15 @@ def run_case(args):
             require(all(expected.values()), 'Campaign supplied incomplete controller identity')
             require(record['test_binary_sha256'] == expected['binary_sha256'], 'Invoked controller binary differs from the campaign')
         conf = root / 'default.pa'
+        rewind=' norewinds=1' if profile=='legacy-low-latency' else ''
+        modem_sink=(f'load-module module-pipe-sink sink_name=radio_sink_fixture rate=44100 channels=2 format=s16le file={pulse_runtime.directory}/modem.fifo use_system_clock_for_timing=no\n'
+                    if profile=='fixed-pipe' else 'load-module module-null-sink sink_name=radio_sink_fixture rate=44100 channels=2 format=s16le'+rewind+'\n')
         conf.write_text('.fail\n' + f'load-module module-native-protocol-unix socket={pulse_runtime.socket} auth-anonymous=1\n' +
             'load-module module-null-sink sink_name=mic_fixture rate=16000 channels=1 format=s16le norewinds=1\n' +
             'load-module module-remap-source source_name=alsa_input.usb-fixture master=mic_fixture.monitor rate=16000 channels=1\n' +
             'load-module module-null-sink sink_name=rf_fixture rate=44100 channels=2 format=s16le norewinds=1\n' +
             'load-module module-remap-source source_name=radio_source_fixture master=rf_fixture.monitor rate=44100 channels=2\n' +
-            'load-module module-null-sink sink_name=alsa_output.usb-fixture rate=48000 channels=2 format=s24le norewinds=1\n' +
-            'load-module module-null-sink sink_name=radio_sink_fixture rate=44100 channels=2 format=s16le norewinds=1\n' +
+            'load-module module-null-sink sink_name=alsa_output.usb-fixture rate=48000 channels=2 format=s24le'+rewind+'\n' +modem_sink+
             'load-module module-null-sink sink_name=unrelated_sink norewinds=1\nload-module module-rescue-streams\n' +
             ('load-module module-suspend-on-idle timeout=1\n' if args.case == 'cold-idle' else ''))
         pulse_args = ['pulseaudio', '-nF', str(conf), '--daemonize=no', '--use-pid-file=no', '--exit-idle-time=-1']
@@ -360,6 +434,11 @@ def run_case(args):
             attempt += 1
             time.sleep(.05)
         require(ready, 'Private Pulse did not become ready')
+        fifo_reader=None
+        if profile=='fixed-pipe':
+            fifo_reader=supervisor.start('fifo-clock',[sys.executable,Path(__file__).with_name('usb_fifo_clock.py'),
+                '--fifo',pulse_runtime.directory/'modem.fifo','--output',root/'fifo-modem.raw','--timing',root/'fifo-modem.jsonl',
+                '--rate','44100','--channels','2','--width','2','--period-ms','10'])
         supervisor.start('legacy-capture', ['parec', '--device=radio_source_fixture', '--rate=44100', '--channels=2',
                                            '--format=s16le', '--latency-msec=10'], stdout=subprocess.DEVNULL)
         horizon = CASE_TIMEOUTS.get(args.case, 75) + 15
@@ -384,32 +463,60 @@ def run_case(args):
                 _, text = check_command(['pactl', 'list', 'short', kind], root, name+'-'+kind, commands, env)
                 content += kind + '\n' + text
             (root/name).write_text(content)
+            for kind in ('sinks','source-outputs'):
+                check_command(['pactl','list',kind],root,name.removesuffix('.txt')+'-'+kind+'-details',commands,env)
             return content
 
         before = endpoints('endpoints-before.txt')
         require(re.search(r'alsa_input\.usb-fixture\s+[^\n]*1ch 16000Hz', before), before)
         require(re.search(r'alsa_output\.usb-fixture\s+[^\n]*2ch 48000Hz', before), before)
         require(re.search(r'radio_sink_fixture\s+[^\n]*2ch 44100Hz', before), before)
+        monitor_source=Path(__file__).with_name('usb_audio_monitor.c')
+        monitor_binary=root/'passive-monitor'
+        check_command(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',monitor_source,'-lpulse','-o',monitor_binary],
+                      root,'compile-passive-monitor',commands,env,30)
+        record['passive_monitor']={'source_sha256':sha(monitor_source),'binary_sha256':sha(monitor_binary),
+            'adjust_latency':False,'early_requests':False,'scope':'passive rendered sink monitor; not physical DAC time'}
         recorder = None
         recording_started = None
         headset_recorder = None
         headset_recording_started = None
-        # An open monitor can prevent the idle sink from suspending. This case
-        # proves private-Pulse suspension through trace events, not sink decode.
-        if args.case not in {'cold-idle','rx-pause150'}:
-            recording = (root/'radio-output.raw').open('wb')
-            recording_started = time.monotonic()
-            recorder = supervisor.start('modem-monitor', ['parec', '--device=radio_sink_fixture.monitor', '--rate=44100',
-                                                         '--format=s16le', '--channels=1', '--latency-msec=20'], stdout=recording)
-        if args.case=='rx-pause150':
-            headset_recording=(root/'headset-output.raw').open('wb')
-            headset_recording_started=time.monotonic()
-            headset_recorder=supervisor.start('headset-monitor',['parec','--device=alsa_output.usb-fixture.monitor',
-                '--rate=48000','--format=s16le','--channels=1','--latency-msec=20'],stdout=headset_recording)
+        def start_observers():
+            nonlocal recorder,recording_started,headset_recorder,headset_recording_started
+            # Admission is held at initial RX until these clients are ready.
+            # They cannot mask the production controller's startup grants.
+            if args.case not in {'cold-idle','rx-pause150'}:
+                recording_started=time.monotonic()
+                recorder=supervisor.start('modem-monitor',[monitor_binary,'--device','radio_sink_fixture.monitor','--rate','44100',
+                    '--output',root/'radio-output.raw','--timing',root/'radio-output.jsonl'])
+            if args.case=='rx-pause150':
+                headset_recording_started=time.monotonic()
+                headset_recorder=supervisor.start('headset-monitor',[monitor_binary,'--device','alsa_output.usb-fixture.monitor',
+                    '--rate','48000','--output',root/'headset-output.raw','--timing',root/'headset-output.jsonl'])
+            deadline=time.monotonic()+3
+            ledgers=[root/name for name in ('radio-output.jsonl','headset-output.jsonl') if
+                (name.startswith('radio') and recorder) or (name.startswith('headset') and headset_recorder)]
+            def observer_delivering(path):
+                if not path.is_file():return False
+                content=path.read_text()
+                complete=content[:content.rfind('\n')+1]
+                entries=[json.loads(line) for line in complete.splitlines() if line.strip()]
+                needs_block=profile!='fixed-pipe' or path.name=='headset-output.jsonl'
+                return any(row.get('kind')=='ready' for row in entries) and (not needs_block or any(row.get('kind')=='block' for row in entries))
+            while ledgers and not all(observer_delivering(path) for path in ledgers):
+                supervisor.require_running()
+                require(time.monotonic()<deadline,'Passive observer did not acknowledge readiness')
+                time.sleep(.01)
+            record['observer_admission']={'schema':'x6200.usb.observer-admission.v1','phase':'after-initial-RX-before-PTT',
+                'ready_ns':time.monotonic_ns(),'first_block_required':bool(ledgers) and (profile!='fixed-pipe' or headset_recorder is not None),
+                'first_block_confirmed':bool(ledgers) and (profile!='fixed-pipe' or headset_recorder is not None),'independent_fifo_reader':fifo_reader is not None,
+                'cold_idle_unobserved':args.case=='cold-idle'}
+            (root/'result/output-observer-ready').write_text(str(record['observer_admission']['ready_ns'])+'\n')
         child_env = dict(env, **injection_environment(args.case, root, args.fault_inject_so))
         if args.case=='rx-pause150':
             require(0<rx_fixture_seconds<=30,'RX fixture exceeds its bounded orchestration horizon')
             child_env['USB_TEST_RX_FIXTURE_MS']=str(math.ceil(rx_fixture_seconds*1000))
+        child_env['USB_TEST_OUTPUT_OBSERVER_BARRIER']='1'
         # Only the controller process receives the interposer, never Pulse/fixtures.
         # Keep the controller's bounded trace-prefix buffers independent of
         # immutable attempt path depth, just as the private Pulse socket is.
@@ -419,10 +526,13 @@ def run_case(args):
         until = time.monotonic() + CASE_TIMEOUTS.get(args.case, 75)
         changed = False
         rx_source_started=rx_source_silenced=False
+        observers_started=False
         while test.poll() is None:
             supervisor.require_running(except_process=test)
             require(time.monotonic() <= until, 'Controller scenario timed out')
             text = (root/'test.log').read_text()
+            if not observers_started and 'FIXTURE_OUTPUT_READY' in text:
+                start_observers();observers_started=True
             if args.case=='rx-pause150' and not rx_source_started and 'RX_FIXTURE_READY' in text:
                 supervisor.stop(radio_source)
                 radio_source=supervisor.start('radio-modem-source',['paplay','--device=rf_fixture',*rx_modem_args])
@@ -457,6 +567,7 @@ def run_case(args):
         trace_paths = sorted((root/'result').glob('freedv-usb-session*.jsonl'))
         require(trace_paths, 'No controller trace was produced')
         rows, identities, capture_closes, abandoned_closes = [], [], [], 0
+        output_sessions=[]
         for path in trace_paths:
             trace_rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
             status_rows = [row for row in trace_rows if row.get('kind') == 'sample']
@@ -468,16 +579,25 @@ def run_case(args):
             identities.append(validate_session_identity(trace_rows, json.loads(completion_path.read_text()),
                                                         expected['source_commit'], expected['build_id'],
                                                         args.case in {'storage-start-fails','storage-completion-fails'}))
+            output_sessions.append(dict(validate_output_contract(trace_rows,json.loads(completion_path.read_text())),
+                trace_file=path.name,completion_file=completion_path.name,trace_sha256=sha(path),completion_sha256=sha(completion_path)))
             turns=completed_turns(trace_rows)
             abandoned_closes+=sum(row.get('kind')=='capture-close' and row.get('complete') is False for row in trace_rows)
             if turns or any(row.get('kind')=='capture-close' and row.get('complete') is True for row in trace_rows):
                 closed=capture_close_oracle(trace_rows,path.with_name(path.stem+'-mic.raw').read_bytes(),len(turns))
-                capture_closes.extend(dict(turn,trace_file=path.name) for turn in closed['turns'])
+                for turn in closed['turns']:
+                    if 'completion_interruption' in turn:
+                        turn['completion_interruption'].update(trace_file=path.name,trace_sha256=sha(path))
+                    capture_closes.append(dict(turn,trace_file=path.name))
             rows.extend(trace_rows)
         require(sum(turn['rf_completed'] for turn in capture_closes)==harness.get('total_turns',harness['turns']),
                 'Finite capture closure did not cover every completed controller turn')
-        require(len(capture_closes)==harness.get('total_turns',harness['turns']) or harness['fault']>1,
+        require(len(capture_closes)==harness.get('total_turns',harness['turns']) or harness['fault']>1 or
+                (harness['fault']==1 and all('completion_interruption' in turn for turn in capture_closes if not turn['rf_completed'])),
                 'A healthy controller abandoned a completely closed capture interval')
+        record['usb_output_contract_version']=1
+        record['output_contract']={'schema':'x6200.usb.output-contract-set.v1','status':'PASS',
+            'usb_output_contract_version':1,'sessions':output_sessions}
         record['capture_close']={'status':'PASS','deadline_ms':750,'turns':capture_closes,
             'completed_rf_turns':harness.get('total_turns',harness['turns']),
             'completed_intervals':len(capture_closes),'abandoned_intervals':abandoned_closes,
@@ -509,6 +629,8 @@ def run_case(args):
         if args.case in CAPTURE_FAILURE_CASES:
             record['capture_close_failure']=validate_capture_close_failure(rows,harness,text,
                 args.case.removeprefix('capture-close-'))
+        if args.case in BACKEND_FAILURE_CASES:
+            record['backend_failure']=validate_backend_failure(rows,harness,text,BACKEND_FAILURE_CASES[args.case])
         if args.case == 'mic-valid-drop300':
             require('no-hole=1' in text and 'valid capture resumed' in text,
                     'The finite microphone-only valid-data deletion was not exercised')
@@ -560,27 +682,31 @@ def run_case(args):
             time.sleep(.2)
             supervisor.require_running(except_process=test)
             supervisor.stop(recorder)
-            recording.close()
-            recording = None
-            monitor_seconds = (root/'radio-output.raw').stat().st_size / 88200
-            wall_seconds = time.monotonic() - recording_started
-            record['monitor_clock'] = {'basis':'CLOCK_MONOTONIC process launch to reaped monitor',
-                                       'started_seconds':recording_started, 'wall_seconds':wall_seconds,
-                                       'pcm_seconds':monitor_seconds, 'maximum_alignment_error_seconds':.2}
-            require(abs(wall_seconds-monitor_seconds) <= .2,
-                    'Monitor sample clock does not match its monotonic recording interval')
+            ledger=json_rows(root/'radio-output.jsonl')
+            require(ledger[-1]['kind']=='completion' and ledger[-1]['error']==0,'Passive modem monitor did not close cleanly')
+            record['monitor_clock']={'basis':'passive rendered receive-block ledger; not physical DAC time',
+                'pcm_frames':(root/'radio-output.raw').stat().st_size//2,'ledger_sha256':sha(root/'radio-output.jsonl')}
         if headset_recorder:
             require(rx_source_started and rx_source_silenced,'RX fixture transitions were incomplete')
             time.sleep(.2)
             supervisor.require_running(except_process=test)
             supervisor.stop(headset_recorder)
-            headset_recording.close();headset_recording=None
-            seconds=(root/'headset-output.raw').stat().st_size/96000
-            wall=time.monotonic()-headset_recording_started
-            require(abs(wall-seconds)<=.2,'Headset monitor clock differs from its recording interval')
-            record['headset_monitor_clock']={'basis':'CLOCK_MONOTONIC launch to reaped monitor',
-                'started_seconds':headset_recording_started,'wall_seconds':wall,'pcm_seconds':seconds,
-                'maximum_alignment_error_seconds':.2}
+            ledger=json_rows(root/'headset-output.jsonl')
+            require(ledger[-1]['kind']=='completion' and ledger[-1]['error']==0,'Passive headset monitor did not close cleanly')
+            record['headset_monitor_clock']={'basis':'passive rendered receive-block ledger; not physical DAC time',
+                'pcm_frames':(root/'headset-output.raw').stat().st_size//2,'ledger_sha256':sha(root/'headset-output.jsonl')}
+        if fifo_reader:
+            # Observe beyond controller OFF as well: an early clear must remain
+            # visible to the independent backend oracle instead of clipping it.
+            time.sleep(1.0)
+            supervisor.require_running(except_process=test)
+            supervisor.stop(fifo_reader)
+            frames=array('h');frames.frombytes((root/'fifo-modem.raw').read_bytes())
+            if sys.byteorder!='little':frames.byteswap()
+            require(frames[::2]==frames[1::2],'Fixed-pipe stereo channel conversion is inconsistent')
+            mono=frames[::2]
+            if sys.byteorder!='little':mono.byteswap()
+            (root/'fifo-modem-mono.raw').write_bytes(mono.tobytes())
         cleanup = supervisor.close()
         require(not cleanup['errors'], 'Fixture cleanup failed: '+str(cleanup['errors']))
         record['collector_contract'] = validate_collector_contract(
@@ -614,7 +740,7 @@ def run_case(args):
                 save_json(root/'case-result.json',record)
             record['actual_sink_turns'] = sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env,
                 harness.get('total_turns', harness['turns']), harness.get('turn_records',()),require_speech=args.case in SPEECH_CASES,
-                progress=preserve_turn_progress)
+                progress=preserve_turn_progress,harness=harness,fifo=profile=='fixed-pipe')
             record['actual_sink_decode'] = {'failures':0,
                 'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in record['actual_sink_turns']),
                 'synchronized_blocks':sum(turn['observed']['synchronized_blocks'] for turn in record['actual_sink_turns'])}

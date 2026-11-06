@@ -29,6 +29,11 @@ jobs:
           python tools/freedv/test_usb_rf_evidence.py
           python tools/freedv/test_usb_test_support.py
           python -O tools/freedv/test_usb_test_support.py
+          python tools/freedv/test_usb_output_contract.py
+          python -O tools/freedv/test_usb_output_contract.py
+          python tools/freedv/test_usb_fifo_clock.py
+          python tools/freedv/test_usb_backend_observer.py
+          python -O tools/freedv/test_usb_backend_observer.py
           python tools/freedv/test_usb_campaign.py
           python tools/freedv/test_usb_host_resources.py
           python tools/freedv/test_usb_controller_build.py
@@ -116,6 +121,7 @@ jobs:
             ${{ runner.temp }}/usb-controller-matrix/**/*.jsonl
             ${{ runner.temp }}/usb-controller-matrix/**/*.log
             ${{ runner.temp }}/usb-controller-matrix/**/*.txt
+            ${{ runner.temp }}/usb-controller-matrix/**/default.pa
             ${{ runner.temp }}/usb-controller-campaigns/**/*.json
             ${{ runner.temp }}/usb-controller-failure-fixtures/
   windows-runner:

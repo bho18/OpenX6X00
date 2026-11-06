@@ -15,6 +15,10 @@ DEFAULT_TOTAL_BYTES = 64 * 1024 * 1024
 DEFAULT_FILE_BYTES = 16 * 1024 * 1024
 MAX_FILES = 128
 MAX_FAILED_CASES = 3
+# The indexed capture interposer uses .pcm; other generated controller,
+# monitor and FIFO recordings use .raw. Keep this extra name explicit so an
+# arbitrary .pcm attachment cannot enter the public-fixture artifact.
+INDEXED_CAPTURE_PCM = 'mic-observer.pcm'
 
 
 def safe_file(path, root):
@@ -117,7 +121,9 @@ def diagnose(work_root, output=None, max_total=DEFAULT_TOTAL_BYTES, max_file=DEF
             print('Case reason: ' + str(details.get('error', details.get('reason', 'unavailable'))))
         if not destination or not case_root.is_dir() or case_root.is_symlink():
             continue
-        for path in sorted(case_root.rglob('*.raw')):
+        candidates = sorted(set(case_root.rglob('*.raw')) |
+                            set(case_root.rglob(INDEXED_CAPTURE_PCM)))
+        for path in candidates:
             relative = path.relative_to(matrix_root)
             omitted = {'source': str(relative)}
             considered += 1

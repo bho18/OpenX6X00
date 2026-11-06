@@ -40,6 +40,8 @@ extern void usb_test_mic_stop_callback(void (*)(void *),void *) __attribute__((w
 extern void usb_test_mic_release_action(void (*)(void *),void *) __attribute__((weak));
 extern int usb_test_mic_release_now(void) __attribute__((weak));
 extern unsigned long long usb_test_mic_release_posted_ms(void) __attribute__((weak));
+extern unsigned long long usb_test_backend_wait_started_ms(void) __attribute__((weak));
+extern unsigned long long usb_test_backend_wait_until_us(void) __attribute__((weak));
 static void stop_from_close(void *audio){fd_usb_audio_stop(audio);}
 static bool cold_case,cold_rx_case,cold_late_tx_case;
 static atomic_uint recovered_observations;
@@ -49,10 +51,22 @@ typedef struct {
     atomic_uint_fast64_t release,sequence,packet_at,ack_at,freeze_until,freeze_recovered;
     pthread_t ticker;pthread_mutex_t packet_mutex;atomic_bool ticker_stop;atomic_uint packets_emitted,observations;
 } fake;
+typedef struct {unsigned key_sequence;uint64_t on_before_ns,on_after_ns,off_before_ns,off_after_ns;} rf_interval;
+static rf_interval rf_intervals[128];static unsigned rf_interval_n;static pthread_mutex_t rf_events_mutex=PTHREAD_MUTEX_INITIALIZER;
 static const char *run_directory,*run_scenario;static fake *run_control;
 static uint64_t ms(void) {
     struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);
     return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;
+}
+static uint64_t monotonic_ns(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return(uint64_t)t.tv_sec*1000000000+t.tv_nsec;}
+static void set_physical_tx(fake *f,bool enabled){
+    pthread_mutex_lock(&rf_events_mutex);uint64_t before=monotonic_ns();bool previous=atomic_exchange(&f->physical_tx,enabled);uint64_t after=monotonic_ns();
+    if(previous!=enabled){
+        if(enabled){assert(rf_interval_n<128);rf_intervals[rf_interval_n++]=(rf_interval){.key_sequence=atomic_load(&f->keys),.on_before_ns=before,.on_after_ns=after};}
+        else{for(unsigned i=rf_interval_n;i>0;--i)if(!rf_intervals[i-1].off_after_ns){rf_intervals[i-1].off_before_ns=before;rf_intervals[i-1].off_after_ns=after;break;}
+            printf("RF_PHYSICAL_OFF before_ns=%llu after_ns=%llu keys=%u\n",(unsigned long long)before,(unsigned long long)after,atomic_load(&f->keys));fflush(stdout);}
+    }
+    pthread_mutex_unlock(&rf_events_mutex);
 }
 static void pause_ms(unsigned n) {
     struct timespec t={n/1000,(n%1000)*1000000};nanosleep(&t,NULL);
@@ -90,7 +104,7 @@ static bool observe(void *context,fd_usb_inputs *out) {
        atomic_fetch_add(&recovered_observations,1)==1){
         /* First recovered observation admits fresh frames; the next one is
          * the final pre-key observation and must still require actual RX. */
-        atomic_store(&f->physical_tx,true);emit_packet(f);
+        set_physical_tx(f,true);emit_packet(f);
     }
     atomic_fetch_add(&f->observations,1);pthread_mutex_lock(&f->packet_mutex);uint64_t now=ms(),at=atomic_load(&f->packet_at);
     *out=(fd_usb_inputs){.valid=true,.pressed=atomic_load(&f->pressed),
@@ -110,7 +124,7 @@ static bool key(void *context,uint64_t release) {
     if(block){fprintf(stderr,"BLOCKING_KEY %u ms\n",block);fflush(stderr);pause_ms(block);}
     /* Model an I2C ON already in flight: Stop may fence future writes, but
      * cannot retract this write. The controller must issue compensating OFF. */
-    atomic_store(&f->physical_tx,true);
+    set_physical_tx(f,true);
     atomic_store(&f->ack_at,ms()+atomic_load(&f->delay));
     atomic_store(&f->inflight,false);return true;
 }
@@ -118,7 +132,7 @@ static void clear(void *context,bool halt) {
     fake *f=context;
     if(halt)atomic_store(&f->halted,true);
     unsigned block=atomic_load(&f->block_clear);if(block)pause_ms(block);
-    atomic_store(&f->physical_tx,false);atomic_store(&f->ack_at,0);
+    set_physical_tx(f,false);atomic_store(&f->ack_at,0);
     atomic_fetch_add(&f->clears,1);
 }
 static void inhibit(void *context) { atomic_store(&((fake*)context)->halted,true); }
@@ -241,6 +255,9 @@ static void result(const char *directory,const char *scenario,fake *f,fd_usb_sna
     for(unsigned i=0;i<durability_sessions;++i)fprintf(out,"%s{\"fds\":%u,\"threads\":%u}",i?",":"",closed_fds[i],closed_tasks[i]);
     fputs("],\"turn_records\":[",out);
     for(unsigned i=0;i<turn_record_n;++i){turn_record *r=&turn_records[i];fprintf(out,"%s{\"session\":\"%s\",\"turn\":%u,\"accepted_mic_samples\":%llu,\"rendered_modem_samples\":%llu,\"modem_tap_start\":%llu,\"modem_tap_end\":%llu,\"started_ms\":%llu,\"ended_ms\":%llu}",i?",":"",r->session,r->turn,(unsigned long long)r->accepted_mic,(unsigned long long)r->rendered_modem,(unsigned long long)r->modem_tap_start,(unsigned long long)r->modem_tap_end,(unsigned long long)r->started_ms,(unsigned long long)r->ended_ms);}
+    fputs("],\"rf_intervals\":[",out);pthread_mutex_lock(&rf_events_mutex);
+    for(unsigned i=0;i<rf_interval_n;++i){rf_interval r=rf_intervals[i];fprintf(out,"%s{\"key_sequence\":%u,\"on_before_ns\":%llu,\"on_after_ns\":%llu,\"off_before_ns\":%llu,\"off_after_ns\":%llu}",i?",":"",r.key_sequence,(unsigned long long)r.on_before_ns,(unsigned long long)r.on_after_ns,(unsigned long long)r.off_before_ns,(unsigned long long)r.off_after_ns);}
+    pthread_mutex_unlock(&rf_events_mutex);
     fprintf(out,"],\"io_service_pause\":{\"count\":%u,\"started_ms\":%llu,\"duration_ms\":%llu},\"render_queue\":{\"limit_frames\":%u,\"output_bound_frames\":%u,\"high_water_frames\":%u,\"deferred_calls\":%u,\"final_deferred_calls\":%u,\"final_flush_calls\":%u,\"final_flush_frames\":%llu,\"generated_frames\":%llu,\"written_frames\":%llu},\"render_hold\":{\"started_ms\":%llu,\"ended_ms\":%llu,\"hits\":%u}}\n",
         usb_test_io_pause_count?usb_test_io_pause_count():0,usb_test_io_pause_started_ms?usb_test_io_pause_started_ms():0,usb_test_io_pause_duration_ms?usb_test_io_pause_duration_ms():0,
         FD_USB_TX_QUEUE_FRAMES,FD_USB_RENDER_OUTPUT_FRAMES,s.render_queue_high_water,s.render_deferred_count,s.render_final_deferred_count,s.render_final_flush_calls,(unsigned long long)s.transport_tail_frames,(unsigned long long)(s.rendered_modem+s.transport_tail_frames),(unsigned long long)s.modem_written_frames,
@@ -290,7 +307,38 @@ int main(int argc,char **argv) {
         fd_usb_snapshot last=wait_stopped(audio,10000);assert(last.fault==(!strcmp(scenario,"--initial-pa-reject")?15u:14u));
         assert(!atomic_load(&f.keys)&&!atomic_load(&f.physical_tx));result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
     }
-    wait_state(audio,FD_USB_RX,20000);pause_ms(350);
+    wait_state(audio,FD_USB_RX,20000);
+    if(getenv("USB_TEST_OUTPUT_OBSERVER_BARRIER")){
+        puts("FIXTURE_OUTPUT_READY");fflush(stdout);char acknowledged[PATH_MAX];int n=snprintf(acknowledged,sizeof(acknowledged),"%s/output-observer-ready",argv[1]);assert(n>0&&(size_t)n<sizeof(acknowledged));
+        uint64_t until=ms()+5000;
+        while(access(acknowledged,F_OK)&&ms()<until){(void)healthy_snapshot(audio,"unexpected-output-observer-barrier-fault");pause_ms(5);}
+        fd_usb_snapshot ready=healthy_snapshot(audio,"unexpected-output-observer-barrier-fault");
+        if(access(acknowledged,F_OK))failed_wait(audio,"output-observer-barrier-timeout",ready);
+    }
+    pause_ms(350);
+    if(!strcmp(scenario,"--backend-timing-missing")||!strcmp(scenario,"--backend-timing-invalid")||!strcmp(scenario,"--backend-stop-before-timing")||!strcmp(scenario,"--backend-stop-during-wait")){
+        if(!strcmp(scenario,"--backend-stop-before-timing")){assert(usb_test_mic_stop_callback);usb_test_mic_stop_callback(stop_from_close,audio);}
+        fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);release_ptt(&f);
+        if(!strcmp(scenario,"--backend-stop-during-wait")){
+            assert(usb_test_backend_wait_started_ms&&usb_test_backend_wait_until_us);uint64_t until=ms()+10000;
+            while(!usb_test_backend_wait_started_ms()&&ms()<until){(void)healthy_snapshot(audio,"unexpected-backend-wait-fault");pause_ms(1);}
+            assert(usb_test_backend_wait_started_ms()&&monotonic_ns()/1000<usb_test_backend_wait_until_us());
+            uint64_t before=monotonic_ns();fd_usb_audio_stop(audio);uint64_t after=monotonic_ns();assert(after-before<100000000);
+            printf("BACKEND_STOP_DURING_WAIT request_before_ns=%llu request_after_ns=%llu wait_started_ms=%llu wait_until_us=%llu\n",(unsigned long long)before,(unsigned long long)after,usb_test_backend_wait_started_ms(),usb_test_backend_wait_until_us());fflush(stdout);
+        }
+        fd_usb_snapshot last=wait_stopped(audio,10000);
+        if(!strcmp(scenario,"--backend-timing-missing"))assert(last.fault==14&&!strcmp(last.first_fault_origin,"modem-backend-timing"));
+        else if(!strcmp(scenario,"--backend-timing-invalid"))assert(last.fault==9&&!strcmp(last.first_fault_origin,"modem-backend-timing-invalid"));
+        else assert(last.fault==1&&!strcmp(last.first_fault_origin,"local-stop"));
+        assert(last.turns==0&&last.engine.eoo_count==1&&atomic_load(&f.keys)==1&&!atomic_load(&f.physical_tx)&&last.rf_clear_confirmed);
+        result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
+    }
+    if(!strcmp(scenario,"--backend-default")||!strcmp(scenario,"--backend-fixed-pipe")||!strcmp(scenario,"--backend-monitor-competition")){
+        fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);release_ptt(&f);
+        fd_usb_snapshot last=wait_state(audio,FD_USB_RX,10000);assert(last.turns==1&&last.engine.eoo_count==1&&last.rf_clear_confirmed);
+        fd_usb_audio_stop(audio);last=wait_stopped(audio,10000);assert(last.fault==1&&atomic_load(&f.keys)==1&&!atomic_load(&f.physical_tx));
+        result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
+    }
     if(!strcmp(scenario,"--capture-close-missing")||!strcmp(scenario,"--capture-close-invalid")||!strcmp(scenario,"--capture-close-stop")){
         if(!strcmp(scenario,"--capture-close-stop")){assert(usb_test_mic_stop_callback);usb_test_mic_stop_callback(stop_from_close,audio);}
         fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1250);release_ptt(&f);
@@ -396,7 +444,7 @@ int main(int argc,char **argv) {
         wait_state(audio,FD_USB_DRAIN,10000);assert(usb_test_trigger_started_ms&&usb_test_trigger_ack_ms);uint64_t until=ms()+5000;
         while(!usb_test_trigger_started_ms()&&ms()<until){(void)healthy_snapshot(audio,"unexpected-trigger-wait-fault");pause_ms(1);}
         assert(usb_test_trigger_started_ms());pause_ms(50);
-        uint64_t dropped=ms();assert(!usb_test_trigger_ack_ms());atomic_store(&f.physical_tx,false);
+        uint64_t dropped=ms();assert(!usb_test_trigger_ack_ms());set_physical_tx(&f,false);
         fd_usb_snapshot last=wait_stopped(audio,10000);assert(last.fault==4&&!strcmp(last.first_fault_origin,"tx-status-disappeared-during-drain"));
         uint64_t started=usb_test_trigger_started_ms(),acked=usb_test_trigger_ack_ms();assert(acked>=started+650&&started<dropped&&dropped<acked);
         printf("RF_DROP_DURING_TRIGGER_WAIT started_ms=%llu drop_ms=%llu ack_ms=%llu\n",(unsigned long long)started,(unsigned long long)dropped,(unsigned long long)acked);
@@ -415,7 +463,7 @@ int main(int argc,char **argv) {
         qualification_status_freeze(audio,&f);
         if(!full_session&&strcmp(scenario,"--rf-disabled")&&strcmp(scenario,"--cold-qualification")&&strcmp(scenario,"--cold-idle")) {
             pause_ms(300);
-            if(!strcmp(scenario,"--qualification-physical-tx"))atomic_store(&f.physical_tx,true);
+            if(!strcmp(scenario,"--qualification-physical-tx"))set_physical_tx(&f,true);
             else atomic_store(&f.pressed,true);
             fd_usb_snapshot s=wait_stopped(audio,10000);
             assert(s.fault && !s.qualification_complete && !atomic_load(&f.keys));

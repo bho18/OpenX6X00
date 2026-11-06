@@ -20,7 +20,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEAT
                                atomic_json, digest, sha, validate_campaign,
                                INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
-                               host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run)
+                               host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run, USB_OUTPUT_CONTRACT_VERSION, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run)
 from usb_test_support import run_bounded
 from usb_host_resources import run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES
 
@@ -37,6 +37,9 @@ def observed_transport_library():
 
 
 COVERAGE = {
+    'backend_profiles':{'backend-fixed-pipe','io-pause150','rx-pause150'},
+    'backend_timing_faults':{'backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'},
+    'rf_window_integrity':{'normal','full-session','backend-fixed-pipe','io-pause150'},
     'capture_pipeline_tail':{'capture-close-tail120'},
     'matched_decoder_control':set(WAVEFORM_CASES),
     'prekey_audio': {'pa-delay', 'pa-reject', 'pa-missing'},
@@ -133,13 +136,13 @@ def main():
     timeouts = {name: args.case_timeout or CASE_TIMEOUTS.get(name, 90) for name in selected}
     resource_config=host_resource_configuration('qualification' if args.profile=='qualification' else 'regression',
         args.resource_reclaim_root,args.resource_min_start_bytes,args.resource_min_end_bytes)
-    plan = {'profile': args.profile, 'repetitions': repetitions,
+    plan = {'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'profile': args.profile, 'repetitions': repetitions,
             'expected_cases': expected, 'selected_cases': selected,
             'debug_subset': bool(args.only), 'case_timeout_seconds': timeouts,
             'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
             'host_resource_configuration':resource_config}
     executions = [name + '@' + str(repeat + 1) for repeat in range(repetitions) for name in selected]
-    record = {'schema': MATRIX_SCHEMA, 'status': 'FAIL', 'plan': plan,
+    record = {'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'schema': MATRIX_SCHEMA, 'status': 'FAIL', 'plan': plan,
               'scope': 'Actual codec and four-stream controller; fake RF transport, never hardware qualification',
               'radio_accessed': False, 'hardware_qualified': False, 'cases': {}, 'coverage': [],
               'infrastructure_prerequisites':{},
@@ -164,14 +167,15 @@ def main():
                     'rade_library_sha256': sha(args.rade_library.resolve()) if args.rade_library else None,
                     'fault_injector_source_sha256': sha(here/'usb_audio_fault_inject.c'),
                     'compiler_sha256': sha(Path(compiler).resolve()),
-                    'host_resource_configuration':resource_config,
+                    'host_resource_configuration':resource_config,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,
                     'transport_library_sha256':observed_transport_library()['library_sha256'],
                     'pulse_tools_sha256': {name: sha(Path(shutil.which(name)).resolve()) for name in
                         ('pulseaudio','paplay','parec','pactl') if shutil.which(name)},
                     'test_tools_sha256': {name: sha(here / name) for name in
                         ('test_usb_audio_matrix.py', 'test_usb_audio_integration.py', 'usb_test_support.py',
                          'usb_test_campaign.py', 'usb_collector_contract.py', 'usb_rf_evidence.py',
-                         'usb_harness_failure_selftest.py','usb_host_resources.py','usb_transport_oracle.py',
+                         'usb_harness_failure_selftest.py','usb_host_resources.py','usb_transport_oracle.py','usb_output_contract.py',
+                         'usb_audio_monitor.c','usb_fifo_clock.py',
                          'usb_audio_fault_inject.c', 'usb_audio_integration_test.c')}}
         record.update(identity=identity, source_commit=revision, source_tree_sha256=tree,
                       build_id=args.build_id, test_binary_sha256=identity['test_binary_sha256'])
@@ -248,6 +252,8 @@ def main():
                        'case_record_path': str(details_path),
                        'case_record_sha256': sha(details_path) if details_path.exists() else None,
                        'harness': details.get('harness'), 'identity': details.get('identity'),
+                       'usb_output_contract_version':details.get('usb_output_contract_version'),'output_contract':details.get('output_contract'),
+                       'backend_profile':details.get('backend_profile'),'backend_failure':details.get('backend_failure'),'observer_admission':details.get('observer_admission'),
                        'collector_contract':details.get('collector_contract'),
                        'audio_buffer_contract':details.get('audio_buffer_contract'),
                        'io_service_pause':details.get('io_service_pause'),
@@ -271,6 +277,14 @@ def main():
                             details.get('fault_injector_sha256') != record['fault_injector_sha256']):
                         run['status'] = 'FAIL'
                         run.setdefault('reason', 'Case fixture/runner/injector identity differs from the campaign')
+                if passed:
+                    try:
+                        validate_output_contract_run(run,verify_files=True,expected_identity=identity)
+                        validate_backend_profile_run(run,name,verify_files=True)
+                        validate_observer_admission_run(run,name,verify_files=True)
+                    except ValueError as error:
+                        run['status']='FAIL'
+                        run.setdefault('reason',str(error))
                 if passed and name in SPEECH_CASES:
                     turns = run['actual_sink_turns']
                     if (run['decoded_speech_blocks'] <= 0 or not turns or
@@ -315,6 +329,12 @@ def main():
                         validate_capture_close_failure_run(run,name)
                     except ValueError as error:
                         run['status'] = 'FAIL'
+                        run.setdefault('reason',str(error))
+                if passed and name in ('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'):
+                    try:
+                        validate_backend_failure_run(run,name)
+                    except ValueError as error:
+                        run['status']='FAIL'
                         run.setdefault('reason',str(error))
                 if passed and name == 'capture-close-tail120':
                     try:

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import wave
 from usb_headset_inventory import collect, command, sha256
+from usb_output_contract import validate_output_contract
 
 
 ERRORS = (OSError, ValueError, KeyError, EOFError, wave.Error, subprocess.SubprocessError)
@@ -117,6 +118,17 @@ def summarize_trace(rows):
 def strict_contract(manifest):
     version = manifest.get('usb_startup_contract_version', 1)
     return type(version) is int and version >= 3
+
+
+def output_contract_version(manifest):
+    if 'usb_output_contract_version' not in manifest:
+        return 0
+    version = manifest['usb_output_contract_version']
+    if type(version) is not int or version != 1:
+        raise ValueError('Unsupported USB output contract version; new images require integer version 1.')
+    if manifest.get('usb_startup_contract_version') != 3:
+        raise ValueError('USB output contract version 1 requires the startup v3 session contract.')
+    return version
 
 
 def collect_persistent_journal(output):
@@ -336,8 +348,12 @@ def collect_trace(output, manifest=None):
             if summary['session_identity']['session_id'] != pointer['session_id']:
                 raise ValueError('Runtime trace conflicts with the explicit current-session pointer.')
             summary['current_session'] = pointer
+            summary['output_contract'] = validate_output_contract(
+                rows, summary['completion'], output_contract_version(manifest), summary['session_identity'])
         except ERRORS as error:
             diagnostic_errors.append(str(error))
+    else:
+        summary['output_contract'] = validate_output_contract(rows, None, output_contract_version(manifest))
     summary['audio_taps'] = {}
     pcm_seconds = 30
     if strict_contract(manifest):
@@ -415,6 +431,7 @@ def collect_evidence(output, manifest, sdr=None):
                   rf_key_commands_sent=False, rf_recording_decoded=False, rf_tested=False,
                   ready_for_rf_test=False,
                   usb_startup_contract_version=manifest.get('usb_startup_contract_version', 1),
+                  usb_output_contract_version=manifest.get('usb_output_contract_version', 0),
                   listening='UNASSESSED', physical_rf_off_timing='UNMEASURED', blockers=[],
                   stages=dict(collection={'status': 'PENDING'}, gui={'status': 'UNASSESSED'},
                               audio={'status': 'UNASSESSED'}, control_completion={'status': 'UNASSESSED'}, qualification={'status': 'NOT_REQUESTED'},
@@ -446,6 +463,7 @@ def collect_evidence(output, manifest, sdr=None):
                 raise ValueError('Kit manifest unavailable: ' + manifest['_load_error'])
             if type(manifest.get('usb_startup_contract_version', 1)) is not int or manifest.get('usb_startup_contract_version', 1) not in (1, 2, 3):
                 raise ValueError('Unsupported USB startup contract version.')
+            output_contract_version(manifest)
             inventory = collect(expected_gui=manifest['gui_sha256'])
             save(output / 'inventory.json', inventory)
             result['inventory_status'] = inventory['status']
@@ -465,6 +483,10 @@ def collect_evidence(output, manifest, sdr=None):
             result['gui_session_fault'] = fault_code(summary['first_fault'] or summary['last'])
             result['rf_disabled'] = summary['rf_disabled']
             result['audio_taps'] = summary['audio_taps']
+            result['output_contract'] = summary['output_contract']
+            result['stages']['output_completion'] = summary['output_contract']
+            if summary['output_contract']['status'] != 'PASS':
+                result['historical_output_evidence'] = True
             if summary['metadata']:
                 result['runtime_metadata'] = summary['metadata']
             if summary['streams']:
@@ -581,7 +603,8 @@ def collect_evidence(output, manifest, sdr=None):
             primary = min(result['blockers'], key=lambda item: priority[item['stage']])
             result['reason'] = primary['reason']
             result['primary_failure_stage'] = primary['stage']
-        elif summary and summary['rf_disabled'] and strict_contract(manifest):
+        elif (summary and summary['rf_disabled'] and strict_contract(manifest) and
+              summary['output_contract']['status'] == 'PASS'):
             result['status'] = 'READY_FOR_RF_TEST'
             result['ready_for_rf_test'] = True
         elif result['rf_recording_decoded']:

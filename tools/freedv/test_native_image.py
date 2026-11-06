@@ -28,8 +28,9 @@ class UsbReleaseGateTests(unittest.TestCase):
                     'modem_sha256':'f'*64,'fault_injector_sha256':'1'*64}
         identity['host_resource_configuration']=host_resource_configuration()
         identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
+        identity['usb_output_contract_version']=1
         expected = list(USB_CONTROLLER_CASES)
-        plan = {'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
+        plan = {'usb_output_contract_version':1,'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
                 'selected_cases':expected, 'debug_subset':False,
                 'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
                 'host_resource_configuration':identity['host_resource_configuration']}
@@ -42,7 +43,7 @@ class UsbReleaseGateTests(unittest.TestCase):
                 log.write_text('Synthetic metadata gate fixture; no controller executed.\n')
                 case_root=root/(name+'-'+str(repeat));case_root.mkdir()
                 case_record = case_root/'case-result.json'
-                extra=capture_case_fixture(name,case_root)
+                extra=capture_case_fixture(name,case_root,identity)
                 case_record.write_text(json.dumps({'synthetic':True,**extra})+'\n')
                 runs.append({'status':'PASS', 'repeat':repeat, 'log_path':str(log),
                              'log_sha256':campaign_sha(log), 'case_record_path':str(case_record),
@@ -61,7 +62,7 @@ class UsbReleaseGateTests(unittest.TestCase):
         finally:
             campaign.close()
         matrix = {**matrix, 'campaign':snapshot, 'promotion_eligible':snapshot['promotion_eligible']}
-        return {**identity, 'usb_integration': {'status':'PASS', 'contract_version':3,
+        return {**identity, 'usb_integration': {'status':'PASS', 'contract_version':3,'usb_output_contract_version':1,
                 'evidence_cli':{'status':'PASS'}, 'matrix':matrix}}
 
     def test_old_pass_and_incomplete_or_failed_evaluation_cannot_release(self):

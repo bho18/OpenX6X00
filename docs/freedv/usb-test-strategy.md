@@ -21,6 +21,9 @@ and the blocked native hand-mic contract remain separate.
 | A successful 743 ms uncork left captures stale; delivery resumed about 30 ms later | Test operation acknowledgment and subsequent fresh valid samples as separate events, including missing recovery and release/Stop during recovery. |
 | The failed device run followed about 20 seconds in RX | Exercise idle histories as well as rapid turns. An injected pause models a failure; it is not proof of real device suspension/resume. |
 | Application PCM was queued while the negotiated Pulse playback reserve was only 50 ms | Require a measured buffer contract on all four streams, then test controlled servicing pauses at both actual output sinks. |
+| The `usb-qualification-20261106.1` device run stopped before audio or TX: its playback grant provided only 225 ms against the 300 ms requirement | Correct the Pulse request domain. With `PA_STREAM_ADJUST_LATENCY`, the requested 450 ms covered both device and client latency; the prior host fixture's 50 ms device cap hid the insufficient client reserve. Reproduce the unchanged binary's exact grant with ordinary uncapped sinks, and require the corrected request to pass that profile. Keep the 300 ms admission guard. |
+| Correcting the client-buffer domain alone exposed an underrun on a default sink with large backend requests | Keep the 450 ms client reserve and request the documented 20 ms backend service cadence with playback `PA_STREAM_EARLY_REQUESTS`. Preserve the failed focused run and require the complete modem/headset output in the retained servicing-pause screens. A healthy callback clock alone cannot excuse a payload underrun. |
+| A complete recorded modem waveform continued leaving a paced backend after the modeled RF gate cleared | Treat protocol drain acknowledgment and backend consumption separately. Obtain fresh timing after drain, wait conservatively for reported queued output, and require the independently paced FIFO's complete signal to remain inside the modeled RF-on interval. A waveform recorded after RF clears cannot qualify the turn. |
 | A second full-pass RX/TX case exceeded the render queue during its final modem tail | Reserve current output-frame capacity for every resampler call, including its final flush; test tail backpressure with complete payload delivery. |
 | A host run underrun was followed by a clean replay | Retain every attempt. A replay cannot remove the failure or establish scheduling margin. |
 | Polling refreshed the fake packet clock | Advance fake telemetry independently of observation so stale-status tests exercise real loss of freshness. |
@@ -56,6 +59,10 @@ admission, active TX, drain, unkey, RX recovery, Stop and Exit:
   Old-turn samples cannot enter the next turn or the earphones.
   Normal release first closes a finite microphone capture interval; Stop still
   fences processing and RF admission immediately.
+* Normal release keeps TX asserted through protocol drain and a fresh,
+  asynchronously obtained playback-backend timing interval. Invalid or missing
+  timing blocks turn completion. Stop still requests OFF immediately; waiting
+  for a complete tail must never delay Stop or allow a later callback to rekey.
 * Return/restoration requires completed control work and a newer actual RX
   packet. Software clearing, cached control values and a stopped display are
   different observations. Aggregate TX is not raw hand-mic PTT or an independent
@@ -74,14 +81,34 @@ both sides of each bound. Do not extend them to make a failing test pass.
 The screened I/O servicing pause is 150 ms. Each playback stream must provide
 at least 300 ms of usable negotiated reserve (`tlength - minreq`) and prebuffer:
 150 ms of servicing delay, a 120 ms codec block and 30 ms of margin. Both outputs
-request a 450 ms target and one-second capacity; admission checks the actual
-grant, rather than trusting the request. Capture capacity must cover 150 ms plus
-two negotiated fragments. The one-second transport capacity does not expand the
+request a 450 ms **client-stream** target and one-second client capacity, without
+`PA_STREAM_ADJUST_LATENCY` on playback. Playback uses
+`PA_STREAM_EARLY_REQUESTS` with a 20 ms minimum request to ask for a shorter
+backend service cadence while retaining the client buffer. This avoids tying
+backend bursts to the large client target when the codec produces 120 ms
+blocks. The device's own queue is a separate latency domain; a fixed-latency
+sink can grant a different cadence or latency. Admission checks the actual
+client grant, rather than trusting the request, and completion uses fresh
+reported backend timing. Capture flags remain unchanged. Capture capacity must
+cover 150 ms plus two negotiated fragments.
+The one-second transport capacity does not expand the
 existing application backlog or capture-loss limits. This buffering adds startup
 and tail latency; hardware conversation latency remains unmeasured.
 
+Pulse protocol drain acknowledgment does not establish that a DAC or device
+FIFO is empty. After acknowledgment, the controller requests fresh modem-stream
+timing and conservatively waits for the reported sink latency, transport latency
+and any positive write-minus-read remainder. The wait uses a monotonic clock,
+remains within the existing three-second total drain deadline, and continues
+checking fresh TX/protection status. A missing timing reply retains the existing
+one-second operation bound. Invalid timing, a deadline overrun or lost TX status
+faults the turn. The typed `x6200.usb.playback-tail.v1` receipt describes this
+**Pulse-reported backend interval**, not independently measured antenna RF or a
+physical DAC acknowledgment.
+
 Controlled TX and RX servicing pauses must preserve the complete modem and
-headset waveforms respectively. A below-budget grant must block keying. A short
+headset waveforms respectively. The fixed-pipe backend also checks output
+through a 150 ms TX servicing pause. A below-budget grant must block keying. A short
 200 ms accepted turn checks underfilled prebuffer, EOO, drain and RX return;
 it does not count as a complete intelligible speech test. Explicit acknowledged
 prebuffer/trigger operations finish such short payloads without relaxing the
@@ -174,8 +201,12 @@ and supplies no promotion credit to the new source.
    descriptors, bounded queues and memory trends after teardown. A fixed count
    is a regression screen, not an endurance or thermal rating. The raw modem
    waveform oracle compares each 48 kHz reference with its actual 44.1 kHz sink
-   recording at a common 8 kHz rate. Calibrated against 30 actual retained
-   host-fixture turns, it allows at most one second of alignment lag, requires full payload
+   recording at a common 8 kHz rate. Derive its alignment bound from actual
+   negotiated client `tlength`, the greater of reported or configured backend
+   latency, and the existing 500 ms servicing/codec/crop allowance. The
+   450 ms client/50 ms backend profile retains its one-second bound. The gate
+   recomputes that bound from raw receipts; an arbitrary larger horizon cannot
+   qualify a recording. Require full payload
    coverage except 5 ms at resampler edges, correlation of at least 0.95,
    fitted gain from 0.24 to 0.26, and 100 ms-window normalized RMS error no
    greater than 0.35. This full-waveform gate is primary. Each turn must also
@@ -200,6 +231,16 @@ and supplies no promotion credit to the new source.
    payload negatives must fail. These are transport/content checks; human
    speech intelligibility and physical first/last-word completeness remain
    unassessed by them.
+   Retain complete output checks on the capped sinks and the fixed-pipe
+   backend. For the independently paced FIFO, every nonzero transported sample,
+   including EOO, must be consumed while the modeled RF gate is on, and the full
+   finite zero tail's deadline must precede RF clear. Keep the flags-only
+   negative that records a complete waveform after modeled RF clear.
+   Missing or invalid backend timing and Stop before the reply or during the
+   wait must retain their expected fault, clear/RX confirmation and no-rekey
+   outcome. These are software/backend-model checks, not physical USB or RF
+   measurements. Rewindable Pulse monitor recordings remain diagnostic evidence;
+   do not waive missing prefixes or infer full sink/DAC delivery from them.
 3. **Radio transition check, RF disabled.** Run the same retained controller and
    real endpoints on the radio. Keep the independent RF gate disabled. Record
    Pulse/server/module configuration, effective negotiated buffers and endpoint
@@ -214,8 +255,8 @@ and supplies no promotion credit to the new source.
    synchronization alone do not establish this result.
 
 The host fixture models audio rates, state/control ordering and adversarial
-scheduling. Its null sinks do not reproduce the physical ALSA driver, USB bus,
-Loop110 wireless link, baseband MODEM routing or RF. RF-disabled evaluation
+scheduling. Its null sinks and paced FIFO do not reproduce the physical ALSA
+driver, USB bus, Loop110 wireless link, baseband MODEM routing or RF. RF-disabled evaluation
 also does not exercise real MODEM-on admission. RF receive qualification needs
 a transmitting peer; an SDR receiver alone supplies initial TX evidence.
 
@@ -290,6 +331,15 @@ software correctness, device timing and hardware RF claims separate. Build and
 image checks must bind the qualifying campaign to the exact shipped binaries,
 source tree, helper kit and fixtures. Verify the GitHub downloads before asking
 for the next radio trial.
+
+The replacement image and matching kit require
+`usb_output_contract_version: 1` in addition to startup contract version 3.
+Session identity, raw trace/completion hashes and backend-tail receipts must
+agree before promotion. Older version-3 sessions without this output marker
+remain diagnostic evidence; they do not qualify the corrected output contract.
+The `usb-qualification-20261106.1` release remains on HOLD for its reproduced
+startup regression. Use its verified replacement and matching kit for the next
+integrated radio transition check.
 
 For a radio session, retain the first fault plus an explicit terminal summary,
 including session identity, turns, clear/RX confirmation, dropped/truncated

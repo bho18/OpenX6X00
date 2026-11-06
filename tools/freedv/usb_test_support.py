@@ -489,7 +489,7 @@ def capture_close_oracle(rows, microphone_pcm, expected_turns):
         require(accounting['active_ms']==active_ms,'The source frame budget changed its capture epoch')
         budget=microphone_frame_budget(active_ms,accepted,descriptor['fragsize']//2,
                                       pipeline_tail_frames=close['tail_frames'])
-        results.append({'status':'PASS','turn':number,'start_index':start,'cutoff_index':cutoff,
+        result={'status':'PASS','turn':number,'start_index':start,'cutoff_index':cutoff,
             'consumed_index':close['consumed_index'],'accepted_frames':accepted,'mic_tap_start':tap_start,
             'mic_tap_end':tap_end,'close_elapsed_ms':times[-1]-times[0],'write_index_bytes':write,
             'source_usec':close['source_usec'],'transport_usec':close['transport_usec'],'sink_usec':close['sink_usec'],
@@ -498,7 +498,13 @@ def capture_close_oracle(rows, microphone_pcm, expected_turns):
             'capture_started_ms':close['capture_started_ms'],'close_started_ms':times[0],
             'timing_issued_ms':times[1],'frozen_ms':times[2],'reached_ms':times[3],'closed_ms':times[4],
             'frontier_extra_frames':extra,'frontier_basis':'Pulse capture production; no monitor playback correction',
-            'physical_latency':'UNMEASURED','rf_completed':turn['rf_completed'],'microphone_frame_budget':budget})
+            'physical_latency':'UNMEASURED','rf_completed':turn['rf_completed'],'microphone_frame_budget':budget}
+        if not turn['rf_completed']:
+            first=next((row for row in rows if row.get('kind')=='event' and row.get('event')=='first-fault'),{})
+            if first.get('status')==1 and first.get('operation')=='local-stop' and first.get('state')==4 and first.get('ms',-1)>=times[-1]:
+                result['completion_interruption']={'schema':'x6200.usb.capture-interruption.v1','status':'CONFIRMED',
+                    'fault':1,'origin':'local-stop','state':4,'ms':first['ms'],'closed_ms':times[-1]}
+        results.append(result)
     require(sum(turn['rf_completed'] for turn in covered)==expected_turns,
             'Completed RF turns are missing finite capture closure')
     return {'status':'PASS','turns':results,'deadline_ms':750,'physical_latency':'UNMEASURED',
@@ -671,7 +677,7 @@ def validate_capture_close_failure(rows,harness,log_text,mode):
             'abandoned_interval':abandoned[-1],'stop_requested_ms':stop_ms}
 
 
-def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_rate, expected_gain=.25):
+def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_rate, expected_gain=.25, maximum_lag_ms=1000):
     """Verify the complete transmitted waveform, independently of vocoder phase.
 
     A fixed alignment is selected once, then checked across the full reference
@@ -712,7 +718,9 @@ def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_r
     n = len(left)
     indexes = [round(index*(n-1)/95) for index in range(96)]
     probe = [left[index] for index in indexes]
-    maximum = min(32000,len(right)-(n-1)*4-1)
+    require(isinstance(maximum_lag_ms,(int,float)) and math.isfinite(maximum_lag_ms) and maximum_lag_ms>0,
+            'Waveform alignment requires a finite declared latency budget')
+    maximum = min(math.floor(maximum_lag_ms*32),len(right)-(n-1)*4-1)
     require(maximum >= 0, 'Monitor recording omitted part of the modem reference')
     best_score,best_lag = -1.0,0
     for lag in range(0,maximum+1,4):
@@ -739,7 +747,7 @@ def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_r
             fine_best=score,lag
     require(fine_best[0]>=0,'Monitor recording omitted the aligned reference')
     delay=fine_best[1]/fine_rate
-    require(delay<=1,'Waveform alignment exceeded its one-second bound')
+    require(delay<=maximum_lag_ms/1000,'Waveform alignment exceeded its declared output-queue budget')
     aligned=[native_at((delay+index/8000)*observed_rate) for index in range(n)]
     score = correlation(left,aligned)
     require(score >= .95, 'Sink modem waveform differs from its reference; correlation '+str(round(score,5)))
@@ -757,10 +765,106 @@ def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_r
     require(maximum_error <= .35, 'Sink modem waveform has a missing, duplicated or corrupted region')
     return {'status':'PASS','method':'full_modem_waveform_and_100ms_windows','correlation':score,
             'lag_ms':delay*1000,'fitted_gain':gain,'expected_gain':expected_gain,'minimum_correlation':.95,
-            'maximum_lag_ms':1000,'resampler_edge_allowance_ms':5,
+            'maximum_lag_ms':maximum_lag_ms,'resampler_edge_allowance_ms':5,
             'maximum_window_normalized_error':maximum_error,'allowed_window_normalized_error':.35,
             'reference_frames_compared_at_8k':n,'complete_reference_covered':True,
             'intelligibility':'UNASSESSED'}
+
+
+def output_alignment_budget(rows,turn,stream='modem'):
+    candidates=[row for row in rows if row.get('kind') in ('stream','audio-budget') and row.get('stream')==stream and
+                row.get('ms',0)<=turn['end_ms']]
+    require(candidates,'Actual output descriptors are required for alignment')
+    target=max(row['tlength']*1000/(row['rate']*2*row['channels']) for row in candidates)
+    latency=max([max(row.get('reported_sink_usec',0),row.get('configured_sink_usec',0)) for row in candidates]+
+        [max(row['sink_usec'],row['configured_sink_usec']) for row in rows if stream=='modem' and
+         row.get('kind')=='backend-tail' and row.get('complete') is True and row['completed_us']//1000<=turn['end_ms']])
+    maximum=math.ceil(target+latency/1000+150+120+30+200)
+    return {'schema':'x6200.usb.alignment-budget.v1','basis':'actual_output_queues_and_existing_scheduler_crop_budgets',
+            'stream':stream,'stream_target_ms':target,'backend_usec':latency,'io_service_ms':150,
+            'codec_quantum_ms':120,'margin_ms':30,'crop_context_ms':200,'maximum_lag_ms':maximum}
+
+
+def fifo_rf_window(timing_rows,reference_transport_pcm,aligned_frame_start,rf_on_after_ns,rf_off_before_ns):
+    """Check actual paced FIFO reads of the complete signal, including EOO.
+
+    The finite quiet tail is retained and its scheduled end is reported. Every
+    nonzero frame must have been read while keyed; no monitor/DAC equivalence
+    is assumed, and this remains a host backend model.
+    """
+    header=next((row for row in timing_rows if row.get('kind')=='session'),{})
+    terminal=next((row for row in reversed(timing_rows) if row.get('kind')=='terminal'),{})
+    require(header.get('schema')=='x6200.usb.fifo-clock.v1' and header.get('scope')=='paced FIFO backend model; not physical hardware' and
+            header.get('rate_hz')==44100 and terminal.get('status') in ('STOPPED','COMPLETE') and
+            terminal.get('exit_code')==0 and terminal.get('partial_frame_bytes')==0,
+            'The independent FIFO clock did not retain a complete bounded recording')
+    signal=array('h');signal.frombytes(reference_transport_pcm)
+    if sys.byteorder!='little':signal.byteswap()
+    nonzero=[index for index,sample in enumerate(signal) if sample]
+    require(nonzero and type(aligned_frame_start) is int and aligned_frame_start>=0 and
+            aligned_frame_start+len(signal)<=terminal['frames'],'The FIFO capture omitted part of the finite modem waveform')
+    first,last=aligned_frame_start+nonzero[0],aligned_frame_start+nonzero[-1]
+    blocks=[row for row in timing_rows if row.get('kind')=='block']
+    beginning=next((row for row in blocks if row['frame_start']<=first<row['frame_end']),None)
+    ending=next((row for row in blocks if row['frame_start']<=last<row['frame_end']),None)
+    require(beginning and ending,'The FIFO clock omitted a signal boundary')
+    before,after=beginning['before_ns'],ending['after_ns']
+    signal_passed=rf_on_after_ns<=before<=after<=rf_off_before_ns
+    finite_end=header['clock_origin_ns']+(aligned_frame_start+len(signal)-1)*1000000000//44100
+    passed=signal_passed and finite_end<=rf_off_before_ns
+    return {'schema':'x6200.usb.rf-window.v1','status':'PASS' if passed else 'FAIL',
+        'scope':'paced FIFO backend model; not physical hardware','basis':'actual_FIFO_read_intervals',
+        'rf_on_after_ns':rf_on_after_ns,'rf_off_before_ns':rf_off_before_ns,
+        'aligned_frame_start':aligned_frame_start,'reference_frames':len(signal),
+        'first_signal_frame':first,'last_signal_frame':last,'first_signal_read_before_ns':before,
+        'last_signal_read_after_ns':after,'quiet_tail_frames':len(signal)-nonzero[-1]-1,
+        'finite_last_deadline_ns':finite_end,'finite_deadline_before_rf_off':finite_end<=rf_off_before_ns,
+        'all_signal_consumed_while_rf':signal_passed,'late_signal_ns':max(0,after-rf_off_before_ns),
+        'early_signal_ns':max(0,rf_on_after_ns-before)}
+
+
+def validate_backend_failure(rows,harness,text,mode):
+    """Require a real, fresh post-EOO backend request and bounded interruption."""
+    expected={'missing':(14,'modem-backend-timing'),'invalid':(9,'modem-backend-timing-invalid'),
+              'stop-before-timing':(1,'local-stop'),'stop-during-wait':(1,'local-stop')}
+    require(mode in expected,'Unknown backend failure mode')
+    fault,origin=expected[mode]
+    first=next((row for row in rows if row.get('event')=='first-fault'),{})
+    receipt=next((row for row in rows if row.get('kind')=='backend-tail' and row.get('complete') is False),{})
+    require(harness['fault']==fault and harness['first_fault_origin']==origin and harness['turns']==0 and
+            harness['eoo']==1 and harness['keys']==1 and harness['physical_tx'] is False and
+            first.get('status')==fault and first.get('operation')==origin and first.get('state')==4 and
+            receipt.get('rf_tx_confirmed') is False,'The backend interruption lost its phase, EOO or fault evidence')
+    requested=re.search(r'INJECT backend timing requested_ms=(\d+) mode='+re.escape(mode)+r' phase=drain',text)
+    ack=re.search(r'INJECT backend timing mode='+re.escape(mode)+r' real_ack_ms=(\d+) success=1 withheld=([01]) phase=drain',text)
+    require(requested and ack,'The backend timing interposer did not exercise a real fresh ACK')
+    require(receipt['protocol_ack_ms']<=int(requested[1])<=int(ack[1])<=first['ms'] and
+            int(ack[2])==(mode=='missing'),'The backend request/ACK ordering is invalid')
+    require(harness.get('rf_clear_confirmed') is True,'Backend failure did not confirm RF clear')
+    if mode=='missing':
+        require(first['ms']-int(requested[1])>=1000,'Missing backend ACK faulted before its unchanged deadline')
+    result={'schema':'x6200.usb.backend-failure.v1','status':'PASS','mode':mode,'fault':fault,'origin':origin,
+        'state':4,'first_fault_ms':first['ms'],'requested_ms':int(requested[1]),'real_ack_ms':int(ack[1]),
+        'protocol_ack_ms':receipt['protocol_ack_ms'],'eoo':1,'completed_rf_turns':0,'keys':1,'physical_tx':False,
+        'rf_clear_confirmed':True,'interrupted_intervals':1,'requested_phase':'drain',
+        'raw_log_sha256':hashlib.sha256(text.encode()).hexdigest()}
+    final=next(row for row in reversed(rows) if row.get('kind')=='sample')
+    require(final.get('rf_valid') and not final.get('rf_tx') and final['state'] in (5,6),
+            'Backend failure did not close with fresh RX')
+    if mode=='invalid':
+        require('INJECT backend timing invalid write_index_bytes=-1 phase=drain' in text,'Invalid raw boundary was not injected')
+    if mode=='stop-before-timing':
+        stop=re.search(r'INJECT backend timing stop-before-forward stop_ms=(\d+) action_invoked=1 phase=drain',text)
+        require(stop and int(ack[1])<=first['ms']<=int(stop[1]),'Stop was not applied before forwarding the timing ACK')
+        result['stop_ms']=int(stop[1])
+    if mode=='stop-during-wait':
+        stop=re.search(r'BACKEND_STOP_DURING_WAIT request_before_ns=(\d+) request_after_ns=(\d+) wait_started_ms=(\d+) wait_until_us=(\d+)',text)
+        require(stop,'The actual backend wait was not interrupted')
+        before,after,start,until=map(int,stop.groups())
+        require(start*1000000<=before<=after<until*1000 and after-before<100000000,
+                'Stop waited for the backend tail instead of clearing promptly')
+        result.update(request_before_ns=before,request_after_ns=after,wait_started_ms=start,wait_until_us=until)
+    return result
 
 
 def audio_buffer_contract(rows):

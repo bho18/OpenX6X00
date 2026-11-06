@@ -16,7 +16,7 @@ import build_native_development as builder
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
                                immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
-                               host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol, validate_capture_pipeline_tail_run)
+                               host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol, validate_capture_pipeline_tail_run, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run)
 
 
 SYNTHETIC_TRANSPORT_LIBRARY=b'synthetic-libsamplerate-gate-fixture'
@@ -220,13 +220,21 @@ def sink_turn_fixture(close,require_speech=True,root=None):
                    'expected_gain':.25,'minimum_correlation':.95,'maximum_lag_ms':1000,
                    'resampler_edge_allowance_ms':5,'maximum_window_normalized_error':.01,
                    'allowed_window_normalized_error':.35,'reference_frames_compared_at_8k':3900}}
+        turn['alignment_budget']={'schema':'x6200.usb.alignment-budget.v1',
+            'basis':'actual_output_queues_and_existing_scheduler_crop_budgets','stream':'modem','stream_target_ms':450.,
+            'backend_usec':50000,'io_service_ms':150,'codec_quantum_ms':120,'margin_ms':30,'crop_context_ms':200,
+            'maximum_lag_ms':1000}
         calls=[{'stage':'regular','input_frames':4000,'generated_frames':3675} for _ in range(6)]
         calls.append({'stage':'src-final','input_frames':0,'generated_frames':0})
         artifacts={};bodies={};directory=(root or Path('/synthetic'))/('turn-%03d-control'%number)
         for name,frames in (('source48',24000),('transport441',22050),('reference_stimulus',88200),
                             ('actual_stimulus',88200),('reference_decoded',37044 if require_speech else 0),
                             ('actual_decoded',37044 if require_speech else 0)):
-            raw=(b'\x01\x00' if name=='source48' else b'\0\0')*frames
+            if name=='source48':raw=(1000).to_bytes(2,'little',signed=True)*frames
+            elif name=='transport441':raw=(250).to_bytes(2,'little',signed=True)*frames
+            elif name in ('reference_stimulus','actual_stimulus'):
+                raw=b'\0\0'*2205+(250).to_bytes(2,'little',signed=True)*22050+b'\0\0'*(frames-24255)
+            else:raw=b'\0\0'*frames
             bodies[name]=raw
             artifacts[name]={'path':str(directory/(name+'.raw')),'sha256':hashlib.sha256(raw).hexdigest()}
         for side,key in (('reference','reference'),('actual','observed')):
@@ -247,7 +255,7 @@ def sink_turn_fixture(close,require_speech=True,root=None):
             'source_sha256':artifacts['source48']['sha256'],'transport_sha256':artifacts['transport441']['sha256'],
             'reference_stimulus_sha256':artifacts['reference_stimulus']['sha256'],
             'actual_stimulus_sha256':artifacts['actual_stimulus']['sha256'],
-            'source_context':'fixed_full_waveform_alignment','native_alignment':{'offset_frames':2205,
+            'source_context':'fixed_full_waveform_alignment','alignment_budget':copy.deepcopy(turn['alignment_budget']),'native_alignment':{'offset_frames':2205,
                 'search_radius_frames':8,'normalized_rms_error':.01,'complete_transport_covered':True},
             'transport':{'converter':2,'library':'synthetic-libsamplerate','version':'synthetic',
                 'input_frames':24000,'output_frames':22050,'calls':calls,'eof_complete':True,
@@ -255,7 +263,8 @@ def sink_turn_fixture(close,require_speech=True,root=None):
         if root is not None:
             directory.mkdir(parents=True,exist_ok=True)
             for name,raw in bodies.items():Path(artifacts[name]['path']).write_bytes(raw)
-            trace_rows.setdefault(interval['trace_file'],[{'kind':'stream','stream':'mic','rate':48000,'channels':1,'fragsize':1920}]).extend(
+            trace_rows.setdefault(interval['trace_file'],[{'kind':'stream','stream':'mic','rate':48000,'channels':1,'fragsize':1920},
+                {'kind':'stream','stream':'modem','ms':0,'rate':44100,'channels':1,'tlength':39690,'reported_sink_usec':50000,'configured_sink_usec':50000}]).extend(
                 dict(row,kind='render-queue',ms=turn['start_ms']+100+index) for index,row in enumerate(calls))
             trace_rows[interval['trace_file']].append(dict(interval,kind='capture-close',complete=True,index_gap=False,
                 close_timeout_ms=750,scope='pulse-capture-pipeline-frontier',submitted_first_index=interval['start_index'],
@@ -270,8 +279,10 @@ def sink_turn_fixture(close,require_speech=True,root=None):
             microphone=result/(Path(name).stem+'-mic.raw')
             count=max(row['mic_tap_end'] for row in rows if row.get('kind')=='capture-close')
             if not microphone.exists():microphone.write_bytes(b'\0\0'*count)
+    helper={'harness':{'turns':len(turns),'total_turns':len(turns),'fault':1},'capture_close':close,'actual_sink_turns':turns}
+    if root is not None:output_contract_fixture(root,helper['harness'])
+    attach_rf_windows_fixture(helper,root)
     return turns
-
 
 
 def capture_pipeline_tail_fixture(root):
@@ -304,15 +315,173 @@ def capture_pipeline_tail_fixture(root):
     (root/'test.log').write_text(text)
     proof=validate_capture_pipeline_tail(raw,row,microphone,source_rows,source,text)
     proof.update(observer_pcm_sha256=sha(pcm),observer_index_sha256=sha(index))
-    return {'harness':{'turns':1,'total_turns':1,'eoo':1,'total_eoo':1,'fault':1,'rf_clear_confirmed':True,
-                       'rf_valid':True,'rf_tx':False,'physical_tx':False},
-            'capture_close':close,'capture_pipeline_tail':proof,'actual_sink_turns':turns}
+    run={'harness':{'turns':1,'total_turns':1,'eoo':1,'total_eoo':1,'fault':1,'rf_clear_confirmed':True,
+                    'rf_valid':True,'rf_tx':False,'physical_tx':False},
+         'capture_close':close,'capture_pipeline_tail':proof,'actual_sink_turns':turns}
+    attach_rf_windows_fixture(run,root)
+    return run
 
 
-def capture_case_fixture(case,root):
+
+def output_contract_fixture(root,harness,identity=None):
+    """Hand-computed playback-tail receipts for metadata gate unit tests."""
+    from usb_output_contract import validate_output_contract
+    root=Path(root);result=root/'result';result.mkdir(parents=True,exist_ok=True)
+    identity=identity or {'source_commit':'a'*40,'build_id':'synthetic-output-fixture','test_binary_sha256':'c'*64}
+    paths=sorted(result.glob('freedv-usb-session*.jsonl'))
+    if not paths:
+        path=result/'freedv-usb-session-unit.jsonl';path.write_text('');paths=[path]
+    sessions=[];session_ids=[]
+    for path in paths:
+        rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        rows=[row for row in rows if not row.get('_synthetic_output')]
+        key={'session_id':path.stem,'source_commit':identity['source_commit'],'build_id':identity['build_id']}
+        header={'kind':'session','schema':'x6200.usb-audio.v3','usb_output_contract_version':1,**key,'_synthetic_output':True}
+        closes=[row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is True]
+        generated=[]
+        for number,close in enumerate(closes,1):
+            start,drain,closed=close['capture_started_ms'],close['close_started_ms'],close['closed_ms']
+            ack_us=(closed+12)*1000;until=ack_us+33000+1;unkey=(until+999)//1000+1
+            for state,at in ((3,start),(4,drain),(8,unkey)):
+                generated.append({'kind':'event','event':'state','state':state,'ms':at,'_synthetic_output':True})
+            generated.append({'kind':'backend-tail','schema':'x6200.usb.playback-tail.v1',**key,'turn':number,
+                'drain_started_ms':drain,'protocol_ack_ms':closed+10,'timing_issued_ms':closed+11,
+                'timing_issued_us':(closed+11)*1000,'timing_ack_ms':closed+12,'timing_ack_us':ack_us,
+                'write_index_bytes':8820,'read_index_bytes':7938,'sink_usec':20000,'transport_usec':3000,
+                'configured_sink_usec':20000,'protocol_pending_usec':10000,'wait_usec':33000,
+                'wait_until_us':until,'completed_us':until,'complete':True,'rf_tx_confirmed':True,'rf_disabled':False,
+                'scope':'pulse-reported-backend-tail','_synthetic_output':True})
+        fault=harness.get('fault',1);state=6 if fault==1 else 5
+        at=max([row.get('ms',0) for row in rows+generated]+[1000])+100
+        final={'kind':'sample','ms':at,'turns':len(closes),'state':state,'fault':fault,'_synthetic_output':True}
+        modem={'kind':'stream','ms':0,'stream':'modem','rate':44100,'channels':1,'tlength':39690,
+               'reported_sink_usec':50000,'configured_sink_usec':50000,'_synthetic_output':True}
+        extra=[{'kind':'stream','stream':'headset','ms':0,'rate':48000,'channels':1,'tlength':43200,
+                'maxlength':96000,'minreq':1920,'prebuf':36482},
+               {'kind':'stream','stream':'radio-rx','ms':0,'rate':44100,'channels':1,'fragsize':1764}]
+        initial={'kind':'event','event':'state','state':1,'ms':min([item['capture_started_ms'] for item in closes]+[1000])-100,'_synthetic_output':True}
+        trace_rows=[header,modem,initial,*extra,*rows,*generated,final]
+        for item in trace_rows:
+            if item.get('kind') in ('stream','audio-budget') and item.get('stream') in ('mic','radio-rx','headset','modem'):
+                capture=item['stream'] in ('mic','radio-rx')
+                item.update(requested_flags=0x2000 if capture else 0x4000,adjust_latency=capture,
+                            request_domain='capture-fragments' if capture else 'per-stream-playback')
+                if not capture:
+                    rate=item['rate'];item.setdefault('maxlength',rate*2);item.setdefault('minreq',rate//25)
+                    item.setdefault('prebuf',rate*2*380//1000)
+        path.write_text(''.join(json.dumps(row)+'\n' for row in trace_rows))
+        completion={'kind':'completion','schema':'x6200.usb-completion.v1',**key,'usb_output_contract_version':1,
+            'terminal':True,'trace_complete':True,'turns':len(closes),'playback_tail_completed_intervals':len(closes),
+            'playback_tail_interrupted_intervals':0,'state':state,'fault':fault,'qualification_turns':0,'last_sample_ms':at}
+        cp=path.with_name(path.stem+'-completion.json');atomic_json(cp,completion)
+        summary=validate_output_contract(trace_rows,completion,required_version=1,expected_identity=key)
+        sessions.append(dict(summary,trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp)))
+        session_ids.append(path.stem)
+    return {'usb_output_contract_version':1,'identity':{'status':'PASS','source_commit':identity['source_commit'],
+            'build_id':identity['build_id'],'binary_sha256':identity['test_binary_sha256'],'session_ids':session_ids},
+            'output_contract':{'schema':'x6200.usb.output-contract-set.v1','status':'PASS','usb_output_contract_version':1,'sessions':sessions}}
+
+
+
+def rf_intervals_from_turns(turns):
+    return [dict(key_sequence=turn['rf_window']['rf_key_sequence'],**{key:turn['rf_window']['rf_'+key] for key in
+            ('on_before_ns','on_after_ns','off_before_ns','off_after_ns')}) for turn in turns
+            if turn.get('rf_window',{}).get('status')=='PASS']
+
+
+def attach_rf_windows_fixture(run,root=None):
+    from usb_test_support import fifo_rf_window
+    from test_usb_audio_integration import rf_window_proof
+    turns=run.get('actual_sink_turns',[]);intervals=[]
+    for number,turn in enumerate(turns,1):
+        start,end=turn['start_ms'],turn['end_ms']
+        interval={'key_sequence':number,'on_before_ns':(start-2)*1000000,'on_after_ns':(start-1)*1000000,
+                  'off_before_ns':(end-10)*1000000,'off_after_ns':(end-9)*1000000}
+        intervals.append(interval);turn['monitor_frame_start']=0
+        turn['rf_window']={'schema':'x6200.usb.rf-window.v1','status':'PASS',
+            'scope':'pulse-reported backend model; not physical hardware','basis':'fresh_backend_tail_before_RF_off',
+            'receipt_turn':[row for row in run['capture_close']['turns'] if row['rf_completed']][number-1]['turn'],
+            'receipt_sha256':'e'*64,'backend_completed_ns':(end-20)*1000000,'rf_key_sequence':number,
+            **{'rf_'+key:interval[key] for key in ('on_before_ns','on_after_ns','off_before_ns','off_after_ns')},
+            'complete_reference_covered':True,'all_signal_consumed_while_rf':True,'finite_deadline_before_rf_off':True}
+    run['harness']['rf_intervals']=intervals
+    if root is None:return
+    root=Path(root);fixed=run.get('backend_profile',{}).get('name')=='fixed-pipe'
+    if fixed and turns:
+        turn=turns[0];data=Path(turn['artifacts']['actual_stimulus']['path']).read_bytes()[:turn['decoder_control']['control_frames']*2]
+        frames=len(data)//2;origin=intervals[0]['on_after_ns']
+        header={'kind':'session','schema':'x6200.usb.fifo-clock.v1','scope':'paced FIFO backend model; not physical hardware',
+            'rate_hz':44100,'channels':2,'sample_width_bytes':2,'frame_bytes':4,'period_ms':10,'clock_origin_ns':origin}
+        clock=[header]
+        for number,start in enumerate(range(0,frames,441)):
+            end=min(start+441,frames);deadline=origin+(number+1)*10000000
+            clock.append({'kind':'block','block':number,'period':number+1,'frame_start':start,'frame_end':end,
+                'bytes_read':(end-start)*4,'partial_frame_bytes':0,'before_ns':deadline,'after_ns':deadline+1000})
+        clock.append({'kind':'terminal','status':'STOPPED','exit_code':0,'partial_frame_bytes':0,'frames':frames,
+            'raw_bytes':frames*4,'blocks':len(clock)-1,'clock_origin_ns':origin,'finished_ns':clock[-1]['after_ns']+1000})
+        (root/'fifo-modem.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in clock))
+        (root/'fifo-modem-mono.raw').write_bytes(data)
+        (root/'fifo-modem.raw').write_bytes(b''.join(data[index:index+2]*2 for index in range(0,len(data),2)))
+    for turn in turns:
+        path=root/'result'/turn['trace_file'];rows=[json.loads(line) for line in path.read_text().splitlines()]
+        transport=Path(turn['artifacts']['transport441']['path']).read_bytes()
+        turn['rf_window']=rf_window_proof(root,rows,turn,turn['rf_window']['receipt_turn'],transport,
+            turn['decoder_control'],turn['monitor_frame_start'],run['harness'],fifo=fixed)
+
+
+
+def backend_failure_fixture(case,root,identity=None):
+    from usb_output_contract import validate_output_contract
+    from usb_test_support import validate_backend_failure
+    root=Path(root);run=capture_case_fixture('normal',root,identity)
+    mode,fault,origin={'backend-timing-missing':('missing',14,'modem-backend-timing'),
+        'backend-timing-invalid':('invalid',9,'modem-backend-timing-invalid'),
+        'backend-stop-before-timing':('stop-before-timing',1,'local-stop'),
+        'backend-stop-during-wait':('stop-during-wait',1,'local-stop')}[case]
+    interval=run['capture_close']['turns'][0];interval['rf_completed']=False;run['capture_close']['completed_rf_turns']=0
+    run['actual_sink_turns']=[]
+    harness=run['harness'];harness.update(status='PASS',scenario='--'+case,turns=0,total_turns=0,eoo=1,total_eoo=1,
+        fault=fault,first_fault_origin=origin,first_fault_operation_ms=1001 if mode=='missing' else 0,
+        keys=1,physical_tx=False,rf_valid=True,rf_tx=False,rf_clear_confirmed=True)
+    entry=run['output_contract']['sessions'][0];path=root/'result'/entry['trace_file'];cp=root/'result'/entry['completion_file']
+    rows=[json.loads(line) for line in path.read_text().splitlines()]
+    rows=[row for row in rows if not(row.get('event')=='state' and row.get('state')==8)]
+    receipt=next(row for row in rows if row.get('kind')=='backend-tail');request=receipt['timing_issued_ms'];ack=request+1
+    fault_ms=request+1001 if mode=='missing' else ack+1
+    receipt.update(complete=False,rf_tx_confirmed=False,completed_us=0)
+    if mode in ('missing','stop-before-timing'):
+        receipt.update(timing_ack_ms=0,timing_ack_us=0,wait_usec=0,wait_until_us=0)
+    if mode=='invalid':receipt['write_index_bytes']=-1
+    text='INJECT backend timing requested_ms='+str(request)+' mode='+mode+' phase=drain\n'
+    text+='INJECT backend timing mode='+mode+' real_ack_ms='+str(ack)+' success=1 withheld='+str(int(mode=='missing'))+' phase=drain\n'
+    if mode=='invalid':text+='INJECT backend timing invalid write_index_bytes=-1 phase=drain\n'
+    if mode=='stop-before-timing':text+='INJECT backend timing stop-before-forward stop_ms='+str(fault_ms)+' action_invoked=1 phase=drain\n'
+    if mode=='stop-during-wait':
+        before=receipt['timing_ack_us']*1000+100000
+        text+='BACKEND_STOP_DURING_WAIT request_before_ns='+str(before)+' request_after_ns='+str(before+1000)+' wait_started_ms='+str(receipt['timing_ack_ms'])+' wait_until_us='+str(receipt['wait_until_us'])+'\n'
+    first={'kind':'event','event':'first-fault','state':4,'status':fault,'operation':origin,'ms':fault_ms}
+    rows.insert(-1,first);rows[-1].update(turns=0,rf_valid=True,rf_tx=False,state=6 if fault==1 else 5,fault=fault,ms=fault_ms+10)
+    path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    completion=json.loads(cp.read_text());completion.update(turns=0,playback_tail_completed_intervals=0,
+        playback_tail_interrupted_intervals=1,state=rows[-1]['state'],fault=fault,last_sample_ms=rows[-1]['ms']);atomic_json(cp,completion)
+    summary=validate_output_contract(rows,completion,required_version=1)
+    run['output_contract']['sessions']=[dict(summary,trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp))]
+    if fault==1:interval['completion_interruption']={'schema':'x6200.usb.capture-interruption.v1','status':'CONFIRMED',
+        'fault':1,'origin':'local-stop','state':4,'ms':fault_ms,'closed_ms':interval['closed_ms'],'trace_file':path.name,'trace_sha256':sha(path)}
+    harness['rf_intervals'][0].update(off_before_ns=(fault_ms+1)*1000000,off_after_ns=(fault_ms+2)*1000000)
+    (root/'test.log').write_text(text)
+    run['backend_failure']=validate_backend_failure(rows,harness,text,mode)
+    run['backend_profile'].update(name='legacy-low-latency',null_norewinds=True)
+    (root/'default.pa').write_text('load-module module-null-sink sink_name=radio_sink_fixture norewinds=1\n')
+    return run
+
+
+def capture_case_fixture(case,root,identity=None):
     from test_usb_audio_integration import SPEECH_CASES,WAVEFORM_CASES
-    if case=='capture-close-tail120':return capture_pipeline_tail_fixture(root)
-    if case in ('capture-release-split','capture-release-held150'):result=capture_source_boundary_fixture(case,root)
+    if case in ('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'):
+        return backend_failure_fixture(case,root,identity)
+    if case=='capture-close-tail120':result=capture_pipeline_tail_fixture(root)
+    elif case in ('capture-release-split','capture-release-held150'):result=capture_source_boundary_fixture(case,root)
     elif case in ('capture-close-missing','capture-close-invalid','capture-close-stop'):result=capture_close_failure_fixture(case,root)
     elif case=='eoo-backpressure':result=tail_backpressure_fixture()
     else:
@@ -321,6 +490,25 @@ def capture_case_fixture(case,root):
     if case in WAVEFORM_CASES:
         result['actual_sink_turns']=sink_turn_fixture(result['capture_close'],case in SPEECH_CASES,root)
     else:result['actual_sink_turns']=[]  # Match the matrix summary's explicit default.
+    profile_name={'backend-fixed-pipe':'fixed-pipe','io-pause150':'fixed-pipe','rx-pause150':'default'}.get(case,'legacy-low-latency')
+    module='module-pipe-sink' if profile_name=='fixed-pipe' else 'module-null-sink'
+    result['backend_profile']={'schema':'x6200.usb.backend-profile.v1','name':profile_name,'passive_monitor':case!='cold-idle','observer_excluded_for_idle':case=='cold-idle',
+        'competing_monitor':profile_name=='monitor-competition','modem_sink_module':module,'null_norewinds':profile_name=='legacy-low-latency'}
+    Path(root).mkdir(parents=True,exist_ok=True)
+    (Path(root)/'default.pa').write_text('load-module '+module+' sink_name=radio_sink_fixture'+(' norewinds=1' if profile_name=='legacy-low-latency' else '')+'\n')
+    result.update(output_contract_fixture(root,result['harness'],identity))
+    attach_rf_windows_fixture(result,root)
+    starts=[turn['start_ms'] for turn in result.get('actual_sink_turns',[])]
+    ready=(min(starts+[1000])-10)*1000000;fixed=profile_name=='fixed-pipe'
+    result['observer_admission']={'schema':'x6200.usb.observer-admission.v1','phase':'after-initial-RX-before-PTT',
+        'ready_ns':ready,'first_block_required':not fixed,'first_block_confirmed':not fixed,
+        'independent_fifo_reader':fixed,'cold_idle_unobserved':case=='cold-idle'}
+    (Path(root)/'result/output-observer-ready').write_text(str(ready)+'\n')
+    with (Path(root)/'test.log').open('a') as log:log.write('FIXTURE_OUTPUT_READY\n')
+    ledger=[{'kind':'ready','monotonic_ns':ready-2,'flags':0,'adjust_latency':False,'early_requests':False,
+             'scope':'passive rendered sink monitor; not physical DAC time'},
+            {'kind':'block','received_ns':ready-1,'frame_start':0,'frames':1}]
+    (Path(root)/('headset-output.jsonl' if case=='rx-pause150' else 'radio-output.jsonl')).write_text(''.join(json.dumps(row)+'\n' for row in ledger))
     return result
 
 
@@ -350,7 +538,8 @@ class CampaignTests(unittest.TestCase):
                          'modem_sha256': 'f' * 64, 'fault_injector_sha256': '1' * 64}
         self.identity['host_resource_configuration']=host_resource_configuration()
         self.identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
-        self.plan = {'profile': 'qualification', 'repetitions': 2,
+        self.identity['usb_output_contract_version']=1
+        self.plan = {'usb_output_contract_version':1,'profile': 'qualification', 'repetitions': 2,
                      'expected_cases': ['normal'], 'selected_cases': ['normal'],
                      'debug_subset': False, 'case_timeout_seconds': {'normal': 90},
                      'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
@@ -372,12 +561,12 @@ class CampaignTests(unittest.TestCase):
             log.write_text('retained bounded subprocess log\n')
             case_root=evidence/('normal-case-'+str(repeat))
             case = case_root/'case-result.json'
-            extra=capture_case_fixture('normal',case_root)
+            extra=capture_case_fixture('normal',case_root,self.identity)
             case.write_text(json.dumps({'status': 'PASS', 'repeat': repeat,**extra}) + '\n')
             runs.append({'status': 'PASS', 'repeat': repeat, 'log_path': str(log),
                          'log_sha256': sha(log), 'case_record_path': str(case),
                          'case_record_sha256': sha(case),**extra})
-        result = {'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
+        result = {'usb_output_contract_version':1,'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
                   'plan': self.plan, 'complete_matrix': status == 'PASS',
                   'expected_executions': ['normal@1', 'normal@2'],
                   'executed': ['normal@1', 'normal@2'], 'not_executed': [], 'skipped': [],
@@ -408,7 +597,9 @@ class CampaignTests(unittest.TestCase):
         campaign,evidence=self.begin();result=self.result(evidence)
         runs=result['cases'].pop('normal')['runs']
         for run in runs:
-            extra=capture_case_fixture(name,Path(run['case_record_path']).parent)
+            case_root=evidence/('optional-'+str(run['repeat']))
+            extra=capture_case_fixture(name,case_root,self.identity)
+            run['case_record_path']=str(case_root/'case-result.json')
             details={'status':'PASS',**extra}
             if retained=='ABSENT':details.pop('actual_sink_turns',None)
             else:details['actual_sink_turns']=copy.deepcopy(retained)
@@ -430,6 +621,15 @@ class CampaignTests(unittest.TestCase):
             report=self.optional_sink_report(retained,summary)
             with self.subTest(retained=retained,summary=summary),self.assertRaisesRegex(ValueError,'retained per-turn'):
                 validate_campaign(report,['stop-during-key'])
+
+    def test_legacy_or_unknown_output_feature_cannot_qualify_a_new_image(self):
+        for target,value in (('matrix',None),('plan',0),('identity',2),('matrix',True)):
+            campaign,evidence=self.begin();result=self.result(evidence)
+            if target=='matrix':result['usb_output_contract_version']=value
+            else:result[target]=dict(result[target],usb_output_contract_version=value)
+            report=self.finish(campaign,result)
+            with self.subTest(target=target,value=value),self.assertRaisesRegex(ValueError,'output contract version1'):
+                validate_campaign(report,['normal'],verify_files=False)
 
     def test_required_positive_sink_absence_still_blocks_retained_binding(self):
         campaign,evidence=self.begin();result=self.result(evidence)
@@ -642,6 +842,8 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.fixture_mismatch = False
         self.aggregate_only = False
         self.malformed_sink = False
+        self.missing_output_contract = False
+        self.flags_only_output_contract = False
         self.infrastructure_fail = False
         self.infrastructure_fake_exit = False
         self.infrastructure_wrong_identity = False
@@ -706,12 +908,21 @@ class MatrixSupervisionTests(unittest.TestCase):
                          'build_id':expected_env.get('USB_TEST_EXPECTED_BUILD_ID'),
                          'controller_binary_sha256':sha(self.binary),
                          'mutations':{name:{'status':'PASS'} for name in ('missing-completion','truncated-completion','truncated-trace')}}}
-        details.update(capture_case_fixture(case,output))
+        details.update(capture_case_fixture(case,output,{'source_commit':expected_env['USB_TEST_EXPECTED_SOURCE_COMMIT'],
+            'build_id':'older-build' if self.old_build else expected_env['USB_TEST_EXPECTED_BUILD_ID'],'test_binary_sha256':sha(self.binary)}))
         details['actual_sink_decode']={'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in details.get('actual_sink_turns',[]))}
         if self.aggregate_only:
             details['actual_sink_decode']={'synthesis_blocks':20}
             details['actual_sink_turns']=[]
         if self.malformed_sink:details['actual_sink_turns'][0]['content_match']['complete_reference_covered']=False
+        if self.missing_output_contract:details.pop('output_contract')
+        if self.flags_only_output_contract:
+            entry=details['output_contract']['sessions'][0]
+            trace=output/'result'/entry['trace_file'];completion=output/'result'/entry['completion_file']
+            rows=[json.loads(line) for line in trace.read_text().splitlines()]
+            trace.write_text(''.join(json.dumps(row)+'\n' for row in rows if row.get('kind')!='backend-tail'))
+            final=json.loads(completion.read_text());final['playback_tail_completed_intervals']=0;atomic_json(completion,final)
+            entry.update(completed_intervals=0,receipt_count=0,trace_sha256=sha(trace),completion_sha256=sha(completion))
         (output / 'case-result.json').write_text(json.dumps(details) + '\n')
         return {'exit_code': 1 if self.fail else 0, 'timed_out': False, 'duration_ms': 1}
 
@@ -799,6 +1010,16 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.assertEqual(record['executed'],['normal@1','normal@2'])
         self.assertEqual(len(record['infrastructure_prerequisites']),1)
         self.assertIn('infrastructure_failure_preservation',record['coverage'])
+
+    def test_advertised_flags_without_completion_proof_fail_before_seal(self):
+        for flag in ('missing_output_contract','flags_only_output_contract'):
+            setattr(self,flag,True)
+            status,record=self.invoke()
+            self.assertEqual(status,1)
+            self.assertEqual(record['status'],'FAIL')
+            self.assertEqual(record['cases']['normal']['runs'][0]['status'],'FAIL')
+            self.assertEqual(record['campaign']['history'][-1]['result']['status'],'FAIL')
+            setattr(self,flag,False)
 
     def test_promotion_validation_failure_is_printed_and_retained(self):
         with mock.patch.object(matrix,'validate_campaign',side_effect=ValueError('sentinel promotion failure')), \
@@ -895,8 +1116,10 @@ class MatrixSupervisionTests(unittest.TestCase):
 class PositiveTurnGateTests(unittest.TestCase):
     def fixture(self,case='normal',turns=2):
         close=capture_close_fixture(turns)
-        return {'harness':{'turns':turns,'total_turns':turns,'eoo':turns,'total_eoo':turns,'fault':1},
-                'capture_close':close,'actual_sink_turns':sink_turn_fixture(close,case!='short-turn200')}
+        run={'harness':{'turns':turns,'total_turns':turns,'eoo':turns,'total_eoo':turns,'fault':1},
+             'capture_close':close,'actual_sink_turns':sink_turn_fixture(close,case!='short-turn200')}
+        run['harness']['rf_intervals']=rf_intervals_from_turns(run['actual_sink_turns'])
+        return run
 
     def test_every_positive_turn_and_short_waveform_pass(self):
         validate_sink_turns_run(self.fixture(),'normal',verify_files=False)
@@ -997,6 +1220,25 @@ class MatchedDecoderGateTests(unittest.TestCase):
             with self.subTest(mutation=mutation),self.assertRaises(ValueError):
                 validate_sink_turns_run(run,'normal',verify_files=False)
 
+    def test_alignment_horizon_is_derived_from_raw_backend_profile(self):
+        run=self.fixture(files=True);turn=run['actual_sink_turns'][0]
+        path=self.root/'result'/turn['trace_file'];rows=[json.loads(line) for line in path.read_text().splitlines()]
+        for row in rows:
+            if row.get('kind')=='stream' and row.get('stream')=='modem':row.update(reported_sink_usec=700000,configured_sink_usec=700000)
+        path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+        budget=dict(turn['alignment_budget'],backend_usec=700000,maximum_lag_ms=1650)
+        turn['alignment_budget']=budget;turn['decoder_control']['alignment_budget']=copy.deepcopy(budget)
+        turn['content_match']['maximum_lag_ms']=1650;turn['decoder_control']['matched_waveform']['maximum_lag_ms']=1650
+        validate_sink_turns_run(run,'normal')
+
+    def test_arbitrary_larger_alignment_horizon_cannot_replace_raw_profile(self):
+        run=self.fixture(files=True);turn=run['actual_sink_turns'][0]
+        budget=dict(turn['alignment_budget'],backend_usec=700000,maximum_lag_ms=1650)
+        turn['alignment_budget']=budget;turn['decoder_control']['alignment_budget']=copy.deepcopy(budget)
+        turn['content_match']['maximum_lag_ms']=1650;turn['decoder_control']['matched_waveform']['maximum_lag_ms']=1650
+        with self.assertRaisesRegex(ValueError,'actual negotiated outputs'):
+            validate_sink_turns_run(run,'normal')
+
     def test_loaded_transport_dependency_must_match_campaign_identity(self):
         run=self.fixture()
         validate_sink_turns_run(run,'normal',verify_files=False,expected_transport_sha256=SYNTHETIC_TRANSPORT_SHA)
@@ -1069,6 +1311,162 @@ class ReleaseLockProtocolGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):validate_release_lock_protocol(self.protocol,self.expected)
         self.protocol['evidence_files']['log']['sha256']=sha(path)
         with self.assertRaises(ValueError):validate_release_lock_protocol(self.protocol,self.expected)
+
+
+
+class OutputContractRunGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name)
+
+    def fixture(self,case='normal'):
+        run=capture_case_fixture(case,self.root);run['case_record_path']=str(self.root/'case-result.json');return run
+
+    def test_every_completed_turn_requires_typed_backend_contract(self):
+        validate_output_contract_run(self.fixture())
+
+    def test_zero_turn_stop_needs_markers_but_no_completed_backend_interval(self):
+        run=self.fixture('stop-during-key')
+        self.assertEqual(run['output_contract']['sessions'][0]['completed_intervals'],0)
+        validate_output_contract_run(run)
+        run.pop('usb_output_contract_version')
+        with self.assertRaises(ValueError):validate_output_contract_run(run)
+
+    def test_missing_unknown_or_diagnostic_contract_never_qualifies_new_build(self):
+        for mutation in ('missing','version','diagnostic','sessions','turns','identity'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture('normal',root);run['case_record_path']=str(root/'case-result.json')
+                if mutation=='missing':run.pop('output_contract')
+                elif mutation=='version':run['usb_output_contract_version']=2
+                elif mutation=='diagnostic':run['output_contract']['status']='DIAGNOSTIC_ONLY'
+                elif mutation=='sessions':run['output_contract']['sessions']=[]
+                elif mutation=='turns':run['harness']['total_turns']+=1
+                else:run['identity']['session_ids']=['old-session']
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_output_contract_run(run)
+
+    def test_raw_tail_deletion_or_early_unkey_is_rejected_even_with_updated_hash(self):
+        for mutation in ('missing','early_unkey','wrong_identity','wait_arithmetic','deadline'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture('normal',root);run['case_record_path']=str(root/'case-result.json')
+                entry=run['output_contract']['sessions'][0];trace=root/'result'/entry['trace_file']
+                rows=[json.loads(line) for line in trace.read_text().splitlines()]
+                receipt=next(row for row in rows if row.get('kind')=='backend-tail')
+                if mutation=='missing':rows=[row for row in rows if row.get('kind')!='backend-tail']
+                elif mutation=='early_unkey':next(row for row in rows if row.get('event')=='state' and row.get('state')==8)['ms']=receipt['completed_us']//1000-1
+                elif mutation=='wrong_identity':receipt['source_commit']='old'
+                elif mutation=='wait_arithmetic':receipt['wait_usec']-=1
+                else:receipt['timing_ack_ms']=receipt['timing_issued_ms']+1000;receipt['timing_ack_us']=receipt['timing_ack_ms']*1000
+                trace.write_text(''.join(json.dumps(row)+'\n' for row in rows));entry['trace_sha256']=sha(trace)
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_output_contract_run(run)
+
+    def test_copied_session_under_new_filename_cannot_inflate_turn_coverage(self):
+        run=self.fixture();first=run['output_contract']['sessions'][0];second=copy.deepcopy(first)
+        result=self.root/'result'
+        for key in ('trace_file','completion_file'):
+            source=result/first[key]
+            target=result/('copied-'+first[key]);target.write_bytes(source.read_bytes())
+            second[key]=target.name
+        second['trace_sha256']=sha(result/second['trace_file'])
+        second['completion_sha256']=sha(result/second['completion_file'])
+        run['output_contract']['sessions'].append(second)
+        run['harness'].update(total_turns=2,turns=2)
+        run['identity']['session_ids']*=2
+        with self.assertRaisesRegex(ValueError,'session identity was reused'):
+            validate_output_contract_run(run)
+
+    def test_session_summary_and_receipts_cannot_be_reused_or_tampered(self):
+        run=self.fixture();run['output_contract']['sessions'].append(copy.deepcopy(run['output_contract']['sessions'][0]))
+        with self.assertRaises(ValueError):validate_output_contract_run(run)
+        run=self.fixture();entry=run['output_contract']['sessions'][0]
+        path=self.root/'result'/entry['completion_file'];path.write_text('{}')
+        with self.assertRaises(ValueError):validate_output_contract_run(run)
+
+
+
+class OutputProfileAndRfWindowGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name)
+
+    def fixture(self,case='normal'):
+        run=capture_case_fixture(case,self.root);run['case_record_path']=str(self.root/'case-result.json');return run
+
+    def test_default_and_fixed_models_cover_complete_rf_payload(self):
+        for case in ('backend-fixed-pipe','io-pause150'):
+            with tempfile.TemporaryDirectory() as directory:
+                run=capture_case_fixture(case,Path(directory));run['case_record_path']=str(Path(directory)/'case-result.json')
+                validate_backend_profile_run(run,case);validate_observer_admission_run(run,case)
+                validate_sink_turns_run(run,case)
+
+    def test_playback_adjust_flag_or_old_small_reserve_cannot_hide_in_summary(self):
+        for mutation in ('adjust','noearly','domain','reserve'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture('normal',root);run['case_record_path']=str(root/'case-result.json')
+                path=root/'result'/run['output_contract']['sessions'][0]['trace_file']
+                rows=[json.loads(line) for line in path.read_text().splitlines()]
+                modem=next(row for row in rows if row.get('kind')=='stream' and row.get('stream')=='modem')
+                if mutation=='adjust':modem.update(requested_flags=0x6000,adjust_latency=True)
+                elif mutation=='noearly':modem['requested_flags']&=~0x4000
+                elif mutation=='domain':modem['request_domain']='sink-plus-client'
+                else:modem.update(tlength=21609,minreq=1764,prebuf=19845)
+                path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_backend_profile_run(run,'normal')
+
+    def test_observer_cannot_request_latency_or_begin_before_startup_admission(self):
+        for mutation in ('missing','early','activeobserver','noblock'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture('normal',root);run['case_record_path']=str(root/'case-result.json')
+                if mutation=='missing':run.pop('observer_admission')
+                elif mutation=='early':run['observer_admission']['ready_ns']=run['harness']['rf_intervals'][0]['on_before_ns']+1
+                else:
+                    path=root/'radio-output.jsonl';rows=[json.loads(line) for line in path.read_text().splitlines()]
+                    if mutation=='activeobserver':rows[0].update(flags=0x2000,adjust_latency=True)
+                    else:rows=[row for row in rows if row.get('kind')!='block']
+                    path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_observer_admission_run(run,'normal')
+
+    def test_rf_clear_before_backend_completion_rejects_unchanged_waveform_pass(self):
+        run=self.fixture();turn=run['actual_sink_turns'][0];window=turn['rf_window']
+        self.assertEqual(turn['content_match']['status'],'PASS')
+        self.assertEqual(turn['speech_status'],'DECODED_REFERENCE_MATCH')
+        early=window['backend_completed_ns']-1
+        window.update(rf_off_before_ns=early,rf_off_after_ns=early+1)
+        run['harness']['rf_intervals'][0].update(off_before_ns=early,off_after_ns=early+1)
+        with self.assertRaisesRegex(ValueError,'RF interval'):validate_sink_turns_run(run,'normal')
+
+    def test_independent_fifo_late_signal_rejects_good_waveform_and_backend_flags(self):
+        run=self.fixture('backend-fixed-pipe');turn=run['actual_sink_turns'][0];proof=turn['rf_window']
+        path=Path(proof['fifo_artifacts']['timing']['path']);rows=[json.loads(line) for line in path.read_text().splitlines()]
+        last=next(row for row in rows if row.get('kind')=='block' and row['frame_start']<=proof['last_signal_frame']<row['frame_end'])
+        last['after_ns']=proof['rf_off_before_ns']+1000
+        rows[-1]['finished_ns']=last['after_ns']+1000
+        path.write_text(''.join(json.dumps(row)+'\n' for row in rows));proof['fifo_artifacts']['timing']['sha256']=sha(path)
+        self.assertEqual(turn['content_match']['status'],'PASS')
+        with self.assertRaises(ValueError):validate_sink_turns_run(run,'backend-fixed-pipe')
+
+
+class BackendFailureGateTests(unittest.TestCase):
+    def test_all_four_post_eoo_backend_interruptions_keep_zero_completed_rf_turns(self):
+        cases=('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait')
+        for case in cases:
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture(case,root);run['case_record_path']=str(root/'case-result.json')
+                validate_capture_close_run(run,verify_files=True);validate_backend_failure_run(run,case)
+                self.assertEqual(run['harness']['total_turns'],0)
+                self.assertEqual(run['harness']['total_eoo'],1)
+
+    def test_wrong_phase_or_original_fault_and_erased_interruption_cannot_pass(self):
+        for mutation in ('missing','phase','fault','eoo','RFturn','clear','log'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture('backend-timing-invalid',root);run['case_record_path']=str(root/'case-result.json')
+                if mutation=='missing':run.pop('backend_failure')
+                elif mutation=='phase':run['backend_failure']['requested_phase']='tx'
+                elif mutation=='fault':run['backend_failure']['fault']=1
+                elif mutation=='eoo':run['harness']['total_eoo']=0
+                elif mutation=='RFturn':run['harness']['total_turns']=1
+                elif mutation=='clear':run['harness']['rf_clear_confirmed']=False
+                else:(root/'test.log').write_text('PASS')
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_backend_failure_run(run,'backend-timing-invalid')
 
 
 
@@ -1213,6 +1611,44 @@ class CaptureTailBudgetGateTests(unittest.TestCase):
             elif mutation=='legacy':budget.pop('schema')
             else:budget['comparison_basis']='maximum_on_total_plus_tolerance'
             with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_capture_close_run(run)
+
+    def stop_after_complete_fixture(self,root):
+        from usb_output_contract import validate_output_contract
+        run=capture_case_fixture('normal',root);run['case_record_path']=str(root/'case-result.json')
+        run['harness'].update(turns=0,total_turns=0,first_fault_origin='local-stop')
+        interval=run['capture_close']['turns'][0];interval['rf_completed']=False
+        run['capture_close']['completed_rf_turns']=0
+        path=root/'result'/interval['trace_file'];rows=[json.loads(line) for line in path.read_text().splitlines()]
+        rows=[row for row in rows if not (row.get('event')=='state' and row.get('state')==8)]
+        first_fault={'kind':'event','event':'first-fault','status':1,'operation':'local-stop','state':4,'ms':interval['closed_ms']+100}
+        rows.insert(-1,first_fault);rows[-1]['turns']=0
+        path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+        cp=path.with_name(path.stem+'-completion.json');completion=json.loads(cp.read_text());completion['turns']=0;atomic_json(cp,completion)
+        summary=validate_output_contract(rows,completion,required_version=1)
+        run['output_contract']['sessions']=[dict(summary,trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp))]
+        interval['completion_interruption']={'schema':'x6200.usb.capture-interruption.v1','status':'CONFIRMED',
+            'fault':1,'origin':'local-stop','state':4,'ms':first_fault['ms'],'closed_ms':interval['closed_ms'],
+            'trace_file':path.name,'trace_sha256':sha(path)}
+        return run
+
+    def test_completed_capture_before_local_stop_does_not_claim_rf_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run=self.stop_after_complete_fixture(Path(directory))
+            validate_output_contract_run(run);validate_capture_close_run(run,verify_files=True)
+            self.assertEqual(run['capture_close']['completed_rf_turns'],0)
+            self.assertFalse(run['capture_close']['turns'][0]['rf_completed'])
+
+    def test_stop_summary_without_exact_retained_drain_chronology_is_rejected(self):
+        for mutation in ('missing','early','phase','hash'):
+            with tempfile.TemporaryDirectory() as directory:
+                run=self.stop_after_complete_fixture(Path(directory));interval=run['capture_close']['turns'][0]
+                witness=interval['completion_interruption']
+                if mutation=='missing':interval.pop('completion_interruption')
+                elif mutation=='early':witness['ms']=interval['closed_ms']-1
+                elif mutation=='phase':witness['state']=3
+                else:witness['trace_sha256']='0'*64
+                with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                    validate_capture_close_run(run,verify_files=False)
 
     def test_source_horizon_and_capture_close_deadline_remain_bounded(self):
         for mutation in ('horizon','deadline'):
