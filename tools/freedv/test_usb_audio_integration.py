@@ -30,7 +30,7 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require,
 from usb_transport_oracle import transport_chunks_for_turn,matched_decoder_control
 from usb_collector_contract import validate_collector_contract
 from usb_output_contract import validate_output_contract
-from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run
+from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags
 
 CASES = (
     'normal', 'rx-signal', 'block-key', 'stop-during-key', 'release-during-key',
@@ -637,6 +637,7 @@ def run_case(args):
                         turn['completion_interruption'].update(trace_file=path.name,trace_sha256=sha(path))
                     capture_closes.append(dict(turn,trace_file=path.name))
             rows.extend(trace_rows)
+        validate_headset_volume_flags(rows,required=args.case in {'audio-controls','audio-gain-turn'})
         require(sum(turn['rf_completed'] for turn in capture_closes)==harness.get('total_turns',harness['turns']),
                 'Finite capture closure did not cover every completed controller turn')
         require(len(capture_closes)==harness.get('total_turns',harness['turns']) or harness['fault']>1 or

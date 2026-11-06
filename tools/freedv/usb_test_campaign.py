@@ -525,6 +525,19 @@ def _validate_output_contract_run(run,verify_files=True,expected_identity=None):
 
 
 
+def validate_headset_volume_flags(rows,required=False):
+    """A unity headset client must respect the user's existing sink master."""
+    streams=[row for row in rows if row.get('kind') in ('stream','audio-budget')]
+    headset=[row for row in streams if row.get('stream')=='headset']
+    if required and not headset:
+        raise ValueError('Headset relative-volume request descriptor is missing')
+    for row in streams:
+        if row.get('stream') not in ('mic','radio-rx','headset','modem'):continue
+        flags=row.get('requested_flags')
+        if type(flags) is not int or bool(flags&0x40000) is not (row['stream']=='headset'):
+            raise ValueError('Only the headset stream must request RELATIVE_VOLUME to preserve its sink master')
+
+
 def validate_backend_profile_run(run,case,verify_files=True):
     profile=run.get('backend_profile',{})
     names=('legacy-low-latency','default','fixed-pipe')
@@ -546,6 +559,7 @@ def validate_backend_profile_run(run,case,verify_files=True):
         seen=set()
         for session in run['output_contract']['sessions']:
             rows=[json.loads(value) for value in (Path(run['case_record_path']).parent/'result'/session['trace_file']).read_text().splitlines() if value.strip()]
+            validate_headset_volume_flags(rows,required=case in ('audio-controls','audio-gain-turn'))
             for row in rows:
                 name=row.get('stream')
                 if row.get('kind') not in ('stream','audio-budget') or name not in ('mic','radio-rx','headset','modem'):continue

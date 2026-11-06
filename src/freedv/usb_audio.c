@@ -700,11 +700,14 @@ static bool prepare(fd_usb_audio *a){
      * than consuming nearly the whole client reserve in one backend burst. */
     pa_stream_flags_t base_flags=PA_STREAM_DONT_MOVE|PA_STREAM_AUTO_TIMING_UPDATE;
     pa_stream_flags_t flags=base_flags|PA_STREAM_EARLY_REQUESTS;
+    /* Unity is relative to the operator's current USB master even on flat-
+     * volume servers; opening this stream must not raise device loudness. */
+    pa_stream_flags_t headset_flags=flags|PA_STREAM_RELATIVE_VOLUME;
     pa_stream_flags_t capture_flags=base_flags|PA_STREAM_ADJUST_LATENCY;
-    a->requested_flags[MIC]=a->requested_flags[RADIO_RX]=capture_flags;a->requested_flags[HEADSET]=flags;a->requested_flags[MODEM]=flags|PA_STREAM_START_CORKED;
+    a->requested_flags[MIC]=a->requested_flags[RADIO_RX]=capture_flags;a->requested_flags[HEADSET]=headset_flags;a->requested_flags[MODEM]=flags|PA_STREAM_START_CORKED;
     pa_buffer_attr attr={.maxlength=RATE*2*STREAM_CAPACITY_MS/1000,.tlength=RATE*2*OUTPUT_TARGET_MS/1000,.prebuf=(uint32_t)-1,.minreq=RATE*2/50,.fragsize=RATE*2/50};
     pa_cvolume volume;pa_cvolume_set(&volume,1,PA_VOLUME_NORM);
-    bool ok=pa_stream_connect_record(a->streams[MIC],a->source,&attr,capture_flags)>=0&&pa_stream_connect_playback(a->streams[HEADSET],a->sink,&attr,flags,&volume,NULL)>=0;
+    bool ok=pa_stream_connect_record(a->streams[MIC],a->source,&attr,capture_flags)>=0&&pa_stream_connect_playback(a->streams[HEADSET],a->sink,&attr,headset_flags,&volume,NULL)>=0;
     attr=(pa_buffer_attr){.maxlength=RADIO_RATE*2*STREAM_CAPACITY_MS/1000,.tlength=RADIO_RATE*2*OUTPUT_TARGET_MS/1000,.prebuf=(uint32_t)-1,.minreq=RADIO_RATE*2/50,.fragsize=RADIO_RATE*2/50};pa_cvolume_set(&volume,1,PA_VOLUME_NORM);
     ok=ok&&pa_stream_connect_record(a->streams[RADIO_RX],a->c.radio_source,&attr,capture_flags)>=0&&pa_stream_connect_playback(a->streams[MODEM],a->c.radio_sink,&attr,flags|PA_STREAM_START_CORKED,&volume,NULL)>=0;
     until=now_ms()+5000;bool ready=false;

@@ -17,6 +17,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
                                immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
                                host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol, validate_capture_pipeline_tail_run, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run)
+from usb_test_campaign import validate_headset_volume_flags
 
 
 SYNTHETIC_TRANSPORT_LIBRARY=b'synthetic-libsamplerate-gate-fixture'
@@ -364,7 +365,7 @@ def output_contract_fixture(root,harness,identity=None):
         for item in trace_rows:
             if item.get('kind') in ('stream','audio-budget') and item.get('stream') in ('mic','radio-rx','headset','modem'):
                 capture=item['stream'] in ('mic','radio-rx')
-                item.update(requested_flags=0x2000 if capture else 0x4000,adjust_latency=capture,
+                item.update(requested_flags=0x2000 if capture else 0x44000 if item['stream']=='headset' else 0x4000,adjust_latency=capture,
                             request_domain='capture-fragments' if capture else 'per-stream-playback')
                 if not capture:
                     rate=item['rate'];item.setdefault('maxlength',rate*2);item.setdefault('minreq',rate//25)
@@ -1413,6 +1414,32 @@ class OutputProfileAndRfWindowGateTests(unittest.TestCase):
                 else:modem.update(tlength=21609,minreq=1764,prebuf=19845)
                 path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
                 with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_backend_profile_run(run,'normal')
+
+    def test_relative_volume_belongs_only_to_actual_headset_stream(self):
+        for stream in ('headset','modem','mic','radio-rx'):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);run=capture_case_fixture('normal',root);run['case_record_path']=str(root/'case-result.json')
+                validate_backend_profile_run(run,'normal')
+                path=root/'result'/run['output_contract']['sessions'][0]['trace_file']
+                rows=[json.loads(line) for line in path.read_text().splitlines()]
+                target=next(row for row in rows if row.get('kind')=='stream' and row.get('stream')==stream)
+                target['requested_flags']^=0x40000
+                path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                with self.subTest(stream=stream),self.assertRaisesRegex(ValueError,'RELATIVE_VOLUME'):
+                    validate_backend_profile_run(run,'normal')
+
+    def test_relative_volume_requires_typed_headset_descriptor(self):
+        rows=[{'kind':'stream','stream':'headset','requested_flags':0x44000},
+              {'kind':'audio-budget','stream':'modem','requested_flags':0x4000}]
+        validate_headset_volume_flags(rows,required=True)
+        for mutation in ('missing-headset','absolute-headset','relative-modem','bool-flags'):
+            changed=copy.deepcopy(rows)
+            if mutation=='missing-headset':changed.pop(0)
+            elif mutation=='absolute-headset':changed[0]['requested_flags']=0x4000
+            elif mutation=='relative-modem':changed[1]['requested_flags']|=0x40000
+            else:changed[0]['requested_flags']=True
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                validate_headset_volume_flags(changed,required=True)
 
     def test_observer_cannot_request_latency_or_begin_before_startup_admission(self):
         for mutation in ('missing','early','activeobserver','noblock'):
