@@ -238,7 +238,48 @@ def completed_turns(rows):
     return turns
 
 
-def validate_operation_phase(rows, phase, mode):
+def validate_delayed_ack(rows, log_text, phase, action, state, requested_ms=650):
+    """Prove the injected hold used the controller's measured wait interval.
+
+    Issue time precedes the real Pulse API call. It cannot serve as the start
+    of a delay that is intended to exercise the later controller wait.
+    """
+    pattern=(r'INJECT PA delayed-ack action=(\S+) phase=(\S+) issued_ms=(\d+) '
+             r'wait_started_ms=(\d+) ack_ms=(\d+) requested_ms=(\d+) success=(-?\d+)')
+    witnesses=[]
+    for match in re.finditer(pattern,log_text):
+        observed_action,observed_phase,issued,wait_started,acknowledged,requested,success=match.groups()
+        if observed_action==action and observed_phase==phase:
+            witnesses.append(dict(issued_ms=int(issued),wait_started_ms=int(wait_started),
+                ack_ms=int(acknowledged),requested_ms=int(requested),success=int(success)))
+    operation='modem-'+action
+    starts=[row for row in rows if row.get('kind')=='event' and row.get('event')=='operation-start'
+            and row.get('operation')==operation and row.get('state')==state]
+    endings=[row for row in rows if row.get('kind')=='event' and row.get('event')=='operation-end'
+             and row.get('operation')==operation and row.get('state')==state and row.get('status')==1]
+    header=next((row for row in rows if row.get('kind')=='session'),{})
+    timeout=header.get('operation_timeout_ms',1000)
+    for witness in witnesses:
+        issued,started,ack=witness['issued_ms'],witness['wait_started_ms'],witness['ack_ms']
+        if (witness['requested_ms']!=requested_ms or witness['success']!=1 or
+                ack-started<requested_ms):
+            continue
+        for end in endings:
+            if not requested_ms<=end.get('duration_ms',0)<timeout:
+                continue
+            # The most recent start is the only valid partner for this end.
+            prior=[begin for begin in starts if begin['ms']<=end['ms']]
+            if not prior:
+                continue
+            begin=max(prior,key=lambda row:row['ms'])
+            if issued<=begin['ms']<=started<=ack<=end['ms']:
+                return {'status':'PASS','phase':phase,'operation':operation,'trace_state':state,
+                        **witness,'hold_ms':ack-started,'trace_start_ms':begin['ms'],
+                        'trace_end_ms':end['ms'],'duration_ms':end['duration_ms']}
+    require(False,'No correlated '+str(requested_ms)+'ms delayed ACK witness inside the requested '+phase+' '+operation+' wait')
+
+
+def validate_operation_phase(rows, phase, mode, log_text=''):
     states = {'initial-rx':0, 'tx':2, 'rx-return':9}
     events = [row for row in rows if row.get('kind') == 'event' and row.get('event') == 'operation-end'
               and row.get('operation') == 'modem-flush' and row.get('state') == states[phase]]
@@ -256,8 +297,11 @@ def validate_operation_phase(rows, phase, mode):
         require(any(row.get('event') == 'first-fault' and row.get('state') == states[phase] and
                     row.get('status') == (15 if mode == 'reject' else 14) for row in rows),
                 'The requested PA phase did not cause its expected first fault')
-    return {'phase':phase,'mode':mode,'operation':'modem-flush','trace_state':states[phase],
+    result={'phase':phase,'mode':mode,'operation':'modem-flush','trace_state':states[phase],
             'observed_status':observed['status'],'duration_ms':observed['duration_ms']}
+    if mode=='delay':
+        result['delay_witness']=validate_delayed_ack(rows,log_text,phase,'flush',states[phase])
+    return result
 
 
 def validate_drain_loss_wait(rows, harness, log_text):
@@ -266,12 +310,10 @@ def validate_drain_loss_wait(rows, harness, log_text):
     started,dropped,acknowledged=map(int,witness.groups())
     require(started<dropped<acknowledged and acknowledged-started>=650,
             'RF loss did not occur inside the requested successful 650ms trigger ACK wait')
-    starts=[row for row in rows if row.get('kind')=='event' and row.get('event')=='operation-start'
-            and row.get('operation')=='modem-trigger' and row.get('state')==4]
-    endings=[row for row in rows if row.get('kind')=='event' and row.get('event')=='operation-end'
-             and row.get('operation')=='modem-trigger' and row.get('state')==4 and row.get('status')==1]
-    require(any(started<=begin['ms']<dropped<acknowledged<=end['ms'] for begin in starts for end in endings),
-            'The trace does not place RF loss inside the successful DRAIN trigger operation')
+    delay=validate_delayed_ack(rows,log_text,'tx','trigger',4)
+    require(started==delay['wait_started_ms'] and acknowledged==delay['ack_ms'] and
+            delay['trace_start_ms']<=started<dropped<acknowledged<=delay['trace_end_ms'],
+            'The trace does not place RF loss inside the successful DRAIN trigger operation wait')
     faults=[row for row in rows if row.get('event')=='first-fault' and row.get('status')==4
             and row.get('operation')=='tx-status-disappeared-during-drain' and row.get('state')==4]
     require(faults and min(row['ms'] for row in faults)>=acknowledged,
@@ -280,7 +322,7 @@ def validate_drain_loss_wait(rows, harness, log_text):
             'A turn with RF loss during the trigger wait was counted as complete')
     return {'status':'PASS','operation':'modem-trigger','phase':'tx','state':4,
             'started_ms':started,'rf_drop_ms':dropped,'acknowledged_ms':acknowledged,
-            'successful_ack_wait_ms':acknowledged-started,'completed_turns':0}
+            'successful_ack_wait_ms':acknowledged-started,'completed_turns':0,'delay_witness':delay}
 
 
 def render_capacity_audit(rows):

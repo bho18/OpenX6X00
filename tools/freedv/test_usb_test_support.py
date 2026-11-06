@@ -258,10 +258,11 @@ class AudioReserveTests(unittest.TestCase):
 class IdentityAndPhaseTests(unittest.TestCase):
     def drain_wait(self, dropped=150, turns=0):
         rows=[{'kind':'event','event':'operation-start','operation':'modem-trigger','state':4,'ms':101},
-              {'kind':'event','event':'operation-end','operation':'modem-trigger','state':4,'ms':751,'status':1},
-              {'kind':'event','event':'first-fault','operation':'tx-status-disappeared-during-drain','state':4,'ms':752,'status':4}]
+              {'kind':'event','event':'operation-end','operation':'modem-trigger','state':4,'ms':752,'status':1,'duration_ms':651},
+              {'kind':'event','event':'first-fault','operation':'tx-status-disappeared-during-drain','state':4,'ms':753,'status':4}]
         harness={'fault':4,'turns':turns,'physical_tx':False}
-        log='RF_DROP_DURING_TRIGGER_WAIT started_ms=100 drop_ms='+str(dropped)+' ack_ms=750'
+        log=('RF_DROP_DURING_TRIGGER_WAIT started_ms=101 drop_ms='+str(dropped)+' ack_ms=751\n'
+             'INJECT PA delayed-ack action=trigger phase=tx issued_ms=100 wait_started_ms=101 ack_ms=751 requested_ms=650 success=1')
         return rows,harness,log
 
     def test_rf_loss_during_successful_delayed_trigger_blocks_completion(self):
@@ -270,6 +271,37 @@ class IdentityAndPhaseTests(unittest.TestCase):
     def test_rf_loss_before_wait_or_a_counted_turn_cannot_credit_the_boundary(self):
         for values in [self.drain_wait(dropped=99),self.drain_wait(turns=1)]:
             with self.assertRaises(ValueError):validate_drain_loss_wait(*values)
+
+    def delayed_flush(self,phase='initial-rx',*,wait_started=101,ack=751,duration=650):
+        state={'initial-rx':0,'tx':2,'rx-return':9}[phase]
+        rows=[{'kind':'session','operation_timeout_ms':1000},
+              {'kind':'event','event':'operation-start','operation':'modem-flush','state':state,'ms':101},
+              {'kind':'event','event':'operation-end','operation':'modem-flush','state':state,'ms':101+duration,
+               'status':1,'duration_ms':duration}]
+        log=('INJECT PA delayed-ack action=flush phase='+phase+' issued_ms=100 wait_started_ms='+str(wait_started)+
+             ' ack_ms='+str(ack)+' requested_ms=650 success=1')
+        return rows,phase,'delay',log
+
+    def test_delayed_ack_clock_begins_inside_all_three_controller_wait_phases(self):
+        for phase in ('initial-rx','tx','rx-return'):
+            with self.subTest(phase=phase):
+                result=validate_operation_phase(*self.delayed_flush(phase))
+                self.assertEqual(result['delay_witness']['hold_ms'],650)
+                self.assertEqual(result['delay_witness']['trace_start_ms'],101)
+
+    def test_issue_time_delay_cannot_credit_649ms_controller_wait(self):
+        with self.assertRaises(ValueError):
+            validate_operation_phase(*self.delayed_flush(wait_started=100,ack=750,duration=649))
+
+    def test_declared_trace_duration_cannot_mask_short_hold_or_pre_wait_origin(self):
+        for values in [self.delayed_flush(ack=750),self.delayed_flush(wait_started=100,ack=750)]:
+            with self.assertRaises(ValueError):validate_operation_phase(*values)
+
+    def test_unmatched_or_missing_delay_witness_cannot_credit_runtime_duration(self):
+        rows,phase,mode,log=self.delayed_flush()
+        for changed in ('',log.replace('phase=initial-rx','phase=tx'),log.replace('ack_ms=751','ack_ms=752'),
+                        log.replace('requested_ms=650','requested_ms=649')):
+            with self.assertRaises(ValueError):validate_operation_phase(rows,phase,mode,changed)
 
     def trace(self):
         rows=[{'kind':'session','session_id':'one','source_commit':'source','build_id':'build'},

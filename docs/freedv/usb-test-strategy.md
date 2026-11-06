@@ -25,6 +25,7 @@ and the blocked native hand-mic contract remain separate.
 | A host run underrun was followed by a clean replay | Retain every attempt. A replay cannot remove the failure or establish scheduling margin. |
 | Polling refreshed the fake packet clock | Advance fake telemetry independently of observation so stale-status tests exercise real loss of freshness. |
 | An operation injection could fire during the wrong phase | Require the intended phase/state and observed injected operation; startup coverage cannot substitute for TX or RX-return coverage. |
+| A 650 ms injected delay measured as 649 ms because issue and wait timers began at different points | Anchor the injected hold to the controller's first operation poll and retain separate issue, wait and acknowledgment timestamps. |
 | A stale/incomplete trace or ignored fault could look complete | Bind current-session identity, immutable first fault and terminal receipt; reconcile them before accepting a result. |
 | One global decode could hide a missing or stale later turn | Check the complete raw modem waveform and actual decoder output for each turn against its own reference. |
 | TX loss during drain could be counted as a completed turn | Keep checking fresh TX status during drain and reject the turn before completed-turn accounting can qualify it. |

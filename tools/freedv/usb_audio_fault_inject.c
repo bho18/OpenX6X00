@@ -18,7 +18,8 @@ typedef struct {
     pa_stream *stream;
     pa_stream_success_cb_t callback;
     void *userdata;
-    unsigned long long issued;
+    unsigned long long issued,wait_started;
+    const char *action,*phase;
     atomic_int real_done, success, delivered;
     bool is_trigger;
 } delayed_operation;
@@ -74,8 +75,7 @@ static void completed(pa_stream *stream,int success,void *unused) {
 }
 static void begin(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata,const char *action) {
     if(getenv("USB_TEST_COLD_CAPTURE"))atomic_store(&cold_started,1);
-    pending=(delayed_operation){.stream=stream,.callback=callback,.userdata=userdata,.issued=now_ms(),.is_trigger=!strcmp(action,"trigger")};
-    if(pending.is_trigger)atomic_store(&trigger_started,pending.issued);
+    pending=(delayed_operation){.stream=stream,.callback=callback,.userdata=userdata,.issued=now_ms(),.action=action,.phase=phase_name(),.is_trigger=!strcmp(action,"trigger")};
     fprintf(stderr,"INJECT PA %s mode=%s device=%s delay=%sms phase=%s\n",action,
             setting("USB_TEST_PA_MODE",""),pa_stream_get_device_name(stream),setting("USB_TEST_PA_DELAY_MS","650"),phase_name());
 }
@@ -104,12 +104,22 @@ pa_operation_state_t pa_operation_get_state(const pa_operation *operation) {
     const char *mode=setting("USB_TEST_PA_MODE","");
     if(!strcmp(mode,"missing"))return PA_OPERATION_RUNNING;
     if(!strcmp(mode,"reject"))return state;
-    if(now_ms()-pending.issued<strtoul(setting("USB_TEST_PA_DELAY_MS","650"),NULL,10))return PA_OPERATION_RUNNING;
+    /* The controller starts its operation deadline after the real Pulse API
+     * returns. Starting this hold at issue time could under-exercise that
+     * deadline by the API/logging time (650 ms injected, 649 ms observed).
+     * Its first state poll is inside the measured wait, so this origin proves
+     * the full requested interval without changing the production deadline. */
+    unsigned long long now=now_ms();
+    if(!pending.wait_started){pending.wait_started=now;if(pending.is_trigger)atomic_store(&trigger_started,now);}
+    unsigned long long requested=strtoull(setting("USB_TEST_PA_DELAY_MS","650"),NULL,10);
+    if(now-pending.wait_started<requested)return PA_OPERATION_RUNNING;
     if(pending.real_done && !pending.delivered) {
         pending.delivered=1;
-        if(pending.is_trigger)atomic_store(&trigger_acked,now_ms());
+        if(pending.is_trigger)atomic_store(&trigger_acked,now);
+        fprintf(stderr,"INJECT PA delayed-ack action=%s phase=%s issued_ms=%llu wait_started_ms=%llu ack_ms=%llu requested_ms=%llu success=%d\n",
+            pending.action,pending.phase,pending.issued,pending.wait_started,now,requested,pending.success);
         if(atomic_load(&cold_started)){
-            unsigned long long now=now_ms();atomic_store(&cold_ack,now);
+            atomic_store(&cold_ack,now);
             atomic_store(&cold_resume,now+strtoul(setting("USB_TEST_COLD_RESUME_MS","30"),NULL,10));
             fprintf(stderr,"INJECT cold ACK success=%d after=%llums resume=%s\n",pending.success,now-pending.issued,
                 getenv("USB_TEST_COLD_NEVER")?"never":setting("USB_TEST_COLD_RESUME_MS","30"));

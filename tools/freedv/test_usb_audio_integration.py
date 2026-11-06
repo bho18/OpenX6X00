@@ -450,7 +450,7 @@ def run_case(args):
         if args.case in PA_CASES:
             phase = PA_CASES[args.case]['phase']
             require('phase='+phase in text, 'The PA operation fault did not target the requested preparation phase')
-            record['injected_operation'] = validate_operation_phase(rows,phase,PA_CASES[args.case]['mode'])
+            record['injected_operation'] = validate_operation_phase(rows,phase,PA_CASES[args.case]['mode'],text)
         if args.case=='drain-tx-loss':
             require('INJECT PA trigger' in text and 'phase=tx' in text,
                     'The injected wait did not target the TX trigger operation')
