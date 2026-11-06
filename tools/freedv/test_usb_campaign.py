@@ -479,6 +479,39 @@ def backend_failure_fixture(case,root,identity=None):
     return run
 
 
+def audio_controls_fixture(live=False,root=None):
+    """Synthetic gate-unit control receipts; no audio or controller executes."""
+    if root:Path(root).mkdir(parents=True,exist_ok=True)
+    initial={'alsa_output.usb-fixture':{'mute':True,'volume':[26214,19661]},
+             'radio_sink_fixture':{'mute':False,'volume':[65536,65536]},
+             'unrelated_sink':{'mute':False,'volume':[15073,12452]}}
+    names=('gain-turn-up','gain-turn-down','gain-turn-rx') if live else ('baseline','up','down','gain6','gain24','gainminus12','gain0')
+    gains=(6,-6,0) if live else (0,0,0,6,24,-12,0)
+    volumes=(43,40,40) if live else (40,43,40,40,40,40,40)
+    phases=[]
+    for index,(name,gain,volume) in enumerate(zip(names,gains,volumes)):
+        tx=live and index<2;mute=not live and index==0
+        snapshot={'phase':name,'monotonic_ms':1000+index*100,'state':3 if tx else 1,'generation':2 if live and index==2 else 0,
+            'armed':live,'rf_tx':tx,'keys':(2 if tx else 3) if live else 0,'turns':2 if live and index==2 else 0,
+            'submitted_mic':(index+1)*48000 if live else 0,'mic_clipped_samples':0,
+            'mic_meter_ready':True,'mic_gain_db':gain,'mic_input_rms_dbfs10':-150,'mic_input_peak_dbfs10':-120,
+            'mic_rms_dbfs10':-10 if gain==24 else -150+gain*10,'mic_peak_dbfs10':0 if gain==24 else -120+gain*10,
+            'headset_volume_ready':True,'headset_volume_percent':volume,'headset_muted':mute,
+            'rade_creations':1,'encoder_creations':1,'decoder_creations':1,'resampler_creations':4,'worker_creations':2}
+        pulse=copy.deepcopy(initial);pulse['alsa_output.usb-fixture']={'mute':mute,'volume':[int(volume*65536/100),round(volume*.75*65536/100)]}
+        entry={'snapshot':snapshot,'pulse':pulse}
+        if root:
+            for kind in ('snapshot','pulse'):
+                path=Path(root)/(name+'-'+kind+'.json');atomic_json(path,entry[kind])
+                entry[kind+'_path']=str(path);entry[kind+'_sha256']=sha(path)
+        phases.append(entry)
+    key='audio_gain_turn' if live else 'audio_controls'
+    return {'harness':{'keys':3 if live else 0,'turns':2 if live else 0,'total_turns':2 if live else 0,
+                      'eoo':2 if live else 0,'fault':1,'physical_tx':False,'rf_clear_confirmed':True},
+            key:{'schema':'x6200.usb.audio-gain-turn.v1' if live else 'x6200.usb.audio-controls.v1',
+                 'status':'PASS','initial_sinks':initial,'phases':phases}}
+
+
 def capture_case_fixture(case,root,identity=None):
     from test_usb_audio_integration import SPEECH_CASES,WAVEFORM_CASES
     if case in ('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'):
@@ -487,6 +520,9 @@ def capture_case_fixture(case,root,identity=None):
     elif case in ('capture-release-split','capture-release-held150'):result=capture_source_boundary_fixture(case,root)
     elif case in ('capture-close-missing','capture-close-invalid','capture-close-stop'):result=capture_close_failure_fixture(case,root)
     elif case=='eoo-backpressure':result=tail_backpressure_fixture()
+    elif case in ('audio-controls','audio-gain-turn'):
+        result=audio_controls_fixture(case=='audio-gain-turn',root)
+        result['capture_close']=capture_close_fixture(result['harness']['turns'])
     else:
         count=int(case in WAVEFORM_CASES)
         result={'harness':{'turns':count,'total_turns':count,'eoo':count,'fault':1},'capture_close':capture_close_fixture(count)}
@@ -1913,39 +1949,19 @@ class BuildPrerequisiteHistoryTests(unittest.TestCase):
 class AudioControlEvidenceTests(unittest.TestCase):
     """Synthetic gate negatives; the real Pulse/controller case supplies evidence."""
     def fixture(self,live=False,root=None):
-        initial={'alsa_output.usb-fixture':{'mute':True,'volume':[26214,19661]},
-                 'radio_sink_fixture':{'mute':False,'volume':[65536,65536]},
-                 'unrelated_sink':{'mute':False,'volume':[15073,12452]}}
-        names=('gain-turn-up','gain-turn-down','gain-turn-rx') if live else ('baseline','up','down','gain6','gain24','gainminus12','gain0')
-        gains=(6,-6,0) if live else (0,0,0,6,24,-12,0)
-        volumes=(43,40,40) if live else (40,43,40,40,40,40,40)
-        phases=[]
-        for index,(name,gain,volume) in enumerate(zip(names,gains,volumes)):
-            tx=live and index<2;mute=not live and index==0
-            snapshot={'phase':name,'monotonic_ms':1000+index*100,'state':3 if tx else 1,'generation':2 if live and index==2 else 0,
-                'armed':live,'rf_tx':tx,'keys':(2 if tx else 3) if live else 0,'turns':2 if live and index==2 else 0,
-                'submitted_mic':(index+1)*48000 if live else 0,'mic_clipped_samples':0,
-                'mic_meter_ready':True,'mic_gain_db':gain,'mic_input_rms_dbfs10':-150,'mic_input_peak_dbfs10':-120,
-                'mic_rms_dbfs10':-10 if gain==24 else -150+gain*10,'mic_peak_dbfs10':0 if gain==24 else -120+gain*10,
-                'headset_volume_ready':True,'headset_volume_percent':volume,'headset_muted':mute,
-                'rade_creations':1,'encoder_creations':1,'decoder_creations':1,'resampler_creations':4,'worker_creations':2}
-            pulse=copy.deepcopy(initial);pulse['alsa_output.usb-fixture']={'mute':mute,'volume':[int(volume*65536/100),round(volume*.75*65536/100)]}
-            entry={'snapshot':snapshot,'pulse':pulse}
-            if root:
-                for kind in ('snapshot','pulse'):
-                    path=Path(root)/(name+'-'+kind+'.json');atomic_json(path,entry[kind])
-                    entry[kind+'_path']=str(path);entry[kind+'_sha256']=sha(path)
-            phases.append(entry)
-        key='audio_gain_turn' if live else 'audio_controls'
-        return {'harness':{'keys':3 if live else 0,'turns':2 if live else 0,'total_turns':2 if live else 0,
-                          'eoo':2 if live else 0,'fault':1,'physical_tx':False,'rf_clear_confirmed':True},
-                key:{'schema':'x6200.usb.audio-gain-turn.v1' if live else 'x6200.usb.audio-controls.v1',
-                     'status':'PASS','initial_sinks':initial,'phases':phases}}
+        return audio_controls_fixture(live,root)
 
     def test_rx_preview_and_live_turn_receipts_pass(self):
         for live,validator in ((False,validate_audio_controls_run),(True,validate_audio_gain_turn_run)):
             with self.subTest(live=live),tempfile.TemporaryDirectory() as directory:
-                validator(self.fixture(live,directory),verify_files=True)
+                case='audio-gain-turn' if live else 'audio-controls'
+                run=capture_case_fixture(case,directory)
+                run['case_record_path']=str(Path(directory)/'case-result.json')
+                validator(run,verify_files=True)
+                validate_output_contract_run(run,verify_files=True)
+                validate_backend_profile_run(run,case,verify_files=True)
+                validate_capture_close_run(run,verify_files=True)
+                validate_sink_turns_run(run,case,verify_files=True)
 
     def test_rx_preview_cannot_key_or_recreate_codec(self):
         for field,value in (('state',3),('armed',True),('rf_tx',True),('keys',1),('submitted_mic',1),
