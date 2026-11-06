@@ -1,191 +1,136 @@
-# X6200 USB PTT transition and end-to-end RF development test
+# X6200 USB Digital Voice beta
 
-Use the release's **replacement image and matching helper kit** on a spare SD
-card. The `usb-qualification-20261106.1` image is on HOLD for a reproduced
-startup regression; use the verified `usb-qualification-20261106.2` replacement
-and its matching kit. Stock baseband firmware is unchanged. The original native
-hand-mic mode remains blocked. This USB headset/panel-PTT mode first runs an
-automatic RF-disabled transition check, then offers a separate local Enable TX
-action for the SDR campaign.
-The earlier successful recording, codec and headset playback results remain
-accepted; there is no new basic speech-recording or listening round.
-The [qualification strategy](usb-test-strategy.md) defines the software,
-lifecycle, radio-transition and RF gates and how failed attempts remain in the
-record. This guide is the short operator procedure for the radio stages.
+Use the `usb-voice-beta-20261106.1` image and its matching helper kit on a spare
+SD card. Keep the working `usb-qualification-20261106.2` card as a fallback.
+Stock baseband firmware is unchanged. This beta uses a USB headset with microphone
+and the radio's on-device panel PTT for **half-duplex RADE V1**.
 
-The failed `.1` run stopped before audio or TX because the playback request
-mixed client-buffer and device-latency domains. The replacement corrects that
-request while retaining the 300 ms minimum client reserve, and requests a
-shorter backend service cadence separately from the client-buffer size. Actual
-device latency can differ, so it also waits for a fresh Pulse-reported backend
-interval after protocol drain before normal TX clear. The host tests now cover
-the original startup-grant failure and a separately paced backend that can
-expose a late modem tail. These checks do not establish
-physical USB or RF timing; the short integrated radio check below supplies the
-next evidence.
+The earlier recording, encoding, decoding, headset playback and initial RF
+transmit results are accepted. The next operating milestone is a live incoming
+RADE V1 signal decoded into the headset, followed by alternating short replies.
+You do not need another basic audio-recording or SDR transmit campaign first.
 
-The RF test requests 1 W and retains a 20-second software limit per press.
-Requested power is not calibrated output power, and Linux TX clearing is not an
-autonomous baseband RF-off guarantee. Settings are temporary and restored on
-normal Exit.
+## What changed
 
-## Prepare
+* **Mic gain**: saved manual gain from -12 to +24 dB, initially 0 dB, before the
+  speech encoder. The live RMS/peak meter previews this level even in RX; it
+  does not key the radio. CLIP indicates saturation during accepted TX speech.
+* **Headphones**: the physical VOL knob controls the selected USB headset sink.
+  Its actual volume and mute state are displayed. The extra -18 dB speech-stream
+  attenuation is removed. Start with a low headset volume before opening the mode.
+* The codec, resamplers and four audio streams remain resident through RX/TX
+  turns. RF admission, tail completion and the existing transition check remain.
 
-1. Verify both release ZIPs against `SHA256SUMS`. Flash the image ZIP with your
-   usual image-writing tool, boot the spare card, and retain your working card.
-   Use the `.2` image and kit together; the candidate and kit manifests must
-   declare `usb_output_contract_version: 1`. Do not install a baseband update.
-2. Connect the Shokz Loop110 and power/pair the headset. Set a comfortable
-   headset listening volume. Disconnect the hand mic and paddles/other keying
-   accessories. Use only the radio's on-device panel PTT for the later RF test.
-3. Connect the transmitter to a suitable dummy load. Let the SDR receive a weak
-   leakage signal, or use a properly attenuated RF coupler. Never connect the
-   transmitter output directly to an SDR input. Avoid SDR overload/clipping.
-4. Select an appropriate permitted HF test frequency before opening FreeDV.
-   Disable ATU for the dummy load, split, TX shift, RIT, XIT and transverter
-   offsets. Close other radio apps/recorders and TCI control clients. Tuning is
-   locked while USB mode owns the radio. The mode temporarily selects USB-DIG
-   and 100..3100 Hz RX filtering.
-5. Set the SDR to the same dial frequency in **USB**, with approximately
-   100..3100 Hz audio passband. Disable squelch and audio noise processing.
-   Prepare to record **demodulated audio**, PCM signed 16-bit mono, preferably
-   48 kHz. Recordings up to 120 seconds and 32 MiB are accepted without trimming.
-   IQ recordings are not input to this helper.
+The +20 dB control used on the receiving PC was FreeDV's **Speaker / decoded
+speech output** gain. It does not establish that X6200 mic gain needs +20 dB.
+Measured microphone peaks already reached about -5 dBFS; that much input boost
+would clip. Adjust speech gain using the meter and a peer's listening report.
+Mic gain changes speech, not RF/modem drive. There is no automatic gain control
+in this beta.
 
-## Automatic transition check with RF disabled
+## Install and prepare
 
-1. Open FreeDV and confirm **USB FreeDV / RADE V1 - RF TEST**. Wait for
-   preparation to finish. The display must say **RF disabled** and actual radio
-   **RX**. Leave every PTT released.
-2. Select **Run transition check** locally. Leave the headset connected and
-   all PTT released through the initial 20-second idle period and the three
-   automatic direction/control-delay turns. **No speaking or listening task is
-   required.** This specifically checks
-   the control/audio interaction that failed in the last RF attempts. The
-   idle/short-turn sequence is a transition screen; it does not establish
-   session reopen behavior, physical endpoint suspension or sustained operating
-   margin. Those claims need their separately declared campaign results.
-3. The same retained codec and four real streams are serviced through simulated
-   turns and injected control delays while the real radio remains RX. The real
-   MODEM-on/key operation is not called, and the radio adapter's independent TX
-   gate remains disabled. Any internal modem loopback checks continuity and
-   timing automatically; it is not another voice-quality or RF receive test.
-   If output preparation briefly pauses capture delivery, the controller keeps
-   RF off and waits for new valid microphone and radio samples before continuing.
-   Capture that does not recover within the preparation deadline remains a
-   blocker. Active transmission still uses the strict capture-loss guard.
-4. Continue only after **Transition check passed**, with actual radio RX and
-   panel PTT released. RF remains disabled after a pass. If there is a fault,
-   unexpected radio TX or an unconfirmed RX state, select Stop, then Exit when
-   possible. Collect evidence without an SDR file and return the ZIP. If radio
-   TX persists after Stop, switch the radio off. Do not adjust gains or repeat
-   basic audio tests to work around a transition fault.
+1. Download `x6200-usb-rf-windows.zip`, `usb-rf-test-kit.zip` and `SHA256SUMS` from
+   the beta release. Verify their SHA-256 hashes. Extract and flash
+   `x6200-usb-rf.img` using your usual image-writing tool, then boot that card.
+   Keep image and kit together; their manifests must have the same build ID and
+   image hash, startup contract 3 and output contract 1. No baseband update is needed.
+2. Connect the Shokz Loop110, then power and pair the headset. Start at low
+   listening volume. Disconnect the hand mic, paddles and other keying accessories.
+   Use **panel PTT**, not the hand mic or a headset call button.
+3. Select the dial frequency before opening FreeDV. Disable split, TX shift,
+   RIT, XIT and transverter offsets. Close other radio apps, recorders and TCI
+   control clients. Tuning stays locked in USB voice mode. It temporarily selects
+   USB-DIG, 100..3100 Hz RX filtering and **1 W requested** TX power. The software
+   limit is **20 seconds per press**; use short beta replies. Radio settings are
+   restored on normal Exit. Saved mic gain and USB headset volume remain user
+   preferences.
+4. For live reception, arrange a peer using **compatible RADE V1**, on the same
+   dial frequency and sideband, without squelch or speech noise processing in
+   the modem path. Another FreeDV mode is not a compatible source. The unvalidated
+   second transmitter can wait; a known working operator is a suitable peer.
+   Use an appropriate antenna and permitted frequency for that exchange.
 
-The check uses the same retained codec, streams and controller as the RF phase.
-It must finish normally before Enable TX can promote the session. Failure cannot
-be overridden by repeated Enable presses; Exit and a fresh session are required
-after a fault.
+## Receive and set the audio controls
 
-## One complete SDR transmit campaign
+1. Open FreeDV and confirm **USB Digital Voice (Beta)**. Wait for **Receiving**,
+   actual radio **RX**, and **TX disabled**. Leave PTT released. Reception and
+   decoding work before TX is enabled; Run check is not needed just to listen.
+2. Turn **VOL** to set headset loudness. The displayed headphone percentage must
+   follow it; clockwise also unmutes. This adjusts USB playback, not radio RF
+   gain or modem drive. On Exit the knob resumes its ordinary radio behavior.
+3. Have the peer send a short RADE V1 transmission. Listen for intelligible
+   decoded speech, including its first and last words. A Receiving label means
+   the controller is in RX; it is not a decoder-sync or intelligibility indicator.
+4. Speak normally with PTT released and use the **Mic gain - / +** buttons only
+   as needed. Aim for ordinary speech peaks around **-12 to -6 dBFS**, with room
+   for louder syllables. Keep peaks below 0 dBFS. The meter displays the proposed
+   encoder input; speaking in RX does not transmit it. Leave gain at 0 dB if
+   your normal speech already reaches that range. Do not add 20 dB by default.
 
-1. After the transition check passed, briefly press/release panel PTT while TX is
-   still disabled. The radio must remain RX. If it keys, select Stop and end the
-   test; do not enable TX.
-2. Select **Enable / disable TX** locally. Start the SDR audio recording. Hold
-   panel PTT, wait for **Transmitting**, and speak for about eight seconds:
-   "RF test turn one. One two three four five. The quick brown fox jumps over
-   the lazy dog. End RF test turn one."
-   Microphone input before Transmitting is discarded while audio preparation
-   and TX acknowledgement settle; do not begin speaking during that transition.
-3. Release PTT. The controller should close its bounded microphone tail,
-   finish accepted speech and the modem tail, acknowledge protocol drain, wait
-   through the conservatively reported playback-backend interval, clear
-   software TX and wait for a newer RX packet. The backend wait remains inside
-   the same total drain deadline; Stop bypasses it and requests clear
-   immediately.
-   Allow three seconds after release; if TX persists, select Stop. If it still
-   persists, switch the radio off. Packet telemetry is not direct physical
-   RF-off instrumentation.
-4. Stop the SDR recording a few seconds after RF ends. Confirm the SDR was not
-   saturated or muted and save the complete 1..30 s PCM16 audio WAV.
-5. After normal release worked, make a separate short transmission on
-   the dummy load and select Stop while PTT remains held, then release PTT.
-   RF should end and the mode must stay stopped without rekeying. Keep this
-   interrupted burst out of the WAV used to judge the complete first phrase.
-   Record this outcome separately; a normal-release result does not also
-   qualify Stop while held.
-6. Select **Exit**, release all PTT, and wait for ordinary radio control to
-   return. Ownership is retained until asynchronous work has stopped,
-   restoration was sent, a newer actual RX packet arrived and panel PTT is
-   released. A stopped label alone must not be treated as confirmed RF clear.
-   Save evidence before a normal reboot because detailed traces/audio are under
-   `/tmp`. Bounded incident metadata is also retained on the SD card. If
-   persistent TX required power-off, report that recovery; collect the surviving
-   metadata afterward. Missing trace/audio leaves the trial blocked. Do not
-   describe it as passed or silently replace it with a retry. Controller
-   completion metadata covers audio/controller teardown; confirm settings
-   restoration and RF cessation through the hardware-trial observations.
+## Enable short half-duplex replies
 
-## Collect and decode evidence
+1. With PTT released and actual RX confirmed, select **Run check**. Leave PTT
+   released during its 20-second idle and three automatic direction-change turns.
+   No speaking or listening exercise is required. Real RF TX remains disabled.
+   This is the new session's retained admission check, not a repeat of basic
+   codec qualification.
+2. Continue only after the check passes and RX is confirmed. Select **Enable TX**
+   locally. Hold panel PTT, wait for **Transmitting**, then speak a short reply
+   (about 5-10 seconds). Audio spoken during preparation is discarded. Ask the
+   peer whether your speech is clear, comfortably loud, and complete at both ends.
+3. Release PTT and allow up to three seconds for the accepted speech/modem tail
+   to finish and fresh RX to be confirmed. Then listen for the peer's reply.
+   Make a few alternating turns rather than transmitting and receiving together.
+   If CLIP appears, reduce mic gain before the next turn. Set listening volume
+   separately with VOL.
+4. **Stop** immediately fences further TX admission and requests software TX
+   clear. If TX persists after Stop, switch the radio off. A Linux clear or a
+   telemetry RX flag is not an independent physical RF-off guarantee. Use
+   **Exit**, release PTT and wait for ordinary controls to return when finished.
 
-Extract the release's matching helper kit. In Windows PowerShell run:
+A transition fault, missing endpoint or unconfirmed RX must be resolved before
+continuing; do not work around one by changing gains or repeating Enable TX.
+The [qualification strategy](usb-test-strategy.md) describes the software gates
+and retained failure history. This remains a beta: incoming RF reception and
+longer conversations need operator confirmation; split-frequency operation is
+outside this release's qualification.
+
+## Save one session report
+
+After Exit and before rebooting, extract the matching helper kit and run in
+Windows PowerShell:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-UsbRfEvidence.ps1 -RadioIp 192.168.4.210 -SdrWav 'C:\path\to\sdr-usb-audio.wav'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-UsbRfEvidence.ps1 -RadioIp 192.168.4.210
 ```
 
-For an RF-disabled transition check or startup failure, omit `-SdrWav`. This collects
-diagnostics only and does not count as RF speech verification. The helper
-verifies the installed image components, collects the stopped session, and
-optionally decodes your **SDR recording**. It sends no radio/PTT commands.
+This is read-only collection; it sends no TX/PTT commands. Note the peer/mode,
+frequency, RX first/last-word clarity, mic gain, headphone setting, any clipping,
+and PTT release/return to RX. Return the printed `usb-rf-results-*.zip`, including
+on failure. The ZIP contains microphone audio. Preserve it before reboot because
+detailed traces and audio live under `/tmp`; bounded incident metadata is also
+retained on the card. Report any power-off recovery separately.
 
-Listen to the downloaded `results/offair-decode/offair-decoded.wav` when present.
-Compare the complete RF phrase and first/last words with the microphone tap.
-The microphone evidence can also contain background audio from the preceding
-RF-disabled transition check; the phase trace identifies the RF speech turn.
-Record intelligibility, dropouts, RF release behavior,
-frequency, SDR settings and power/ALC indications. Automated synchronization
-alone is not a successful complete-phrase result. Host waveform and matched-
-transport decoder controls check payload preservation; they do not qualify
-physical first-word acquisition. Leading context, gain and resampling phase can
-change decoder acquisition, so retain the complete SDR burst and the first/last-
-word listening observations. No additional basic audio recording round is needed.
+An SDR recording is optional, not required for the accepted initial TX result
+or the next live RX step. To decode one, add `-SdrWav 'C:\path\to\sdr-usb-audio.wav'`.
+The helper accepts complete **demodulated USB audio**, PCM16 mono/stereo at 8,
+44.1 or 48 kHz, up to **120 seconds and 32 MiB**, with no trimming. Stereo is
+averaged without normalization. It does not accept IQ data. Larger files retain
+only a bounded diagnostic header and digest. Automated sync alone does not
+establish intelligibility or complete first/last words.
 
-Return the printed `usb-rf-results-*.zip`, including on failure. It contains your
-voice and recording. WAV accepts PCM16 mono/stereo at 8, 44.1 or 48 kHz; stereo
-is averaged with no normalization. Rejected input WAVs up to 16 MiB are retained
-for diagnosis. Larger inputs retain a bounded header and digest. Collection,
-GUI/audio state and RF decoding are reported separately so a later no-sync
-result cannot hide the first startup fault.
+## Implementation boundaries
 
-## Scope
+The USB microphone supplies speech independently of the stock baseband's coupled
+mic/line inputs. Radio RX capture and modem playback use the stock 44.1 kHz host
+audio boundary; explicit resamplers bridge the resident 48 kHz codec. RECORD
+stays clear, MODEM is the stock RF TX source, and conservative quarter-amplitude
+modem drive is unchanged. This is half-duplex RF operation.
 
-Four bound streams are retained: radio RX capture, radio modem playback, USB
-microphone capture and USB decoded-speech playback. One 48 kHz codec alternates
-directions; explicit resamplers bridge the radio's fixed 44.1 kHz boundary.
-Pulse converts the USB microphone from its 16 kHz hardware rate; headset
-playback uses 48 kHz. RECORD stays clear and MODEM is the stock RF TX source.
-Modem PCM is trimmed to one quarter amplitude before mono sink duplication for
-conservative initial drive. An internal modem tap is not RF evidence.
-
-Audio servicing is independent of blocking control/I2C writes and codec
-transitions. Audio preparation completes before a key request. Retained panel
-release events, bounded queues, asynchronous control completion, priority OFF,
-first-fault metadata and per-stream sample/callback counters support diagnosis.
-Stop fences future TX admission immediately; a blocked hardware transaction can
-still delay delivery of the clear command. The display and trace distinguish a
-requested clear from confirmed fresh RX.
-
-The backend-tail receipt records a wait based on fresh Pulse timing. It is not
-a physical DAC-empty acknowledgment or an independent RF-off measurement.
-Missing or invalid timing blocks normal turn completion. The matching helper
-checks this output contract alongside the session's first fault and terminal
-result; a later decoded file cannot turn a failed controller session into a
-pass.
-
-The integrated transition check evaluates operation of this Linux audio/controller
-implementation on the device. It does not qualify antenna RF, an independent
-baseband lease, native hand-mic isolation or simultaneous RF duplex. The SDR
-campaign tests the transmit leg. RF receive qualification, longer conversations
-and split-frequency operation require a transmitting peer and remain later
-steps.
+Normal release completes the modem tail, acknowledges protocol drain, waits for
+a fresh Pulse-reported backend interval within the existing deadline, clears TX
+and waits for a newer RX packet. That receipt is not a physical DAC-empty or
+RF-off measurement. Stop bypasses the normal tail wait and prioritizes clear.
+No raw independent hand-mic PTT interface or baseband watchdog guarantee has
+been added. Native hand-mic isolation remains blocked by the stock routing.

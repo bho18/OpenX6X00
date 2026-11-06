@@ -3,6 +3,7 @@
 #include "usb_voice.h"
 #include "usb_evidence_store.h"
 #include "usb_render_budget.h"
+#include "usb_audio_levels.h"
 #include <pulse/pulseaudio.h>
 #include <pulse/timeval.h>
 #include <pulse/rtclock.h>
@@ -72,6 +73,11 @@ struct fd_usb_audio {
     atomic_bool stop,stopped,watch_exit,armed,rf_disabled,qualification_requested,qualification_running,qualification_complete;
     atomic_bool qualification_keyed,qualification_loopback,reference_input_active,fault_record_ready;
     atomic_int context_state_id;
+    atomic_int mic_gain_db,meter_gain_db,mic_input_rms_dbfs10,mic_input_peak_dbfs10,mic_rms_dbfs10,mic_peak_dbfs10;
+    atomic_bool mic_meter_ready,headset_volume_ready,headset_muted;
+    atomic_uint headset_volume_percent;
+    atomic_uint_fast64_t mic_clipped_samples,headset_volume_request;
+    fd_usb_level_window mic_meter;int mic_meter_gain;
     atomic_uint fault,state,qualification_done;
     atomic_uint_fast64_t heartbeat,io_heartbeat,tx_at,epoch;
     fd_usb_snapshot snapshot;
@@ -83,6 +89,14 @@ struct fd_usb_audio {
     uint64_t key_epoch,key_release,key_request,key_completed,clear_request,clear_completed;
     pa_threaded_mainloop *loop;pa_context *context;pa_stream *streams[STREAM_COUNT];pa_time_event *io_timer;
     pa_operation *drain;int drain_ack;uint64_t drain_started;
+    /* Sink master changes are serialized on Pulse's I/O thread. The atomic
+     * request carries a revision and desired volume/mute, so bursts of knob
+     * detents accumulate while a previous operation is in flight. */
+    pa_operation *volume_operation;
+    pa_cvolume headset_channels;
+    uint64_t volume_started,volume_next_poll,volume_target,volume_applied,volume_query_request;
+    unsigned volume_stage;int volume_ack;
+    bool volume_seen,volume_query_sync,volume_transaction,volume_mute_pending,volume_force_query;
     pa_operation *backend_operation;uint64_t backend_generation,backend_protocol_ack,backend_requested,backend_requested_us,backend_drain_started,backend_ack_us,backend_until_us,backend_completed_us;
     uint64_t backend_sink_usec,backend_transport_usec,backend_configured_usec,backend_pending_usec,backend_wait_usec;int64_t backend_read_index,backend_write_index;
     int backend_ack;bool backend_complete,backend_reported;pa_stream_flags_t requested_flags[STREAM_COUNT];
@@ -202,6 +216,18 @@ static bool mic_index(fd_usb_audio *a,uint64_t *index){
     }
     *index=(uint64_t)t->read_index/2;return true;
 }
+static void meter_mic(fd_usb_audio *a,const int16_t *pcm,unsigned n){
+    int gain=atomic_load(&a->mic_gain_db);
+    if(gain!=a->mic_meter_gain){a->mic_meter=(fd_usb_level_window){0};a->mic_meter_gain=gain;}
+    fd_usb_level_add(&a->mic_meter,pcm,n,gain);
+    if(a->mic_meter.samples<RATE/10)return;
+    atomic_store(&a->mic_input_rms_dbfs10,fd_usb_level_rms_dbfs10(a->mic_meter.input_squares,a->mic_meter.samples));
+    atomic_store(&a->mic_input_peak_dbfs10,fd_usb_level_dbfs10(a->mic_meter.input_peak));
+    atomic_store(&a->mic_rms_dbfs10,fd_usb_level_rms_dbfs10(a->mic_meter.output_squares,a->mic_meter.samples));
+    atomic_store(&a->mic_peak_dbfs10,fd_usb_level_dbfs10(a->mic_meter.output_peak));
+    atomic_store(&a->meter_gain_db,gain);atomic_store(&a->mic_meter_ready,true);
+    a->mic_meter=(fd_usb_level_window){0};
+}
 static void read_pcm(pa_stream *s,size_t requested,void *p){
     (void)requested;fd_usb_audio *a=p;unsigned i=stream_index(a,s);if(i>RADIO_RX)return;
     for(unsigned loops=0;loops<64;++loops){
@@ -211,6 +237,7 @@ static void read_pcm(pa_stream *s,size_t requested,void *p){
         unsigned st=atomic_load(&a->state);bool active=(i==MIC&&a->mic_live)||(i==RADIO_RX&&st==FD_USB_RX);
         uint64_t now=now_ms();
         if(data&&bytes%2==0){
+            if(i==MIC)meter_mic(a,data,(unsigned)(bytes/2));
             uint64_t old=atomic_exchange(&a->metrics[i].last,now),gap=age(now,old);
             if(old&&gap>atomic_load(&a->metrics[i].max_gap))atomic_store(&a->metrics[i].max_gap,gap);
             uint64_t total=atomic_fetch_add(&a->metrics[i].captured,bytes/2)+bytes/2;
@@ -343,8 +370,80 @@ static void underflow(pa_stream *s,void *p){
     if(i==HEADSET)fail_at(a,U_DRAIN,"headset-payload-underflow",HEADSET,0,0);
 }
 static void context_state(pa_context *c,void *p){fd_usb_audio *a=p;atomic_store(&a->context_state_id,pa_context_get_state(c));if(!PA_CONTEXT_IS_GOOD(pa_context_get_state(c))&&!atomic_load(&a->stop))fail_at(a,U_DEVICE,"context-state",STREAM_COUNT,pa_context_errno(c),0);}
+enum { VOLUME_QUERY=1,VOLUME_SET,VOLUME_MUTE };
+#define VOLUME_MUTE_BIT UINT64_C(128)
+static unsigned volume_percent(const pa_cvolume *volume){
+    uint64_t percent=((uint64_t)pa_cvolume_max(volume)*100+PA_VOLUME_NORM/2)/PA_VOLUME_NORM;
+    return percent>100?100:(unsigned)percent;
+}
+static const char *volume_operation_name(unsigned stage){return stage==VOLUME_QUERY?"headset-volume-read":stage==VOLUME_SET?"headset-volume-set":"headset-mute-set";}
+static void volume_success(pa_context *c,int success,void *p){(void)c;fd_usb_audio *a=p;a->volume_ack=success?1:-1;}
+static void volume_info(pa_context *c,const pa_sink_info *i,int end,void *p){
+    (void)c;fd_usb_audio *a=p;
+    if(end){a->volume_ack=end>0&&a->volume_seen?1:-1;return;}
+    if(!i||strcmp(i->name,a->sink)||!pa_cvolume_valid(&i->volume))return;
+    a->headset_channels=i->volume;a->volume_seen=true;
+    atomic_store(&a->headset_volume_percent,volume_percent(&i->volume));atomic_store(&a->headset_muted,i->mute!=0);
+}
+static void volume_problem(fd_usb_audio *a,uint64_t now){
+    event(a,"headset-volume-error",volume_operation_name(a->volume_stage),HEADSET,-1,pa_context_errno(a->context),now-a->volume_started);
+    atomic_store(&a->headset_volume_ready,false);
+    /* Failed UI controls do not revoke RF or interrupt a healthy audio path.
+     * Consume this transaction, then reconcile with the device before any
+     * newer request. A bounded retry avoids flooding a failing server. */
+    if(a->volume_transaction)a->volume_applied=a->volume_target;
+    a->volume_transaction=false;a->volume_mute_pending=false;a->volume_force_query=true;a->volume_next_poll=now+500;
+}
+static void volume_pump(fd_usb_audio *a,uint64_t now){
+    if(atomic_load(&a->stop)||pa_context_get_state(a->context)!=PA_CONTEXT_READY||!a->sink[0])return;
+    if(a->volume_operation){
+        bool timed_out=now-a->volume_started>=OP_TIMEOUT_MS;
+        if(pa_operation_get_state(a->volume_operation)==PA_OPERATION_RUNNING&&!timed_out)return;
+        if(timed_out){pa_operation_cancel(a->volume_operation);a->volume_ack=-1;}
+        pa_operation_unref(a->volume_operation);a->volume_operation=NULL;
+        if(a->volume_ack!=1){volume_problem(a,now);return;}
+        if(a->volume_stage==VOLUME_QUERY){
+            if(a->volume_query_sync){
+                uint_fast64_t expected=a->volume_query_request;
+                uint_fast64_t actual=(expected&~UINT64_C(255))|atomic_load(&a->headset_volume_percent)|(atomic_load(&a->headset_muted)?VOLUME_MUTE_BIT:0);
+                /* A query may update the idle desired value, but never erase
+                 * detents accepted since that query started. */
+                if(atomic_compare_exchange_strong(&a->headset_volume_request,&expected,actual))a->volume_applied=actual;
+            }
+            atomic_store(&a->headset_volume_ready,true);a->volume_next_poll=now+500;a->volume_force_query=false;
+        }
+    }
+    if(a->volume_transaction){
+        if(a->volume_mute_pending){
+            a->volume_mute_pending=false;a->volume_stage=VOLUME_MUTE;a->volume_ack=0;a->volume_started=now;
+            a->volume_operation=pa_context_set_sink_mute_by_name(a->context,a->sink,(a->volume_target&VOLUME_MUTE_BIT)!=0,volume_success,a);
+            if(!a->volume_operation)volume_problem(a,now);
+            return;
+        }
+        a->volume_applied=a->volume_target;a->volume_transaction=false;a->volume_force_query=true;a->volume_next_poll=now;
+    }
+    if((a->volume_force_query||!atomic_load(&a->headset_volume_ready)||now>=a->volume_next_poll)&&now>=a->volume_next_poll){
+        a->volume_stage=VOLUME_QUERY;a->volume_ack=0;a->volume_seen=false;a->volume_started=now;
+        a->volume_query_request=atomic_load(&a->headset_volume_request);a->volume_query_sync=a->volume_query_request==a->volume_applied;
+        a->volume_operation=pa_context_get_sink_info_by_name(a->context,a->sink,volume_info,a);
+        if(!a->volume_operation)volume_problem(a,now);
+        return;
+    }
+    if(!atomic_load(&a->headset_volume_ready)||a->volume_force_query)return;
+    uint64_t requested=atomic_load(&a->headset_volume_request);
+    if(requested==a->volume_applied)return;
+    pa_cvolume volume=a->headset_channels;
+    /* Pulse units are perceptual. Scale all channels together to preserve
+     * their existing balance; cap the largest channel at unity. */
+    pa_cvolume_scale(&volume,(pa_volume_t)((requested&127)*PA_VOLUME_NORM/100));
+    a->volume_target=requested;a->volume_transaction=true;
+    a->volume_mute_pending=((requested&VOLUME_MUTE_BIT)!=0)!=atomic_load(&a->headset_muted);
+    a->volume_stage=VOLUME_SET;a->volume_ack=0;a->volume_started=now;
+    a->volume_operation=pa_context_set_sink_volume_by_name(a->context,a->sink,&volume,volume_success,a);
+    if(!a->volume_operation)volume_problem(a,now);
+}
 static void io_tick(pa_mainloop_api *api,pa_time_event *e,const struct timeval *tv,void *p){
-    (void)api;(void)tv;fd_usb_audio *a=p;atomic_store(&a->io_heartbeat,now_ms());
+    (void)api;(void)tv;fd_usb_audio *a=p;uint64_t now=now_ms();atomic_store(&a->io_heartbeat,now);volume_pump(a,now);
     pa_context_rttime_restart(a->context,e,pa_rtclock_now()+10000);
 }
 static bool physical(pa_proplist *p,const char *driver){const char *bus=pa_proplist_gets(p,"device.bus"),*vendor=pa_proplist_gets(p,"device.vendor.id"),*product=pa_proplist_gets(p,"device.product.id");return driver&&!strncmp(driver,"module-alsa-",12)&&bus&&!strcmp(bus,"usb")&&vendor&&!strcmp(vendor,"3511")&&product&&!strcmp(product,"2b1e");}
@@ -604,7 +703,7 @@ static bool prepare(fd_usb_audio *a){
     pa_stream_flags_t capture_flags=base_flags|PA_STREAM_ADJUST_LATENCY;
     a->requested_flags[MIC]=a->requested_flags[RADIO_RX]=capture_flags;a->requested_flags[HEADSET]=flags;a->requested_flags[MODEM]=flags|PA_STREAM_START_CORKED;
     pa_buffer_attr attr={.maxlength=RATE*2*STREAM_CAPACITY_MS/1000,.tlength=RATE*2*OUTPUT_TARGET_MS/1000,.prebuf=(uint32_t)-1,.minreq=RATE*2/50,.fragsize=RATE*2/50};
-    pa_cvolume volume;pa_cvolume_set(&volume,1,PA_VOLUME_NORM/2);
+    pa_cvolume volume;pa_cvolume_set(&volume,1,PA_VOLUME_NORM);
     bool ok=pa_stream_connect_record(a->streams[MIC],a->source,&attr,capture_flags)>=0&&pa_stream_connect_playback(a->streams[HEADSET],a->sink,&attr,flags,&volume,NULL)>=0;
     attr=(pa_buffer_attr){.maxlength=RADIO_RATE*2*STREAM_CAPACITY_MS/1000,.tlength=RADIO_RATE*2*OUTPUT_TARGET_MS/1000,.prebuf=(uint32_t)-1,.minreq=RADIO_RATE*2/50,.fragsize=RADIO_RATE*2/50};pa_cvolume_set(&volume,1,PA_VOLUME_NORM);
     ok=ok&&pa_stream_connect_record(a->streams[RADIO_RX],a->c.radio_source,&attr,capture_flags)>=0&&pa_stream_connect_playback(a->streams[MODEM],a->c.radio_sink,&attr,flags|PA_STREAM_START_CORKED,&volume,NULL)>=0;
@@ -772,7 +871,14 @@ static void process_audio(fd_usb_audio *a,unsigned st){
         tap(a,st==FD_USB_RX?1:0,pcm,n);
         if(!reference){
             if(st==FD_USB_RX)a->submitted_rx+=n;
-            if(fd_voice_submit(a->engine,a->generation,pcm,n)!=n){FAIL(a,U_QUEUE,"codec-input-queue");return;}
+            /* Keep the source-accounting tap raw. Only the speech submitted
+             * to the retained TX codec receives the operator's digital gain. */
+            int gain=atomic_load(&a->mic_gain_db);uint64_t clipped=0;
+            const int16_t *input=pcm;
+            if(st!=FD_USB_RX){clipped=fd_usb_pcm_gain(converted,pcm,n,gain);input=converted;}
+            size_t accepted=fd_voice_submit(a->engine,a->generation,input,n);
+            if(st!=FD_USB_RX)atomic_fetch_add(&a->mic_clipped_samples,accepted==n?clipped:fd_usb_pcm_gain(NULL,pcm,accepted,gain));
+            if(accepted!=n){FAIL(a,U_QUEUE,"codec-input-queue");return;}
         }
     }
     if(reference&&now_ms()>=a->reference_next){
@@ -873,6 +979,14 @@ static bool finish_qualification(fd_usb_audio *a){
     atomic_store(&a->qualification_running,false);atomic_store(&a->qualification_complete,true);atomic_store(&a->armed,false);
     event(a,"qualification-complete",NULL,STREAM_COUNT,1,0,0);return true;
 }
+static void controls_snapshot(fd_usb_audio *a,fd_usb_snapshot *s){
+    s->mic_gain_db=atomic_load(&a->mic_gain_db);
+    s->mic_input_rms_dbfs10=atomic_load(&a->mic_input_rms_dbfs10);s->mic_input_peak_dbfs10=atomic_load(&a->mic_input_peak_dbfs10);
+    s->mic_rms_dbfs10=atomic_load(&a->mic_rms_dbfs10);s->mic_peak_dbfs10=atomic_load(&a->mic_peak_dbfs10);
+    s->mic_meter_ready=atomic_load(&a->mic_meter_ready)&&atomic_load(&a->meter_gain_db)==s->mic_gain_db;
+    s->mic_clipped_samples=atomic_load(&a->mic_clipped_samples);
+    s->headset_volume_percent=atomic_load(&a->headset_volume_percent);s->headset_volume_ready=atomic_load(&a->headset_volume_ready);s->headset_muted=atomic_load(&a->headset_muted);
+}
 static void publish(fd_usb_audio *a,fd_usb_inputs in){
     uint64_t now=now_ms();fd_usb_snapshot s={.state=atomic_load(&a->state),.fault=atomic_load(&a->fault),.generation=a->generation,.turns=a->turns,.heartbeat_ms=atomic_load(&a->heartbeat),
         .armed=atomic_load(&a->armed),.pressed=in.pressed,.rf_valid=in.rf_valid,.rf_tx=in.rf_tx,.stopped=atomic_load(&a->stopped)||a->finalizing,
@@ -884,6 +998,7 @@ static void publish(fd_usb_audio *a,fd_usb_inputs in){
         .mic_max_gap_ms=atomic_load(&a->metrics[MIC].max_gap),.rx_max_gap_ms=atomic_load(&a->metrics[RADIO_RX].max_gap),
         .mic_holes=atomic_load(&a->metrics[MIC].holes),.rx_holes=atomic_load(&a->metrics[RADIO_RX].holes),
         .headset_underflows=atomic_load(&a->metrics[HEADSET].underflows),.modem_underflows=atomic_load(&a->metrics[MODEM].payload_underflows),.engine=a->engine?fd_voice_observe(a->engine):a->final_engine};
+    controls_snapshot(a,&s);
     s.submitted_mic=a->submitted_mic;s.rendered_modem=a->rendered_modem;s.modem_tap_samples=a->tap_samples[2];
     s.render_queue_high_water=a->render_queue_high_water;s.render_deferred_count=a->render_deferred_count;s.render_final_deferred_count=a->render_final_deferred_count;s.render_final_flush_calls=a->render_final_flush_calls;s.transport_tail_frames=a->transport_tail_frames;s.modem_written_frames=atomic_load(&a->metrics[MODEM].captured);
     s.qualification_idle_remaining_ms=atomic_load(&a->qualification_running)&&now<a->qualification_idle_until?(unsigned)(a->qualification_idle_until-now):0;
@@ -900,7 +1015,9 @@ static void publish(fd_usb_audio *a,fd_usb_inputs in){
         }
         if(emitted<count||(!a->finalizing&&now-a->last_trace>=100&&a->trace_rows>=6999))a->trace_history_truncated=true;
         if(a->finalizing||((s.stopped||now-a->last_trace>=100)&&a->trace_rows<6999)){a->last_trace=now;a->last_sample_ms=now;++a->trace_rows;
-            fprintf(a->trace,"{\"kind\":\"sample\",\"ms\":%llu,\"state\":%u,\"fault\":%u,\"generation\":%llu,\"turns\":%llu,\"rf_valid\":%s,\"rf_tx\":%s,\"ptt\":%s,\"capture\":%u,\"playback\":%u,\"engine_in\":%u,\"engine_out\":%u,\"eoo\":%llu,\"sync\":%s,\"gaps\":%u,\"underflows\":%u,\"rf_disabled\":%s,\"qualification_running\":%s,\"qualification_complete\":%s,\"qualification_loopback\":%s,\"qualification_target\":%u,\"qualification_turns\":%u,\"rf_clear_confirmed\":%s,\"mic_age_ms\":%llu,\"rx_age_ms\":%llu,\"mic_rate_hz\":%u,\"rx_rate_hz\":%u,\"mic_rate_window_ms\":%llu,\"rx_rate_window_ms\":%llu,\"mic_captured\":%llu,\"rx_captured\":%llu,\"mic_discarded\":%llu,\"rx_discarded\":%llu,\"mic_holes\":%u,\"rx_holes\":%u,\"headset_underflows\":%u,\"modem_underflows\":%u,\"submitted_rx\":%llu,\"submitted_mic\":%llu,\"rendered_rx\":%llu,\"rendered_modem\":%llu,\"io_heartbeat_age_ms\":%u,\"mic_suspended\":%d,\"rx_suspended\":%d,\"headset_suspended\":%d,\"modem_suspended\":%d,\"preparation_excluded_ms\":[%llu,%llu],\"preparation_excluded_frames\":[%llu,%llu],\"first_fault\":{\"code\":%u,\"origin\":\"%s\",\"stream\":\"%s\",\"pa_errno\":%u,\"operation_ms\":%llu,\"mic_age_ms\":%llu,\"rx_age_ms\":%llu,\"io_heartbeat_age_ms\":%llu}}\n",
+            fprintf(a->trace,"{\"kind\":\"sample\",\"mic_gain_db\":%d,\"mic_meter_ready\":%s,\"mic_input_rms_dbfs10\":%d,\"mic_input_peak_dbfs10\":%d,\"mic_rms_dbfs10\":%d,\"mic_peak_dbfs10\":%d,\"mic_clipped_samples\":%llu,\"headset_volume_percent\":%u,\"headset_volume_ready\":%s,\"headset_muted\":%s,",
+                s.mic_gain_db,s.mic_meter_ready?"true":"false",s.mic_input_rms_dbfs10,s.mic_input_peak_dbfs10,s.mic_rms_dbfs10,s.mic_peak_dbfs10,(unsigned long long)s.mic_clipped_samples,s.headset_volume_percent,s.headset_volume_ready?"true":"false",s.headset_muted?"true":"false");
+            fprintf(a->trace,"\"ms\":%llu,\"state\":%u,\"fault\":%u,\"generation\":%llu,\"turns\":%llu,\"rf_valid\":%s,\"rf_tx\":%s,\"ptt\":%s,\"capture\":%u,\"playback\":%u,\"engine_in\":%u,\"engine_out\":%u,\"eoo\":%llu,\"sync\":%s,\"gaps\":%u,\"underflows\":%u,\"rf_disabled\":%s,\"qualification_running\":%s,\"qualification_complete\":%s,\"qualification_loopback\":%s,\"qualification_target\":%u,\"qualification_turns\":%u,\"rf_clear_confirmed\":%s,\"mic_age_ms\":%llu,\"rx_age_ms\":%llu,\"mic_rate_hz\":%u,\"rx_rate_hz\":%u,\"mic_rate_window_ms\":%llu,\"rx_rate_window_ms\":%llu,\"mic_captured\":%llu,\"rx_captured\":%llu,\"mic_discarded\":%llu,\"rx_discarded\":%llu,\"mic_holes\":%u,\"rx_holes\":%u,\"headset_underflows\":%u,\"modem_underflows\":%u,\"submitted_rx\":%llu,\"submitted_mic\":%llu,\"rendered_rx\":%llu,\"rendered_modem\":%llu,\"io_heartbeat_age_ms\":%u,\"mic_suspended\":%d,\"rx_suspended\":%d,\"headset_suspended\":%d,\"modem_suspended\":%d,\"preparation_excluded_ms\":[%llu,%llu],\"preparation_excluded_frames\":[%llu,%llu],\"first_fault\":{\"code\":%u,\"origin\":\"%s\",\"stream\":\"%s\",\"pa_errno\":%u,\"operation_ms\":%llu,\"mic_age_ms\":%llu,\"rx_age_ms\":%llu,\"io_heartbeat_age_ms\":%llu}}\n",
                 (unsigned long long)now,s.state,s.fault,(unsigned long long)s.generation,(unsigned long long)s.turns,in.rf_valid?"true":"false",in.rf_tx?"true":"false",in.pressed?"true":"false",s.input_queue,s.output_queue,s.engine.input_depth,s.engine.output_depth,(unsigned long long)s.engine.eoo_count,s.engine.synchronized?"true":"false",s.gaps,s.underflows,s.rf_disabled?"true":"false",s.qualification_running?"true":"false",s.qualification_complete?"true":"false",s.qualification_loopback?"true":"false",s.qualification_target,s.qualification_turns,s.rf_clear_confirmed?"true":"false",(unsigned long long)s.mic_age_ms,(unsigned long long)s.rx_age_ms,s.mic_rate_hz,s.rx_rate_hz,(unsigned long long)s.mic_rate_window_ms,(unsigned long long)s.rx_rate_window_ms,(unsigned long long)s.mic_captured,(unsigned long long)s.rx_captured,(unsigned long long)s.mic_discarded,(unsigned long long)s.rx_discarded,s.mic_holes,s.rx_holes,s.headset_underflows,s.modem_underflows,(unsigned long long)a->submitted_rx,(unsigned long long)a->submitted_mic,(unsigned long long)a->rendered_rx,(unsigned long long)a->rendered_modem,age(now,atomic_load(&a->io_heartbeat)),atomic_load(&a->metrics[MIC].suspended),atomic_load(&a->metrics[RADIO_RX].suspended),atomic_load(&a->metrics[HEADSET].suspended),atomic_load(&a->metrics[MODEM].suspended),(unsigned long long)a->preparation_excluded_ms[MIC],(unsigned long long)a->preparation_excluded_ms[RADIO_RX],(unsigned long long)a->preparation_excluded_frames[MIC],(unsigned long long)a->preparation_excluded_frames[RADIO_RX],s.first_fault_code,s.first_fault_origin,s.first_fault_stream,s.first_fault_pa_error,(unsigned long long)s.first_fault_operation_ms,(unsigned long long)s.first_fault_mic_age_ms,(unsigned long long)s.first_fault_rx_age_ms,(unsigned long long)first_fault_io_age);
         }
         fflush(a->trace);
@@ -1050,6 +1167,7 @@ done:
         io_lock(a);if(a->drain){pa_operation_cancel(a->drain);pa_operation_unref(a->drain);a->drain=NULL;}
         if(a->mic_close_operation){pa_operation_cancel(a->mic_close_operation);pa_operation_unref(a->mic_close_operation);a->mic_close_operation=NULL;}
         if(a->backend_operation){pa_operation_cancel(a->backend_operation);pa_operation_unref(a->backend_operation);a->backend_operation=NULL;}
+        if(a->volume_operation){pa_operation_cancel(a->volume_operation);pa_operation_unref(a->volume_operation);a->volume_operation=NULL;}
         if(a->io_timer){pa_threaded_mainloop_get_api(a->loop)->time_free(a->io_timer);a->io_timer=NULL;}
         for(unsigned i=0;i<STREAM_COUNT;++i)if(a->streams[i]){pa_stream_set_state_callback(a->streams[i],NULL,NULL);pa_stream_set_moved_callback(a->streams[i],NULL,NULL);pa_stream_set_suspended_callback(a->streams[i],NULL,NULL);pa_stream_set_read_callback(a->streams[i],NULL,NULL);pa_stream_set_write_callback(a->streams[i],NULL,NULL);pa_stream_set_underflow_callback(a->streams[i],NULL,NULL);pa_stream_disconnect(a->streams[i]);pa_stream_unref(a->streams[i]);a->streams[i]=NULL;}
         if(a->context){pa_context_set_state_callback(a->context,NULL,NULL);pa_context_disconnect(a->context);pa_context_unref(a->context);a->context=NULL;}
@@ -1103,6 +1221,9 @@ fd_usb_audio *fd_usb_audio_open(const fd_usb_config *c){
     fd_usb_audio *a=calloc(1,sizeof(*a));if(!a)return NULL;a->c=*c;const char *base=c->trace_prefix?strrchr(c->trace_prefix,'/'):NULL;snprintf(a->session_id,sizeof(a->session_id),"%s",c->trace_prefix?(base?base+1:c->trace_prefix):"untraced");
     pthread_mutex_init(&a->mutex,NULL);pthread_mutex_init(&a->events_mutex,NULL);pthread_mutex_init(&a->control_mutex,NULL);pthread_cond_init(&a->control_changed,NULL);
     atomic_store(&a->heartbeat,now_ms());atomic_store(&a->io_heartbeat,now_ms());atomic_store(&a->rf_disabled,c->rf_disabled);
+    atomic_store(&a->mic_gain_db,fd_usb_mic_gain_clamp(c->mic_gain_db));
+    atomic_store(&a->mic_input_rms_dbfs10,FD_USB_LEVEL_FLOOR_DBFS10);atomic_store(&a->mic_input_peak_dbfs10,FD_USB_LEVEL_FLOOR_DBFS10);
+    atomic_store(&a->mic_rms_dbfs10,FD_USB_LEVEL_FLOOR_DBFS10);atomic_store(&a->mic_peak_dbfs10,FD_USB_LEVEL_FLOOR_DBFS10);
     if(pthread_create(&a->control_worker,NULL,control_run,a))goto sync_failure;
     /* Create the monitor first so even an immediate preparation failure has
      * a valid monitor handle and a complete evidence-writer join boundary. */
@@ -1118,6 +1239,22 @@ sync_failure:
 }
 
 void fd_usb_audio_arm(fd_usb_audio *a,bool armed){if(a&&!atomic_load(&a->stop)&&!atomic_load(&a->rf_disabled))atomic_store(&a->armed,armed);}
+bool fd_usb_audio_set_mic_gain(fd_usb_audio *a,int gain_db){
+    if(!a||atomic_load(&a->stop))return false;
+    gain_db=fd_usb_mic_gain_clamp(gain_db);
+    if(atomic_exchange(&a->mic_gain_db,gain_db)!=gain_db)atomic_store(&a->mic_meter_ready,false);
+    return true;
+}
+bool fd_usb_audio_adjust_headset_volume(fd_usb_audio *a,int delta_percent){
+    if(!a||atomic_load(&a->stop)||!atomic_load(&a->headset_volume_ready))return false;
+    if(!delta_percent)return true;
+    uint_fast64_t prior=atomic_load(&a->headset_volume_request),next;
+    do{
+        int64_t percent=(int64_t)(prior&127)+delta_percent;if(percent<0)percent=0;if(percent>100)percent=100;
+        next=((prior&~UINT64_C(255))+256)|(uint64_t)percent|(delta_percent>0?0:prior&VOLUME_MUTE_BIT);
+    }while(!atomic_compare_exchange_weak(&a->headset_volume_request,&prior,next));
+    return true;
+}
 bool fd_usb_audio_start_qualification(fd_usb_audio *a){
     if(!a||atomic_load(&a->stop)||!a->c.qualification_turns||!atomic_load(&a->rf_disabled)||atomic_load(&a->qualification_running))return false;
     fd_usb_snapshot s=fd_usb_audio_snapshot(a);if(s.state!=FD_USB_RX||s.pressed||!s.rf_valid||s.rf_tx)return false;
@@ -1139,6 +1276,7 @@ fd_usb_snapshot fd_usb_audio_snapshot(fd_usb_audio *a){
         snprintf(s.first_fault_origin,sizeof(s.first_fault_origin),"%s",a->first_fault_origin);snprintf(s.first_fault_stream,sizeof(s.first_fault_stream),"%s",a->first_fault_stream);
     }
     pthread_mutex_unlock(&a->mutex);
+    controls_snapshot(a,&s);
     s.stopped=atomic_load(&a->stopped);s.state=atomic_load(&a->state);s.fault=atomic_load(&a->fault);return s;
 }
 void fd_usb_audio_close(fd_usb_audio *a){

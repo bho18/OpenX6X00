@@ -25,6 +25,7 @@ ParamInt         *cfg_band_id             = nullptr;
 ParamInt         *cfg_mic                 = nullptr;
 ParamInt         *cfg_hmic                = nullptr;
 ParamInt         *cfg_freedv_timeout      = nullptr;
+ParamInt         *cfg_freedv_usb_mic_gain = nullptr;
 ParamInt         *cfg_imic                = nullptr;
 ParamInt         *cfg_moni                = nullptr;
 ParamInt         *cfg_wefax_align         = nullptr;   // WEFAX app
@@ -201,6 +202,7 @@ void cfg_api_init(void (*on_db_error)(const char *)) {
     cfg_hmic             = &cfg_sm.p_hmic;
     cfg_imic             = &cfg_sm.p_imic;
     cfg_freedv_timeout    = &cfg_sm.p_freedv_timeout;
+    cfg_freedv_usb_mic_gain = &cfg_sm.p_freedv_usb_mic_gain;
     cfg_moni             = &cfg_sm.p_moni;
     cfg_atu_enabled      = &cfg_sm.p_atu_enabled;
     cfg_auto_level_enabled = &cfg_sm.p_auto_level_enabled;

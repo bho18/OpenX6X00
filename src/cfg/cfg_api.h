@@ -55,6 +55,7 @@ extern ParamInt         *cfg_wefax_align;       // p_wefax_align, WEFAX picture 
 extern ParamInt         *cfg_wefax_tilt;        // p_wefax_tilt, WEFAX picture slant
 extern ParamInt         *cfg_hmic;              // p_hmic
 extern ParamInt         *cfg_freedv_timeout;     // seconds, 30..600, default 180
+extern ParamInt         *cfg_freedv_usb_mic_gain; // USB speech gain dB, -12..24, default 0
 extern ParamInt         *cfg_imic;              // p_imic
 extern ParamInt         *cfg_moni;              // p_moni
 extern ParamInt         *cfg_atu_enabled;       // p_atu_enabled

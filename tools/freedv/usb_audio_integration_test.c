@@ -182,6 +182,54 @@ static fd_usb_snapshot healthy_snapshot(fd_usb_audio *audio,const char *reason){
     if(s.fault){fprintf(stderr,"Unexpected fault %u: %s at %s/%s\n",s.fault,fd_usb_fault_text(s.fault),s.first_fault_origin,s.first_fault_stream);failed_wait(audio,reason,s);}
     return s;
 }
+/* This case exercises only the audio controls in RX. The Python driver
+ * independently queries the real private-Pulse sink before acknowledging each
+ * phase; no snapshot or successful API return substitutes for that readback. */
+static fd_usb_snapshot controls_snapshot(fd_usb_audio *audio,int gain,unsigned volume,bool muted){
+    uint64_t until=ms()+3000;fd_usb_snapshot s={0};
+    do{
+        s=healthy_snapshot(audio,"unexpected-audio-controls-fault");
+        if(s.mic_meter_ready&&s.mic_gain_db==gain&&s.headset_volume_ready&&
+           s.headset_volume_percent==volume&&s.headset_muted==muted)return s;
+        pause_ms(5);
+    }while(ms()<until);
+    failed_wait(audio,"audio-controls-readback-timeout",s);
+}
+static void controls_phase(fd_usb_audio *audio,fake *f,const char *directory,const char *name,fd_usb_snapshot s){
+    if(!strcmp(run_scenario,"--audio-controls")){
+        assert(s.state==FD_USB_RX&&!s.armed&&!s.rf_tx&&!s.turns&&!s.submitted_mic&&!s.mic_clipped_samples);
+        assert(!atomic_load(&f->keys)&&!atomic_load(&f->pressed)&&!atomic_load(&f->physical_tx));
+    }
+    assert(s.engine.rade_creations==1&&s.engine.encoder_creations==1&&s.engine.decoder_creations==1&&
+           s.engine.resampler_creations==4&&s.engine.worker_creations==2);
+    char path[PATH_MAX];int n=snprintf(path,sizeof(path),"%s/audio-controls-%s.json",directory,name);
+    assert(n>0&&(size_t)n<sizeof(path));FILE *out=fopen(path,"w");assert(out);
+    fprintf(out,"{\"phase\":\"%s\",\"monotonic_ms\":%llu,\"state\":%u,\"generation\":%llu,\"armed\":%s,\"keys\":%u,\"rf_tx\":%s,\"turns\":%llu,\"submitted_mic\":%llu,\"mic_clipped_samples\":%llu,\"mic_gain_db\":%d,\"mic_meter_ready\":%s,\"mic_input_rms_dbfs10\":%d,\"mic_input_peak_dbfs10\":%d,\"mic_rms_dbfs10\":%d,\"mic_peak_dbfs10\":%d,\"headset_volume_ready\":%s,\"headset_volume_percent\":%u,\"headset_muted\":%s,\"rade_creations\":%u,\"encoder_creations\":%u,\"decoder_creations\":%u,\"resampler_creations\":%u,\"worker_creations\":%u}\n",
+        name,(unsigned long long)ms(),s.state,(unsigned long long)s.generation,s.armed?"true":"false",atomic_load(&f->keys),s.rf_tx?"true":"false",
+        (unsigned long long)s.turns,(unsigned long long)s.submitted_mic,(unsigned long long)s.mic_clipped_samples,s.mic_gain_db,
+        s.mic_meter_ready?"true":"false",s.mic_input_rms_dbfs10,s.mic_input_peak_dbfs10,s.mic_rms_dbfs10,s.mic_peak_dbfs10,
+        s.headset_volume_ready?"true":"false",s.headset_volume_percent,s.headset_muted?"true":"false",
+        s.engine.rade_creations,s.engine.encoder_creations,s.engine.decoder_creations,s.engine.resampler_creations,s.engine.worker_creations);
+    assert(!fclose(out));
+    n=snprintf(path,sizeof(path),"%s/audio-controls-%s-ack",directory,name);assert(n>0&&(size_t)n<sizeof(path));
+    uint64_t until=ms()+5000;
+    while(access(path,F_OK)&&ms()<until){(void)healthy_snapshot(audio,"unexpected-audio-controls-observer-fault");pause_ms(5);}
+    if(access(path,F_OK))failed_wait(audio,"audio-controls-observer-timeout",s);
+}
+static void audio_controls(fd_usb_audio *audio,fake *f,const char *directory){
+    fd_usb_snapshot s=controls_snapshot(audio,0,40,true);uint64_t generation=s.generation;
+    controls_phase(audio,f,directory,"baseline",s);
+    for(unsigned i=0;i<3;++i)assert(fd_usb_audio_adjust_headset_volume(audio,1));
+    controls_phase(audio,f,directory,"up",controls_snapshot(audio,0,43,false));
+    for(unsigned i=0;i<3;++i)assert(fd_usb_audio_adjust_headset_volume(audio,-1));
+    controls_phase(audio,f,directory,"down",controls_snapshot(audio,0,40,false));
+    const int requests[]={6,INT_MAX,INT_MIN,0};const int applied[]={6,24,-12,0};
+    const char *names[]={"gain6","gain24","gainminus12","gain0"};
+    for(unsigned i=0;i<4;++i){
+        assert(fd_usb_audio_set_mic_gain(audio,requests[i]));s=controls_snapshot(audio,applied[i],40,false);
+        assert(s.generation==generation);controls_phase(audio,f,directory,names[i],s);
+    }
+}
 static void qualification_status_freeze(fd_usb_audio *audio,fake *f){
     if(!getenv("USB_TEST_QUALIFICATION_STATUS_FREEZE"))return;
     uint64_t until=ms()+2000;fd_usb_snapshot s;
@@ -316,6 +364,13 @@ int main(int argc,char **argv) {
         if(access(acknowledged,F_OK))failed_wait(audio,"output-observer-barrier-timeout",ready);
     }
     pause_ms(350);
+    if(!strcmp(scenario,"--audio-controls")){
+        audio_controls(audio,&f,argv[1]);fd_usb_audio_stop(audio);
+        fd_usb_snapshot last=wait_stopped(audio,10000);
+        assert(last.fault==1&&!atomic_load(&f.keys)&&!last.turns&&!last.submitted_mic&&!last.mic_clipped_samples);
+        result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);
+        puts("PASS live RX microphone preview and selected headset master controls; no RF admission");return 0;
+    }
     if(!strcmp(scenario,"--backend-timing-missing")||!strcmp(scenario,"--backend-timing-invalid")||!strcmp(scenario,"--backend-stop-before-timing")||!strcmp(scenario,"--backend-stop-during-wait")){
         if(!strcmp(scenario,"--backend-stop-before-timing")){assert(usb_test_mic_stop_callback);usb_test_mic_stop_callback(stop_from_close,audio);}
         fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);release_ptt(&f);
@@ -591,10 +646,16 @@ int main(int argc,char **argv) {
         fd_usb_snapshot s=wait_stopped(audio,12000);assert(s.fault==11);
         assert(atomic_load(&f.halted));result(argv[1],scenario,&f,s);fd_usb_audio_close(audio);return 0;
     }
+    bool gain_turn=!strcmp(scenario,"--audio-gain-turn");
+    if(gain_turn){assert(fd_usb_audio_set_mic_gain(audio,6));(void)controls_snapshot(audio,6,40,true);}
     atomic_store(&f.delay,!strcmp(scenario,"--block-key")?20:650);
     atomic_store(&f.block_key,!strcmp(scenario,"--block-key")?900:0);
     atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,6000);
     atomic_store(&f.delay,0);atomic_store(&f.block_key,0);puts("TX_ACTIVE");fflush(stdout);
+    if(gain_turn){
+        for(unsigned i=0;i<3;++i)assert(fd_usb_audio_adjust_headset_volume(audio,1));
+        controls_phase(audio,&f,argv[1],"gain-turn-up",controls_snapshot(audio,6,43,false));
+    }
     unsigned expected=0;
     if(!strcmp(scenario,"--tx-stall")) {
         atomic_store(&f.stall,true);pause_ms(750);assert(!atomic_load(&f.physical_tx));atomic_store(&f.stall,false);expected=11;
@@ -618,10 +679,22 @@ int main(int argc,char **argv) {
         marker("USB_TEST_STALE_TRIGGER");pause_ms(800);(void)healthy_snapshot(audio,"unexpected-runtime-fault");
         assert(remove(getenv("USB_TEST_STALE_TRIGGER"))==0);pause_ms(900);
     }else pause_ms(1700);
+    if(gain_turn){
+        uint64_t generation=healthy_snapshot(audio,"unexpected-live-gain-fault").generation;
+        assert(fd_usb_audio_set_mic_gain(audio,-6));
+        for(unsigned i=0;i<3;++i)assert(fd_usb_audio_adjust_headset_volume(audio,-1));
+        fd_usb_snapshot changed=controls_snapshot(audio,-6,40,false);assert(changed.generation==generation);
+        controls_phase(audio,&f,argv[1],"gain-turn-down",changed);
+    }
     atomic_fetch_add(&f.release,1);wait_state(audio,FD_USB_RX,6000);
     pause_ms(300);assert(atomic_load(&f.keys)==2 && !atomic_load(&f.physical_tx));
     release_ptt(&f);pause_ms(100);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,6000);pause_ms(1200);
     release_ptt(&f);wait_state(audio,FD_USB_RX,6000);
+    if(gain_turn){
+        uint64_t generation=healthy_snapshot(audio,"unexpected-rx-gain-fault").generation;
+        assert(fd_usb_audio_set_mic_gain(audio,0));fd_usb_snapshot changed=controls_snapshot(audio,0,40,false);
+        assert(changed.generation==generation);controls_phase(audio,&f,argv[1],"gain-turn-rx",changed);
+    }
     pause_ms(50);fd_usb_snapshot s=healthy_snapshot(audio,"unexpected-completed-turn-fault");
     fprintf(stderr,"COMPLETED turns=%llu eoo=%llu\n",(unsigned long long)s.turns,(unsigned long long)s.engine.eoo_count);
     assert(s.turns==(full_session?5u:2u) && s.engine.eoo_count==(full_session?5u:2u));

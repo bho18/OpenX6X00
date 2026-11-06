@@ -30,6 +30,7 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require,
 from usb_transport_oracle import transport_chunks_for_turn,matched_decoder_control
 from usb_collector_contract import validate_collector_contract
 from usb_output_contract import validate_output_contract
+from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run
 
 CASES = (
     'normal', 'rx-signal', 'block-key', 'stop-during-key', 'release-during-key',
@@ -50,13 +51,14 @@ CASES = (
     'capture-close-tail120',
     'backend-fixed-pipe',
     'backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait',
+    'audio-controls','audio-gain-turn',
 )
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
 SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale',
                 'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled', 'cold-resume',
                 'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session', 'io-pause150', 'eoo-backpressure',
                 'capture-release-split','capture-release-held150','capture-close-tail120',
-                'backend-fixed-pipe'}
+                'backend-fixed-pipe','audio-gain-turn'}
 WAVEFORM_CASES = SPEECH_CASES | {'short-turn200'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
 PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
@@ -148,6 +150,17 @@ def check_command(command, root, name, commands, env, timeout=3, check=True):
     if check:
         require(result['exit_code'] == 0, 'Fixture command failed: ' + name + '; inspect its retained log')
     return result, (root / (name + '.log')).read_text()
+
+
+def pulse_control_sinks(root, name, commands, env):
+    """Read actual master state, independently of the controller's snapshot."""
+    _, text = check_command(['pactl', '--format=json', 'list', 'sinks'], root, name, commands, env)
+    selected = {'alsa_output.usb-fixture', 'radio_sink_fixture', 'unrelated_sink'}
+    sinks = {sink['name']: {'mute': sink['mute'],
+             'volume': [channel['value'] for channel in sink['volume'].values()]}
+             for sink in json.loads(text) if sink['name'] in selected}
+    require(set(sinks) == selected, 'Audio control readback omitted a selected or unrelated sink')
+    return sinks
 
 
 def decode_pcm(runner, pcm, rate, directory, commands, env):
@@ -319,7 +332,9 @@ def headset_oracle(root, trace_path, recording_started):
     turn={'start_ms':rendered['ms'],'end_ms':samples[-1]['ms']}
     begin,observed=monitor_crop(root,turn,48000,'headset-output')
     budget=output_alignment_budget(rows,turn,'headset')
-    matched=modem_waveform_match(reference,48000,observed,48000,expected_gain=.125,maximum_lag_ms=budget['maximum_lag_ms'])
+    # The HEADSET client stream requests PA_VOLUME_NORM: unity amplitude.
+    # Pulse master volume is unity in this fixture, independently of the RF path.
+    matched=modem_waveform_match(reference,48000,observed,48000,expected_gain=1.0,maximum_lag_ms=budget['maximum_lag_ms'])
     descriptor=next(row for row in rows if row.get('kind')=='stream' and row.get('stream')=='radio-rx')
     progression=microphone_frame_budget(samples[-1]['ms']-samples[0]['ms'],
         samples[-1]['rx_captured']-samples[0]['rx_captured'],descriptor['fragsize']//2,rate=44100,stream='radio-rx')
@@ -434,6 +449,18 @@ def run_case(args):
             attempt += 1
             time.sleep(.05)
         require(ready, 'Private Pulse did not become ready')
+        controls_phases=[]
+        controls_initial=None
+        control_names=(('baseline','up','down','gain6','gain24','gainminus12','gain0') if args.case=='audio-controls'
+                       else ('gain-turn-up','gain-turn-down','gain-turn-rx') if args.case=='audio-gain-turn' else ())
+        if control_names:
+            for suffix, arguments in (
+                    ('headset-volume',['set-sink-volume','alsa_output.usb-fixture','40%','30%']),
+                    ('headset-mute',['set-sink-mute','alsa_output.usb-fixture','1']),
+                    ('radio-volume',['set-sink-volume','radio_sink_fixture','100%','100%']),
+                    ('unrelated-volume',['set-sink-volume','unrelated_sink','23%','19%'])):
+                check_command(['pactl',*arguments],root,'controls-initial-'+suffix,commands,env)
+            controls_initial=pulse_control_sinks(root,'controls-initial-readback',commands,env)
         fifo_reader=None
         if profile=='fixed-pipe':
             fifo_reader=supervisor.start('fifo-clock',[sys.executable,Path(__file__).with_name('usb_fifo_clock.py'),
@@ -446,6 +473,12 @@ def run_case(args):
             require(speech.getcomptype() == 'NONE', 'Speech fixture must be PCM WAV')
             speech_args = continuous_fixture(root/'continuous-speech.raw', speech.readframes(speech.getnframes()),
                                              speech.getframerate(), speech.getnchannels(), speech.getsampwidth(), horizon)
+        if args.case=='audio-controls':
+            # A stable -12 dBFS peak tone separates gain/meter behavior from
+            # the changing envelope of a speech fixture. It is never keyed.
+            tone=array('h',(round(8192*math.sin(2*math.pi*400*i/16000)) for i in range(16000)))
+            if sys.byteorder!='little':tone.byteswap()
+            speech_args=continuous_fixture(root/'continuous-speech.raw',tone.tobytes(),16000,1,2,horizon)
         radio_pcm = args.modem.read_bytes() if args.case == 'rx-signal' else b'\0' * 88200
         radio_args = continuous_fixture(root/'continuous-radio.raw', radio_pcm,
                                         48000 if args.case == 'rx-signal' else 44100, 1, 2, horizon)
@@ -533,6 +566,20 @@ def run_case(args):
             text = (root/'test.log').read_text()
             if not observers_started and 'FIXTURE_OUTPUT_READY' in text:
                 start_observers();observers_started=True
+            if control_names and len(controls_phases)<len(control_names):
+                phase=control_names[len(controls_phases)]
+                snapshot_path=root/'result'/('audio-controls-'+phase+'.json')
+                if snapshot_path.is_file():
+                    try:snapshot=json.loads(snapshot_path.read_text())
+                    except json.JSONDecodeError:snapshot=None  # Writer has not closed its small receipt yet.
+                    if snapshot is not None:
+                        pulse=pulse_control_sinks(root,'controls-'+phase+'-readback',commands,env)
+                        pulse_path=root/('controls-'+phase+'-pulse.json');save_json(pulse_path,pulse)
+                        controls_phases.append({'snapshot':snapshot,'pulse':pulse,
+                            'snapshot_path':str(snapshot_path),'snapshot_sha256':sha(snapshot_path),
+                            'pulse_path':str(pulse_path),'pulse_sha256':sha(pulse_path)})
+                        save_json(root/'audio-controls-partial.json',{'initial_sinks':controls_initial,'phases':controls_phases})
+                        (root/'result'/('audio-controls-'+phase+'-ack')).write_text('Actual Pulse master readback retained\n')
             if args.case=='rx-pause150' and not rx_source_started and 'RX_FIXTURE_READY' in text:
                 supervisor.stop(radio_source)
                 radio_source=supervisor.start('radio-modem-source',['paplay','--device=rf_fixture',*rx_modem_args])
@@ -676,6 +723,16 @@ def run_case(args):
                     'The controlled pause did not hold both client capture services')
             record['io_service_pause']=pause
         record['harness'] = harness
+        if args.case=='audio-controls':
+            record['audio_controls']={'schema':'x6200.usb.audio-controls.v1','status':'PASS',
+                'scope':'Real private-Pulse RX audio controls; no PTT or RF qualification',
+                'initial_sinks':controls_initial,'phases':controls_phases}
+            validate_audio_controls_run(record,verify_files=True)
+        if args.case=='audio-gain-turn':
+            record['audio_gain_turn']={'schema':'x6200.usb.audio-gain-turn.v1','status':'PASS',
+                'scope':'Actual codec TX/tail/RX with live controls and private-Pulse readback; fake RF only',
+                'initial_sinks':controls_initial,'phases':controls_phases}
+            validate_audio_gain_turn_run(record,verify_files=True)
         record['event_count'] = len(rows)
         record['status_row_count'] = sum(row.get('kind') == 'sample' for row in rows)
         if recorder:

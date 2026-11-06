@@ -5,6 +5,8 @@
 #include <stdatomic.h>
 #include "voice_engine.h"
 #include "qualified_profile.h"
+#define FD_USB_MIC_GAIN_MIN_DB (-12)
+#define FD_USB_MIC_GAIN_MAX_DB 24
 /* Values 0..6 are retained for older evidence readers. */
 typedef enum {
     FD_USB_PREPARE, FD_USB_RX, FD_USB_START, FD_USB_TX, FD_USB_DRAIN,
@@ -24,6 +26,7 @@ typedef struct {
     const char *source,*sink,*radio_source,*radio_sink,*trace_prefix,*incident_dir;
     fd_usb_control control;
     bool rf_disabled;
+    int mic_gain_db; /* Digital speech gain; zero preserves microphone PCM exactly. */
     unsigned qualification_turns,qualification_control_delay_ms,qualification_idle_ms,trace_pcm_seconds;
 } fd_usb_config;
 typedef struct fd_usb_audio fd_usb_audio;
@@ -42,10 +45,17 @@ typedef struct {
     uint64_t mic_captured,rx_captured,mic_discarded,rx_discarded;
     uint64_t mic_max_gap_ms,rx_max_gap_ms;
     unsigned mic_holes,rx_holes,headset_underflows,modem_underflows;
+    int mic_gain_db,mic_input_rms_dbfs10,mic_input_peak_dbfs10,mic_rms_dbfs10,mic_peak_dbfs10;
+    bool mic_meter_ready;
+    uint64_t mic_clipped_samples; /* Accepted TX samples only; RX meter previews do not increment it. */
+    unsigned headset_volume_percent;
+    bool headset_volume_ready,headset_muted;
     fd_voice_stats engine;
 } fd_usb_snapshot;
 fd_usb_audio *fd_usb_audio_open(const fd_usb_config *);
 void fd_usb_audio_arm(fd_usb_audio *,bool);
+bool fd_usb_audio_set_mic_gain(fd_usb_audio *,int);
+bool fd_usb_audio_adjust_headset_volume(fd_usb_audio *,int delta_percent);
 bool fd_usb_audio_start_qualification(fd_usb_audio *);
 bool fd_usb_audio_enable_rf(fd_usb_audio *);
 void fd_usb_audio_stop(fd_usb_audio *); /* fences admission and queues priority OFF; never waits for audio/I2C */

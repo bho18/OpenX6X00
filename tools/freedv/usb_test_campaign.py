@@ -312,6 +312,10 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 validate_capture_pipeline_tail_run(run,verify_files=verify_files)
             if name in ('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'):
                 validate_backend_failure_run(run,name,verify_files=verify_files)
+            if name == 'audio-controls':
+                validate_audio_controls_run(run,verify_files=verify_files)
+            if name == 'audio-gain-turn':
+                validate_audio_gain_turn_run(run,verify_files=verify_files)
             if run.get('repeat') != repeat:
                 raise ValueError('USB qualification has a missing or duplicated repetition: '+name)
             for key in ('log_path','case_record_path'):
@@ -325,7 +329,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                         raise ValueError('Retained USB case evidence changed: ' + name)
                 details=_load(run['case_record_path'])
                 for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
-                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','observer_admission'):
+                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','observer_admission','audio_controls','audio_gain_turn'):
                     retained=details.get(key)
                     if key=='actual_sink_turns' and key not in details:
                         from test_usb_audio_integration import WAVEFORM_CASES
@@ -347,6 +351,115 @@ def validate_output_contract_run(run,verify_files=True,expected_identity=None):
         return _validate_output_contract_run(run,verify_files,expected_identity)
     except (OSError,KeyError,TypeError,AttributeError) as error:
         raise ValueError('Required playback completion evidence is missing or malformed: '+str(error)) from error
+
+
+def validate_audio_controls_run(run,verify_files=True):
+    """Require real sink master readbacks and fresh RX-only microphone previews."""
+    proof=run.get('audio_controls',{});harness=run.get('harness',{})
+    phases=proof.get('phases',[]);initial=proof.get('initial_sinks',{})
+    names=('baseline','up','down','gain6','gain24','gainminus12','gain0')
+    gains=(0,0,0,6,24,-12,0);volumes=(40,43,40,40,40,40,40)
+    selected='alsa_output.usb-fixture';others=('radio_sink_fixture','unrelated_sink')
+    if (proof.get('schema')!='x6200.usb.audio-controls.v1' or proof.get('status')!='PASS' or
+            len(phases)!=len(names) or set(initial)!={selected,*others} or
+            harness.get('keys')!=0 or harness.get('turns')!=0 or harness.get('total_turns',0)!=0 or
+            harness.get('physical_tx') is not False or harness.get('fault')!=1):
+        raise ValueError('Audio control exercise omitted its RX-only phases or attempted TX')
+    for name,sink in initial.items():
+        if (not isinstance(sink,dict) or type(sink.get('mute')) is not bool or
+                len(sink.get('volume',[]))!=2 or
+                any(type(value) is not int or not 0<=value<=65536 for value in sink['volume'])):
+            raise ValueError('Audio control initial sink master readback is invalid')
+    if (initial[selected]['mute'] is not True or
+            any(abs(value-65536*percent/100)>1 for value,percent in zip(initial[selected]['volume'],(40,30)))):
+        raise ValueError('Audio control fixture did not preserve an asymmetric muted initial headset master')
+    generation=None;previous_ms=-1
+    for index,(entry,name,gain,volume) in enumerate(zip(phases,names,gains,volumes)):
+        s=entry.get('snapshot',{});pulse=entry.get('pulse',{})
+        if (s.get('phase')!=name or s.get('state')!=1 or s.get('armed') is not False or
+                s.get('rf_tx') is not False or s.get('keys')!=0 or s.get('turns')!=0 or
+                s.get('submitted_mic')!=0 or s.get('mic_clipped_samples')!=0 or
+                s.get('mic_meter_ready') is not True or s.get('mic_gain_db')!=gain or
+                s.get('headset_volume_ready') is not True or s.get('headset_volume_percent')!=volume or
+                s.get('headset_muted') is not (index==0) or
+                any(s.get(key)!=count for key,count in (('rade_creations',1),('encoder_creations',1),
+                    ('decoder_creations',1),('resampler_creations',4),('worker_creations',2)))):
+            raise ValueError('Audio control phase lacks fresh RX preview, actual volume, or persistent codec objects')
+        if (type(s.get('generation')) is not int or type(s.get('monotonic_ms')) is not int or
+                s['monotonic_ms']<previous_ms or (generation is not None and generation!=s['generation'])):
+            raise ValueError('Audio controls transitioned the codec generation or reused unordered receipts')
+        generation=s['generation'];previous_ms=s['monotonic_ms']
+        raw_rms,raw_peak,rms,peak=(s.get(key) for key in
+            ('mic_input_rms_dbfs10','mic_input_peak_dbfs10','mic_rms_dbfs10','mic_peak_dbfs10'))
+        if (any(type(value) is not int for value in (raw_rms,raw_peak,rms,peak)) or
+                not -155<=raw_rms<=-145 or not -125<=raw_peak<=-115 or
+                (gain!=24 and (abs(peak-raw_peak-gain*10)>2 or abs(rms-raw_rms-gain*10)>2)) or
+                (gain==24 and (peak!=0 or not -30<=rms<=0))):
+            raise ValueError('Audio control preview did not meter the known live input and selected saturating gain')
+        if set(pulse)!=set(initial) or any(pulse.get(other)!=initial[other] for other in others):
+            raise ValueError('Headset volume control changed an unrelated or modem sink')
+        headset=pulse[selected];actual=headset.get('volume',[])
+        if (headset.get('mute') is not (index==0) or len(actual)!=2 or
+                any(type(value) is not int for value in actual) or
+                abs(max(actual)-65536*volume/100)>1 or
+                abs(actual[1]*initial[selected]['volume'][0]-actual[0]*initial[selected]['volume'][1])>65536):
+            raise ValueError('Actual headset master lost rapid detents, channel balance, or unmute')
+        if verify_files:
+            for kind in ('snapshot','pulse'):
+                path=entry.get(kind+'_path')
+                if not path or sha(path)!=entry.get(kind+'_sha256') or _load(path)!=entry[kind]:
+                    raise ValueError('Retained audio control readback changed')
+    return proof
+
+
+def validate_audio_gain_turn_run(run,verify_files=True):
+    """Live controls must preserve real codec TX/drain/RX and other sink masters."""
+    proof=run.get('audio_gain_turn',{});harness=run.get('harness',{})
+    phases=proof.get('phases',[]);initial=proof.get('initial_sinks',{})
+    selected='alsa_output.usb-fixture';others=('radio_sink_fixture','unrelated_sink')
+    if (proof.get('schema')!='x6200.usb.audio-gain-turn.v1' or proof.get('status')!='PASS' or
+            len(phases)!=3 or set(initial)!={selected,*others} or harness.get('keys')!=3 or
+            harness.get('turns')!=2 or harness.get('eoo')!=2 or harness.get('physical_tx') is not False or
+            harness.get('fault')!=1 or harness.get('rf_clear_confirmed') is not True):
+        raise ValueError('Live audio controls did not complete both TX/tail/RX turns')
+    if (initial[selected].get('mute') is not True or len(initial[selected].get('volume',[]))!=2 or
+            any(abs(value-65536*percent/100)>1 for value,percent in zip(initial[selected]['volume'],(40,30)))):
+        raise ValueError('Live audio controls omitted the asymmetric muted headset baseline')
+    previous=None
+    for entry,name,gain,volume,state,keys,turns in zip(phases,
+            ('gain-turn-up','gain-turn-down','gain-turn-rx'),(6,-6,0),(43,40,40),(3,3,1),(2,2,3),(0,0,2)):
+        s=entry.get('snapshot',{});pulse=entry.get('pulse',{})
+        if (s.get('phase')!=name or s.get('state')!=state or s.get('armed') is not True or
+                s.get('rf_tx') is not (state==3) or s.get('keys')!=keys or s.get('turns')!=turns or
+                type(s.get('submitted_mic')) is not int or s['submitted_mic']<0 or
+                type(s.get('mic_clipped_samples')) is not int or s['mic_clipped_samples']<0 or
+                s.get('mic_meter_ready') is not True or s.get('mic_gain_db')!=gain or
+                s.get('headset_volume_ready') is not True or s.get('headset_volume_percent')!=volume or
+                s.get('headset_muted') is not False or
+                any(s.get(key)!=count for key,count in (('rade_creations',1),('encoder_creations',1),
+                    ('decoder_creations',1),('resampler_creations',4),('worker_creations',2)))):
+            raise ValueError('Live audio controls lost its applied gain, volume, or persistent codec objects')
+        if (type(s.get('generation')) is not int or type(s.get('monotonic_ms')) is not int or
+                (previous is not None and (s['monotonic_ms']<previous['monotonic_ms'] or
+                 s['submitted_mic']<=previous['submitted_mic'] or s['mic_clipped_samples']<previous['mic_clipped_samples'] or
+                 (state==3 and s['generation']!=previous['generation']) or
+                 (state==1 and s['generation']<=previous['generation'])))):
+            raise ValueError('Gain updates reset codec generation or interrupted accepted microphone progress')
+        if set(pulse)!=set(initial) or any(pulse.get(other)!=initial[other] for other in others):
+            raise ValueError('Live headset control changed an unrelated or modem sink')
+        actual=pulse[selected].get('volume',[])
+        if (pulse[selected].get('mute') is not False or len(actual)!=2 or
+                any(type(value) is not int for value in actual) or
+                abs(max(actual)-65536*volume/100)>1 or
+                abs(actual[1]*initial[selected]['volume'][0]-actual[0]*initial[selected]['volume'][1])>65536):
+            raise ValueError('Live headset master lost detents, balance, or unmute')
+        if verify_files:
+            for kind in ('snapshot','pulse'):
+                path=entry.get(kind+'_path')
+                if not path or sha(path)!=entry.get(kind+'_sha256') or _load(path)!=entry[kind]:
+                    raise ValueError('Retained live audio control readback changed')
+        previous=s
+    return proof
 
 
 def _validate_output_contract_run(run,verify_files=True,expected_identity=None):

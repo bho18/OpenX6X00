@@ -99,6 +99,9 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_freedv_timeout{"freedv_timeout", 180, 30, 600,
         StorageType::GLOBAL, pending_writes_, &global_params_};
+    // USB microphone speech gain is independent of baseband mic/RF controls.
+    Parameter<int32_t> p_freedv_usb_mic_gain{"freedv_usb_mic_gain", 0, -12, 24,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_imic{"imic", 30, 0, 50,
         StorageType::GLOBAL, pending_writes_, &global_params_};
 #ifdef BOARD_X6200
