@@ -30,6 +30,7 @@ USB_REQUIRED_COVERAGE = {
     'negotiated_buffers', 'service_jitter', 'receive_sink', 'short_payload',
     'tail_backpressure',
     'infrastructure_failure_preservation',
+    'capture_close', 'source_boundary',
 }
 
 

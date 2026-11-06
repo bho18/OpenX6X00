@@ -22,7 +22,9 @@ import wave
 from usb_test_support import (ProcessSupervisor, completed_turns, require,
                               run_bounded, save_json, validate_turn_decode, validate_session_identity, modem_waveform_match,
                               validate_operation_phase, microphone_frame_budget, PulseTestRuntime, pulse_startup_failure,
-                              audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait, validate_tail_backpressure)
+                              audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait, validate_tail_backpressure,
+                              capture_close_oracle, indexed_capture_source_match, validate_capture_release_boundary,
+                              validate_capture_close_failure)
 from usb_collector_contract import validate_collector_contract
 
 CASES = (
@@ -39,17 +41,22 @@ CASES = (
     'full-session',
     'io-pause150', 'buffer-contract-reject', 'rx-pause150', 'short-turn200',
     'eoo-backpressure',
+    'capture-release-split', 'capture-release-held150',
+    'capture-close-missing', 'capture-close-invalid', 'capture-close-stop',
 )
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
 SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale',
                 'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled', 'cold-resume',
-                'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session', 'io-pause150', 'eoo-backpressure'}
+                'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session', 'io-pause150', 'eoo-backpressure',
+                'capture-release-split','capture-release-held150'}
 WAVEFORM_CASES = SPEECH_CASES | {'short-turn200'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
 PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
             for prefix, phase in [('', 'tx'), ('initial-', 'initial-rx'), ('return-', 'rx-return')]
             for mode in ('delay', 'reject', 'missing')}
-INJECT_CASES = COLD_CASES | set(PA_CASES) | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure'}
+CAPTURE_RELEASE_CASES={'capture-release-split','capture-release-held150'}
+CAPTURE_FAILURE_CASES={'capture-close-missing','capture-close-invalid','capture-close-stop'}
+INJECT_CASES = COLD_CASES | set(PA_CASES) | CAPTURE_RELEASE_CASES | CAPTURE_FAILURE_CASES | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure'}
 CASE_TIMEOUTS = {'many-turns': 120, 'reopen': 180, 'cold-idle': 100, 'drain-tx-loss': 60, 'full-session':120}
 
 
@@ -63,7 +70,13 @@ def injection_environment(case, root, library):
         return {}
     require(library and library.is_file(), 'This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
-    if case=='eoo-backpressure':
+    if case in CAPTURE_RELEASE_CASES:
+        result.update(USB_TEST_MIC_OBSERVER_PREFIX=str(root/'result/mic-observer'),
+                      USB_TEST_MIC_RELEASE_MODE='held150' if case.endswith('held150') else 'split',
+                      USB_TEST_MIC_RELEASE_TRIGGER=str(root/'result/inject-mic-release'))
+    elif case in CAPTURE_FAILURE_CASES:
+        result['USB_TEST_MIC_CLOSE_MODE']=case.removeprefix('capture-close-')
+    elif case=='eoo-backpressure':
         result.update(USB_TEST_RENDER_HOLD_TRIGGER=str(root/'result/inject-render-hold'),USB_TEST_RENDER_HOLD_MS='150')
     elif case=='drain-tx-loss':
         result.update(USB_TEST_PA_MODE='delay',USB_TEST_PA_DEVICE='radio_sink_fixture',
@@ -161,6 +174,7 @@ def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env
         require(descriptor and descriptor['rate'] == 48000 and descriptor['channels'] == 1,
                 'Source frame oracle requires the negotiated 48k mono microphone stream')
         fragments = descriptor['fragsize']//2
+        closed=[turn for turn in capture_close_oracle(rows,microphone,len(turns))['turns'] if turn['rf_completed']]
         reference_start = 0
         microphone_start = 0
         for index, turn in enumerate(turns):
@@ -176,7 +190,8 @@ def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env
                 reference_turn = reference[max(0, reference_start-128)*2:min(len(reference), (reference_end+128)*2)]
             accepted = exact['accepted_mic_samples'] if exact else after['submitted_mic']-microphone_start
             microphone_start = after['submitted_mic']
-            source_budget = microphone_frame_budget(turn['drain_ms']-turn['start_ms'], accepted, fragments)
+            source_budget=closed[index]['microphone_frame_budget']
+            require(source_budget['accepted_frames']==accepted,'Capture closure and sink turn disagree on microphone PCM')
             reference_start = reference_end
             begin = max(0, math.floor((turn['start_ms']/1000 - recording_started - .2) * 44100))
             end = math.ceil((turn['end_ms']/1000 - recording_started + .2) * 44100)
@@ -420,7 +435,7 @@ def run_case(args):
         require(harness['status'] == 'PASS' and not harness['physical_tx'], str(harness))
         trace_paths = sorted((root/'result').glob('freedv-usb-session*.jsonl'))
         require(trace_paths, 'No controller trace was produced')
-        rows, identities = [], []
+        rows, identities, capture_closes, abandoned_closes = [], [], [], 0
         for path in trace_paths:
             trace_rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
             status_rows = [row for row in trace_rows if row.get('kind') == 'sample']
@@ -432,7 +447,20 @@ def run_case(args):
             identities.append(validate_session_identity(trace_rows, json.loads(completion_path.read_text()),
                                                         expected['source_commit'], expected['build_id'],
                                                         args.case in {'storage-start-fails','storage-completion-fails'}))
+            turns=completed_turns(trace_rows)
+            abandoned_closes+=sum(row.get('kind')=='capture-close' and row.get('complete') is False for row in trace_rows)
+            if turns or any(row.get('kind')=='capture-close' and row.get('complete') is True for row in trace_rows):
+                closed=capture_close_oracle(trace_rows,path.with_name(path.stem+'-mic.raw').read_bytes(),len(turns))
+                capture_closes.extend(dict(turn,trace_file=path.name) for turn in closed['turns'])
             rows.extend(trace_rows)
+        require(sum(turn['rf_completed'] for turn in capture_closes)==harness.get('total_turns',harness['turns']),
+                'Finite capture closure did not cover every completed controller turn')
+        require(len(capture_closes)==harness.get('total_turns',harness['turns']) or harness['fault']>1,
+                'A healthy controller abandoned a completely closed capture interval')
+        record['capture_close']={'status':'PASS','deadline_ms':750,'turns':capture_closes,
+            'completed_rf_turns':harness.get('total_turns',harness['turns']),
+            'completed_intervals':len(capture_closes),'abandoned_intervals':abandoned_closes,
+            'frontier_basis':'Pulse capture production; no monitor playback correction','physical_latency':'UNMEASURED'}
         record['identity'] = {'status':'PASS' if all(expected.values()) else 'NOT_REQUESTED',
                               'source_commit':identities[0]['source_commit'], 'build_id':identities[0]['build_id'],
                               'binary_sha256':record['test_binary_sha256'], 'session_ids':[identity['session_id'] for identity in identities]}
@@ -457,16 +485,22 @@ def run_case(args):
             record['drain_loss_wait']=validate_drain_loss_wait(rows,harness,text)
         if args.case=='eoo-backpressure':
             record['tail_backpressure']=validate_tail_backpressure(rows,harness,text)
+        if args.case in CAPTURE_FAILURE_CASES:
+            record['capture_close_failure']=validate_capture_close_failure(rows,harness,text,
+                args.case.removeprefix('capture-close-'))
         if args.case == 'mic-valid-drop300':
             require('no-hole=1' in text and 'valid capture resumed' in text,
                     'The finite microphone-only valid-data deletion was not exercised')
             require(harness['fault'] == 23 and harness['turns'] == 0 and harness['eoo'] == 0 and harness['mic_holes'] == 0,
                     'Deleted microphone data was accepted as a complete turn')
-            accounting = [row for row in rows if row.get('kind') == 'source-accounting']
-            require(accounting and accounting[-1]['evaluated'] and accounting[-1]['passed'] is False and
-                    accounting[-1]['accepted_mic_frames'] < accounting[-1]['required_mic_frames'],
-                    'The source frame deficit was not reported independently of holes')
-            record['injected_source_loss'] = accounting[-1]
+            gaps=[row for row in rows if row.get('event')=='first-fault' and row.get('status')==23 and
+                  row.get('operation')=='tx-microphone-index-gap']
+            abandoned=[row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is False and
+                       row.get('index_gap') is True]
+            require(gaps and abandoned and not capture_closes,
+                    'The missing native-index microphone interval was not rejected before EOO')
+            record['injected_source_loss']={'status':'PASS','index_gap':True,'fault':23,
+                'origin':'tx-microphone-index-gap','holes':0,'complete_intervals':0,'abandoned_interval':abandoned[-1]}
         if args.case in COLD_CASES:
             require('INJECT cold ACK success=1' in text, text)
             require('callback starvation device=alsa_input.usb-fixture' in text, text)
@@ -533,6 +567,18 @@ def run_case(args):
             expected['source_commit'] or identities[0]['source_commit'],
             expected['build_id'] or identities[0]['build_id'], record['test_binary_sha256'],
             storage_failure_expected=args.case in {'storage-start-fails','storage-completion-fails'})
+        if args.case in CAPTURE_RELEASE_CASES:
+            require(len(trace_paths)==1 and len(capture_closes)==1 and harness['turns']==1,
+                    'The capture boundary exercise did not complete its single full RF turn')
+            observer_pcm=root/'result/mic-observer.pcm';observer_index=root/'result/mic-observer.jsonl'
+            source_rows=[json.loads(line) for line in observer_index.read_text().splitlines() if line.strip()]
+            microphone=trace_paths[0].with_name(trace_paths[0].stem+'-mic.raw').read_bytes()
+            raw_close=next(row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is True)
+            boundary=validate_capture_release_boundary(raw_close,capture_closes[0],microphone,source_rows,
+                observer_pcm.read_bytes(),text,'held150' if args.case.endswith('held150') else 'split')
+            record['capture_source_boundary']={'status':'PASS','case':args.case,'turns':[boundary],
+                'observer_pcm_sha256':sha(observer_pcm),'observer_index_sha256':sha(observer_index),
+                'physical_latency':'UNMEASURED'}
         runner = args.runner or (Path(os.environ['USB_RF_REFERENCE_RUNNER']) if os.environ.get('USB_RF_REFERENCE_RUNNER') else None)
         if args.case in WAVEFORM_CASES:
             require(runner is not None, 'Speech cases require the actual codec runner')

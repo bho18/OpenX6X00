@@ -4,6 +4,7 @@ These helpers are test infrastructure; they never contact a radio.
 """
 from pathlib import Path
 from array import array
+import hashlib
 import json
 import math
 import os
@@ -408,6 +409,215 @@ def microphone_frame_budget(active_ms, accepted_frames, fragment_frames, rate=48
             'expected_frames':expected,'minimum_frames':lower,'maximum_frames':upper,
             'fragment_frames':fragment_frames,'boundary_frames':boundary,
             'delivery_tolerance_percent':1,'evaluated':evaluated}
+
+
+def capture_close_oracle(rows, microphone_pcm, expected_turns):
+    """Check finite Pulse capture intervals, separately from delivery time.
+
+    This frontier describes the Pulse capture pipeline. It does not establish
+    the physical microphone or PTT latency. Monitor playback latency is
+    deliberately absent from the capture-production frontier arithmetic.
+    """
+    require(len(microphone_pcm)%2==0,'The accepted microphone tap is misaligned')
+    completed=completed_turns(rows)
+    intervals=[];current=None
+    for row in rows:
+        if row.get('kind')!='event' or row.get('event')!='state':
+            continue
+        if row.get('state')==3:
+            current={'start_ms':row['ms'],'rf_completed':False};intervals.append(current)
+        elif current is not None and row.get('state')==4:
+            current['drain_ms']=row['ms']
+        elif current is not None and row.get('state') in (5,6,8):
+            current.update(end_ms=row['ms'],rf_completed=row['state']==8);current=None
+    closes=[row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is True]
+    require(len(closes)>=expected_turns==len(completed),'Capture closure did not cover every completed RF turn')
+    descriptor=next((row for row in rows if row.get('kind')=='stream' and row.get('stream')=='mic'),{})
+    require(descriptor.get('rate')==48000 and descriptor.get('channels')==1,
+            'Capture closure requires the actual 48k mono microphone descriptor')
+    results=[];covered=[]
+    for number,close in enumerate(closes,1):
+        require(close.get('turn')==number,'Capture closure turn order is incomplete')
+        matches=[turn for turn in intervals if turn not in covered and 'drain_ms' in turn and
+                 turn['start_ms']<=close['close_started_ms']<=turn['drain_ms']<=close['timing_issued_ms']]
+        require(len(matches)==1,'Capture closure has no matching finite TX release interval')
+        turn=matches[0];covered.append(turn)
+        write=close['write_index_bytes']
+        require(type(write) is int and write>=0 and write%2==0,'The raw capture write index is invalid')
+        require(all(type(close[key]) is int and close[key]>=0 for key in ('source_usec','transport_usec','sink_usec')),
+                'Capture timing inputs are invalid')
+        extra=((close['source_usec']+close['transport_usec'])*48000+999999)//1000000
+        cutoff=write//2+extra
+        require(close['frontier_extra_frames']==extra and close['cutoff_index']==cutoff,
+                'The capture cutoff does not match the raw production frontier')
+        start=close['start_index']
+        require(type(start) is int and 0<=start<=cutoff and close['consumed_index']==cutoff and
+                close['submitted_first_index']==start and close['submitted_end_index']==cutoff,
+                'The completed capture interval is missing, overlapping or extends beyond its frozen cutoff')
+        tap_start,tap_end=close['mic_tap_start'],close['mic_tap_end']
+        require(type(tap_start) is int and type(tap_end) is int and 0<=tap_start<=tap_end<=len(microphone_pcm)//2,
+                'The accepted capture interval is not retained in the microphone tap')
+        accepted=tap_end-tap_start
+        require(accepted==cutoff-start,'The accepted PCM does not conserve the exact indexed capture interval')
+        require(close['tail_frames']==max(0,cutoff-close['release_fence_index']) and
+                close['index_gap'] is False and close['close_timeout_ms']==750,
+                'Capture closure changed its indexed tail, continuity or deadline contract')
+        times=[close[key] for key in ('close_started_ms','timing_issued_ms','frozen_ms','reached_ms','closed_ms')]
+        require(all(type(value) is int for value in times) and times==sorted(times) and
+                turn['start_ms']<=times[0]<=turn['drain_ms']<=times[1] and
+                times[-1]<=turn['end_ms'] and times[-1]-times[0]<=750,
+                'Capture closure did not finish within its bounded release phase')
+        releases=[row for row in rows if row.get('kind')=='event' and row.get('event')=='capture-release-observed'
+                  and row.get('state')==3 and times[0]<=row.get('ms',-1)<=turn['drain_ms']]
+        require(releases and close['capture_started_ms']<=turn['start_ms'],
+                'Capture closure lacks its coordinator release epoch before the I/O fence')
+        accounting=next((row for row in rows if row.get('kind')=='source-accounting' and row.get('turn')==number),None)
+        require(accounting and rows.index(close)<rows.index(accounting) and accounting['ms']>=times[-1] and
+                accounting['accepted_mic_frames']==accepted and accounting['passed'] is True,
+                'EOO source accounting ran before complete capture closure or disagrees with accepted PCM')
+        active_ms=times[0]-close['capture_started_ms']
+        require(accounting['active_ms']==active_ms,'The source frame budget changed its capture epoch')
+        budget=microphone_frame_budget(active_ms,accepted,descriptor['fragsize']//2)
+        results.append({'status':'PASS','turn':number,'start_index':start,'cutoff_index':cutoff,
+            'consumed_index':close['consumed_index'],'accepted_frames':accepted,'mic_tap_start':tap_start,
+            'mic_tap_end':tap_end,'close_elapsed_ms':times[-1]-times[0],'write_index_bytes':write,
+            'source_usec':close['source_usec'],'transport_usec':close['transport_usec'],'sink_usec':close['sink_usec'],
+            'release_fence_index':close['release_fence_index'],'tail_frames':close['tail_frames'],
+            'cutoff_split_frames':close['cutoff_split_frames'],
+            'capture_started_ms':close['capture_started_ms'],'close_started_ms':times[0],
+            'timing_issued_ms':times[1],'frozen_ms':times[2],'reached_ms':times[3],'closed_ms':times[4],
+            'frontier_extra_frames':extra,'frontier_basis':'Pulse capture production; no monitor playback correction',
+            'physical_latency':'UNMEASURED','rf_completed':turn['rf_completed'],'microphone_frame_budget':budget})
+    require(sum(turn['rf_completed'] for turn in covered)==expected_turns,
+            'Completed RF turns are missing finite capture closure')
+    return {'status':'PASS','turns':results,'deadline_ms':750,'physical_latency':'UNMEASURED',
+            'completed_rf_turns':expected_turns,'completed_intervals':len(results),
+            'abandoned_intervals':sum(row.get('kind')=='capture-close' and row.get('complete') is False for row in rows)}
+
+
+def indexed_capture_source_match(close_result, microphone_pcm, source_rows, source_pcm):
+    """Compare accepted PCM with an independently observed native-index span."""
+    require(len(source_pcm)%2==0,'The independent capture source tap is misaligned')
+    start,cutoff=close_result['start_index'],close_result['cutoff_index']
+    expected=bytearray();cursor=start;split=None;post=0
+    previous_end=None
+    for block in source_rows:
+        if block.get('valid') is not True:
+            continue
+        begin,end,tap,frames=(block[key] for key in ('index_start','index_end','tap_start','tap_frames'))
+        require(all(type(value) is int and value>=0 for value in (begin,end,tap,frames)) and
+                end-begin==frames and (tap+frames)*2<=len(source_pcm),'The independent source index ledger is invalid')
+        if end<=start or begin>=cutoff:
+            if begin>=cutoff:post+=frames
+            continue
+        require(previous_end is None or begin==previous_end,'The independent source interval has a gap or duplicate')
+        previous_end=end
+        left,right=max(begin,start),min(end,cutoff)
+        require(left==cursor,'The independent source is missing part of the finite capture interval')
+        expected.extend(source_pcm[(tap+left-begin)*2:(tap+right-begin)*2]);cursor=right
+        if begin<cutoff<end:
+            split={'start_index':begin,'end_index':end,'cutoff_index':cutoff};post+=end-cutoff
+    require(cursor==cutoff and len(expected)//2==cutoff-start,'The independent source did not reach the frozen capture cutoff')
+    accepted=microphone_pcm[close_result['mic_tap_start']*2:close_result['mic_tap_end']*2]
+    require(accepted==expected,'Accepted microphone PCM differs from the exact indexed pre-cutoff source')
+    return {'status':'PASS','turn':close_result['turn'],'compared_frames':len(expected)//2,
+            'accepted_frames':len(accepted)//2,'expected_source_sha256':hashlib.sha256(expected).hexdigest(),
+            'accepted_sha256':hashlib.sha256(accepted).hexdigest(),'post_cutoff_frames_observed':post,
+            'split_block':split,'post_cutoff_excluded':True}
+
+
+def validate_capture_release_boundary(close, closed, microphone_pcm, source_rows, source_pcm, log_text, mode):
+    pattern=(r'INJECT MIC release mode=(\S+) hold_started_ms=(\d+) hold_ended_ms=(\d+) '
+             r'callback_started_ms=(\d+) barrier_started_ms=(\d+) release_observed_ms=(\d+) '
+             r'callback_ended_ms=(\d+) blocked_peeks=(\d+) cutoff_index=(\d+) sentinel_frames=(\d+) no-discard=1')
+    match=re.search(pattern,log_text)
+    require(match and match[1]==mode,'The indexed capture release exercise was not retained')
+    keys=('hold_started_ms','hold_ended_ms','callback_started_ms','barrier_started_ms','release_observed_ms',
+          'callback_ended_ms','blocked_peeks','cutoff_index','sentinel_frames')
+    witness=dict(zip(keys,map(int,match.groups()[1:])))
+    require(witness['hold_ended_ms']-witness['hold_started_ms']>=150 and witness['cutoff_index']==closed['cutoff_index'],
+            'The capture delivery hold or frozen cutoff was not exercised')
+    if mode=='held150':
+        require(witness['hold_started_ms']+50<=witness['release_observed_ms']<witness['hold_ended_ms'] and
+                close['timing_issued_ms']<witness['hold_ended_ms'] and close['frozen_ms']<witness['hold_ended_ms'] and
+                witness['blocked_peeks']>0,'The release fence bypassed the held microphone delivery')
+    else:
+        require(mode=='split' and witness['hold_ended_ms']<=witness['callback_started_ms']<=witness['barrier_started_ms']<=
+                witness['release_observed_ms']<witness['callback_ended_ms'] and close['cutoff_split_frames']>0,
+                'The coordinator did not observe release inside the selected callback and split its finite cutoff')
+    require(witness['release_observed_ms']<=close['close_started_ms']<=close['timing_issued_ms'],
+            'Capture closure did not follow the observed retained release')
+    result=indexed_capture_source_match(closed,microphone_pcm,source_rows,source_pcm)
+    require(result['split_block'] is not None and result['post_cutoff_frames_observed']>0,
+            'The indexed source did not expose both sides of the frozen cutoff')
+    sentinel=0
+    for block in source_rows:
+        if block.get('valid') is not True or block['index_end']<=closed['cutoff_index']:
+            continue
+        offset=max(0,closed['cutoff_index']-block['index_start'])
+        payload=array('h');payload.frombytes(source_pcm[(block['tap_start']+offset)*2:(block['tap_start']+block['tap_frames'])*2])
+        if sys.byteorder!='little':payload.byteswap()
+        sentinel+=sum(sample==30001 for sample in payload)
+    accepted=array('h');accepted.frombytes(microphone_pcm[closed['mic_tap_start']*2:closed['mic_tap_end']*2])
+    if sys.byteorder!='little':accepted.byteswap()
+    require(witness['sentinel_frames']>0 and sentinel==witness['sentinel_frames'] and 30001 not in accepted,
+            'Post-cutoff sentinel audio entered the accepted microphone interval or was not observed')
+    return {**result,'mode':mode,'exercise':witness,'sentinel_value':30001,
+            'post_cutoff_sentinel_frames':sentinel,'post_cutoff_sentinel_excluded':True}
+
+
+def validate_capture_close_failure(rows,harness,log_text,mode):
+    requested=re.search(r'INJECT MIC close-timing requested_ms=(\d+) mode='+mode+r' phase=drain',log_text)
+    acknowledged=re.search(r'INJECT MIC close-timing mode='+mode+
+        r' real_ack_ms=(\d+) success=1 withheld=([01]) phase=drain',log_text)
+    require(requested and acknowledged,'The failing timing request was not independently acknowledged in DRAIN')
+    requested_ms,ack_ms=int(requested[1]),int(acknowledged[1])
+    require(requested_ms<=ack_ms and acknowledged[2]==('1' if mode=='missing' else '0'),
+            'The intended timing ACK suppression or invalid boundary was not exercised')
+    starts=[row for row in rows if row.get('event')=='capture-close-start' and row.get('state')==4]
+    faults=[row for row in rows if row.get('event')=='first-fault' and row.get('state')==4 and row['ms']>=ack_ms]
+    require(starts and any(row['ms']<=requested_ms for row in starts) and faults,
+            'The injected timing failure did not target the active DRAIN capture closure')
+    fault=faults[0]
+    stop_ms=None
+    if mode=='stop':
+        stopped=re.search(r'INJECT MIC close-timing stop-before-forward stop_ms=(\d+) callback_invoked=1 phase=drain',log_text)
+        require(stopped and ack_ms<=int(stopped[1])<=fault['ms'] and fault['status']==1 and fault['operation']=='local-stop',
+                'Local Stop was not observed before forwarding the late successful timing callback')
+        stop_ms=int(stopped[1])
+    elif mode=='invalid':
+        require('INJECT MIC close-timing retrograde ' in log_text and
+                'write_index_bytes=0 source_usec=0 transport_usec=0 phase=drain' in log_text and
+                fault['status']==23 and fault['operation']=='microphone-close-frontier-invalid',
+                'The retrograde capture frontier was not rejected')
+    else:
+        require(mode=='missing' and fault['status'] in (6,9,17),
+                'Withheld capture timing did not fail through a bounded existing queue, output or closure guard')
+        if fault['status']==9:
+            require(fault['operation']=='modem-payload-underflow' and fault.get('stream')=='modem' and
+                    any(row.get('kind')=='sample' and row.get('modem_underflows',0)>0 for row in rows),
+                    'An unrelated output fault cannot prove capture timing was withheld')
+        elif fault['status']==6:
+            require(fault['operation'] in ('pcm-queue-full','aggregate-queue-limit') and
+                    any(row.get('kind')=='sample' and row.get('state')==4 and requested_ms<=row['ms']<=fault['ms'] and
+                        row.get('capture',0)>0 for row in rows),
+                    'An unrelated queue defect cannot prove pending capture backpressure')
+        else:
+            require(fault['operation']=='microphone-close-timeout' and fault.get('stream')=='mic' and
+                    fault.get('duration_ms',0)>=750,'The close timeout did not retain its original 750ms guard')
+    require(harness['fault']==fault['status'] and harness['turns']==0 and harness['eoo']==0 and
+            harness['rf_clear_confirmed'] and not harness['physical_tx'],
+            'A failed capture closure emitted EOO, completed a turn or left RF asserted')
+    abandoned=[row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is False]
+    require(abandoned and not any(row.get('kind')=='capture-close' and row.get('complete') is True for row in rows) and
+            abandoned[-1]['close_timeout_ms']==750,'The failed finite capture interval was not retained as incomplete')
+    if mode=='stop':
+        require(abandoned[-1]['frozen_ms']==0 and abandoned[-1]['cutoff_index']==0,
+                'The late timing callback committed a new frontier after local Stop')
+    return {'status':'PASS','mode':mode,'phase':'drain','requested_ms':requested_ms,'real_ack_ms':ack_ms,
+            'withheld':mode=='missing','fault':fault['status'],'origin':fault['operation'],
+            'fault_ms':fault['ms'],'eoo':0,'completed_turns':0,'close_timeout_ms':750,
+            'abandoned_interval':abandoned[-1],'stop_requested_ms':stop_ms}
 
 
 def modem_waveform_match(reference_pcm, reference_rate, observed_pcm, observed_rate, expected_gain=.25):

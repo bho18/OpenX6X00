@@ -18,7 +18,8 @@ from build_native_development import source_snapshot
 from test_usb_audio_integration import CASES, SPEECH_CASES
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEATS,
                                atomic_json, digest, sha, validate_campaign,
-                               INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run)
+                               INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run, validate_capture_close_run,
+                               validate_capture_source_boundary_run, validate_capture_close_failure_run)
 from usb_test_support import run_bounded
 
 COVERAGE = {
@@ -56,9 +57,13 @@ COVERAGE = {
     'receive_sink': {'rx-pause150'},
     'short_payload': {'short-turn200'},
     'tail_backpressure': {'eoo-backpressure'},
+    'capture_close': {'normal','many-turns','reopen','full-session','capture-release-split','capture-release-held150',
+                      'capture-close-missing','capture-close-invalid','capture-close-stop'},
+    'source_boundary': {'capture-release-split','capture-release-held150'},
 }
 DURABILITY_CASES = {'many-turns', 'reopen', 'cold-idle', 'drain-tx-loss', 'full-session', 'mic-valid-drop300',
-                    'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'short-turn200', 'eoo-backpressure'}
+                    'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'short-turn200', 'eoo-backpressure', 'capture-release-split',
+                    'capture-release-held150', 'capture-close-missing', 'capture-close-invalid', 'capture-close-stop'}
 CASE_TIMEOUTS = {'many-turns': 150, 'reopen': 210, 'cold-idle': 130, 'drain-tx-loss': 60, 'full-session': 120}
 
 
@@ -210,6 +215,9 @@ def main():
                        'io_service_pause':details.get('io_service_pause'),
                        'actual_headset_output':details.get('actual_headset_output'),
                        'tail_backpressure':details.get('tail_backpressure'),
+                       'capture_close':details.get('capture_close'),
+                       'capture_source_boundary':details.get('capture_source_boundary'),
+                       'capture_close_failure':details.get('capture_close_failure'),
                        'actual_sink_turns': details.get('actual_sink_turns', []),
                        'decoded_speech_blocks': details.get('actual_sink_decode', {}).get('synthesis_blocks', 0)}
                 if passed:
@@ -245,6 +253,24 @@ def main():
                             any(turn.get('status') != 'PASS' for turn in run['actual_sink_turns'])):
                         run['status'] = 'FAIL'
                         run.setdefault('reason', 'Complete short-payload delivery proof is missing')
+                if passed:
+                    try:
+                        validate_capture_close_run(run)
+                    except ValueError as error:
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason',str(error))
+                if passed and name in ('capture-release-split','capture-release-held150'):
+                    try:
+                        validate_capture_source_boundary_run(run,name)
+                    except ValueError as error:
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason',str(error))
+                if passed and name in ('capture-close-missing','capture-close-invalid','capture-close-stop'):
+                    try:
+                        validate_capture_close_failure_run(run,name)
+                    except ValueError as error:
+                        run['status'] = 'FAIL'
+                        run.setdefault('reason',str(error))
                 if passed and name == 'eoo-backpressure':
                     try:
                         validate_tail_backpressure_run(run)

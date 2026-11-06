@@ -29,6 +29,7 @@ and the blocked native hand-mic contract remain separate.
 | A stale/incomplete trace or ignored fault could look complete | Bind current-session identity, immutable first fault and terminal receipt; reconcile them before accepting a result. |
 | One global decode could hide a missing or stale later turn | Check the complete raw modem waveform and actual decoder output for each turn against its own reference. |
 | TX loss during drain could be counted as a completed turn | Keep checking fresh TX status during drain and reject the turn before completed-turn accounting can qualify it. |
+| A delayed MIC callback crossed release and valid speech was discarded in DRAIN | Close a finite indexed capture interval, drain it before EOO, and check its exact PCM against an independent input observer. |
 | Unbounded fixture processes and latest-PASS selection hid failed attempts | Bound commands and child cleanup; retain immutable attempt history and block promotion after failed or unfinished attempts. |
 
 ## Contracts checked across every phase
@@ -48,6 +49,8 @@ admission, active TX, drain, unkey, RX recovery, Stop and Exit:
 * Only active-direction samples enter the codec. Each accepted TX turn has one
   end-of-over sequence, a complete ordered modem payload and bounded drain.
   Old-turn samples cannot enter the next turn or the earphones.
+  Normal release first closes a finite microphone capture interval; Stop still
+  fences processing and RF admission immediately.
 * Return/restoration requires completed control work and a newer actual RX
   packet. Software clearing, cached control values and a stopped display are
   different observations. Aggregate TX is not raw hand-mic PTT or an independent
@@ -97,6 +100,28 @@ must be at least 99% of the nominal 48 kHz frames for that window, minus two
 actual negotiated microphone fragments for callback boundaries. This detects
 gross silent deletion before encoding; it does not prove delivery of every
 sample. It is independent of the global ±5% rate gate.
+
+Release also requires an indexed capture-close contract. Fence the transition
+against the Pulse callback, obtain fresh capture timing asynchronously, and
+freeze a finite raw capture-production frontier. That frontier includes the
+reported source/in-flight and transport pipeline, without the playback-latency
+correction used for monitor sources. It defines a bounded capture tail, not a
+sample-perfect physical PTT timestamp or a measured wireless-headset delay.
+Hold closing data in the existing bounded queue until the cutoff is known,
+split its final chunk, and require contiguous source indices and exact interval
+conservation before EOO. Samples beyond the frozen cutoff cannot replace missing
+earlier samples. Invalid timing, index gaps or incomplete closure block the turn.
+Closure stays within the existing 750 ms capture bound and the same total
+three-second drain deadline; the wall-time source screen remains independent.
+This candidate also conservatively rejects a reported frontier more than
+24,000 frames (500 ms) ahead of the current MIC read cursor. That admission
+horizon is separate from queue occupancy and is not a measured hardware limit.
+
+Two deterministic checks release during a callback and during a 150 ms delivery
+hold. Compare the exact accepted microphone interval with an independent raw
+input observer, exclude post-cutoff sentinel data, and check the complete modem
+payload, one EOO and fresh RX. The 300 ms valid-data-deletion negative must still
+fail even if later microphone samples are available.
 
 ## One qualification chain
 

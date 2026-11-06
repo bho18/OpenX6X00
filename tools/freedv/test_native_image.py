@@ -15,7 +15,7 @@ from verify_native_abi import same_sdk_build
 from prepare_native_image import prepare
 from build_voice_candidate import verify_usb_integration, USB_REQUIRED_COVERAGE, USB_CONTROLLER_CASES
 from usb_test_campaign import Campaign, MATRIX_SCHEMA, sha as campaign_sha, INFRASTRUCTURE_PREREQUISITES
-from test_usb_campaign import infrastructure_fixture, tail_backpressure_fixture
+from test_usb_campaign import infrastructure_fixture, capture_case_fixture
 
 
 class UsbReleaseGateTests(unittest.TestCase):
@@ -37,8 +37,9 @@ class UsbReleaseGateTests(unittest.TestCase):
             for repeat in (1,2):
                 log = root/(name+'-'+str(repeat)+'.log')
                 log.write_text('Synthetic metadata gate fixture; no controller executed.\n')
-                case_record = root/(name+'-'+str(repeat)+'.json')
-                extra=tail_backpressure_fixture() if name=='eoo-backpressure' else {}
+                case_root=root/(name+'-'+str(repeat));case_root.mkdir()
+                case_record = case_root/'case-result.json'
+                extra=capture_case_fixture(name,case_root)
                 case_record.write_text(json.dumps({'synthetic':True,**extra})+'\n')
                 runs.append({'status':'PASS', 'repeat':repeat, 'log_path':str(log),
                              'log_sha256':campaign_sha(log), 'case_record_path':str(case_record),

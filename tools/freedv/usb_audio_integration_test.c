@@ -27,6 +27,10 @@ extern unsigned long long usb_test_trigger_ack_ms(void) __attribute__((weak));
 extern unsigned long long usb_test_render_hold_started_ms(void) __attribute__((weak));
 extern unsigned long long usb_test_render_hold_ended_ms(void) __attribute__((weak));
 extern unsigned usb_test_render_hold_hits(void) __attribute__((weak));
+extern unsigned long long usb_test_mic_release_hold_started_ms(void) __attribute__((weak));
+extern unsigned long long usb_test_mic_barrier_started_ms(void) __attribute__((weak));
+extern void usb_test_mic_stop_callback(void (*)(void *),void *) __attribute__((weak));
+static void stop_from_close(void *audio){fd_usb_audio_stop(audio);}
 static bool cold_case,cold_rx_case,cold_late_tx_case;
 static atomic_uint recovered_observations;
 typedef struct {
@@ -231,6 +235,30 @@ int main(int argc,char **argv) {
         assert(!atomic_load(&f.keys)&&!atomic_load(&f.physical_tx));result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
     }
     wait_state(audio,FD_USB_RX,20000);pause_ms(350);
+    if(!strcmp(scenario,"--capture-close-missing")||!strcmp(scenario,"--capture-close-invalid")||!strcmp(scenario,"--capture-close-stop")){
+        if(!strcmp(scenario,"--capture-close-stop")){assert(usb_test_mic_stop_callback);usb_test_mic_stop_callback(stop_from_close,audio);}
+        fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1250);release_ptt(&f);
+        fd_usb_snapshot last=wait_stopped(audio,10000);
+        if(!strcmp(scenario,"--capture-close-stop"))assert(last.fault==1&&!strcmp(last.first_fault_origin,"local-stop"));
+        else if(!strcmp(scenario,"--capture-close-invalid"))assert(last.fault==23&&!strcmp(last.first_fault_origin,"microphone-close-frontier-invalid"));
+        else assert(last.fault==6||last.fault==9||last.fault==17);
+        assert(!last.turns&&!last.engine.eoo_count&&atomic_load(&f.keys)==1&&!atomic_load(&f.physical_tx)&&last.rf_clear_confirmed);
+        result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
+    }
+    if(!strcmp(scenario,"--capture-release-split")||!strcmp(scenario,"--capture-release-held150")){
+        assert(usb_test_mic_release_hold_started_ms&&usb_test_mic_barrier_started_ms);
+        fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);
+        marker("USB_TEST_MIC_RELEASE_TRIGGER");uint64_t until=ms()+2000;
+        while(!usb_test_mic_release_hold_started_ms()&&ms()<until)pause_ms(1);
+        assert(usb_test_mic_release_hold_started_ms());
+        if(!strcmp(scenario,"--capture-release-split")){
+            while(!usb_test_mic_barrier_started_ms()&&ms()<until)pause_ms(1);
+            assert(usb_test_mic_barrier_started_ms());
+        }else pause_ms(50);
+        release_ptt(&f);fd_usb_snapshot last=wait_state(audio,FD_USB_RX,10000);
+        assert(last.turns==1&&last.engine.eoo_count==1&&last.rf_clear_confirmed&&!last.mic_holes&&!last.rx_holes);
+        fd_usb_audio_stop(audio);last=wait_stopped(audio,10000);result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
+    }
     if(!strcmp(scenario,"--storage-completion-fails")){
         assert(!chmod(incident_dir,0500));fd_usb_audio_stop(audio);fd_usb_snapshot last=wait_stopped(audio,10000);
         assert(last.fault==1&&!last.qualification_complete&&!atomic_load(&f.keys));assert(!chmod(incident_dir,0700));
@@ -291,7 +319,7 @@ int main(int argc,char **argv) {
     }
     if(!strcmp(scenario,"--mic-valid-drop300")){
         fd_usb_audio_arm(audio,true);atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);marker("USB_TEST_STALE_TRIGGER");pause_ms(1250);release_ptt(&f);
-        fd_usb_snapshot last=wait_stopped(audio,10000);assert(last.fault==23&&!strcmp(last.first_fault_origin,"tx-microphone-frame-deficit"));
+        fd_usb_snapshot last=wait_stopped(audio,10000);assert(last.fault==23&&!strcmp(last.first_fault_origin,"tx-microphone-index-gap"));
         assert(!last.turns&&!last.engine.eoo_count&&!last.mic_holes&&!last.rx_holes&&!atomic_load(&f.physical_tx));
         result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;
     }

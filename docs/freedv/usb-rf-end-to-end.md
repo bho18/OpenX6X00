@@ -82,8 +82,9 @@ after a fault.
    the lazy dog. End RF test turn one."
    Microphone input before Transmitting is discarded while audio preparation
    and TX acknowledgement settle; do not begin speaking during that transition.
-3. Release PTT. The controller should finish accepted speech and the modem
-   tail, drain playback, clear software TX and wait for a newer RX packet.
+3. Release PTT. The controller should close its bounded microphone tail,
+   finish accepted speech and the modem tail, drain playback, clear software TX
+   and wait for a newer RX packet.
    Allow three seconds after release; if TX persists, select Stop. If it still
    persists, switch the radio off. Packet telemetry is not direct physical
    RF-off instrumentation.

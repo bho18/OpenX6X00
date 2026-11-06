@@ -12,6 +12,8 @@
 #include <unistd.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
+static unsigned long long now_ms(void);
 
 typedef struct {
     _Atomic(pa_operation *) operation;
@@ -37,6 +39,18 @@ static atomic_uint io_pause_count;
 static atomic_int buffer_reject_reported;
 static atomic_ullong render_hold_started,render_hold_ended;
 static atomic_uint render_hold_hits;
+static atomic_ullong mic_release_hold_started,mic_release_hold_ended,mic_callback_started,mic_callback_ended,mic_release_observed,mic_barrier_started,mic_test_cutoff;
+static atomic_uint mic_release_peeks,mic_blocked_peeks;
+static unsigned long long mic_sentinel_frames;
+static atomic_int mic_close_requested,mic_close_invalid;
+static pa_stream_success_cb_t mic_close_callback;static void *mic_close_userdata;
+static void (*mic_close_stop_callback)(void *);static void *mic_close_stop_userdata;
+void usb_test_mic_stop_callback(void (*callback)(void *),void *userdata){mic_close_stop_callback=callback;mic_close_stop_userdata=userdata;}
+void usb_test_mic_close_requested(void){atomic_store(&mic_close_requested,1);}
+unsigned long long usb_test_mic_release_hold_started_ms(void){return atomic_load(&mic_release_hold_started);}
+unsigned long long usb_test_mic_barrier_started_ms(void){return atomic_load(&mic_barrier_started);}
+void usb_test_mic_release_observed(void){atomic_store(&mic_release_observed,now_ms());}
+void usb_test_mic_cutoff(uint64_t cutoff){atomic_store(&mic_test_cutoff,cutoff);}
 unsigned long long usb_test_render_hold_started_ms(void){return atomic_load(&render_hold_started);}
 unsigned long long usb_test_render_hold_ended_ms(void){return atomic_load(&render_hold_ended);}
 unsigned usb_test_render_hold_hits(void){return atomic_load(&render_hold_hits);}
@@ -97,6 +111,36 @@ pa_operation *pa_stream_trigger(pa_stream *stream,pa_stream_success_cb_t callbac
     if(!selected(stream,"trigger"))return real(stream,callback,userdata);
     begin(stream,callback,userdata,"trigger");pending.operation=real(stream,completed,NULL);return pending.operation;
 }
+static void close_timing_done(pa_stream *stream,int success,void *unused){
+    (void)unused;const char *mode=setting("USB_TEST_MIC_CLOSE_MODE","");
+    fprintf(stderr,"INJECT MIC close-timing mode=%s real_ack_ms=%llu success=%d withheld=%u phase=drain\n",mode,now_ms(),success,!strcmp(mode,"missing"));
+    if(!strcmp(mode,"missing"))return;
+    if(!strcmp(mode,"stop")){
+        if(mic_close_stop_callback)mic_close_stop_callback(mic_close_stop_userdata);
+        fprintf(stderr,"INJECT MIC close-timing stop-before-forward stop_ms=%llu callback_invoked=%u phase=drain\n",now_ms(),mic_close_stop_callback!=NULL);
+    }else atomic_store(&mic_close_invalid,1);
+    if(mic_close_callback)mic_close_callback(stream,success,mic_close_userdata);
+    atomic_store(&mic_close_invalid,0);
+}
+pa_operation *pa_stream_update_timing_info(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata){
+    pa_operation *(*real)(pa_stream*,pa_stream_success_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_update_timing_info");
+    const char *mode=getenv("USB_TEST_MIC_CLOSE_MODE");
+    if(!mode||!atomic_exchange(&mic_close_requested,0))return real(stream,callback,userdata);
+    mic_close_callback=callback;mic_close_userdata=userdata;
+    fprintf(stderr,"INJECT MIC close-timing requested_ms=%llu mode=%s phase=drain\n",now_ms(),mode);
+    return real(stream,close_timing_done,NULL);
+}
+const pa_timing_info *pa_stream_get_timing_info(pa_stream *stream){
+    const pa_timing_info *(*real)(pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_get_timing_info");
+    const pa_timing_info *info=real(stream);
+    if(info&&atomic_load(&mic_close_invalid)){
+        static _Thread_local pa_timing_info invalid;invalid=*info;
+        invalid.write_index=0;invalid.source_usec=invalid.transport_usec=0;
+        fprintf(stderr,"INJECT MIC close-timing retrograde read_index_bytes=%lld write_index_bytes=0 source_usec=0 transport_usec=0 phase=drain\n",(long long)invalid.read_index);
+        return &invalid;
+    }
+    return info;
+}
 pa_operation_state_t pa_operation_get_state(const pa_operation *operation) {
     pa_operation_state_t (*real)(const pa_operation*)=dlsym(RTLD_NEXT,"pa_operation_get_state");
     pa_operation_state_t state=real(operation);
@@ -134,9 +178,54 @@ void pa_operation_cancel(pa_operation *operation) {
     if(operation==pending.operation)pending.operation=NULL;
     real(operation);
 }
+typedef struct {uint64_t start,end,tap;unsigned frames;unsigned long long ms;} mic_observation;
+static mic_observation mic_observations[16384];static unsigned mic_observation_n;static uint64_t mic_observer_n;
+static int16_t *mic_observer_pcm;static pa_stream *mic_observer_stream;static uint64_t mic_observer_last=UINT64_MAX;
+static void mic_observer_finish(void){
+    const char *prefix=getenv("USB_TEST_MIC_OBSERVER_PREFIX");if(!prefix)return;
+    char path[2048];snprintf(path,sizeof(path),"%s.pcm",prefix);FILE *f=fopen(path,"wb");
+    if(f){fwrite(mic_observer_pcm,2,mic_observer_n,f);fclose(f);}
+    snprintf(path,sizeof(path),"%s.jsonl",prefix);f=fopen(path,"w");
+    if(f){for(unsigned i=0;i<mic_observation_n;++i){mic_observation r=mic_observations[i];fprintf(f,"{\"index_start\":%llu,\"index_end\":%llu,\"tap_start\":%llu,\"tap_frames\":%u,\"valid\":true,\"observed_ms\":%llu}\n",(unsigned long long)r.start,(unsigned long long)r.end,(unsigned long long)r.tap,r.frames,r.ms);}fclose(f);}
+    fprintf(stderr,"INJECT MIC release mode=%s hold_started_ms=%llu hold_ended_ms=%llu callback_started_ms=%llu barrier_started_ms=%llu release_observed_ms=%llu callback_ended_ms=%llu blocked_peeks=%u cutoff_index=%llu sentinel_frames=%llu no-discard=1\n",setting("USB_TEST_MIC_RELEASE_MODE",""),atomic_load(&mic_release_hold_started),atomic_load(&mic_release_hold_ended),atomic_load(&mic_callback_started),atomic_load(&mic_barrier_started),atomic_load(&mic_release_observed),atomic_load(&mic_callback_ended),atomic_load(&mic_blocked_peeks),atomic_load(&mic_test_cutoff),mic_sentinel_frames);
+    free(mic_observer_pcm);
+}
+static bool mic_release_target(pa_stream *stream){
+    const char *device=pa_stream_get_device_name(stream),*trigger=getenv("USB_TEST_MIC_RELEASE_TRIGGER");
+    return device&&!strcmp(device,"alsa_input.usb-fixture")&&trigger&&!access(trigger,F_OK);
+}
+static void observe_mic(pa_stream *stream,const void **data,size_t bytes){
+    const char *prefix=getenv("USB_TEST_MIC_OBSERVER_PREFIX"),*device=pa_stream_get_device_name(stream);
+    if(!prefix||!device||strcmp(device,"alsa_input.usb-fixture")||!*data||!bytes||bytes%2)return;
+    const pa_timing_info *timing=pa_stream_get_timing_info(stream);
+    if(!timing||timing->read_index_corrupt||timing->read_index<0||timing->read_index%2)return;
+    uint64_t index=(uint64_t)timing->read_index/2,cutoff=atomic_load(&mic_test_cutoff);unsigned frames=(unsigned)bytes/2;
+    static _Thread_local int16_t replacement[48000];
+    if(cutoff&&index+frames>cutoff&&frames<=48000){
+        memcpy(replacement,*data,bytes);unsigned from=index<cutoff?(unsigned)(cutoff-index):0;
+        for(unsigned i=from;i<frames;++i)replacement[i]=(int16_t)30001;
+        *data=replacement;
+    }
+    if(stream==mic_observer_stream&&index==mic_observer_last)return;
+    if(!mic_observer_pcm){mic_observer_pcm=calloc(48000u*120u,2);if(!mic_observer_pcm)return;atexit(mic_observer_finish);}
+    if(mic_observation_n>=16384||mic_observer_n+frames>48000u*120u)return;
+    mic_observer_stream=stream;mic_observer_last=index;
+    mic_observations[mic_observation_n++]=(mic_observation){index,index+frames,mic_observer_n,frames,now_ms()};
+    memcpy(mic_observer_pcm+mic_observer_n,*data,bytes);mic_observer_n+=frames;
+    if(cutoff&&index+frames>cutoff)mic_sentinel_frames+=index<cutoff?index+frames-cutoff:frames;
+}
 int pa_stream_peek(pa_stream *stream,const void **data,size_t *bytes) {
     int (*real)(pa_stream*,const void**,size_t*)=dlsym(RTLD_NEXT,"pa_stream_peek");
     int result=real(stream,data,bytes);
+    if(result>=0&&mic_release_target(stream)){
+        unsigned long long started=atomic_load(&mic_release_hold_started);
+        if(started&&now_ms()-started<150){atomic_fetch_add(&mic_blocked_peeks,1);*data=NULL;*bytes=0;return 0;}
+        if(*data&&*bytes&&!strcmp(setting("USB_TEST_MIC_RELEASE_MODE",""),"split")&&atomic_load(&mic_callback_started)&&!atomic_load(&mic_callback_ended)&&atomic_fetch_add(&mic_release_peeks,1)==1){
+            atomic_store(&mic_barrier_started,now_ms());unsigned long long until=now_ms()+300;
+            while(!atomic_load(&mic_release_observed)&&now_ms()<until){struct timespec span={0,1000000};nanosleep(&span,NULL);}
+        }
+    }
+    if(result>=0)observe_mic(stream,data,*bytes);
     const char *device=pa_stream_get_device_name(stream),*target=getenv("USB_TEST_HOLE_DEVICE"),*trigger=getenv("USB_TEST_HOLE_TRIGGER");
     if(!hole_delivered && result>=0 && *data && *bytes && device && target && !strcmp(device,target) &&
        trigger && access(trigger,F_OK)==0) {
@@ -150,6 +239,16 @@ typedef struct {pa_stream *stream;pa_stream_request_cb_t callback;void *userdata
 static read_registration readers[8];
 static void deliver_read(pa_stream *stream,size_t bytes,void *userdata) {
     read_registration *registration=userdata;
+    if(mic_release_target(stream)){
+        unsigned long long now=now_ms(),started=atomic_load(&mic_release_hold_started);
+        if(!started){started=now;atomic_store(&mic_release_hold_started,now);}
+        if(now-started<150)return; /* Retain actual queued PCM; never drop. */
+        bool first=!atomic_load(&mic_release_hold_ended);
+        if(first){atomic_store(&mic_release_hold_ended,now);atomic_store(&mic_callback_started,now);}
+        if(registration->callback)registration->callback(stream,bytes,registration->userdata);
+        if(first)atomic_store(&mic_callback_ended,now_ms());
+        return;
+    }
     const char *target=getenv("USB_TEST_STALE_DEVICE"),*trigger=getenv("USB_TEST_STALE_TRIGGER");
     const char *device=pa_stream_get_device_name(stream);
     bool cold=atomic_load(&cold_started)&&(getenv("USB_TEST_COLD_NEVER")||

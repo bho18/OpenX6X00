@@ -22,6 +22,9 @@
 #endif
 #if defined(HOST_BUILD)
 extern void usb_test_operation_phase(const char *) __attribute__((weak));
+extern void usb_test_mic_cutoff(uint64_t) __attribute__((weak));
+extern void usb_test_mic_release_observed(void) __attribute__((weak));
+extern void usb_test_mic_close_requested(void) __attribute__((weak));
 #endif
 
 #define RATE 48000u
@@ -87,6 +90,14 @@ struct fd_usb_audio {
     unsigned gaps,mic_fragment_frames,render_queue_high_water,render_deferred_count,render_final_deferred_count,render_final_flush_calls,render_audit_rows;
     bool render_backpressured,render_final_backpressured;uint64_t transport_tail_frames;uint64_t submitted_rx,submitted_mic,rendered_rx,rendered_modem,converted_radio,reference_submitted;
     uint64_t tx_capture_started,tx_capture_ended,tx_submitted_base;
+    /* Pulse sample indices, in 48 kHz mono frames. The existing capture
+     * queue also holds uncommitted closing frames; it is never enlarged. */
+    uint64_t mic_start_index,mic_next_index,mic_queue_index,mic_cutoff_index,mic_submitted_end,mic_tap_start;
+    uint64_t mic_close_started,mic_timing_issued,mic_frozen,mic_reached,mic_closed,mic_release_index;
+    uint64_t mic_source_usec,mic_transport_usec,mic_sink_usec,mic_frontier_extra;
+    int64_t mic_write_index;unsigned mic_committed,mic_cutoff_split;
+    bool mic_live,mic_closing,mic_cutoff_frozen,mic_cutoff_reached,mic_close_reported,mic_index_gap;
+    pa_operation *mic_close_operation;int mic_close_ack;uint64_t mic_close_generation;
     int16_t qualification_pcm[RATE*4];unsigned qualification_n,reference_cursor;
     bool qualification_waiting_loopback;
     uint64_t reference_next,reference_started,reference_synthesis_base,reference_underflow_base,reference_headset_base;
@@ -177,13 +188,20 @@ static void stream_suspended(pa_stream *s,void *p){
     int suspended=pa_stream_is_suspended(s);atomic_store(&a->metrics[i].suspended,suspended);
     event(a,"stream-suspended",NULL,i,suspended,pa_context_errno(a->context),0);
 }
+static bool mic_index(fd_usb_audio *a,uint64_t *index){
+    const pa_timing_info *t=pa_stream_get_timing_info(a->streams[MIC]);
+    if(!t||t->read_index_corrupt||t->write_index_corrupt||t->read_index<0||t->read_index%2){
+        fail_at(a,U_CAPTURE_RATE,"microphone-invalid-sample-index",MIC,0,0);return false;
+    }
+    *index=(uint64_t)t->read_index/2;return true;
+}
 static void read_pcm(pa_stream *s,size_t requested,void *p){
     (void)requested;fd_usb_audio *a=p;unsigned i=stream_index(a,s);if(i>RADIO_RX)return;
     for(unsigned loops=0;loops<64;++loops){
         const void *data;size_t bytes;
         if(pa_stream_peek(s,&data,&bytes)<0){fail_at(a,U_IO,"capture-peek",i,pa_context_errno(a->context),0);return;}
         if(!bytes)return;
-        unsigned st=atomic_load(&a->state);bool active=(i==MIC&&st==FD_USB_TX)||(i==RADIO_RX&&st==FD_USB_RX);
+        unsigned st=atomic_load(&a->state);bool active=(i==MIC&&a->mic_live)||(i==RADIO_RX&&st==FD_USB_RX);
         uint64_t now=now_ms();
         if(data&&bytes%2==0){
             uint64_t old=atomic_exchange(&a->metrics[i].last,now),gap=age(now,old);
@@ -197,12 +215,90 @@ static void read_pcm(pa_stream *s,size_t requested,void *p){
             atomic_fetch_add(&a->metrics[i].holes,1);
             if(active)fail_at(a,U_CAPTURE_HOLE,"active-capture-hole",i,0,0);
             else atomic_fetch_add(&a->metrics[i].discarded,bytes/2);
-        }else if(active&&!atomic_load(&a->stop))push(a,i==MIC?&a->capture:&a->radio_capture,data,(unsigned)bytes/2);
+        }else if(active&&!atomic_load(&a->stop)){
+            unsigned frames=(unsigned)bytes/2,keep=frames;
+            if(i==MIC){
+                uint64_t index;if(!mic_index(a,&index))return;
+                if(index!=a->mic_next_index){a->mic_index_gap=true;fail_at(a,U_CAPTURE_RATE,"tx-microphone-index-gap",MIC,0,0);return;}
+                if(a->mic_cutoff_frozen&&index+keep>a->mic_cutoff_index){
+                    keep=index<a->mic_cutoff_index?(unsigned)(a->mic_cutoff_index-index):0;
+                    if(keep&&keep<frames)a->mic_cutoff_split=frames-keep;
+                }
+                push(a,&a->capture,data,keep);a->mic_next_index=index+frames;
+                if(!a->mic_closing||a->mic_cutoff_frozen)a->mic_committed+=keep;
+                if(a->mic_cutoff_frozen&&index+frames>=a->mic_cutoff_index){a->mic_cutoff_reached=true;a->mic_live=false;a->mic_reached=now;}
+                atomic_fetch_add(&a->metrics[i].discarded,frames-keep);
+            }else push(a,&a->radio_capture,data,frames);
+        }
         else atomic_fetch_add(&a->metrics[i].discarded,bytes/2);
         if(pa_stream_drop(s)<0){fail_at(a,U_IO,"capture-drop",i,pa_context_errno(a->context),0);return;}
         if(atomic_load(&a->stop))return;
     }
     FAIL(a,U_QUEUE,"capture-callback-budget");
+}
+/* A fresh raw record frontier closes the Pulse capture pipeline, rather than
+ * claiming a sample-perfect physical PTT edge. source_usec includes source
+ * and in-flight frames; transport adds its reported uncertainty. Monitor sink
+ * latency is deliberately not subtracted from this production frontier. */
+static void mic_timing_done(pa_stream *s,int success,void *p){
+    fd_usb_audio *a=p;uint64_t now=now_ms();const pa_timing_info *t=pa_stream_get_timing_info(s);
+    if(atomic_load(&a->stop)||atomic_load(&a->fault)||atomic_load(&a->state)!=FD_USB_DRAIN||!a->mic_closing||a->mic_close_generation!=a->generation)return;
+    a->mic_close_ack=success?1:-1;
+    if(!success||!t||t->read_index_corrupt||t->write_index_corrupt||t->read_index<0||t->read_index%2||t->write_index<0||t->write_index%2||
+       now-a->mic_timing_issued>=CAPTURE_TIMEOUT_MS||t->source_usec>CAPTURE_TIMEOUT_MS*1000u||
+       t->transport_usec>CAPTURE_TIMEOUT_MS*1000u-t->source_usec){
+        fail_at(a,U_CAPTURE_RATE,"microphone-close-timing-invalid",MIC,0,now-a->mic_timing_issued);return;
+    }
+    if((uint64_t)t->read_index/2!=a->mic_next_index){a->mic_index_gap=true;fail_at(a,U_CAPTURE_RATE,"tx-microphone-index-gap",MIC,0,now-a->mic_timing_issued);return;}
+    a->mic_write_index=t->write_index;a->mic_source_usec=t->source_usec;a->mic_transport_usec=t->transport_usec;a->mic_sink_usec=t->sink_usec;
+    a->mic_frontier_extra=((t->source_usec+t->transport_usec)*RATE+999999)/1000000;
+    a->mic_cutoff_index=(uint64_t)t->write_index/2+a->mic_frontier_extra;
+    uint64_t committed_end=a->mic_queue_index+a->mic_committed;
+    if(a->mic_cutoff_index<committed_end||a->mic_cutoff_index<a->mic_start_index||
+       a->mic_cutoff_index>a->mic_next_index+QMAX){
+        fail_at(a,U_CAPTURE_RATE,"microphone-close-frontier-invalid",MIC,0,now-a->mic_timing_issued);return;
+    }
+    unsigned keep=a->capture.n;
+    if(a->mic_queue_index+keep>a->mic_cutoff_index){
+        keep=(unsigned)(a->mic_cutoff_index-a->mic_queue_index);
+        a->mic_cutoff_split=a->capture.n-keep;atomic_fetch_add(&a->metrics[MIC].discarded,a->capture.n-keep);a->capture.n=keep;
+    }
+    a->mic_committed=keep;a->mic_cutoff_frozen=true;a->mic_frozen=now;
+    if(a->mic_next_index>=a->mic_cutoff_index){a->mic_cutoff_reached=true;a->mic_live=false;a->mic_reached=now;}
+#if defined(HOST_BUILD)
+    if(usb_test_mic_cutoff)usb_test_mic_cutoff(a->mic_cutoff_index);
+#endif
+    event(a,"capture-cutoff-frozen","mic-timing",MIC,1,0,now-a->mic_timing_issued);
+}
+static bool mic_begin(fd_usb_audio *a){
+    io_lock(a);read_pcm(a->streams[MIC],0,a);uint64_t index=0;bool ok=!atomic_load(&a->stop)&&mic_index(a,&index);
+    if(ok){
+        a->mic_start_index=a->mic_next_index=a->mic_queue_index=a->mic_submitted_end=index;
+        a->mic_cutoff_index=0;a->mic_committed=0;a->mic_cutoff_split=0;a->mic_live=true;a->mic_closing=false;
+        a->mic_cutoff_frozen=a->mic_cutoff_reached=a->mic_close_reported=a->mic_index_gap=false;
+        a->mic_close_started=a->mic_timing_issued=a->mic_frozen=a->mic_reached=a->mic_closed=0;
+        a->mic_release_index=a->mic_source_usec=a->mic_transport_usec=a->mic_sink_usec=a->mic_frontier_extra=0;a->mic_write_index=0;
+        a->mic_close_ack=0;a->mic_tap_start=a->tap_samples[0];
+        a->tx_capture_started=now_ms();a->tx_capture_ended=0;a->tx_submitted_base=a->submitted_mic;state(a,FD_USB_TX);
+    }
+    io_unlock(a);return ok;
+}
+static bool mic_close_begin(fd_usb_audio *a,uint64_t released){
+    event(a,"capture-release-observed","mic-timing",MIC,1,0,0);
+    io_lock(a);
+    /* Serialize the release with the whole read callback, then drain what is
+     * already readable before holding later indexed frames uncommitted. */
+    read_pcm(a->streams[MIC],0,a);
+    if(atomic_load(&a->stop)){io_unlock(a);return false;}
+    a->tx_capture_ended=released;a->mic_close_started=released;a->mic_release_index=a->mic_next_index;
+    a->mic_closing=true;a->finishing=false;state(a,FD_USB_DRAIN);
+    a->mic_timing_issued=now_ms();a->mic_close_generation=a->generation;event(a,"capture-close-start","mic-timing",MIC,0,0,0);
+#if defined(HOST_BUILD)
+    if(usb_test_mic_close_requested)usb_test_mic_close_requested();
+#endif
+    a->mic_close_operation=pa_stream_update_timing_info(a->streams[MIC],mic_timing_done,a);
+    if(!a->mic_close_operation)fail_at(a,U_CAPTURE_RATE,"microphone-close-request-failed",MIC,pa_context_errno(a->context),0);
+    io_unlock(a);return !atomic_load(&a->stop);
 }
 static void write_pcm(pa_stream *s,size_t bytes,void *p){
     fd_usb_audio *a=p;unsigned i=stream_index(a,s);int16_t pcm[2048];
@@ -283,6 +379,7 @@ static bool stream_op(fd_usb_audio *a,unsigned i,bool flush,int cork){
 }
 static void reset_queues(fd_usb_audio *a){
     io_lock(a);a->capture.n=a->capture.head=a->play.n=a->play.head=a->radio_capture.n=a->radio_capture.head=0;
+    a->mic_live=false;a->mic_committed=0;
     a->headset_started=a->modem_started=a->producer_finished=a->radio_output_ended=false;
     a->render_backpressured=a->render_final_backpressured=false;a->drain_ack=0;a->drain_started=0;
     if(a->drain){pa_operation_cancel(a->drain);pa_operation_unref(a->drain);a->drain=NULL;}
@@ -342,6 +439,9 @@ static bool direction(fd_usb_audio *a,fd_voice_direction d){
     bool ok=fd_voice_transition(a->engine,d,++a->generation);
     event(a,"codec-end","direction",STREAM_COUNT,ok,0,now_ms()-begin);
     if(!ok){FAIL(a,U_TRANSITION,"codec-direction");return false;}
+    io_lock(a);a->operation.ack=0;
+    bool timed=wait_operation_locked(a,pa_stream_update_timing_info(a->streams[MIC],op_done,a),"mic-timing-ready",MIC,true);io_unlock(a);
+    if(!timed)return false;
     /* Uncork before RF admission. Automatic PA prebuffering holds an empty
      * modem stream until the accepted speech/modem prefill becomes available. */
     if(d==FD_VOICE_TX){
@@ -558,10 +658,17 @@ static bool capture_accounting(fd_usb_audio *a){
     uint64_t elapsed=a->tx_capture_ended>=a->tx_capture_started?a->tx_capture_ended-a->tx_capture_started:0;
     uint64_t accepted=a->submitted_mic-a->tx_submitted_base,expected=elapsed*RATE/1000;
     uint64_t boundary=(uint64_t)a->mic_fragment_frames*2,required=expected*99/100;
-    required=required>boundary?required-boundary:0;bool evaluated=elapsed>=750,passed=!evaluated||accepted>=required;
+    required=required>boundary?required-boundary:0;bool evaluated=elapsed>=750,passed=(!evaluated||accepted>=required)&&a->mic_cutoff_reached&&a->mic_submitted_end==a->mic_cutoff_index&&accepted==a->mic_cutoff_index-a->mic_start_index&&!a->mic_index_gap;
     if(a->trace)fprintf(a->trace,"{\"kind\":\"source-accounting\",\"ms\":%llu,\"turn\":%llu,\"active_ms\":%llu,\"accepted_mic_frames\":%llu,\"expected_mic_frames\":%llu,\"required_mic_frames\":%llu,\"boundary_frames\":%llu,\"delivery_tolerance_percent\":1,\"evaluated\":%s,\"passed\":%s}\n",
         (unsigned long long)now_ms(),(unsigned long long)(a->turns+1),(unsigned long long)elapsed,(unsigned long long)accepted,(unsigned long long)expected,(unsigned long long)required,(unsigned long long)boundary,evaluated?"true":"false",passed?"true":"false");
     if(!passed){FAIL(a,U_CAPTURE_RATE,"tx-microphone-frame-deficit");return false;}return true;
+}
+static void capture_close_report(fd_usb_audio *a,bool complete){
+    if(!a->trace||a->mic_close_reported||!a->tx_capture_started)return;
+    char line[2048];io_lock(a);a->mic_close_reported=true;
+    snprintf(line,sizeof(line),"{\"kind\":\"capture-close\",\"turn\":%llu,\"start_index\":%llu,\"cutoff_index\":%llu,\"consumed_index\":%llu,\"submitted_first_index\":%llu,\"submitted_end_index\":%llu,\"mic_tap_start\":%llu,\"mic_tap_end\":%llu,\"capture_started_ms\":%llu,\"release_fence_index\":%llu,\"close_started_ms\":%llu,\"timing_issued_ms\":%llu,\"frozen_ms\":%llu,\"reached_ms\":%llu,\"closed_ms\":%llu,\"complete\":%s,\"index_gap\":%s,\"tail_frames\":%llu,\"write_index_bytes\":%lld,\"source_usec\":%llu,\"transport_usec\":%llu,\"sink_usec\":%llu,\"frontier_extra_frames\":%llu,\"cutoff_split_frames\":%u,\"close_timeout_ms\":%u,\"scope\":\"pulse-capture-pipeline-frontier\"}\n",
+        (unsigned long long)(a->turns+1),(unsigned long long)a->mic_start_index,(unsigned long long)a->mic_cutoff_index,(unsigned long long)a->mic_submitted_end,(unsigned long long)a->mic_start_index,(unsigned long long)a->mic_submitted_end,(unsigned long long)a->mic_tap_start,(unsigned long long)a->tap_samples[0],(unsigned long long)a->tx_capture_started,(unsigned long long)a->mic_release_index,(unsigned long long)a->mic_close_started,(unsigned long long)a->mic_timing_issued,(unsigned long long)a->mic_frozen,(unsigned long long)a->mic_reached,(unsigned long long)a->mic_closed,complete?"true":"false",a->mic_index_gap?"true":"false",(unsigned long long)(a->mic_cutoff_frozen&&a->mic_cutoff_index>a->mic_release_index?a->mic_cutoff_index-a->mic_release_index:0),(long long)a->mic_write_index,(unsigned long long)a->mic_source_usec,(unsigned long long)a->mic_transport_usec,(unsigned long long)a->mic_sink_usec,(unsigned long long)a->mic_frontier_extra,a->mic_cutoff_split,CAPTURE_TIMEOUT_MS);
+    io_unlock(a);fputs(line,a->trace);
 }
 static void render_audit(fd_usb_audio *a,const char *stage,unsigned reserved_from,unsigned before,unsigned produced,unsigned after,unsigned input_frames){
     if(after>a->render_queue_high_water)a->render_queue_high_water=after;
@@ -572,7 +679,10 @@ static void render_audit(fd_usb_audio *a,const char *stage,unsigned reserved_fro
 }
 static void process_audio(fd_usb_audio *a,unsigned st){
     int16_t pcm[FD_USB_RENDER_OUTPUT_FRAMES],converted[FD_USB_RENDER_OUTPUT_FRAMES];unsigned n=0;
-    io_lock(a);n=pop(st==FD_USB_RX?&a->radio_capture:&a->capture,pcm,st==FD_USB_RX?441:480);io_unlock(a);
+    io_lock(a);unsigned take=st==FD_USB_RX?441:a->mic_committed<480?a->mic_committed:480;
+    n=pop(st==FD_USB_RX?&a->radio_capture:&a->capture,pcm,take);
+    if(st!=FD_USB_RX){a->mic_committed-=n;a->mic_queue_index+=n;a->mic_submitted_end=a->mic_queue_index;}
+    io_unlock(a);
     bool reference=st==FD_USB_RX&&atomic_load(&a->qualification_loopback);
     if(n){
         if(st==FD_USB_RX){n=convert(a,a->radio_input,pcm,n,converted,(double)RATE/RADIO_RATE,false);memcpy(pcm,converted,n*2);a->converted_radio+=n;}
@@ -593,8 +703,16 @@ static void process_audio(fd_usb_audio *a,unsigned st){
             if(a->reference_cursor>=a->qualification_n)atomic_store(&a->reference_input_active,false);
         }
     }
-    io_lock(a);bool input_empty=!a->capture.n;unsigned play_n=a->play.n;io_unlock(a);
-    if(st==FD_USB_DRAIN&&input_empty&&!a->finishing){if(!capture_accounting(a))return;if(!fd_voice_finish(a->engine,a->generation)){FAIL(a,U_ENGINE,"codec-finish");return;}a->finishing=true;}
+    io_lock(a);bool input_empty=!a->capture.n,closed=a->mic_cutoff_reached;unsigned play_n=a->play.n;
+    if(st==FD_USB_DRAIN&&a->mic_close_operation&&pa_operation_get_state(a->mic_close_operation)!=PA_OPERATION_RUNNING){pa_operation_unref(a->mic_close_operation);a->mic_close_operation=NULL;}
+    io_unlock(a);
+    if(st==FD_USB_DRAIN&&!a->finishing){
+        if(now_ms()-a->mic_close_started>=CAPTURE_TIMEOUT_MS){fail_at(a,U_CAPTURE_STALE,"microphone-close-timeout",MIC,0,now_ms()-a->mic_close_started);return;}
+        if(closed&&input_empty){
+            a->mic_closed=now_ms();capture_close_report(a,true);if(!capture_accounting(a)||atomic_load(&a->stop)||atomic_load(&a->fault))return;
+            if(!fd_voice_finish(a->engine,a->generation)){FAIL(a,U_ENGINE,"codec-finish");return;}a->finishing=true;
+        }
+    }
     unsigned limit=st==FD_USB_RX?QMAX:FD_USB_TX_QUEUE_FRAMES;
     if(play_n>limit){FAIL(a,U_QUEUE,"render-queue-limit");return;}
     unsigned room=st==FD_USB_RX?limit-play_n:fd_usb_tx_render_room(play_n)?FD_USB_RENDER_INPUT_FRAMES:0;
@@ -751,11 +869,21 @@ static void *run(void *p){
             bool ok=false,done_key=key_complete(a,&ok);
             if(!in.pressed||in.release!=a->release){a->pending_clear=request_clear(a,false);a->rx_sequence=actual.sequence;state(a,FD_USB_UNKEY);}
             else if(done_key&&!ok){FAIL(a,U_CONTROL,"key-request-failed");break;}
-            else if(done_key&&in.rf_tx){a->tx_capture_started=now_ms();a->tx_capture_ended=0;a->tx_submitted_base=a->submitted_mic;state(a,FD_USB_TX);}
+            else if(done_key&&in.rf_tx){
+                if(!mic_begin(a)||!actual_inputs(a,&actual))break;
+                in=effective_inputs(a,actual);
+                if(!in.pressed||in.release!=a->release){io_lock(a);a->mic_live=false;io_unlock(a);a->pending_clear=request_clear(a,false);a->rx_sequence=actual.sequence;state(a,FD_USB_UNKEY);}
+                else if(!in.rf_tx){FAIL(a,U_STATUS,"tx-status-disappeared-at-capture-start");break;}
+            }
             else if(now-a->phase_at>2000){FAIL(a,U_KEY,"tx-acknowledgement-timeout");break;}
         }else if(st==FD_USB_TX){
             if(!in.rf_tx){FAIL(a,U_STATUS,"tx-status-disappeared");break;}
-            if(!in.pressed||in.release!=a->release){a->tx_capture_ended=now_ms();state(a,FD_USB_DRAIN);a->finishing=false;}
+            if(!in.pressed||in.release!=a->release){
+#if defined(HOST_BUILD)
+                if(usb_test_mic_release_observed)usb_test_mic_release_observed();
+#endif
+                if(!mic_close_begin(a,now_ms()))break;
+            }
         }
         st=atomic_load(&a->state);
         if(st==FD_USB_RX||st==FD_USB_TX||st==FD_USB_DRAIN)process_audio(a,st);
@@ -830,7 +958,9 @@ done:
     }while(now_ms()<until);
     pthread_mutex_lock(&a->control_mutex);a->control_exit=true;pthread_cond_signal(&a->control_changed);pthread_mutex_unlock(&a->control_mutex);pthread_join(a->control_worker,NULL);
     if(a->loop){
+        capture_close_report(a,false);
         io_lock(a);if(a->drain){pa_operation_cancel(a->drain);pa_operation_unref(a->drain);a->drain=NULL;}
+        if(a->mic_close_operation){pa_operation_cancel(a->mic_close_operation);pa_operation_unref(a->mic_close_operation);a->mic_close_operation=NULL;}
         if(a->io_timer){pa_threaded_mainloop_get_api(a->loop)->time_free(a->io_timer);a->io_timer=NULL;}
         for(unsigned i=0;i<STREAM_COUNT;++i)if(a->streams[i]){pa_stream_set_state_callback(a->streams[i],NULL,NULL);pa_stream_set_moved_callback(a->streams[i],NULL,NULL);pa_stream_set_suspended_callback(a->streams[i],NULL,NULL);pa_stream_set_read_callback(a->streams[i],NULL,NULL);pa_stream_set_write_callback(a->streams[i],NULL,NULL);pa_stream_set_underflow_callback(a->streams[i],NULL,NULL);pa_stream_disconnect(a->streams[i]);pa_stream_unref(a->streams[i]);a->streams[i]=NULL;}
         if(a->context){pa_context_set_state_callback(a->context,NULL,NULL);pa_context_disconnect(a->context);pa_context_unref(a->context);a->context=NULL;}

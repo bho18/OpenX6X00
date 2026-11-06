@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Qualification-history and matrix-failure regressions; no audio/radio needed."""
 import copy
+import hashlib
+from array import array
 import json
 from pathlib import Path
 import shutil
@@ -12,7 +14,8 @@ from unittest import mock
 import test_usb_audio_matrix as matrix
 import build_native_development as builder
 from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
-                               immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run)
+                               immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run, validate_capture_close_run,
+                               validate_capture_source_boundary_run, validate_capture_close_failure_run)
 
 
 def infrastructure_fixture(root, identity, injector_sha):
@@ -47,6 +50,92 @@ def infrastructure_fixture(root, identity, injector_sha):
             'supervision':{'exit_code':0,'timed_out':False}}
 
 
+def capture_close_fixture(completed_rf_turns=0, extra_failed=False):
+    """Synthetic finite-capture metadata for the release-gate unit tests."""
+    rows=[]
+    count=completed_rf_turns+int(extra_failed)
+    for number in range(1,count+1):
+        start=1000+(number-1)*144000;cutoff=start+96000
+        rows.append({'status':'PASS','turn':number,'trace_file':'freedv-usb-session-unit.jsonl',
+            'rf_completed':number<=completed_rf_turns,'start_index':start,'cutoff_index':cutoff,
+            'consumed_index':cutoff,'accepted_frames':96000,'mic_tap_start':(number-1)*96000,'mic_tap_end':number*96000,
+            'close_elapsed_ms':150,'write_index_bytes':(cutoff-96)*2,'source_usec':1000,'transport_usec':1000,
+            'sink_usec':10000,'frontier_extra_frames':96,'release_fence_index':cutoff-100,'tail_frames':100,
+            'cutoff_split_frames':200,'capture_started_ms':1000,'close_started_ms':3000,'timing_issued_ms':3000,
+            'frozen_ms':3001,'reached_ms':3100,'closed_ms':3150,'frontier_basis':'Pulse capture production; no monitor playback correction',
+            'physical_latency':'UNMEASURED','microphone_frame_budget':{'status':'PASS','stream':'microphone',
+                'active_ms':2000,'accepted_frames':96000,'expected_frames':96000.,'minimum_frames':93120,
+                'maximum_frames':98880,'fragment_frames':960,'boundary_frames':1920,
+                'delivery_tolerance_percent':1,'evaluated':True}})
+    return {'status':'PASS','deadline_ms':750,'frontier_basis':'Pulse capture production; no monitor playback correction',
+            'physical_latency':'UNMEASURED','turns':rows,'completed_rf_turns':completed_rf_turns,
+            'completed_intervals':len(rows),'abandoned_intervals':0}
+
+
+def capture_source_boundary_fixture(case,root):
+    root=Path(root);result=root/'result';result.mkdir(parents=True,exist_ok=True)
+    close=capture_close_fixture(1);interval=close['turns'][0]
+    accepted=array('h',((index%30000)-15000 for index in range(96000)))
+    if sys.byteorder!='little':accepted.byteswap()
+    accepted_pcm=accepted.tobytes();source_pcm=accepted_pcm+(30001).to_bytes(2,'little',signed=True)*200
+    pcm=result/'mic-observer.pcm';pcm.write_bytes(source_pcm)
+    rows=[];cursor=interval['start_index'];tap=0
+    while tap<95040:
+        rows.append({'valid':True,'index_start':cursor,'index_end':cursor+960,'tap_start':tap,'tap_frames':960})
+        cursor+=960;tap+=960
+    rows.append({'valid':True,'index_start':cursor,'index_end':interval['cutoff_index']+200,
+                 'tap_start':tap,'tap_frames':1160})
+    index=result/'mic-observer.jsonl';index.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    (result/'freedv-usb-session-unit-mic.raw').write_bytes(accepted_pcm)
+    mode='held150' if case.endswith('held150') else 'split'
+    exercise={'hold_started_ms':2950 if mode=='held150' else 2800,
+              'hold_ended_ms':3110 if mode=='held150' else 2950,
+              'callback_started_ms':3110 if mode=='held150' else 2950,'barrier_started_ms':0 if mode=='held150' else 2999,
+              'release_observed_ms':3000,'callback_ended_ms':3110 if mode=='held150' else 3001,
+              'blocked_peeks':1 if mode=='held150' else 0,'cutoff_index':97000,'sentinel_frames':200}
+    boundary={'status':'PASS','turn':1,'compared_frames':96000,'accepted_frames':96000,
+              'expected_source_sha256':hashlib.sha256(accepted_pcm).hexdigest(),
+              'accepted_sha256':hashlib.sha256(accepted_pcm).hexdigest(),'post_cutoff_frames_observed':200,
+              'split_block':{'start_index':96040,'end_index':97200,'cutoff_index':97000},
+              'post_cutoff_excluded':True,'mode':mode,'exercise':exercise,'sentinel_value':30001,
+              'post_cutoff_sentinel_frames':200,'post_cutoff_sentinel_excluded':True}
+    return {'harness':{'turns':1,'total_turns':1,'eoo':1,'fault':1,'keys':1,'physical_tx':False,'rf_clear_confirmed':True},
+            'capture_close':close,'capture_source_boundary':{'status':'PASS','case':case,'turns':[boundary],
+                'observer_pcm_sha256':sha(pcm),'observer_index_sha256':sha(index),'physical_latency':'UNMEASURED'}}
+
+
+def capture_close_failure_fixture(case,root):
+    from usb_test_support import validate_capture_close_failure
+    root=Path(root);result=root/'result';result.mkdir(parents=True,exist_ok=True)
+    mode=case.removeprefix('capture-close-')
+    fault,origin=(9,'modem-payload-underflow') if mode=='missing' else ((23,'microphone-close-frontier-invalid') if mode=='invalid' else (1,'local-stop'))
+    fault_ms=1424 if mode=='missing' else 1002
+    abandoned={'kind':'capture-close','turn':1,'complete':False,'close_timeout_ms':750,
+               'close_started_ms':1000,'timing_issued_ms':1001,'frozen_ms':0,'cutoff_index':0,
+               'scope':'pulse-capture-pipeline-frontier'}
+    rows=[{'kind':'event','event':'capture-close-start','state':4,'ms':1000},
+          {'kind':'event','event':'first-fault','state':4,'ms':fault_ms,'status':fault,'operation':origin,'stream':'modem'},
+          {'kind':'sample','state':4,'ms':fault_ms,'modem_underflows':1},abandoned]
+    text='INJECT MIC close-timing requested_ms=1001 mode='+mode+' phase=drain\n'
+    text+='INJECT MIC close-timing mode='+mode+' real_ack_ms=1002 success=1 withheld='+str(int(mode=='missing'))+' phase=drain\n'
+    if mode=='invalid':text+='INJECT MIC close-timing retrograde write_index_bytes=0 source_usec=0 transport_usec=0 phase=drain\n'
+    if mode=='stop':text+='INJECT MIC close-timing stop-before-forward stop_ms=1002 callback_invoked=1 phase=drain\n'
+    (root/'test.log').write_text(text)
+    (result/'freedv-usb-session-unit.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    harness={'fault':fault,'first_fault_origin':origin,'turns':0,'total_turns':0,'eoo':0,'keys':1,
+             'rf_clear_confirmed':True,'physical_tx':False}
+    close=capture_close_fixture();close['abandoned_intervals']=1
+    return {'harness':harness,'capture_close':close,
+            'capture_close_failure':validate_capture_close_failure(rows,harness,text,mode)}
+
+
+def capture_case_fixture(case,root):
+    if case in ('capture-release-split','capture-release-held150'):return capture_source_boundary_fixture(case,root)
+    if case in ('capture-close-missing','capture-close-invalid','capture-close-stop'):return capture_close_failure_fixture(case,root)
+    if case=='eoo-backpressure':return tail_backpressure_fixture()
+    return {'harness':{'turns':0,'total_turns':0,'fault':1},'capture_close':capture_close_fixture()}
+
+
 def tail_backpressure_fixture():
     """Gate-unit metadata only; actual render evidence comes from the C harness."""
     queue={'limit_frames':22050,'output_bound_frames':4608,'high_water_frames':18000,'deferred_calls':4,
@@ -57,7 +146,8 @@ def tail_backpressure_fixture():
            'render_audit':{'status':'PASS','count':14,'generated_frames':50000,
                            'final_flush_calls':2,'final_flush_frames':18}}
     return {'tail_backpressure':proof,'harness':{'render_queue':queue,'render_hold':hold,
-             'turns':1,'eoo':1,'rf_clear_confirmed':True},
+             'turns':1,'total_turns':1,'eoo':1,'fault':1,'rf_clear_confirmed':True},
+            'capture_close':capture_close_fixture(1),
             'actual_sink_turns':[{'status':'PASS','content_match':{'status':'PASS',
                 'method':'full_modem_waveform_and_100ms_windows','complete_reference_covered':True}}]}
 
@@ -94,7 +184,8 @@ class CampaignTests(unittest.TestCase):
             case.write_text(json.dumps({'status': 'PASS', 'repeat': repeat}) + '\n')
             runs.append({'status': 'PASS', 'repeat': repeat, 'log_path': str(log),
                          'log_sha256': sha(log), 'case_record_path': str(case),
-                         'case_record_sha256': sha(case)})
+                         'case_record_sha256': sha(case),'harness':{'turns':0,'total_turns':0,'fault':1},
+                         'capture_close':capture_close_fixture()})
         result = {'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
                   'plan': self.plan, 'complete_matrix': status == 'PASS',
                   'expected_executions': ['normal@1', 'normal@2'],
@@ -307,7 +398,8 @@ class MatrixSupervisionTests(unittest.TestCase):
         if self.hang:
             return {'exit_code': -9, 'timed_out': True, 'duration_ms': 90000}
         details = {'status': 'FAIL' if self.fail else 'PASS', 'case': case,
-                   'test_binary_sha256': sha(self.binary), 'harness': {'status': 'PASS'},
+                   'test_binary_sha256': sha(self.binary), 'harness': {'status':'PASS','turns':0,'total_turns':0,'fault':1},
+                   'capture_close':capture_close_fixture(),
                    'identity': {'status':'PASS', 'source_commit':expected_env.get('USB_TEST_EXPECTED_SOURCE_COMMIT'),
                                 'build_id':'older-build' if self.old_build else expected_env.get('USB_TEST_EXPECTED_BUILD_ID'),
                                 'binary_sha256':sha(self.binary)},
@@ -446,6 +538,119 @@ class MatrixSupervisionTests(unittest.TestCase):
         self.assertTrue(record['promotion_eligible'])
         self.assertEqual(record['executed'], ['normal@1', 'normal@2'])
         validate_campaign(record, ['normal'])
+
+
+class CaptureCloseGateTests(unittest.TestCase):
+    def run_fixture(self,rf=1,extra=False,fault=1):
+        return {'harness':{'turns':rf,'total_turns':rf,'fault':fault},
+                'capture_close':capture_close_fixture(rf,extra)}
+
+    def test_finite_closed_interval_and_later_rf_fault_are_distinct(self):
+        validate_capture_close_run(self.run_fixture())
+        validate_capture_close_run(self.run_fixture(0,extra=True,fault=4))
+
+    def test_missing_proof_or_rf_interval_is_rejected(self):
+        for evidence in ({'harness':{'turns':1}},self.run_fixture()):
+            if 'capture_close' in evidence:evidence['capture_close']['turns']=[]
+            with self.assertRaises(ValueError):validate_capture_close_run(evidence)
+
+    def test_postcutoff_acceptance_or_missing_frame_cannot_conserve_interval(self):
+        for key,delta in (('consumed_index',1),('accepted_frames',-1),('mic_tap_end',1)):
+            evidence=self.run_fixture();evidence['capture_close']['turns'][0][key]+=delta
+            with self.subTest(key=key),self.assertRaises(ValueError):validate_capture_close_run(evidence)
+
+    def test_monitor_latency_cannot_rewrite_capture_frontier(self):
+        evidence=self.run_fixture();row=evidence['capture_close']['turns'][0]
+        row['cutoff_index']-=480;row['consumed_index']-=480;row['accepted_frames']-=480;row['mic_tap_end']-=480
+        row['microphone_frame_budget']['accepted_frames']-=480
+        with self.assertRaises(ValueError):validate_capture_close_run(evidence)
+
+    def test_deadline_and_existing_source_budget_cannot_be_relaxed(self):
+        for mutation in ('deadline','tolerance','fragments'):
+            evidence=self.run_fixture();row=evidence['capture_close']['turns'][0]
+            if mutation=='deadline':row['close_elapsed_ms']=751
+            elif mutation=='tolerance':row['microphone_frame_budget']['delivery_tolerance_percent']=2
+            else:row['microphone_frame_budget']['boundary_frames']+=1
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate_capture_close_run(evidence)
+
+    def test_closed_capture_without_completed_rf_requires_actual_fault(self):
+        with self.assertRaises(ValueError):validate_capture_close_run(self.run_fixture(0,extra=True,fault=1))
+
+    def test_abandoned_interval_never_counts_as_completed_rf(self):
+        evidence=self.run_fixture(0);evidence['capture_close']['abandoned_intervals']=1
+        evidence['harness']['total_turns']=1;evidence['capture_close']['completed_rf_turns']=1
+        with self.assertRaises(ValueError):validate_capture_close_run(evidence)
+
+
+class CaptureBoundaryProofTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name);self.count=0
+
+    def fixture(self,case='capture-release-split'):
+        self.count+=1;root=self.root/str(self.count);root.mkdir()
+        evidence=capture_source_boundary_fixture(case,root)
+        path=root/'case-result.json';path.write_text('{}\n');evidence['case_record_path']=str(path)
+        return evidence,root
+
+    def test_exact_source_boundary_both_delivery_histories(self):
+        for case in ('capture-release-split','capture-release-held150'):
+            evidence,_=self.fixture(case);validate_capture_source_boundary_run(evidence,case)
+
+    def test_matching_counts_cannot_replace_missing_prefix_with_future_audio(self):
+        evidence,root=self.fixture()
+        path=root/'result/freedv-usb-session-unit-mic.raw';original=path.read_bytes()
+        path.write_bytes(original[20:]+(30001).to_bytes(2,'little',signed=True)*10)
+        with self.assertRaises(ValueError):validate_capture_source_boundary_run(evidence,'capture-release-split')
+
+    def test_faked_hash_labels_do_not_replace_independent_pcm_evidence(self):
+        evidence,_=self.fixture();row=evidence['capture_source_boundary']['turns'][0]
+        row['expected_source_sha256']=row['accepted_sha256']='0'*64
+        with self.assertRaises(ValueError):validate_capture_source_boundary_run(evidence,'capture-release-split')
+
+    def test_postcutoff_exclusion_and_straddling_block_are_mandatory(self):
+        for field in ('post_cutoff_excluded','post_cutoff_sentinel_excluded'):
+            evidence,_=self.fixture();evidence['capture_source_boundary']['turns'][0][field]=False
+            with self.subTest(field=field),self.assertRaises(ValueError):validate_capture_source_boundary_run(evidence,'capture-release-split')
+
+    def test_held_delivery_must_overlap_async_frontier_freeze(self):
+        evidence,_=self.fixture('capture-release-held150');row=evidence['capture_close']['turns'][0]
+        row['frozen_ms']=3110;row['reached_ms']=3120
+        with self.assertRaises(ValueError):validate_capture_source_boundary_run(evidence,'capture-release-held150')
+
+
+class CaptureCloseFailureProofTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
+        self.root=Path(self.temporary.name);self.count=0
+
+    def fixture(self,mode):
+        self.count+=1;root=self.root/str(self.count);root.mkdir()
+        case='capture-close-'+mode;evidence=capture_close_failure_fixture(case,root)
+        path=root/'case-result.json';path.write_text('{}\n');evidence['case_record_path']=str(path)
+        return evidence,case
+
+    def test_all_actual_drain_failure_paths_keep_clear_and_no_eoo(self):
+        for mode in ('missing','invalid','stop'):
+            evidence,case=self.fixture(mode);validate_capture_close_failure_run(evidence,case)
+
+    def test_initial_phase_cannot_claim_drain_failure_coverage(self):
+        evidence,case=self.fixture('missing');evidence['capture_close_failure']['phase']='initial-rx'
+        with self.assertRaises(ValueError):validate_capture_close_failure_run(evidence,case)
+
+    def test_late_successful_callback_cannot_commit_after_stop(self):
+        evidence,case=self.fixture('stop');evidence['capture_close_failure']['abandoned_interval']['frozen_ms']=1003
+        with self.assertRaises(ValueError):validate_capture_close_failure_run(evidence,case)
+
+    def test_unrelated_fault_cannot_prove_invalid_frontier(self):
+        evidence,case=self.fixture('invalid');evidence['capture_close_failure']['fault']=evidence['harness']['fault']=13
+        with self.assertRaises(ValueError):validate_capture_close_failure_run(evidence,case)
+
+    def test_withheld_ack_must_be_real_and_no_completed_voice_turn_claimed(self):
+        evidence,case=self.fixture('missing');evidence['capture_close_failure']['withheld']=False
+        with self.assertRaises(ValueError):validate_capture_close_failure_run(evidence,case)
+        evidence,case=self.fixture('missing');evidence['harness']['eoo']=1
+        with self.assertRaises(ValueError):validate_capture_close_failure_run(evidence,case)
 
 
 class TailBackpressureGateTests(unittest.TestCase):

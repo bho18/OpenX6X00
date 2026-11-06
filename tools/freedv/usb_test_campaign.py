@@ -8,6 +8,7 @@ failed or abandoned attempt with the same source/configuration identity.
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import time
 import uuid
@@ -278,6 +279,11 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 any(run.get('status') != 'PASS' for run in runs)):
             raise ValueError('USB qualification case did not pass every repetition: ' + name)
         for repeat, run in enumerate(runs,1):
+            validate_capture_close_run(run)
+            if name in ('capture-release-split','capture-release-held150'):
+                validate_capture_source_boundary_run(run,name,verify_files=verify_files)
+            if name in ('capture-close-missing','capture-close-invalid','capture-close-stop'):
+                validate_capture_close_failure_run(run,name,verify_files=verify_files)
             if name == 'eoo-backpressure':
                 validate_tail_backpressure_run(run)
             if run.get('repeat') != repeat:
@@ -297,6 +303,175 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
     bare = {key: value for key, value in matrix.items() if key not in ('campaign', 'promotion_eligible')}
     validate_history(campaign, matrix.get('identity'), bare, verify_files=verify_files)
     return campaign
+
+
+def validate_capture_close_run(run):
+    """Validate finite capture intervals; this is not physical PTT latency."""
+    proof = run.get('capture_close', {})
+    harness = run.get('harness', {})
+    expected_rf = harness.get('total_turns', harness.get('turns'))
+    turns = proof.get('turns')
+    if (proof.get('status') != 'PASS' or proof.get('deadline_ms') != 750 or
+            proof.get('frontier_basis') != 'Pulse capture production; no monitor playback correction' or
+            proof.get('physical_latency') != 'UNMEASURED' or not isinstance(turns, list) or
+            type(expected_rf) is not int or expected_rf < 0 or
+            type(proof.get('completed_rf_turns')) is not int or type(proof.get('completed_intervals')) is not int or
+            proof.get('completed_rf_turns') != expected_rf or proof.get('completed_intervals') != len(turns) or
+            type(proof.get('abandoned_intervals')) is not int or proof['abandoned_intervals'] < 0):
+        raise ValueError('Finite capture-close proof or completed RF interval accounting is missing')
+    if len(turns) < expected_rf or sum(turn.get('rf_completed') is True for turn in turns) != expected_rf:
+        raise ValueError('A completed RF turn is missing its finite capture interval')
+    if len(turns) > expected_rf and not (type(harness.get('fault')) is int and harness['fault'] > 1):
+        raise ValueError('An uncompleted RF interval cannot count as a successful capture/voice turn')
+    seen = set()
+    per_trace = {}
+    for turn in turns:
+        trace, number = turn.get('trace_file'), turn.get('turn')
+        if (turn.get('status') != 'PASS' or type(turn.get('rf_completed')) is not bool or
+                not isinstance(trace, str) or not trace or Path(trace).name != trace or
+                type(number) is not int or number < 1 or (trace, number) in seen):
+            raise ValueError('Capture-close interval identity is missing or duplicated')
+        seen.add((trace, number))
+        if number != per_trace.get(trace, 0) + 1:
+            raise ValueError('Capture-close intervals are not contiguous within their session')
+        per_trace[trace] = number
+        fields = ('start_index','cutoff_index','consumed_index','accepted_frames','mic_tap_start','mic_tap_end',
+                  'close_elapsed_ms','write_index_bytes','source_usec','transport_usec','sink_usec','frontier_extra_frames')
+        if any(type(turn.get(key)) is not int or turn[key] < 0 for key in fields):
+            raise ValueError('Capture-close indices, timing or counts are invalid')
+        start, cutoff = turn['start_index'], turn['cutoff_index']
+        extra = ((turn['source_usec'] + turn['transport_usec']) * 48000 + 999999) // 1000000
+        if (turn['write_index_bytes'] % 2 or turn['frontier_extra_frames'] != extra or
+                cutoff != turn['write_index_bytes']//2 + extra or start > cutoff or
+                turn['consumed_index'] != cutoff or turn['accepted_frames'] != cutoff-start or
+                turn['mic_tap_end']-turn['mic_tap_start'] != cutoff-start or turn['close_elapsed_ms'] > 750):
+            raise ValueError('Capture-close PCM does not conserve its raw frozen source frontier')
+        if ('submitted_first_index' in turn or 'submitted_end_index' in turn) and (
+                turn.get('submitted_first_index') != start or turn.get('submitted_end_index') != cutoff):
+            raise ValueError('Capture submission omitted or extended its declared finite interval')
+        if 'release_fence_index' in turn or 'tail_frames' in turn:
+            fence = turn.get('release_fence_index')
+            if (type(fence) is not int or not start <= fence <= cutoff or
+                    turn.get('tail_frames') != cutoff-fence):
+                raise ValueError('Capture-close tail differs from its release fence')
+        time_keys=('capture_started_ms','close_started_ms','timing_issued_ms','frozen_ms','reached_ms','closed_ms')
+        if any(key in turn for key in time_keys):
+            times=[turn.get(key) for key in time_keys]
+            if (any(type(value) is not int or value<0 for value in times) or times!=sorted(times) or
+                    turn['closed_ms']-turn['close_started_ms']!=turn['close_elapsed_ms'] or
+                    turn.get('microphone_frame_budget',{}).get('active_ms')!=turn['close_started_ms']-turn['capture_started_ms']):
+                raise ValueError('Capture-close epoch, asynchronous freeze and finite timing disagree')
+        budget = turn.get('microphone_frame_budget', {})
+        active, fragment = budget.get('active_ms'), budget.get('fragment_frames')
+        if (budget.get('status') != 'PASS' or type(active) is not int or active < 0 or
+                type(fragment) is not int or fragment <= 0 or budget.get('delivery_tolerance_percent') != 1 or
+                budget.get('boundary_frames') != 2*fragment or budget.get('accepted_frames') != cutoff-start or
+                budget.get('evaluated') is not (active >= 750)):
+            raise ValueError('Capture-close changed or omitted the existing source delivery budget')
+        expected = active*48
+        lower, upper = max(0, expected*99//100 - 2*fragment), (expected*101 + 99)//100 + 2*fragment
+        if (budget.get('minimum_frames') != lower or budget.get('maximum_frames') != upper or
+                (active >= 750 and not lower <= cutoff-start <= upper)):
+            raise ValueError('Capture-close source delivery did not meet the unchanged 1% plus two-fragment budget')
+    return proof
+
+
+def validate_capture_source_boundary_run(run, case, verify_files=True):
+    close=validate_capture_close_run(run)
+    proof=run.get('capture_source_boundary',{})
+    turns=proof.get('turns',[])
+    if (proof.get('status')!='PASS' or proof.get('case')!=case or proof.get('physical_latency')!='UNMEASURED' or
+            close['completed_rf_turns']!=1 or close['completed_intervals']!=1 or close['abandoned_intervals']!=0 or
+            len(turns)!=1 or any(re.fullmatch('[0-9a-f]{64}',str(proof.get(key,''))) is None
+                                for key in ('observer_pcm_sha256','observer_index_sha256'))):
+        raise ValueError('Independent indexed capture source-boundary proof is missing')
+    row,interval=turns[0],close['turns'][0]
+    count=interval['cutoff_index']-interval['start_index']
+    split=row.get('split_block',{});exercise=row.get('exercise',{})
+    mode='held150' if case.endswith('held150') else 'split'
+    keys=('hold_started_ms','hold_ended_ms','callback_started_ms','barrier_started_ms','release_observed_ms',
+          'callback_ended_ms','blocked_peeks','cutoff_index','sentinel_frames')
+    if (row.get('status')!='PASS' or row.get('turn')!=interval['turn'] or row.get('mode')!=mode or count<=0 or
+            row.get('compared_frames')!=count or row.get('accepted_frames')!=count or
+            re.fullmatch('[0-9a-f]{64}',str(row.get('expected_source_sha256',''))) is None or
+            row.get('expected_source_sha256')!=row.get('accepted_sha256') or
+            row.get('post_cutoff_excluded') is not True or row.get('post_cutoff_sentinel_excluded') is not True or
+            row.get('sentinel_value')!=30001 or type(row.get('post_cutoff_frames_observed')) is not int or
+            row['post_cutoff_frames_observed']<=0 or type(row.get('post_cutoff_sentinel_frames')) is not int or
+            row['post_cutoff_sentinel_frames']<=0 or row['post_cutoff_sentinel_frames']>row['post_cutoff_frames_observed'] or
+            any(type(split.get(key)) is not int for key in ('start_index','end_index','cutoff_index')) or
+            not split['start_index']<split['cutoff_index']<split['end_index'] or split['cutoff_index']!=interval['cutoff_index'] or
+            any(type(exercise.get(key)) is not int or exercise[key]<0 for key in keys)):
+        raise ValueError('Indexed capture did not prove exact pre-cutoff acceptance and post-cutoff exclusion')
+    if (exercise['hold_ended_ms']-exercise['hold_started_ms']<150 or exercise['cutoff_index']!=interval['cutoff_index'] or
+            exercise['sentinel_frames']!=row['post_cutoff_sentinel_frames'] or
+            not exercise['release_observed_ms']<=interval['close_started_ms']<=interval['timing_issued_ms']):
+        raise ValueError('Capture boundary was not exercised at the declared retained-release epoch')
+    if mode=='held150':
+        if not (exercise['hold_started_ms']+50<=exercise['release_observed_ms']<exercise['hold_ended_ms'] and
+                interval['timing_issued_ms']<exercise['hold_ended_ms'] and interval['frozen_ms']<exercise['hold_ended_ms'] and
+                exercise['blocked_peeks']>0):
+            raise ValueError('Held capture delivery did not overlap release and asynchronous frontier freeze')
+    elif not (exercise['hold_ended_ms']<=exercise['callback_started_ms']<=exercise['barrier_started_ms']<=
+              exercise['release_observed_ms']<exercise['callback_ended_ms'] and interval.get('cutoff_split_frames',0)>0):
+        raise ValueError('Capture callback did not straddle the retained release and finite cutoff')
+    if verify_files:
+        from usb_test_support import indexed_capture_source_match
+        root=Path(run['case_record_path']).parent/'result'
+        pcm,index=root/'mic-observer.pcm',root/'mic-observer.jsonl'
+        if sha(pcm)!=proof['observer_pcm_sha256'] or sha(index)!=proof['observer_index_sha256']:
+            raise ValueError('Independent capture source artifacts changed')
+        source=pcm.read_bytes();rows=[json.loads(line) for line in index.read_text().splitlines() if line.strip()]
+        microphone=(root/(Path(interval['trace_file']).stem+'-mic.raw')).read_bytes()
+        actual=indexed_capture_source_match(interval,microphone,rows,source)
+        if any(actual[key]!=row.get(key) for key in actual):
+            raise ValueError('Indexed capture source-boundary summary disagrees with exact retained PCM')
+        accepted=microphone[interval['mic_tap_start']*2:interval['mic_tap_end']*2]
+        sentinel=(30001).to_bytes(2,'little',signed=True)
+        if any(accepted[offset:offset+2]==sentinel for offset in range(0,len(accepted),2)):
+            raise ValueError('Post-cutoff sentinel entered the accepted microphone interval')
+    return proof
+
+
+def validate_capture_close_failure_run(run,case,verify_files=True):
+    close=validate_capture_close_run(run);harness=run.get('harness',{});proof=run.get('capture_close_failure',{})
+    mode=case.removeprefix('capture-close-')
+    abandoned=proof.get('abandoned_interval',{})
+    times=[proof.get(key) for key in ('requested_ms','real_ack_ms','fault_ms')]
+    if (proof.get('status')!='PASS' or proof.get('mode')!=mode or proof.get('phase')!='drain' or
+            any(type(value) is not int for value in times) or times!=sorted(times) or
+            proof.get('withheld') is not (mode=='missing') or proof.get('fault')!=harness.get('fault') or
+            proof.get('origin')!=harness.get('first_fault_origin') or proof.get('eoo')!=0 or
+            proof.get('completed_turns')!=0 or harness.get('turns')!=0 or harness.get('eoo')!=0 or
+            harness.get('keys')!=1 or harness.get('rf_clear_confirmed') is not True or
+            harness.get('physical_tx') is not False or close['completed_intervals']!=0 or close['abandoned_intervals']<1 or
+            proof.get('close_timeout_ms')!=750 or abandoned.get('complete') is not False or
+            abandoned.get('close_timeout_ms')!=750 or abandoned.get('scope')!='pulse-capture-pipeline-frontier' or
+            type(abandoned.get('close_started_ms')) is not int or abandoned['close_started_ms']>times[0]):
+        raise ValueError('Asynchronous capture-close failure did not preserve its active DRAIN boundary and bounded clear')
+    if mode=='invalid':
+        if proof['fault']!=23 or proof['origin']!='microphone-close-frontier-invalid':
+            raise ValueError('Invalid capture frontier was not rejected by its actual source guard')
+    elif mode=='missing':
+        causes={6:('pcm-queue-full','aggregate-queue-limit'),9:('modem-payload-underflow',),17:('microphone-close-timeout',)}
+        if proof['fault'] not in causes or proof['origin'] not in causes[proof['fault']]:
+            raise ValueError('An unrelated failure cannot prove withheld capture timing was bounded')
+    elif mode=='stop':
+        stopped=proof.get('stop_requested_ms')
+        if (proof['fault']!=1 or proof['origin']!='local-stop' or type(stopped) is not int or
+                not times[1]<=stopped<=times[2] or abandoned.get('frozen_ms')!=0 or abandoned.get('cutoff_index')!=0):
+            raise ValueError('Late capture timing callback committed a frontier after local Stop')
+    else:
+        raise ValueError('Unknown asynchronous capture-close failure scenario')
+    if verify_files:
+        from usb_test_support import validate_capture_close_failure
+        root=Path(run['case_record_path']).parent
+        traces=sorted((root/'result').glob('freedv-usb-session*.jsonl'))
+        rows=[json.loads(line) for path in traces for line in path.read_text().splitlines() if line.strip()]
+        actual=validate_capture_close_failure(rows,harness,(root/'test.log').read_text(),mode)
+        if actual!=proof:
+            raise ValueError('Capture-close failure witness disagrees with its retained DRAIN trace')
+    return proof
 
 
 def validate_tail_backpressure_run(run):

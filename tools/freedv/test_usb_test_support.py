@@ -20,7 +20,9 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require, run_b
                               validate_operation_phase, validate_session_identity, microphone_frame_budget,
                               PulseTestRuntime, require_unix_socket_path, pulse_startup_failure,
                               audio_buffer_contract, planned_fixture_eof, validate_drain_loss_wait,
-                              render_capacity_audit, validate_tail_backpressure)
+                              render_capacity_audit, validate_tail_backpressure,
+                              capture_close_oracle, indexed_capture_source_match, validate_capture_release_boundary,
+                              validate_capture_close_failure)
 
 
 class SupervisorTests(unittest.TestCase):
@@ -253,6 +255,143 @@ class AudioReserveTests(unittest.TestCase):
         for code,elapsed in [(1,10.01),(0,8.5)]:
             with self.assertRaises(ValueError):planned_fixture_eof(code,9.984,elapsed)
 
+
+
+class CaptureCloseTests(unittest.TestCase):
+    def fixture(self):
+        source=array('h',((index*97)%60000-30000 if index<48528 else 30001 for index in range(50000)))
+        if sys.byteorder!='little':source.byteswap()
+        pcm=source.tobytes();accepted=pcm[528*2:48528*2]
+        close=dict(kind='capture-close',turn=1,complete=True,start_index=528,cutoff_index=48528,
+            consumed_index=48528,submitted_first_index=528,submitted_end_index=48528,
+            mic_tap_start=0,mic_tap_end=48000,close_started_ms=2000,timing_issued_ms=2001,
+            frozen_ms=2005,reached_ms=2010,closed_ms=2011,capture_started_ms=1000,write_index_bytes=96000,
+            source_usec=10000,transport_usec=1000,sink_usec=200000,frontier_extra_frames=528,
+            tail_frames=480,release_fence_index=48048,cutoff_split_frames=472,index_gap=False,close_timeout_ms=750)
+        rows=[dict(kind='stream',stream='mic',rate=48000,channels=1,fragsize=1920),
+            dict(kind='event',event='state',state=3,ms=1000),dict(kind='event',event='capture-release-observed',state=3,ms=2000),
+            dict(kind='event',event='state',state=4,ms=2000),close,
+            dict(kind='source-accounting',turn=1,ms=2012,active_ms=1000,accepted_mic_frames=48000,passed=True),
+            dict(kind='event',event='state',state=8,ms=2300)]
+        blocks=[dict(index_start=start,index_end=end,tap_start=start,tap_frames=end-start,valid=True)
+                for start,end in ((0,20000),(20000,49000),(49000,50000))]
+        return rows,accepted,blocks,pcm
+
+    def test_finite_capture_frontier_ignores_monitor_playback_latency(self):
+        rows,accepted,blocks,pcm=self.fixture()
+        closed=capture_close_oracle(rows,accepted,1)
+        result=indexed_capture_source_match(closed['turns'][0],accepted,blocks,pcm)
+        self.assertEqual(closed['turns'][0]['cutoff_index'],48528)
+        self.assertEqual(result['compared_frames'],48000)
+        self.assertEqual(result['post_cutoff_frames_observed'],1472)
+        self.assertEqual(result['split_block']['cutoff_index'],48528)
+
+    def test_missing_pre_release_samples_cannot_be_repaired_with_post_cutoff_audio(self):
+        rows,accepted,blocks,pcm=self.fixture()
+        closed=capture_close_oracle(rows,accepted,1)['turns'][0]
+        substituted=accepted[:20000]+accepted[20600:]+pcm[48528*2:(48528+300)*2]
+        self.assertEqual(len(substituted),len(accepted))
+        with self.assertRaisesRegex(ValueError,'exact indexed'):
+            indexed_capture_source_match(closed,substituted,blocks,pcm)
+
+    def test_index_gap_or_duplicate_is_rejected_even_when_pcm_length_matches(self):
+        rows,accepted,blocks,pcm=self.fixture();closed=capture_close_oracle(rows,accepted,1)['turns'][0]
+        for change in (-1,1):
+            changed=[dict(block) for block in blocks]
+            changed[1]['index_start']+=change;changed[1]['tap_frames']-=change
+            with self.assertRaises(ValueError):indexed_capture_source_match(closed,accepted,changed,pcm)
+
+    def test_incomplete_interval_or_post_cutoff_consumption_cannot_complete(self):
+        for field,value in [('consumed_index',48527),('submitted_end_index',48529),('mic_tap_end',47999),('complete',False)]:
+            rows,accepted,_,_=self.fixture();rows[4][field]=value
+            with self.assertRaises(ValueError):capture_close_oracle(rows,accepted,1)
+
+    def test_monitor_corrected_or_fabricated_frontier_is_rejected(self):
+        for field,value in [('cutoff_index',38928),('frontier_extra_frames',527),('write_index_bytes',95999)]:
+            rows,accepted,_,_=self.fixture();rows[4][field]=value
+            with self.assertRaises(ValueError):capture_close_oracle(rows,accepted,1)
+
+    def test_source_accounting_cannot_precede_closure_or_hide_wall_time_loss(self):
+        rows,accepted,_,_=self.fixture();rows[4],rows[5]=rows[5],rows[4]
+        with self.assertRaises(ValueError):capture_close_oracle(rows,accepted,1)
+        rows,accepted,_,_=self.fixture();rows[2]['ms']=rows[3]['ms']=2100;rows[4]['close_started_ms']=2100
+        rows[4].update(timing_issued_ms=2101,frozen_ms=2105,reached_ms=2110,closed_ms=2111)
+        rows[5].update(ms=2112,active_ms=1100)
+        with self.assertRaisesRegex(ValueError,'observed wall time'):capture_close_oracle(rows,accepted,1)
+
+    def test_capture_closure_does_not_extend_750ms_deadline(self):
+        rows,accepted,_,_=self.fixture();rows[4]['closed_ms']=2751;rows[-1]['ms']=2800;rows[5]['ms']=2752
+        with self.assertRaisesRegex(ValueError,'bounded release'):capture_close_oracle(rows,accepted,1)
+
+    def test_closed_capture_can_precede_later_rf_drain_failure_without_counting_a_turn(self):
+        rows,accepted,_,_=self.fixture();rows[-1]['state']=5
+        result=capture_close_oracle(rows,accepted,0)
+        self.assertEqual(result['completed_intervals'],1)
+        self.assertEqual(result['completed_rf_turns'],0)
+        self.assertFalse(result['turns'][0]['rf_completed'])
+
+    def boundary(self,mode):
+        rows,accepted,blocks,pcm=self.fixture();close=rows[4]
+        if mode=='held150':close.update(reached_ms=2110,closed_ms=2111);rows[5]['ms']=2112
+        closed=capture_close_oracle(rows,accepted,1)['turns'][0]
+        prefix=('INJECT MIC release mode='+mode+' hold_started_ms='+('1950' if mode=='held150' else '1800')+
+            ' hold_ended_ms='+('2100' if mode=='held150' else '1950')+
+            ' callback_started_ms='+('2100' if mode=='held150' else '1950')+
+            ' barrier_started_ms='+('0' if mode=='held150' else '1999')+
+            ' release_observed_ms=2000 callback_ended_ms='+('2110' if mode=='held150' else '2001')+
+            ' blocked_peeks=1 cutoff_index=48528 sentinel_frames=1472 no-discard=1')
+        return close,closed,accepted,blocks,pcm,prefix,mode
+
+    def test_release_handshakes_and_post_cutoff_sentinel_are_independent(self):
+        for mode in ('split','held150'):
+            result=validate_capture_release_boundary(*self.boundary(mode))
+            self.assertTrue(result['post_cutoff_sentinel_excluded'])
+            self.assertEqual(result['post_cutoff_sentinel_frames'],1472)
+
+    def test_callback_or_peek_bypass_cannot_claim_release_boundary_coverage(self):
+        for mode,old,new in [('split','release_observed_ms=2000','release_observed_ms=2002'),
+                             ('held150','blocked_peeks=1','blocked_peeks=0'),
+                             ('held150','release_observed_ms=2000','release_observed_ms=2101')]:
+            values=list(self.boundary(mode));values[-2]=values[-2].replace(old,new)
+            with self.assertRaises(ValueError):validate_capture_release_boundary(*values)
+
+    def test_missing_post_cutoff_sentinel_cannot_credit_exclusion(self):
+        values=list(self.boundary('held150'));values[-2]=values[-2].replace('sentinel_frames=1472','sentinel_frames=0')
+        with self.assertRaises(ValueError):validate_capture_release_boundary(*values)
+
+    def failure(self,mode):
+        rows,_,_,_=self.fixture();close=rows[4];close.update(complete=False)
+        origin='local-stop' if mode=='stop' else 'microphone-close-frontier-invalid' if mode=='invalid' else 'aggregate-queue-limit'
+        fault=1 if mode=='stop' else 23 if mode=='invalid' else 6
+        if mode=='stop':close.update(frozen_ms=0,cutoff_index=0)
+        rows[5]={'kind':'event','event':'first-fault','state':4,'ms':2012,'status':fault,'operation':origin}
+        rows.insert(4,dict(kind='event',event='capture-close-start',state=4,ms=2001))
+        rows.insert(6,dict(kind='sample',state=4,ms=2007,capture=500))
+        harness=dict(fault=fault,turns=0,eoo=0,physical_tx=False,rf_clear_confirmed=True)
+        log=('INJECT MIC close-timing requested_ms=2001 mode='+mode+' phase=drain\n'+
+             'INJECT MIC close-timing mode='+mode+' real_ack_ms=2005 success=1 withheld='+('1' if mode=='missing' else '0')+' phase=drain\n')
+        if mode=='invalid':log+='INJECT MIC close-timing retrograde read_index_bytes=100 write_index_bytes=0 source_usec=0 transport_usec=0 phase=drain'
+        if mode=='stop':log+='INJECT MIC close-timing stop-before-forward stop_ms=2005 callback_invoked=1 phase=drain'
+        return rows,harness,log,mode
+
+    def test_actual_close_failure_requires_drain_ack_and_no_eoo_or_completed_turn(self):
+        for mode in ('missing','invalid','stop'):
+            self.assertEqual(validate_capture_close_failure(*self.failure(mode))['status'],'PASS')
+        for key in ('turns','eoo'):
+            values=list(self.failure('missing'));values[1][key]=1
+            with self.assertRaises(ValueError):validate_capture_close_failure(*values)
+        values=list(self.failure('invalid'));values[2]=values[2].replace('phase=drain','phase=tx')
+        with self.assertRaises(ValueError):validate_capture_close_failure(*values)
+
+    def test_late_capture_timing_cannot_commit_a_frontier_after_local_stop(self):
+        values=list(self.failure('stop'))
+        next(row for row in values[0] if row.get('kind')=='capture-close')['frozen_ms']=2006
+        with self.assertRaisesRegex(ValueError,'after local Stop'):validate_capture_close_failure(*values)
+
+    def test_unrelated_queue_failure_cannot_credit_withheld_capture_ack(self):
+        values=list(self.failure('missing'))
+        next(row for row in values[0] if row.get('event')=='first-fault')['operation']='render-queue-limit'
+        with self.assertRaisesRegex(ValueError,'unrelated queue'):validate_capture_close_failure(*values)
 
 
 class IdentityAndPhaseTests(unittest.TestCase):
