@@ -60,6 +60,7 @@ typedef struct {
 typedef struct {unsigned key_sequence;uint64_t on_before_ns,on_after_ns,off_before_ns,off_after_ns;} rf_interval;
 static rf_interval rf_intervals[128];static unsigned rf_interval_n;static pthread_mutex_t rf_events_mutex=PTHREAD_MUTEX_INITIALIZER;
 static const char *run_directory,*run_scenario;static fake *run_control;
+static atomic_uint rx_ready_repress_hits;static atomic_bool rx_ready_repress_up;static atomic_uint_fast64_t rx_ready_repress_release,rx_ready_repress_sequence;
 static uint64_t ms(void) {
     struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);
     return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;
@@ -76,6 +77,17 @@ static void set_physical_tx(fake *f,bool enabled){
 }
 static void pause_ms(unsigned n) {
     struct timespec t={n/1000,(n%1000)*1000000};nanosleep(&t,NULL);
+}
+/* Core calls this after publishing RX and before another RX input poll.
+ * A direct new DOWN here deterministically tests the advertised readiness
+ * boundary; there is no sleep and no extra UP sample to conceal a gap. */
+void usb_test_rx_ready_published(void){
+    fake *f=run_control;
+    if(!f||!run_scenario||strcmp(run_scenario,"--operational-open-release")||atomic_load(&f->keys)!=1||atomic_load(&f->release)!=1||atomic_load(&rx_ready_repress_hits))return;
+    bool up=!atomic_load(&f->pressed);assert(up&&!atomic_load(&f->physical_tx));
+    atomic_store(&rx_ready_repress_up,up);atomic_store(&rx_ready_repress_release,atomic_load(&f->release));atomic_store(&rx_ready_repress_sequence,atomic_load(&f->sequence));
+    atomic_store(&f->pressed,true);atomic_fetch_add(&rx_ready_repress_hits,1);
+    printf("RX_READY_REPRESS boundary_ms=%llu up=%u release=%llu sequence=%llu before_next_rx_poll=1\n",(unsigned long long)ms(),up,(unsigned long long)atomic_load(&rx_ready_repress_release),(unsigned long long)atomic_load(&rx_ready_repress_sequence));fflush(stdout);
 }
 /* Real packet arrival is a separate producer. Polling never refreshes age or
  * sequence, so a blocked observer cannot manufacture fresh telemetry. */
@@ -317,7 +329,7 @@ static void result(const char *directory,const char *scenario,fake *f,fd_usb_sna
     for(unsigned i=0;i<durability_sessions;++i)fprintf(out,"%s{\"fds\":%u,\"threads\":%u}",i?",":"",closed_fds[i],closed_tasks[i]);
     fputs("],\"turn_records\":[",out);
     for(unsigned i=0;i<turn_record_n;++i){turn_record *r=&turn_records[i];fprintf(out,"%s{\"session\":\"%s\",\"turn\":%u,\"accepted_mic_samples\":%llu,\"rendered_modem_samples\":%llu,\"modem_tap_start\":%llu,\"modem_tap_end\":%llu,\"started_ms\":%llu,\"ended_ms\":%llu}",i?",":"",r->session,r->turn,(unsigned long long)r->accepted_mic,(unsigned long long)r->rendered_modem,(unsigned long long)r->modem_tap_start,(unsigned long long)r->modem_tap_end,(unsigned long long)r->started_ms,(unsigned long long)r->ended_ms);}
-    fprintf(out,"],\"operational\":%s,\"startup_ready\":%s,\"leaving\":%s,\"configuration_ready\":%s,\"tuning_revision\":%llu,\"tx_timeout_seconds\":%u,\"physical_ptt_pressed\":%s,\"physical_release_sequence\":%llu,\"rade_creations\":%llu,\"encoder_creations\":%llu,\"decoder_creations\":%llu,\"rx_synthesis_blocks\":%llu,\"key_attempts\":%u,\"key_denials\":%u,\"rf_intervals\":[",s.operational?"true":"false",s.startup_ready?"true":"false",s.leaving?"true":"false",s.configuration_ready?"true":"false",(unsigned long long)s.tuning_revision,s.tx_timeout_seconds,atomic_load(&f->pressed)?"true":"false",(unsigned long long)atomic_load(&f->release),(unsigned long long)s.engine.rade_creations,(unsigned long long)s.engine.encoder_creations,(unsigned long long)s.engine.decoder_creations,(unsigned long long)s.engine.synthesis_blocks,atomic_load(&f->key_attempts),atomic_load(&f->key_denials));pthread_mutex_lock(&rf_events_mutex);
+    fprintf(out,"],\"operational\":%s,\"startup_ready\":%s,\"leaving\":%s,\"configuration_ready\":%s,\"tuning_revision\":%llu,\"tx_timeout_seconds\":%u,\"physical_ptt_pressed\":%s,\"physical_release_sequence\":%llu,\"rade_creations\":%llu,\"encoder_creations\":%llu,\"decoder_creations\":%llu,\"rx_synthesis_blocks\":%llu,\"key_attempts\":%u,\"key_denials\":%u,\"rx_ready_repress_hits\":%u,\"rx_ready_repress_up\":%s,\"rx_ready_repress_release\":%llu,\"rx_ready_repress_sequence\":%llu,\"rf_intervals\":[",s.operational?"true":"false",s.startup_ready?"true":"false",s.leaving?"true":"false",s.configuration_ready?"true":"false",(unsigned long long)s.tuning_revision,s.tx_timeout_seconds,atomic_load(&f->pressed)?"true":"false",(unsigned long long)atomic_load(&f->release),(unsigned long long)s.engine.rade_creations,(unsigned long long)s.engine.encoder_creations,(unsigned long long)s.engine.decoder_creations,(unsigned long long)s.engine.synthesis_blocks,atomic_load(&f->key_attempts),atomic_load(&f->key_denials),atomic_load(&rx_ready_repress_hits),atomic_load(&rx_ready_repress_up)?"true":"false",(unsigned long long)atomic_load(&rx_ready_repress_release),(unsigned long long)atomic_load(&rx_ready_repress_sequence));pthread_mutex_lock(&rf_events_mutex);
     for(unsigned i=0;i<rf_interval_n;++i){rf_interval r=rf_intervals[i];fprintf(out,"%s{\"key_sequence\":%u,\"on_before_ns\":%llu,\"on_after_ns\":%llu,\"off_before_ns\":%llu,\"off_after_ns\":%llu}",i?",":"",r.key_sequence,(unsigned long long)r.on_before_ns,(unsigned long long)r.on_after_ns,(unsigned long long)r.off_before_ns,(unsigned long long)r.off_after_ns);}
     pthread_mutex_unlock(&rf_events_mutex);
     fprintf(out,"],\"io_service_pause\":{\"count\":%u,\"started_ms\":%llu,\"duration_ms\":%llu},\"render_queue\":{\"limit_frames\":%u,\"output_bound_frames\":%u,\"high_water_frames\":%u,\"deferred_calls\":%u,\"final_deferred_calls\":%u,\"final_flush_calls\":%u,\"final_flush_frames\":%llu,\"generated_frames\":%llu,\"written_frames\":%llu},\"render_hold\":{\"started_ms\":%llu,\"ended_ms\":%llu,\"hits\":%u}}\n",
@@ -423,9 +435,8 @@ int main(int argc,char **argv) {
         }
         if(!strcmp(scenario,"--operational-open-release")){
             assert(usb_test_mic_release_action);usb_test_mic_release_action(release_from_callback,&f);atomic_store(&f.pressed,true);uint64_t until=ms()+10000;
-            while(!atomic_load(&f.release)&&ms()<until){(void)healthy_snapshot(audio,"open-release-ack-fault");pause_ms(5);}assert(atomic_load(&f.release)==1);
-            fd_usb_snapshot cancelled=wait_state(audio,FD_USB_RX,10000);assert(!cancelled.fault&&!cancelled.submitted_mic&&!cancelled.turns&&!cancelled.engine.eoo_count&&!atomic_load(&f.physical_tx));
-            atomic_store(&f.pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);release_ptt(&f);
+            while(!atomic_load(&rx_ready_repress_hits)&&ms()<until){(void)healthy_snapshot(audio,"open-release-ack-fault");pause_ms(5);}assert(atomic_load(&f.release)==1&&atomic_load(&rx_ready_repress_hits)==1&&atomic_load(&rx_ready_repress_up));
+            wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);release_ptt(&f);
             fd_usb_snapshot returned=wait_state(audio,FD_USB_RX,10000);assert(returned.turns==1&&returned.engine.eoo_count==1);
             fd_usb_audio_leave(audio);fd_usb_snapshot last=wait_stopped(audio,10000);assert(!last.fault&&last.rf_clear_confirmed&&atomic_load(&f.keys)==2&&atomic_load(&f.release)==2&&last.engine.rade_creations==ready.engine.rade_creations);
             result(argv[1],scenario,&f,last);fd_usb_audio_close(audio);return 0;

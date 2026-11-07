@@ -436,7 +436,9 @@ def operational_proof(rows, completion, harness, case):
         openings=[row for row in rows if row.get('kind')=='capture-open']
         if (len(openings)!=2 or openings[0].get('complete') is not False or openings[0].get('canceled') is not True or
                 openings[1].get('complete') is not True or openings[0].get('generation')==openings[1].get('generation') or
-                harness.get('keys')!=2 or harness.get('physical_release_sequence')!=2):
+                harness.get('keys')!=2 or harness.get('physical_release_sequence')!=2 or
+                harness.get('rx_ready_repress_hits')!=1 or harness.get('rx_ready_repress_up') is not True or
+                harness.get('rx_ready_repress_release')!=1 or type(harness.get('rx_ready_repress_sequence')) is not int or harness['rx_ready_repress_sequence']<1):
             raise ValueError('Pending opening release did not cancel then admit one new warm turn')
     if case=='operational-open-prefix':
         openings=[row for row in rows if row.get('kind')=='capture-open' and row.get('complete') is True]

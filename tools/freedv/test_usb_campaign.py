@@ -721,6 +721,7 @@ def operational_case_fixture(case,root,result):
     result['output_contract']['sessions']=[dict(summary,trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp))]
     refresh_capture_contract_fixture(root,result)
     rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()];completion=json.loads(cp.read_text())
+    if case=='operational-open-release':h.update(rx_ready_repress_hits=1,rx_ready_repress_up=True,rx_ready_repress_release=1,rx_ready_repress_sequence=30)
     result['operational']=operational_proof(rows,completion,h,case)
     if case=='operational-retune':result['actual_headset_output']=operational_headset_fixture(root,path)
 

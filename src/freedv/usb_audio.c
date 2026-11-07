@@ -28,6 +28,7 @@ extern void usb_test_mic_cutoff(uint64_t) __attribute__((weak));
 extern void usb_test_mic_release_observed(void) __attribute__((weak));
 extern void usb_test_mic_close_requested(void) __attribute__((weak));
 extern void usb_test_mic_open_requested(void) __attribute__((weak));
+extern void usb_test_rx_ready_published(void) __attribute__((weak));
 extern void usb_test_backend_timing_requested(void) __attribute__((weak));
 extern void usb_test_backend_tail_wait_started(uint64_t) __attribute__((weak));
 #endif
@@ -1318,7 +1319,13 @@ static void *run(void *p){
         }
         if(atomic_load(&a->state)==FD_USB_RX_READY){
             if(!actual.rf_tx&&actual.sequence>a->rx_sequence){
-                a->rf_clear_confirmed=true;atomic_store(&a->tx_at,0);state(a,FD_USB_RX);a->permit_press=false;
+                a->rf_clear_confirmed=true;atomic_store(&a->tx_at,0);
+                /* The fresh RX acknowledgement already sampled PTT. Preserve
+                 * that released observation before advertising ready RX. */
+                a->permit_press=a->c.operational&&!actual.pressed&&!atomic_load(&a->leaving);state(a,FD_USB_RX);
+#if defined(HOST_BUILD)
+                if(a->c.operational&&usb_test_rx_ready_published)usb_test_rx_ready_published();
+#endif
                 if(atomic_load(&a->leaving)){atomic_store(&a->stop,true);break;}
                 if(a->qualification_waiting_loopback){
                     a->qualification_waiting_loopback=false;a->reference_cursor=0;a->reference_next=a->reference_started=now_ms();
