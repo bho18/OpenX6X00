@@ -580,6 +580,27 @@ def pulse_preview_gain(raw_volume):
     return convert(raw_volume)
 
 
+def legacy_cue_phase_previews(pcm,ledger,phases):
+    """Independently grade both legacy admissions in disjoint host windows."""
+    from usb_refinement_contract import local_cue_waveform
+    indexed={row.get('phase'):row for row in phases}
+    names=(('first-preview','initial','cue-preview'),
+           ('after-drain-preview','cue-preview','cue-burst'))
+    previews=[]
+    for name,begin,finish in names:
+        start,end=indexed[begin]['ms'],indexed[finish]['ms']
+        if type(start) is not int or type(end) is not int or not 0<=start<end:
+            raise ValueError('Legacy preview phases do not define disjoint ordered windows')
+        selected=[row for row in ledger if row.get('kind')=='block' and
+                  start*1000000<=row['received_ns']<end*1000000]
+        if not selected:raise ValueError('Legacy preview phase has no independent output blocks')
+        window=dict(start_ms=start,end_ms=end,frame_start=selected[0]['frame_start'],
+                    frame_end=selected[-1]['frame_start']+selected[-1]['frames'])
+        waveform=local_cue_waveform(pcm,frame_start=window['frame_start'],frame_end=window['frame_end'])
+        previews.append(dict(phase=name,window=window,waveform=waveform))
+    return previews
+
+
 def validate_hardening_volume_readbacks(proof,case,verify_files=True,phases=None):
     if proof.get('schema')!='x6200.usb.hardening-volume-readbacks.v1' or proof.get('status')!='PASS':
         raise ValueError('Hardening volume control omitted independent Pulse readbacks')
@@ -635,7 +656,7 @@ def validate_hardening_volume_readbacks(proof,case,verify_files=True,phases=None
 
 
 def validate_hardening_run(run,case,verify_files=True,expected_identity=None):
-    from usb_refinement_contract import validate_refinement_contract,hardening_exercise,local_cue_waveform
+    from usb_refinement_contract import validate_refinement_contract,hardening_exercise,local_cue_waveform,validate_cue_waveform_summary
     proof=run.get('refinement_contract',{})
     if (type(run.get('usb_refinement_contract_version')) is not int or run['usb_refinement_contract_version']!=2 or
             proof.get('schema')!='x6200.usb.refinement-contract-set.v1' or proof.get('status')!='PASS' or
@@ -662,8 +683,10 @@ def validate_hardening_run(run,case,verify_files=True,expected_identity=None):
                 not 0<=window['start_ms']<window['end_ms'] or not 0<=window['frame_start']<window['frame_end'] or
                 cue.get('waveform',{}).get('duration_ms')!=500):
             raise ValueError('Hardening preview lacks final-gesture output evidence')
+        validate_cue_waveform_summary(cue.get('waveform'))
         if case=='operational-hardening-cue-final-gesture':
             low=cue.get('low_level_waveform',{});mapping=cue.get('gain_mapping',{})
+            validate_cue_waveform_summary(low)
             if (mapping!={'method':'pa_sw_volume_to_linear','raw_volume':32768,'linear_gain':.125} or
                     low.get('duration_ms')!=500 or low.get('expected_gain')!=.125 or
                     type(cue.get('level_ratio')) not in (int,float) or not 7.5<=cue['level_ratio']<=8.5):
@@ -726,7 +749,7 @@ def validate_refinement_run(run,case,verify_files=True,expected_identity=None):
     if case not in REFINEMENT_CASES:return
     try:
         from usb_refinement_contract import (validate_refinement_contract,refinement_exercise,
-                                            validate_volume_readbacks,local_cue_waveform)
+                                            validate_volume_readbacks,local_cue_waveform,validate_cue_waveform_summary)
         proof=run.get('refinement_contract',{})
         if (run.get('usb_refinement_contract_version')!=1 or type(run.get('usb_refinement_contract_version')) is not int or
                 proof.get('schema')!='x6200.usb.refinement-contract-set.v1' or proof.get('status')!='PASS' or
@@ -748,6 +771,14 @@ def validate_refinement_run(run,case,verify_files=True,expected_identity=None):
             cue=run.get('local_cue_output',{})
             if cue.get('schema')!='x6200.usb.local-cue-output.v1' or cue.get('status')!='PASS':
                 raise ValueError('Local cue lacks independent headset output evidence')
+            if case!='operational-cue-failure':validate_cue_waveform_summary(cue.get('waveform'))
+            if case=='operational-cue-burst':
+                previews=cue.get('phase_previews',[])
+                if (type(previews) is not list or [row.get('phase') for row in previews]!=['first-preview','after-drain-preview'] or
+                        any(row.get('waveform',{}).get('duration_ms')!=60 or row.get('waveform',{}).get('frames')!=2880 for row in previews) or
+                        previews[0].get('window',{}).get('end_ms')!=previews[1].get('window',{}).get('start_ms')):
+                    raise ValueError('Legacy burst omitted separate first and reused-stream preview evidence')
+                for preview in previews:validate_cue_waveform_summary(preview.get('waveform'))
         if verify_files:
             directory=Path(run['case_record_path']).parent/'result'
             trace,completion=directory/item['trace_file'],directory/item['completion_file']
@@ -782,6 +813,10 @@ def validate_refinement_run(run,case,verify_files=True,expected_identity=None):
                         raise ValueError('Failed optional cue wrote unexpected headset payload')
                 elif local_cue_waveform(pcm)!=cue.get('waveform'):
                     raise ValueError('Local cue waveform differs from independently recorded headset PCM')
+                if case=='operational-cue-burst':
+                    ledger=[json.loads(line) for line in Path(cue['ledger']['path']).read_text().splitlines() if line.strip()]
+                    if legacy_cue_phase_previews(pcm,ledger,phases)!=cue.get('phase_previews'):
+                        raise ValueError('Legacy first/reused preview differs from its disjoint captured phase window')
         return proof
     except (OSError,KeyError,TypeError,AttributeError) as error:
         raise ValueError('Refinement evidence is missing or malformed: '+str(error)) from error

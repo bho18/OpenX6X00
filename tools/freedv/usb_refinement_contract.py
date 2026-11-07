@@ -456,6 +456,23 @@ def cue_reference_pcm(version=1):
     return samples.tobytes()
 
 
+def validate_cue_waveform_summary(waveform):
+    """Keep the mandatory ramp receipt typed even without retained PCM files."""
+    import math
+    require(type(waveform) is dict and waveform.get('schema') in
+            ('x6200.usb.local-cue-waveform.v1','x6200.usb.local-cue-waveform.v2') and
+            waveform.get('status')=='PASS','Successful local preview waveform summary is missing or malformed')
+    ramps=waveform.get('ramp_contract')
+    require(type(ramps) is dict and type(ramps.get('frames')) is int and ramps['frames']==240 and
+            ramps.get('alignment')=='whole-cue' and ramps.get('gain')=='whole-cue' and
+            type(ramps.get('pcm_tolerance')) is int and ramps['pcm_tolerance']==2,
+            'Local preview waveform omitted its fixed whole-cue ramp contract')
+    require(all(type(ramps.get(name)) in (int,float) and math.isfinite(ramps[name]) and
+                0<=ramps[name]<=2 for name in ('leading_max_error','trailing_max_error')),
+            'Local preview ramp errors are untyped, nonfinite or outside PCM quantization tolerance')
+    return waveform
+
+
 def local_cue_waveform(observed_pcm,version=1,*,frame_start=None,frame_end=None,expected_gain=1.0):
     """Find a complete preview within an independently delimited gesture window.
 
@@ -493,13 +510,22 @@ def local_cue_waveform(observed_pcm,version=1,*,frame_start=None,frame_end=None,
     peak=int(np.max(np.abs(observed[start:start+len(reference)])))
     require(correlation>=.985 and (abs(gain-expected_gain)<=expected_gain*.03 if version==2 else 0<gain<=1.05) and peak<=3441,
             'Headset did not render the complete quiet fixed-frequency preview')
+    # A long steady tone can retain a high whole-window correlation after its
+    # beginning or end is clipped. Check the independently specified ramps at
+    # this same whole-cue alignment and gain; never fit either edge separately.
+    leading_error=float(np.max(np.abs(observed[start:start+240]-reference[:240]*gain)))
+    trailing_error=float(np.max(np.abs(observed[start+len(reference)-240:start+len(reference)]-reference[-240:]*gain)))
+    require(leading_error<=2 and trailing_error<=2,
+            'Headset preview leading/trailing ramps differ from the aligned complete waveform')
     result=dict(schema='x6200.usb.local-cue-waveform.v'+str(version),status='PASS',frequency_hz=600,duration_ms=500 if version==2 else 60,
         ramp_ms=5,level_dbfs=-20,frames=len(reference),minimum_correlation=.985,correlation=correlation,
         measured_gain=gain,monitor_frame_start=frame_start+start,peak_pcm16=peak,
+        ramp_contract=dict(frames=240,alignment='whole-cue',gain='whole-cue',pcm_tolerance=2,
+                           leading_max_error=leading_error,trailing_max_error=trailing_error),
         scope='Actual private-Pulse headset monitor only; physical sound level is unmeasured')
     if version==2:result.update(monitor_window_start=frame_start,monitor_window_end=frame_end,
         minimum_gain=.97*expected_gain,expected_gain=expected_gain,allowed_relative_error=.03)
-    return result
+    return validate_cue_waveform_summary(result)
 
 
 def validate_recent_diagnostics(record,expected_identity=None,frozen=None,required_version=None):

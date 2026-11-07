@@ -33,7 +33,7 @@ from usb_output_contract import validate_output_contract
 from usb_capture_open_contract import validate_capture_open_contract
 from usb_refinement_contract import (validate_refinement_contract,refinement_exercise,
     validate_volume_readbacks,local_cue_waveform,hardening_exercise)
-from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags,operational_proof,HARDENING_CASES,HARDENING_CUE_CASES,HARDENING_VOLUME_CASES,HARDENING_FAULTS,refinement_version,pulse_preview_gain
+from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags,operational_proof,HARDENING_CASES,HARDENING_CUE_CASES,HARDENING_VOLUME_CASES,HARDENING_FAULTS,refinement_version,pulse_preview_gain,legacy_cue_phase_previews
 
 CASES = (
     'normal', 'rx-signal', 'block-key', 'stop-during-key', 'release-during-key',
@@ -949,6 +949,9 @@ def run_case(args):
             record['local_cue_output']={'schema':'x6200.usb.local-cue-output.v1','status':'PASS','waveform':waveform,
                 'monitor':{'path':str(root/'headset-output.raw'),'sha256':sha(root/'headset-output.raw')},
                 'ledger':{'path':str(root/'headset-output.jsonl'),'sha256':sha(root/'headset-output.jsonl')}}
+            if args.case=='operational-cue-burst':
+                ledger=[json.loads(line) for line in (root/'headset-output.jsonl').read_text().splitlines() if line.strip()]
+                record['local_cue_output']['phase_previews']=legacy_cue_phase_previews(cue_pcm,ledger,phases)
         record['status'] = 'PASS'
         print('PASS scenario:', args.case, flush=True)
     except BaseException as error:

@@ -5,6 +5,7 @@ import unittest
 from usb_refinement_contract import (validate_refinement_contract,validate_volume_readbacks,
     cue_reference_pcm,local_cue_waveform,BUDGETS,BUDGETS_V2,COUNTERS,TIMESTAMPS,
     HARDENING_BOOLEAN_FIELDS,HARDENING_UNSIGNED_FIELDS,hardening_exercise)
+from usb_refinement_contract import validate_cue_waveform_summary
 
 
 class RefinementContractTests(unittest.TestCase):
@@ -245,6 +246,56 @@ class RefinementContractTests(unittest.TestCase):
         for expected in (0,True,float('nan'),float('inf'),1.1,-.125):
             with self.subTest(expected_gain=expected),self.assertRaises(ValueError):
                 local_cue_waveform(high,2,frame_start=0,frame_end=24000,expected_gain=expected)
+
+    def test_high_whole_correlation_cannot_hide_missing_preview_prefix_or_tail(self):
+        import numpy as np
+        for version,missing_frames in ((1,48),(2,480)):
+            reference=np.frombuffer(cue_reference_pcm(version),dtype='<i2')
+            for side in ('prefix','tail'):
+                broken=reference.copy()
+                if side=='prefix':broken[:missing_frames]=0
+                else:broken[-missing_frames:]=0
+                original=reference.astype(np.float64);partial=broken.astype(np.float64)
+                correlation=float((original@partial)/np.sqrt((original@original)*(partial@partial)))
+                with self.subTest(version=version,side=side):
+                    self.assertGreater(correlation,.985)
+                    bounds=dict(frame_start=0,frame_end=len(reference)) if version==2 else {}
+                    with self.assertRaisesRegex(ValueError,'leading/trailing ramps'):
+                        local_cue_waveform(broken.tobytes(),version,**bounds)
+
+    def test_both_preview_ramps_allow_only_pcm_quantization_at_low_gain(self):
+        from array import array
+        for version,gain in ((1,.07),(2,.125),(2,.01)):
+            reference=array('h');reference.frombytes(cue_reference_pcm(version))
+            observed=array('h',(round(sample*gain) for sample in reference)).tobytes()
+            bounds=dict(frame_start=0,frame_end=len(reference),expected_gain=gain) if version==2 else {}
+            with self.subTest(version=version,gain=gain):
+                proof=local_cue_waveform(observed,version,**bounds)
+                ramps=proof['ramp_contract']
+                self.assertEqual(ramps['frames'],240)
+                self.assertEqual(ramps['alignment'],'whole-cue')
+                self.assertEqual(ramps['gain'],'whole-cue')
+                self.assertEqual(ramps['pcm_tolerance'],2)
+                self.assertLessEqual(ramps['leading_max_error'],2)
+                self.assertLessEqual(ramps['trailing_max_error'],2)
+
+    def test_metadata_only_preview_summary_requires_typed_fixed_ramps(self):
+        for version in (1,2):
+            summary=dict(schema='x6200.usb.local-cue-waveform.v'+str(version),status='PASS',
+                ramp_contract=dict(frames=240,alignment='whole-cue',gain='whole-cue',pcm_tolerance=2,
+                                   leading_max_error=0,trailing_max_error=2.))
+            self.assertEqual(validate_cue_waveform_summary(summary),summary)
+            missing=copy.deepcopy(summary);missing.pop('ramp_contract')
+            with self.subTest(version=version,missing=True),self.assertRaises(ValueError):
+                validate_cue_waveform_summary(missing)
+            for name,value in (('frames',240.),('alignment','edge-refit'),('gain','edge-refit'),
+                               ('pcm_tolerance',2.),('pcm_tolerance',True),
+                               ('leading_max_error',float('nan')),('trailing_max_error',float('inf')),
+                               ('leading_max_error',True),('trailing_max_error',-0.1),
+                               ('leading_max_error',2.000001)):
+                altered=copy.deepcopy(summary);altered['ramp_contract'][name]=value
+                with self.subTest(version=version,name=name,value=value),self.assertRaises(ValueError):
+                    validate_cue_waveform_summary(altered)
 
     def test_independent_readback_cannot_self_consistently_claim_another_controller_setting(self):
         import json

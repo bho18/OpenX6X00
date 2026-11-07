@@ -784,7 +784,9 @@ static void cue_write(pa_stream *stream,size_t bytes,void *context){
     if(!cue_allowed(a,now_ms())||a->cue_generation!=a->generation){cue_cancel(a);return;}
     unsigned frames=(unsigned)(bytes/2);if(frames>cue_frames(a)-a->cue_cursor)frames=cue_frames(a)-a->cue_cursor;
     if(!frames)return;
-    if(pa_stream_write(stream,a->cue_pcm+a->cue_cursor,frames*2,NULL,0,PA_SEEK_RELATIVE)<0){cue_error(a,"preview-write");return;}
+    /* A drained legacy stream may have read past its old write frontier. */
+    pa_seek_mode_t seek=!a->c.hardening&&!a->cue_cursor?PA_SEEK_RELATIVE_ON_READ:PA_SEEK_RELATIVE;
+    if(pa_stream_write(stream,a->cue_pcm+a->cue_cursor,frames*2,NULL,0,seek)<0){cue_error(a,"preview-write");return;}
     a->cue_cursor+=frames;
 }
 static void cue_drained(pa_stream *stream,int ok,void *context){fd_usb_audio *a=context;if(stream!=a->cue_stream)return;a->cue_drain_ack=ok?1:-1;a->cue_drain_completed=now_ms();}

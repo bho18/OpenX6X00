@@ -890,11 +890,19 @@ def refinement_case_fixture(case,root,result):
     if case.startswith('operational-cue-'):
         monitor=root/'synthetic-cue.raw';ledger=root/'synthetic-cue.jsonl'
         pcm=b'\0\0'*960 if case.endswith('failure') else b'\0\0'*960+cue_reference_pcm()+b'\0\0'*960
-        monitor.write_bytes(pcm);ledger.write_text(json.dumps(dict(kind='completion',error=0,synthetic=True))+'\n')
+        ledger_rows=[dict(kind='completion',error=0,synthetic=True)]
+        if case.endswith('burst'):
+            pcm=b'\0\0'*9600+cue_reference_pcm()+b'\0\0'*12960+cue_reference_pcm()+b'\0\0'*2400
+            ledger_rows=[dict(kind='block',frame_start=index,frames=480,received_ns=index*1000000000//48000,synthetic=True)
+                         for index in range(0,len(pcm)//2,480)]+ledger_rows
+        monitor.write_bytes(pcm);ledger.write_text(''.join(json.dumps(row)+'\n' for row in ledger_rows))
         waveform=dict(status='NOT_PLAYED') if case.endswith('failure') else local_cue_waveform(pcm)
         result['local_cue_output']=dict(schema='x6200.usb.local-cue-output.v1',status='PASS',synthetic=True,
             waveform=waveform,monitor=dict(path=str(monitor),sha256=sha(monitor)),ledger=dict(path=str(ledger),sha256=sha(ledger)))
-        if case.endswith('burst'):result['actual_headset_output']=operational_headset_fixture(root,path)
+        if case.endswith('burst'):
+            from usb_test_campaign import legacy_cue_phase_previews
+            result['local_cue_output']['phase_previews']=legacy_cue_phase_previews(pcm,ledger_rows,phases)
+            result['actual_headset_output']=operational_headset_fixture(root,path)
 
 
 def operational_headset_fixture(root,trace):
@@ -2531,6 +2539,46 @@ class RefinementEvidenceTests(unittest.TestCase):
                 path.write_bytes(b'\1\0'*960 if case.endswith('failure') else b'\0'*path.stat().st_size)
                 artifact['sha256']=sha(path)
                 with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
+
+    def test_legacy_burst_requires_each_disjoint_complete_preview(self):
+        from usb_refinement_contract import local_cue_waveform
+        for missing in ('first','second'):
+            with self.subTest(missing=missing),tempfile.TemporaryDirectory() as directory:
+                case='operational-cue-burst';run=self.fixture(case,directory)
+                cue=run['local_cue_output'];path=Path(cue['monitor']['path'])
+                pcm=bytearray(path.read_bytes());start=9600 if missing=='first' else 25440
+                pcm[start*2:(start+480)*2]=b'\0\0'*480
+                path.write_bytes(pcm);cue['monitor']['sha256']=sha(path)
+                # A complete other cue still satisfies the former global-only
+                # oracle. It cannot substitute for this separate admission.
+                cue['waveform']=local_cue_waveform(pcm)
+                with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
+
+    def test_legacy_burst_cannot_reuse_one_preview_proof_for_both_windows(self):
+        for mutation in ('missing','same-window','swapped-proof'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                case='operational-cue-burst';run=self.fixture(case,directory);cue=run['local_cue_output']
+                if mutation=='missing':cue.pop('phase_previews')
+                elif mutation=='same-window':cue['phase_previews'][1]['window']=copy.deepcopy(cue['phase_previews'][0]['window'])
+                else:
+                    cue['phase_previews'][1]['waveform']=copy.deepcopy(cue['phase_previews'][0]['waveform'])
+                with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
+
+    def test_metadata_only_preview_summaries_require_bounded_ramp_proofs(self):
+        targets=(('operational-cue-isolation','global'),('operational-cue-burst','first'),
+                 ('operational-cue-burst','second'),('operational-hardening-cue-final-gesture','global'),
+                 ('operational-hardening-cue-final-gesture','low'))
+        for case,target in targets:
+            for mutation in ('missing','nan','overlimit'):
+                with self.subTest(case=case,target=target,mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                    run=self.fixture(case,directory);self.validate(run,case,verify_files=False)
+                    cue=run['local_cue_output']
+                    waveform=(cue['low_level_waveform'] if target=='low' else
+                              cue['phase_previews'][0 if target=='first' else 1]['waveform'] if target in ('first','second') else cue['waveform'])
+                    if mutation=='missing':waveform.pop('ramp_contract')
+                    elif mutation=='nan':waveform['ramp_contract']['leading_max_error']=float('nan')
+                    else:waveform['ramp_contract']['trailing_max_error']=2.01
+                    with self.assertRaises(ValueError):self.validate(run,case,verify_files=False)
 
     def test_volume_request_needs_confirmed_revision_and_independent_sink_state(self):
         for mutation in ('optimistic','wrong-ack','failure-hidden','unrelated','balance','changed-file'):
