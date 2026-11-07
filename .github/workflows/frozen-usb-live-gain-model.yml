@@ -1,0 +1,444 @@
+# External CI infrastructure. Every job tests the exact clean frozen product ce32f575abe6c494c0c17a15f50c8f842ea63c7d.
+name: Frozen FreeDV live gain source with pinned model cache
+permissions:
+  contents: read
+jobs:
+  linux-inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+    - name: Use canonical LF bytes before checkout
+      shell: bash
+      run: |
+        git config --global core.autocrlf false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ce32f575abe6c494c0c17a15f50c8f842ea63c7d
+    - name: Assert and record actual frozen product source
+      shell: python {0}
+      run: |
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import stat
+        import subprocess
+
+        expected = os.environ['TESTED_SOURCE_COMMIT']
+        actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+        if actual != expected:
+            raise SystemExit('Checkout is not the frozen product commit: ' + actual)
+        dirty = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'], text=True)
+        if dirty:
+            raise SystemExit('Frozen source checkout is dirty: ' + dirty)
+        staged = subprocess.check_output(['git', 'ls-files', '--stage', '-z']).decode().split('\0')
+        files, skipped_gitlinks = {}, []
+        for entry in staged:
+            if not entry:
+                continue
+            header, name = entry.split('\t', 1)
+            mode, object_id, stage = header.split()
+            if stage != '0':
+                raise SystemExit('Unmerged source index: ' + name)
+            if mode == '160000':
+                skipped_gitlinks.append(name)
+                continue
+            path = Path(name)
+            if mode not in ('100644', '100755') or not stat.S_ISREG(path.lstat().st_mode):
+                raise SystemExit('Unexpected tracked nonregular file: ' + name)
+            with path.open('rb') as stream:
+                files[name] = hashlib.file_digest(stream, 'sha256').hexdigest()
+        files = dict(sorted(files.items()))
+        tree = hashlib.sha256(''.join(digest + '  ' + name + '\n' for name, digest in files.items()).encode()).hexdigest()
+        receipt = {
+            'schema': 'x6200.usb.ci-tested-source.v1',
+            'source_commit': actual,
+            'expected_source_commit': expected,
+            'source_worktree_dirty': False,
+            'source_files': files,
+            'source_file_count': len(files),
+            'source_tree_sha256': tree,
+            'skipped_gitlinks': sorted(skipped_gitlinks),
+            'workflow_commit': os.environ['GITHUB_SHA'],
+            'workflow_ref': os.environ['GITHUB_WORKFLOW_REF'],
+            'job': os.environ['GITHUB_JOB'],
+            'run_id': os.environ['GITHUB_RUN_ID'],
+            'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+        }
+        output = Path(os.environ['RUNNER_TEMP']) / ('tested-source-' + os.environ['GITHUB_JOB'] + '.json')
+        output.write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+        print(json.dumps({key: value for key, value in receipt.items() if key != 'source_files'}, sort_keys=True))
+        print('Source receipt: ' + str(output))
+    - name: Install host unit and private audio test dependencies
+      timeout-minutes: 10
+      run: |
+        python3 tools/freedv/test_ci_ubuntu_sources.py
+        sudo python3 tools/freedv/ci_ubuntu_sources.py
+        task_apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2)
+        sudo apt-get "${task_apt_options[@]}" update
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get "${task_apt_options[@]}" install -y --no-install-recommends \
+          build-essential binutils e2fsprogs libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils python3-venv
+        # Host-only preview waveform observer; never installed on the radio.
+        python3 -m venv "$RUNNER_TEMP/usb-observer-python"
+        "$RUNNER_TEMP/usb-observer-python/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: numpy==2.3.5
+        echo "$RUNNER_TEMP/usb-observer-python/bin" >> "$GITHUB_PATH"
+    - name: Check USB duplex endpoint identification without devices
+      run: python tools/freedv/test_usb_headset_inventory.py
+    - name: Check validation guards and partial evidence
+      run: |
+        python tools/freedv/test_usb_headset_validate.py
+        python tools/freedv/test_usb_half_duplex.py
+        python tools/freedv/test_usb_rf_evidence.py
+        python tools/freedv/test_usb_test_support.py
+        python -O tools/freedv/test_usb_test_support.py
+        python tools/freedv/test_usb_output_contract.py
+        python -O tools/freedv/test_usb_output_contract.py
+        python tools/freedv/test_usb_capture_open_contract.py
+        python -O tools/freedv/test_usb_capture_open_contract.py
+        python tools/freedv/test_usb_refinement_contract.py
+        python -O tools/freedv/test_usb_refinement_contract.py
+        python tools/freedv/test_usb_fifo_clock.py
+        python tools/freedv/test_usb_backend_observer.py
+        python -O tools/freedv/test_usb_backend_observer.py
+        python tools/freedv/test_usb_campaign.py
+        python tools/freedv/test_usb_host_resources.py
+        python tools/freedv/test_usb_controller_build.py
+        python tools/freedv/test_usb_ci_diagnostics.py
+        python tools/freedv/test_usb_navigation_service.py
+        python tools/freedv/test_native_image.py
+    - name: Check PCM streams and endpoint loss on private virtual devices
+      run: |
+        gcc -std=c11 -Wall -Wextra -Werror -O2 tools/freedv/usb_headset_pcm.c -lpulse -o /tmp/usb_headset_pcm
+        gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only tools/freedv/usb_half_duplex.c
+        gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only src/freedv/usb_audio.c
+        gcc -std=c11 -Wall -Wextra -Werror -DHOST_BUILD=1 -fsyntax-only src/freedv/usb_audio.c
+        gcc -std=c11 -Wall -Wextra -Werror tools/freedv/usb_panel_test.c -o /tmp/usb_panel_test
+        /tmp/usb_panel_test
+        gcc -std=c11 -Wall -Wextra -Werror tools/freedv/usb_audio_levels_test.c -lm -o /tmp/usb_audio_levels_test
+        /tmp/usb_audio_levels_test
+        gcc -std=c11 -Wall -Wextra -Werror -I. tools/freedv/usb_render_budget_test.c -lsamplerate -lm -o /tmp/usb_render_budget_test
+        /tmp/usb_render_budget_test
+        gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared tools/freedv/test_usb_headset_drop_drain.c -lpulse -ldl -o /tmp/drop-drain.so
+        TEST_PULSE_DROP_DRAIN_ACK_SO=/tmp/drop-drain.so python tools/freedv/test_usb_headset_pcm.py /tmp/usb_headset_pcm
+    - name: Retain actual tested-source receipt
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: tested-source-linux-inventory
+        retention-days: 14
+        if-no-files-found: error
+        path: ${{ runner.temp }}/tested-source-linux-inventory.json
+  usb-controller-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+    - name: Use canonical LF bytes before checkout
+      shell: bash
+      run: |
+        git config --global core.autocrlf false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        fetch-depth: 0
+        ref: ce32f575abe6c494c0c17a15f50c8f842ea63c7d
+    - name: Assert and record actual frozen product source
+      shell: python {0}
+      run: |
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import stat
+        import subprocess
+
+        expected = os.environ['TESTED_SOURCE_COMMIT']
+        actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+        if actual != expected:
+            raise SystemExit('Checkout is not the frozen product commit: ' + actual)
+        dirty = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'], text=True)
+        if dirty:
+            raise SystemExit('Frozen source checkout is dirty: ' + dirty)
+        staged = subprocess.check_output(['git', 'ls-files', '--stage', '-z']).decode().split('\0')
+        files, skipped_gitlinks = {}, []
+        for entry in staged:
+            if not entry:
+                continue
+            header, name = entry.split('\t', 1)
+            mode, object_id, stage = header.split()
+            if stage != '0':
+                raise SystemExit('Unmerged source index: ' + name)
+            if mode == '160000':
+                skipped_gitlinks.append(name)
+                continue
+            path = Path(name)
+            if mode not in ('100644', '100755') or not stat.S_ISREG(path.lstat().st_mode):
+                raise SystemExit('Unexpected tracked nonregular file: ' + name)
+            with path.open('rb') as stream:
+                files[name] = hashlib.file_digest(stream, 'sha256').hexdigest()
+        files = dict(sorted(files.items()))
+        tree = hashlib.sha256(''.join(digest + '  ' + name + '\n' for name, digest in files.items()).encode()).hexdigest()
+        receipt = {
+            'schema': 'x6200.usb.ci-tested-source.v1',
+            'source_commit': actual,
+            'expected_source_commit': expected,
+            'source_worktree_dirty': False,
+            'source_files': files,
+            'source_file_count': len(files),
+            'source_tree_sha256': tree,
+            'skipped_gitlinks': sorted(skipped_gitlinks),
+            'workflow_commit': os.environ['GITHUB_SHA'],
+            'workflow_ref': os.environ['GITHUB_WORKFLOW_REF'],
+            'job': os.environ['GITHUB_JOB'],
+            'run_id': os.environ['GITHUB_RUN_ID'],
+            'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+        }
+        output = Path(os.environ['RUNNER_TEMP']) / ('tested-source-' + os.environ['GITHUB_JOB'] + '.json')
+        output.write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+        print(json.dumps({key: value for key, value in receipt.items() if key != 'source_files'}, sort_keys=True))
+        print('Source receipt: ' + str(output))
+    - name: Install pinned-codec and private audio test build prerequisites
+      timeout-minutes: 10
+      run: |
+        python3 tools/freedv/test_ci_ubuntu_sources.py
+        sudo python3 tools/freedv/ci_ubuntu_sources.py
+        task_apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2)
+        sudo apt-get "${task_apt_options[@]}" update
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get "${task_apt_options[@]}" install -y --no-install-recommends \
+          build-essential cmake ninja-build autoconf automake libtool pkg-config \
+          libpulse-dev libsamplerate0-dev libsndfile1-dev pulseaudio pulseaudio-utils python3-venv
+        python3 -m venv "$RUNNER_TEMP/usb-observer-python"
+        "$RUNNER_TEMP/usb-observer-python/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: numpy==2.3.5
+        echo "$RUNNER_TEMP/usb-observer-python/bin" >> "$GITHUB_PATH"
+    - name: Acquire exact pinned Opus model through verified cache
+      timeout-minutes: 10
+      shell: bash
+      run: |
+        set -euo pipefail
+        model_name="opus_data-${OPUS_MODEL_SHA256}.tar.gz"
+        model_dir="$RUNNER_TEMP/verified-opus-model"
+        mkdir -p "$model_dir" "$RUNNER_TEMP/model-download-bin"
+        model_path="$model_dir/$model_name"
+        export OPUS_PINNED_MODEL_PATH="$model_path"
+        python3 - <<'PYMODEL'
+        import hashlib,json,os,subprocess
+        from pathlib import Path
+        expected=os.environ['OPUS_MODEL_SHA256']
+        target=Path(os.environ['OPUS_PINNED_MODEL_PATH'])
+        urls=[os.environ['OPUS_MODEL_CACHE_URL'], 'https://media.xiph.org/opus/models/'+target.name]
+        errors=[]
+        for index,url in enumerate(urls):
+            candidate=target.with_suffix('.candidate')
+            try:
+                outcome=subprocess.run(['curl','--fail','--location','--silent','--show-error',
+                    '--connect-timeout','15','--max-time','240','--retry','1','--retry-max-time','260',
+                    '--output',str(candidate),url],check=False,timeout=270)
+            except subprocess.TimeoutExpired:
+                candidate.unlink(missing_ok=True);errors.append({'url':url,'exit_code':124});continue
+            if outcome.returncode:
+                candidate.unlink(missing_ok=True);errors.append({'url':url,'exit_code':outcome.returncode});continue
+            with candidate.open('rb') as stream:actual=hashlib.file_digest(stream,'sha256').hexdigest()
+            if actual!=expected:
+                candidate.unlink(missing_ok=True)
+                raise SystemExit('Pinned Opus model checksum mismatch from '+url)
+            if candidate.stat().st_size!=183514217:
+                candidate.unlink(missing_ok=True);raise SystemExit('Pinned model size differs')
+            candidate.replace(target)
+            receipt={'schema':'x6200.usb.ci-model-acquisition.v1','source_url':url,
+                'upstream_url':urls[1],'sha256':actual,'expected_sha256':expected,'bytes':target.stat().st_size,
+                'fallback_attempts':errors,'product_source_modified':False,
+                'workflow_commit':os.environ['GITHUB_SHA'],'tested_source_commit':os.environ['TESTED_SOURCE_COMMIT']}
+            (target.parent/'model-acquisition.json').write_text(json.dumps(receipt,indent=2)+'\n')
+            print(json.dumps(receipt,sort_keys=True));break
+        else:raise SystemExit('Pinned Opus model acquisition failed: '+json.dumps(errors))
+        PYMODEL
+        cat > "$RUNNER_TEMP/model-download-bin/wget" <<'SHMODEL'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        expected_name="opus_data-${OPUS_MODEL_SHA256}.tar.gz"
+        expected_url="https://media.xiph.org/opus/models/${expected_name}"
+        if [[ "$#" == 3 && "$1" == "-O" && "$2" == "$expected_name" && "$3" == "$expected_url" ]]; then
+          # Supply only the exact previously verified model. The unchanged Opus
+          # download script independently checks its SHA again before extraction.
+          cp -- "$OPUS_PINNED_MODEL_PATH" "$2"
+          printf 'Verified pinned Opus model supplied from cache: %s\n' "$OPUS_MODEL_SHA256"
+        else
+          exec /usr/bin/wget "$@"
+        fi
+        SHMODEL
+        chmod 755 "$RUNNER_TEMP/model-download-bin/wget"
+        printf '%s\n' "$RUNNER_TEMP/model-download-bin" >> "$GITHUB_PATH"
+        printf 'OPUS_PINNED_MODEL_PATH=%s\n' "$model_path" >> "$GITHUB_ENV"
+        python3 - <<'PYSHIMRECEIPT'
+        import hashlib,json,os
+        from pathlib import Path
+        root=Path(os.environ['RUNNER_TEMP'])
+        receipt_path=root/'verified-opus-model/model-acquisition.json'
+        receipt=json.loads(receipt_path.read_text())
+        shim=root/'model-download-bin/wget'
+        receipt.update(shim_sha256=hashlib.sha256(shim.read_bytes()).hexdigest(),
+            shim_scope='Only exact pinned official model URL and output basename; all other invocations delegate /usr/bin/wget',
+            unchanged_opus_self_verification=True)
+        receipt_path.write_text(json.dumps(receipt,indent=2)+'\n')
+        print(json.dumps(receipt,sort_keys=True))
+        PYSHIMRECEIPT
+    - name: Build exact production controller and codec runner without the GUI
+      timeout-minutes: 25
+      run: |
+        python3 tools/freedv/build_usb_controller_host.py --prepare-codec \
+          --work "$RUNNER_TEMP/usb-controller-build" --jobs 2 \
+          --build-id "usb-controller-ci-${GITHUB_SHA}" \
+          > "$RUNNER_TEMP/usb-controller-build.log" 2>&1 || {
+            task_status=$?
+            python3 tools/freedv/usb_ci_diagnostics.py --work-root "$RUNNER_TEMP"
+            exit "$task_status"
+          }
+    - name: Run complete controller regression and lifecycle cases on private PulseAudio
+      timeout-minutes: 30
+      run: |
+        export LD_LIBRARY_PATH="$RUNNER_TEMP/usb-controller-build/codec/rade_c/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        python3 tools/freedv/test_usb_audio_matrix.py \
+          "$RUNNER_TEMP/usb-controller-build/freedv_usb_audio_test" \
+          "$RUNNER_TEMP/usb-controller-build/codec/sources/rade_c/input_sample.wav" \
+          "$RUNNER_TEMP/usb-controller-build/usb-reference-48k.raw" \
+          --runner "$RUNNER_TEMP/usb-controller-build/freedv_voice_runner" \
+          --rade-library "$RUNNER_TEMP/usb-controller-build/codec/rade_c/src/librade.so.0.1" \
+          --output "$RUNNER_TEMP/usb-controller-matrix" --profile regression \
+          --campaign-root "$RUNNER_TEMP/usb-controller-campaigns" \
+          --source-commit "$TESTED_SOURCE_COMMIT" --build-id "usb-controller-ci-${GITHUB_SHA}" \
+          > "$RUNNER_TEMP/usb-controller-matrix.log" 2>&1 || {
+            task_status=$?
+            python3 tools/freedv/usb_ci_diagnostics.py --work-root "$RUNNER_TEMP"
+            exit "$task_status"
+          }
+    - name: Retain bounded PCM only from failed public-fixture cases
+      if: failure()
+      timeout-minutes: 2
+      run: |
+        python3 tools/freedv/usb_ci_diagnostics.py --work-root "$RUNNER_TEMP" \
+          --output "$RUNNER_TEMP/usb-controller-failure-fixtures"
+    - name: Retain successful and failed build/campaign evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: usb-controller-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+        retention-days: 14
+        if-no-files-found: warn
+        path: |
+          ${{ runner.temp }}/usb-controller-build.log
+          ${{ runner.temp }}/usb-controller-build/build-record.json
+          ${{ runner.temp }}/usb-controller-build/*.log
+          ${{ runner.temp }}/usb-controller-matrix.log
+          ${{ runner.temp }}/usb-controller-matrix/**/*.json
+          ${{ runner.temp }}/usb-controller-matrix/**/*.jsonl
+          ${{ runner.temp }}/usb-controller-matrix/**/*.log
+          ${{ runner.temp }}/usb-controller-matrix/**/*.txt
+          ${{ runner.temp }}/usb-controller-matrix/**/default.pa
+          ${{ runner.temp }}/usb-controller-campaigns/**/*.json
+          ${{ runner.temp }}/usb-controller-failure-fixtures/
+    - name: Retain actual tested-source receipt
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: tested-source-usb-controller-regression
+        retention-days: 14
+        if-no-files-found: error
+        path: ${{ runner.temp }}/tested-source-usb-controller-regression.json
+    - name: Retain pinned model acquisition receipt
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: pinned-opus-model-acquisition
+        retention-days: 14
+        if-no-files-found: warn
+        path: ${{ runner.temp }}/verified-opus-model/model-acquisition.json
+  windows-runner:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+    - name: Use canonical LF bytes before checkout
+      shell: bash
+      run: |
+        git config --global core.autocrlf false
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ce32f575abe6c494c0c17a15f50c8f842ea63c7d
+    - name: Assert and record actual frozen product source
+      shell: python {0}
+      run: |
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import stat
+        import subprocess
+
+        expected = os.environ['TESTED_SOURCE_COMMIT']
+        actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+        if actual != expected:
+            raise SystemExit('Checkout is not the frozen product commit: ' + actual)
+        dirty = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'], text=True)
+        if dirty:
+            raise SystemExit('Frozen source checkout is dirty: ' + dirty)
+        staged = subprocess.check_output(['git', 'ls-files', '--stage', '-z']).decode().split('\0')
+        files, skipped_gitlinks = {}, []
+        for entry in staged:
+            if not entry:
+                continue
+            header, name = entry.split('\t', 1)
+            mode, object_id, stage = header.split()
+            if stage != '0':
+                raise SystemExit('Unmerged source index: ' + name)
+            if mode == '160000':
+                skipped_gitlinks.append(name)
+                continue
+            path = Path(name)
+            if mode not in ('100644', '100755') or not stat.S_ISREG(path.lstat().st_mode):
+                raise SystemExit('Unexpected tracked nonregular file: ' + name)
+            with path.open('rb') as stream:
+                files[name] = hashlib.file_digest(stream, 'sha256').hexdigest()
+        files = dict(sorted(files.items()))
+        tree = hashlib.sha256(''.join(digest + '  ' + name + '\n' for name, digest in files.items()).encode()).hexdigest()
+        receipt = {
+            'schema': 'x6200.usb.ci-tested-source.v1',
+            'source_commit': actual,
+            'expected_source_commit': expected,
+            'source_worktree_dirty': False,
+            'source_files': files,
+            'source_file_count': len(files),
+            'source_tree_sha256': tree,
+            'skipped_gitlinks': sorted(skipped_gitlinks),
+            'workflow_commit': os.environ['GITHUB_SHA'],
+            'workflow_ref': os.environ['GITHUB_WORKFLOW_REF'],
+            'job': os.environ['GITHUB_JOB'],
+            'run_id': os.environ['GITHUB_RUN_ID'],
+            'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+        }
+        output = Path(os.environ['RUNNER_TEMP']) / ('tested-source-' + os.environ['GITHUB_JOB'] + '.json')
+        output.write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+        print(json.dumps({key: value for key, value in receipt.items() if key != 'source_files'}, sort_keys=True))
+        print('Source receipt: ' + str(output))
+    - name: Check inventory collection and failure preservation
+      shell: powershell
+      run: tools/freedv/test_usb_headset_inventory_runner.ps1
+    - name: Check validation collection and failure preservation
+      shell: powershell
+      run: |
+        tools/freedv/test_usb_headset_validation_runner.ps1
+        tools/freedv/test_usb_half_duplex_runner.ps1
+        tools/freedv/test_usb_rf_runner.ps1
+    - name: Retain actual tested-source receipt
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: tested-source-windows-runner
+        retention-days: 14
+        if-no-files-found: error
+        path: ${{ runner.temp }}/tested-source-windows-runner.json
+'on':
+  push:
+    branches:
+    - ci/freedv-live-gain-20261107.3
+  workflow_dispatch: null
+env:
+  TESTED_SOURCE_COMMIT: ce32f575abe6c494c0c17a15f50c8f842ea63c7d
+  OPUS_MODEL_SHA256: 4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453
+  OPUS_MODEL_CACHE_URL: https://github.com/bho18/OpenX6X00/releases/download/freedv-dependency-model-4ed9445b/opus_data-4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453.tar.gz
