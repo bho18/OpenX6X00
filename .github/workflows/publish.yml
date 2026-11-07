@@ -1,0 +1,19 @@
+name: Publish verified X6200 USB RF candidate
+on:
+  push:
+    branches: [publish/freedv-operational-beta-20261107.1]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify every candidate asset and raw image
+        run: python3 assemble.py
+      - name: Publish the exact verified candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: bho18/OpenX6X00
+        run: |
+          gh release create freedv-operational-beta-20261107.1 release/* --target de6c186232b40172421f77e3883e7cb8ae917003 --prerelease --title 'X6200 FreeDV operational beta' --notes-file release-notes.md
