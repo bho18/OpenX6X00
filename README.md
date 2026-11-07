@@ -1,0 +1,1 @@
+Temporary transport staging for the verified FreeDV operational beta. Download complete archives from the GitHub release. Image source: 20cf0e65fecb6459fc8c7d6d40d65b514b82a11c. No operator recordings are staged.
