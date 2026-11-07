@@ -1,0 +1,13 @@
+{
+  "schema": "x6200.build-input-cache.v1",
+  "filename": "opus_data-4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453.tar.gz",
+  "sha256": "4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453",
+  "bytes": 183514217,
+  "upstream_url": "https://media.xiph.org/opus/models/opus_data-4ed9445b96698bad25d852e912b41495ddfa30c8dbc8a55f9cde5826ed793453.tar.gz",
+  "upstream_repository": "https://github.com/xiph/opus",
+  "upstream_commit": "940d4e5af64351ca8ba8390df3f555484c567fbb",
+  "pin_reference": "https://github.com/bho18/OpenX6X00/blob/20cf0e65fecb6459fc8c7d6d40d65b514b82a11c/tools/freedv/sources.json",
+  "purpose": "Byte-identical public Opus model cache for reproducible CI. No model or firmware changes.",
+  "license_reference": "COPYING",
+  "verification": "Expected SHA is pinned in source and independently enforced by the unchanged Opus download script and benchmark builder."
+}

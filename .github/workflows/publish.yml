@@ -1,0 +1,21 @@
+name: Publish pinned public Opus build input
+on:
+  push:
+    branches: [publish/freedv-dependency-model-4ed9445b]
+    paths: [PUBLISH-READY]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify exact public model and provenance
+        run: python3 assemble.py
+      - name: Publish immutable content-addressed model cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: bho18/OpenX6X00
+        run: |
+          gh release create freedv-dependency-model-4ed9445b release/* --target 20cf0e65fecb6459fc8c7d6d40d65b514b82a11c --prerelease --title 'Pinned Opus model build input 4ed9445b' --notes-file release-notes.md
