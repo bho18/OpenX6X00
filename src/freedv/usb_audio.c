@@ -853,7 +853,12 @@ static void cue_pump(fd_usb_audio *a,uint64_t now){
             cue_write(a->cue_stream,cue_frames(a)*2,a);
             if(atomic_load(&a->cue_broken))return;
             cue_control(a,false,false);
-        }else{cue_control(a,false,false);if(writable)cue_write(a->cue_stream,writable,a);}
+        }else{
+            /* Queue the initial legacy buffer before starting its clock. */
+            if(writable<2){cue_error(a,"preview-prebuffer");return;}
+            cue_write(a->cue_stream,writable,a);
+            if(!atomic_load(&a->cue_broken)&&atomic_load(&a->cue_active))cue_control(a,false,false);
+        }
     }
 }
 static void io_tick(pa_mainloop_api *api,pa_time_event *e,const struct timeval *tv,void *p){

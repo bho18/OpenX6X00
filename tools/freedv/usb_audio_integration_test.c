@@ -227,6 +227,11 @@ static fd_usb_snapshot wait_mic_health(fd_usb_audio *audio,fd_usb_mic_health wan
     do{s=healthy_snapshot(audio,"refinement-microphone-health-fault");if(s.mic_health==wanted)return s;pause_ms(5);}while(ms()<until);
     failed_wait(audio,"refinement-microphone-health-timeout",s);
 }
+static fd_usb_snapshot wait_mic_recovery_epoch(fd_usb_audio *audio,uint64_t previous,unsigned timeout){
+    uint64_t until=ms()+timeout;fd_usb_snapshot s={0};
+    do{s=healthy_snapshot(audio,"refinement-microphone-retry-fault");if(s.mic_recovery_epoch>previous)return s;pause_ms(5);}while(ms()<until);
+    failed_wait(audio,"refinement-microphone-retry-epoch-timeout",s);
+}
 static void refinement_phase(fd_usb_audio *audio,const char *phase){
     fd_usb_snapshot s=healthy_snapshot(audio,"refinement-phase-fault");char path[PATH_MAX];
     int n=snprintf(path,sizeof(path),"%s/refinement-phases.jsonl",run_directory);assert(n>0&&(size_t)n<sizeof(path));
@@ -799,9 +804,11 @@ int main(int argc,char **argv) {
                 fd_usb_snapshot unavailable=wait_mic_health(audio,FD_USB_MIC_UNAVAILABLE,2200);
                 assert(unavailable.mic_retry_available&&!unavailable.armed&&!unavailable.mic_meter_ready&&!atomic_load(&f.keys));
                 refinement_phase(audio,"unavailable");assert(fd_usb_audio_retry_microphone(audio));
-                wait_mic_health(audio,FD_USB_MIC_RECOVERING,1000);wait_mic_health(audio,FD_USB_MIC_UNAVAILABLE,2200);
+                wait_mic_health(audio,FD_USB_MIC_RECOVERING,1000);unavailable=wait_mic_health(audio,FD_USB_MIC_UNAVAILABLE,2200);
                 refinement_phase(audio,"retry-timeout");assert(remove(getenv("USB_TEST_STALE_TRIGGER"))==0);
-                assert(fd_usb_audio_retry_microphone(audio));wait_mic_health(audio,FD_USB_MIC_RECOVERING,1000);
+                /* Fresh capture can finish recovery between the 5ms polls.
+                 * Its retained epoch proves this retry actually started. */
+                assert(fd_usb_audio_retry_microphone(audio));wait_mic_recovery_epoch(audio,unavailable.mic_recovery_epoch,1000);
             }
             fd_usb_snapshot recovered=wait_mic_health(audio,FD_USB_MIC_HEALTHY,2200);
             /* HEALTHY proves a fresh post-recovery capture frame. The cleared
