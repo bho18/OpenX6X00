@@ -201,10 +201,7 @@ void controls_encoder_update(cfg_ctrl_t ctrl, int32_t diff, std::string &msg) {
     }
     if (freedv_usb_active() && ctrl == CTRL_VOL) {
         if (diff) freedv_usb_volume(diff);
-        unsigned percent = 0; bool muted = false;
-        if (freedv_usb_volume_percent(&percent, &muted))
-            snprintf(buf, size, "Headphones: %u%%%s", percent, muted ? " (muted)" : "");
-        else snprintf(buf, size, "Headphones: preparing");
+        if(!knobs_usb_volume_text(buf,size))snprintf(buf,size,"Headphones: preparing");
         return;
     }
 #endif

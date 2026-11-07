@@ -20,7 +20,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEAT
                                atomic_json, digest, sha, validate_campaign,
                                INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
-                               host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run, USB_OUTPUT_CONTRACT_VERSION, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run, validate_operational_run, validate_capture_open_contract_run)
+                               host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run, USB_OUTPUT_CONTRACT_VERSION, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run, validate_operational_run, validate_capture_open_contract_run, validate_refinement_run)
 from usb_test_support import run_bounded
 from usb_host_resources import (run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES,
                                 MIN_END_HEADROOM_BYTES, apply_cpu_scheduling)
@@ -38,6 +38,9 @@ def observed_transport_library():
 
 
 COVERAGE = {
+    'refinement_microphone_recovery':{'operational-mic-recover','operational-mic-recover-held','operational-mic-recover-timeout','operational-mic-recover-retune','operational-mic-recover-stop','operational-mic-recover-device-loss','operational-mic-recover-radio-loss'},
+    'refinement_local_cues':{'operational-cue-isolation','operational-cue-burst','operational-cue-failure'},
+    'refinement_confirmed_volume':{'operational-volume-readback','operational-volume-startup-fails'},
     'operational_startup':{'operational-ready','operational-held-ptt','operational-open-prefix','operational-open-missing','operational-open-invalid','operational-open-stop','operational-open-release'},
     'operational_retuning':{'operational-retune','operational-receive-only','operational-key-retune'},
     'operational_exit':{'operational-leave-tx','operational-abort','operational-device-loss','operational-timeout'},
@@ -141,13 +144,13 @@ def main():
     timeouts = {name: args.case_timeout or CASE_TIMEOUTS.get(name, 90) for name in selected}
     resource_config=host_resource_configuration('qualification' if args.profile=='qualification' else 'regression',
         args.resource_reclaim_root,args.resource_min_start_bytes,args.resource_min_end_bytes)
-    plan = {'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'profile': args.profile, 'repetitions': repetitions,
+    plan = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'profile': args.profile, 'repetitions': repetitions,
             'expected_cases': expected, 'selected_cases': selected,
             'debug_subset': bool(args.only), 'case_timeout_seconds': timeouts,
             'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
             'host_resource_configuration':resource_config}
     executions = [name + '@' + str(repeat + 1) for repeat in range(repetitions) for name in selected]
-    record = {'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'schema': MATRIX_SCHEMA, 'status': 'FAIL', 'plan': plan,
+    record = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'schema': MATRIX_SCHEMA, 'status': 'FAIL', 'plan': plan,
               'scope': 'Actual codec and four-stream controller; fake RF transport, never hardware qualification',
               'radio_accessed': False, 'hardware_qualified': False, 'cases': {}, 'coverage': [],
               'infrastructure_prerequisites':{},
@@ -175,14 +178,14 @@ def main():
                     'rade_library_sha256': sha(args.rade_library.resolve()) if args.rade_library else None,
                     'fault_injector_source_sha256': sha(here/'usb_audio_fault_inject.c'),
                     'compiler_sha256': sha(Path(compiler).resolve()),
-                    'host_resource_configuration':resource_config,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,
+                    'host_resource_configuration':resource_config,'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,
                     'transport_library_sha256':observed_transport_library()['library_sha256'],
                     'pulse_tools_sha256': {name: sha(Path(shutil.which(name)).resolve()) for name in
                         ('pulseaudio','paplay','parec','pactl') if shutil.which(name)},
                     'test_tools_sha256': {name: sha(here / name) for name in
                         ('test_usb_audio_matrix.py', 'test_usb_audio_integration.py', 'usb_test_support.py',
                          'usb_test_campaign.py', 'usb_collector_contract.py', 'usb_rf_evidence.py',
-                         'usb_harness_failure_selftest.py','usb_host_resources.py','usb_transport_oracle.py','usb_output_contract.py','usb_capture_open_contract.py',
+                         'usb_harness_failure_selftest.py','usb_host_resources.py','usb_transport_oracle.py','usb_output_contract.py','usb_capture_open_contract.py','usb_refinement_contract.py',
                          'usb_audio_monitor.c','usb_fifo_clock.py',
                          'usb_audio_fault_inject.c', 'usb_audio_integration_test.c')}}
         record.update(identity=identity, source_commit=revision, source_tree_sha256=tree,
@@ -263,6 +266,9 @@ def main():
                        'harness': details.get('harness'), 'identity': details.get('identity'),
                        'usb_output_contract_version':details.get('usb_output_contract_version'),'output_contract':details.get('output_contract'),
                        'usb_capture_open_contract_version':details.get('usb_capture_open_contract_version'),'capture_open_contract':details.get('capture_open_contract'),
+                       'usb_refinement_contract_version':details.get('usb_refinement_contract_version'),'refinement_contract':details.get('refinement_contract'),
+                       'refinement_exercise':details.get('refinement_exercise'),'refinement_volume_readbacks':details.get('refinement_volume_readbacks'),
+                       'local_cue_output':details.get('local_cue_output'),
                        'backend_profile':details.get('backend_profile'),'backend_failure':details.get('backend_failure'),'observer_admission':details.get('observer_admission'),
                        'collector_contract':details.get('collector_contract'),
                        'audio_buffer_contract':details.get('audio_buffer_contract'),
@@ -297,6 +303,7 @@ def main():
                         validate_backend_profile_run(run,name,verify_files=True)
                         validate_observer_admission_run(run,name,verify_files=True)
                         if name.startswith('operational-'):validate_operational_run(run,name,verify_files=True)
+                        validate_refinement_run(run,name,verify_files=True,expected_identity=identity)
                         if name=='audio-controls':validate_audio_controls_run(run,verify_files=True)
                         if name=='audio-gain-turn':validate_audio_gain_turn_run(run,verify_files=True)
                     except ValueError as error:

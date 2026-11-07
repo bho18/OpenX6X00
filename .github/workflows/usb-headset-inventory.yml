@@ -1,7 +1,7 @@
 name: USB headset and controller checks
 on:
   push:
-    branches: [test/usb-headset-20261105, beta/usb-voice-20261106, feature/freedv-operational-ui-20261106]
+    branches: [test/usb-headset-20261105, beta/usb-voice-20261106, feature/freedv-operational-ui-20261106, feature/freedv-refinement-20261107]
   workflow_dispatch:
 permissions:
   contents: read
@@ -19,7 +19,11 @@ jobs:
           task_apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2)
           sudo apt-get "${task_apt_options[@]}" update
           sudo env DEBIAN_FRONTEND=noninteractive apt-get "${task_apt_options[@]}" install -y --no-install-recommends \
-            build-essential binutils e2fsprogs libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils
+            build-essential binutils e2fsprogs libpulse-dev libsamplerate0-dev pulseaudio pulseaudio-utils python3-venv
+          # Host-only preview waveform observer; never installed on the radio.
+          python3 -m venv "$RUNNER_TEMP/usb-observer-python"
+          "$RUNNER_TEMP/usb-observer-python/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: numpy==2.3.5
+          echo "$RUNNER_TEMP/usb-observer-python/bin" >> "$GITHUB_PATH"
       - name: Check USB duplex endpoint identification without devices
         run: python tools/freedv/test_usb_headset_inventory.py
       - name: Check validation guards and partial evidence
@@ -33,6 +37,8 @@ jobs:
           python -O tools/freedv/test_usb_output_contract.py
           python tools/freedv/test_usb_capture_open_contract.py
           python -O tools/freedv/test_usb_capture_open_contract.py
+          python tools/freedv/test_usb_refinement_contract.py
+          python -O tools/freedv/test_usb_refinement_contract.py
           python tools/freedv/test_usb_fifo_clock.py
           python tools/freedv/test_usb_backend_observer.py
           python -O tools/freedv/test_usb_backend_observer.py
@@ -61,7 +67,7 @@ jobs:
     # syntax-only checks or successful basic PCM helpers. This one-pass host
     # profile is explicitly nonpromotable; release qualification is separate.
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -75,7 +81,10 @@ jobs:
           sudo apt-get "${task_apt_options[@]}" update
           sudo env DEBIAN_FRONTEND=noninteractive apt-get "${task_apt_options[@]}" install -y --no-install-recommends \
             build-essential cmake ninja-build autoconf automake libtool pkg-config \
-            libpulse-dev libsamplerate0-dev libsndfile1-dev pulseaudio pulseaudio-utils
+            libpulse-dev libsamplerate0-dev libsndfile1-dev pulseaudio pulseaudio-utils python3-venv
+          python3 -m venv "$RUNNER_TEMP/usb-observer-python"
+          "$RUNNER_TEMP/usb-observer-python/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: numpy==2.3.5
+          echo "$RUNNER_TEMP/usb-observer-python/bin" >> "$GITHUB_PATH"
       - name: Build exact production controller and codec runner without the GUI
         timeout-minutes: 25
         run: |
@@ -88,7 +97,7 @@ jobs:
               exit "$task_status"
             }
       - name: Run complete controller regression and lifecycle cases on private PulseAudio
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/usb-controller-build/codec/rade_c/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           python3 tools/freedv/test_usb_audio_matrix.py \

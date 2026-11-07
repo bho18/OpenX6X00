@@ -632,6 +632,7 @@ def opening_prefix_fixture(root):
 
 def capture_case_fixture(case,root,identity=None):
     from test_usb_audio_integration import SPEECH_CASES,WAVEFORM_CASES
+    from usb_test_campaign import REFINEMENT_CASES
     if case in ('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'):
         return backend_failure_fixture(case,root,identity)
     if case=='operational-open-prefix':result=opening_prefix_fixture(root)
@@ -646,17 +647,26 @@ def capture_case_fixture(case,root,identity=None):
         count=int(case in WAVEFORM_CASES)
         result={'harness':{'turns':count,'total_turns':count,'eoo':count,'fault':1},'capture_close':capture_close_fixture(count)}
     if case.startswith('operational-'):
-        count=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release'))
-        fault=23 if case in ('operational-open-missing','operational-open-invalid') else 1 if case=='operational-open-stop' else 10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
+        fault=13 if case=='operational-volume-startup-fails' else 23 if case in ('operational-open-missing','operational-open-invalid') else 1 if case in ('operational-open-stop','operational-mic-recover-stop') else 10 if case=='operational-timeout' else 2 if case in ('operational-device-loss','operational-mic-recover-device-loss') else 4 if case=='operational-mic-recover-radio-loss' else 1 if case=='operational-abort' else 0
+        count=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release') or (case in REFINEMENT_CASES and fault==0))
         result['harness'].update(turns=count,total_turns=count,eoo=count,fault=fault,operational=True,
-            startup_ready=True,qualification_complete=False,qualification_turns=0,tx_timeout_seconds=30 if case=='operational-timeout' else 180,
-            physical_tx=False,rf_clear_confirmed=True,configuration_ready=True,tuning_revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune') else 1,
+            startup_ready=case!='operational-volume-startup-fails',qualification_complete=False,qualification_turns=0,tx_timeout_seconds=30 if case=='operational-timeout' else 180,
+            physical_tx=False,rf_clear_confirmed=case!='operational-mic-recover-radio-loss',configuration_ready=True,tuning_revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune','operational-mic-recover-retune') else 1,
             physical_ptt_pressed=case in ('operational-leave-tx','operational-abort','operational-device-loss','operational-timeout','operational-open-missing','operational-open-invalid','operational-open-stop'),
             physical_release_sequence=2 if case in ('operational-key-retune','operational-open-release') else 1 if case in ('operational-held-ptt','operational-retune','operational-receive-only','operational-open-prefix') else 0,
             keys=2 if case=='operational-open-release' else count or int(case in ('operational-open-missing','operational-open-invalid','operational-open-stop')),
             submitted_mic=count*96000,key_attempts=2 if case in ('operational-key-retune','operational-open-release') else count,key_denials=int(case=='operational-key-retune'),
             rade_creations=1,encoder_creations=1,decoder_creations=1,rx_synthesis_blocks=4 if case=='operational-retune' else 0)
         if case!='operational-open-prefix':result['capture_close']=capture_close_fixture(count)
+        if case in REFINEMENT_CASES:
+            # Put refinement phases before the finite TX interval. Durations,
+            # source indices and sample counts retain their independent values.
+            for interval in result['capture_close']['turns']:
+                for field in ('capture_started_ms','close_started_ms','timing_issued_ms','frozen_ms','reached_ms','closed_ms'):
+                    interval[field]+=10000
+            result['harness'].update(physical_release_sequence=2 if case=='operational-mic-recover-held' else int(bool(count)),
+                physical_ptt_pressed=False,headset_uncorks=int(case!='operational-volume-startup-fails'),headset_payload_writes=0,
+                first_fault_origin='headset-initial-volume-not-confirmed' if case=='operational-volume-startup-fails' else '')
         if count:sink_turn_fixture(result['capture_close'],False,root) # Produce raw finite-close fixture records.
     if case in WAVEFORM_CASES:
         result['actual_sink_turns']=sink_turn_fixture(result['capture_close'],case in SPEECH_CASES,root)
@@ -707,9 +717,10 @@ def operational_case_fixture(case,root,result):
                generation=1,tuning_revision=1,radio_sequence=20,tx_eligible=case!='operational-receive-only',ptt_release_sequence=int(case=='operational-held-ptt'),
                ptt=False,rf_valid=True,rf_tx=False,configuration_ready=True,captures_fresh=True,buffers_ready=True,
                headset_id='usb-fixture',headset_name='USB fixture',source='usb-source',sink='usb-sink',**key)
-    rows.insert(1,ready);h=result['harness'];completion=json.loads(cp.read_text())
+    if case!='operational-volume-startup-fails':rows.insert(1,ready)
+    h=result['harness'];completion=json.loads(cp.read_text())
     fields=dict(usb_startup_contract_version=4,state=5 if h['fault']>1 else 6,fault=h['fault'],rf_disabled=False,rf_valid=True,rf_tx=False,
-                rf_clear_confirmed=True,operational=True,startup_ready=True,leaving=True,configuration_ready=True,tx_eligible=True,
+                rf_clear_confirmed=h['rf_clear_confirmed'],operational=True,startup_ready=h['startup_ready'],leaving=True,configuration_ready=True,tx_eligible=True,
                 tuning_revision=h['tuning_revision'],tx_timeout_seconds=h['tx_timeout_seconds'],qualification_target=0,
                 qualification_complete=False,qualification_turns=0)
     samples=[row for row in rows if row.get('kind')=='sample'];samples[-1].update(fields)
@@ -722,15 +733,155 @@ def operational_case_fixture(case,root,result):
                       finalized_ms=completion['last_sample_ms']+1,trace_rows=sum(row.get('kind') in ('event','sample') for row in rows),
                       events_dropped=0,trace_history_truncated=False,storage_errno=0)
     path.write_text(''.join(json.dumps(row)+'\n' for row in rows));atomic_json(cp,completion)
-    atomic_json(path.with_name(path.stem+'-readiness.json'),ready)
+    if case!='operational-volume-startup-fails':atomic_json(path.with_name(path.stem+'-readiness.json'),ready)
     from usb_output_contract import validate_output_contract
     summary=validate_output_contract(rows,completion)
     result['output_contract']['sessions']=[dict(summary,trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp))]
     refresh_capture_contract_fixture(root,result)
     rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()];completion=json.loads(cp.read_text())
     if case=='operational-open-release':h.update(rx_ready_repress_hits=1,rx_ready_repress_up=True,rx_ready_repress_release=1,rx_ready_repress_sequence=30)
-    result['operational']=operational_proof(rows,completion,h,case)
+    from usb_test_campaign import REFINEMENT_CASES
+    if case in REFINEMENT_CASES:
+        refinement_case_fixture(case,root,result)
+    else:
+        result['operational']=operational_proof(rows,completion,h,case)
     if case=='operational-retune':result['actual_headset_output']=operational_headset_fixture(root,path)
+
+
+def refinement_case_fixture(case,root,result):
+    """Construct typed SYNTHETIC gate inputs; no controller or sink is executed.
+
+    Numerical PCM and JSON artifacts exercise the production revalidators. They
+    are deliberately not substitutes for the separate real integration runs.
+    """
+    from usb_refinement_contract import (BUDGETS,validate_refinement_contract,
+        refinement_exercise,cue_reference_pcm,local_cue_waveform)
+    result['synthetic']=True
+    root=Path(root);directory=root/'result'
+    path=directory/'freedv-usb-session-unit.jsonl';cp=path.with_name(path.stem+'-completion.json')
+    rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    completion=json.loads(cp.read_text());h=result['harness']
+    header=next(row for row in rows if row.get('kind')=='session')
+    header.update(usb_refinement_contract_version=1,synthetic=True,**BUDGETS)
+    for row in rows:
+        if row.get('kind')=='startup-readiness':row.update(usb_refinement_contract_version=1,**BUDGETS)
+        if row.get('kind')=='capture-close' and row.get('complete') is True:
+            row.update(close_trigger='ptt-release',physical_release_sequence=h['physical_release_sequence'])
+        if row.get('event')=='capture-navigation-observed':row['event']='capture-release-observed'
+    common=dict(usb_refinement_contract_version=1,mic_health=0,mic_health_reason='fresh-capture',
+        mic_health_changed_ms=100,mic_recovery_started_ms=0,mic_recovery_epoch=0,mic_recovery_attempts=0,
+        mic_retry_available=False,mic_meter_ready=True,mic_age_ms=0,armed=False,pressed=False,
+        rx_sync_changed_ms=100,rx_audio_last_ms=100,headset_volume_initialized=True,
+        headset_volume_ready=True,headset_volume_pending=False,headset_volume_percent=37,
+        headset_volume_requested_percent=37,headset_volume_requested_muted=False,headset_muted=False,
+        headset_volume_requested_revision=1,headset_volume_confirmed_revision=1,headset_volume_failed_revision=0,
+        cue_available=True,cue_active=False,cue_requests=0,cue_completed=0,cue_canceled=0,cue_failures=0,
+        keys=0,turns=0,submitted_mic=0,physical_release_sequence=0,state=1,synthetic=True)
+    phases=[]
+    def phase(name,at,**changes):
+        # Every phase is a full typed observation, with counters carried forward.
+        common.update(changes,sampled_ms=at,rx_audio_last_ms=at)
+        record=dict(common,phase=name,ms=at)
+        phases.append(record)
+        rows.append(dict(record,kind='sample'))
+        return record
+    if case!='operational-volume-startup-fails':phase('initial',150)
+    if case.startswith('operational-mic-recover'):
+        phase('recovering',1000,mic_health=1,mic_health_reason='capture-stale',mic_meter_ready=False,
+            mic_age_ms=750,mic_health_changed_ms=1000,mic_recovery_started_ms=1000,
+            mic_recovery_epoch=1,mic_recovery_attempts=1)
+        if case.endswith('timeout'):
+            phase('unavailable',2500,mic_health=2,mic_health_reason='recovery-timeout',mic_retry_available=True,
+                mic_health_changed_ms=2500)
+            phase('retry-timeout',4100,mic_recovery_attempts=2,mic_recovery_epoch=2,
+                mic_recovery_started_ms=2600,mic_health_changed_ms=4100)
+        elif case.endswith('retune'):
+            phase('retune-canceled',1100,mic_health=2,mic_health_reason='tuning-changed',mic_retry_available=True,
+                mic_health_changed_ms=1100)
+        if not h['fault']:
+            attempts=3 if case.endswith('timeout') else 2 if case.endswith('retune') else 1
+            phase('recovered',4500,mic_health=0,mic_health_reason='fresh-capture',mic_retry_available=False,
+                mic_meter_ready=True,mic_age_ms=0,mic_health_changed_ms=4500,
+                mic_recovery_attempts=attempts,mic_recovery_epoch=attempts,
+                mic_recovery_started_ms=4200 if case.endswith('timeout') else 1200 if case.endswith('retune') else 1000,
+                pressed=case.endswith('held'))
+    elif case.startswith('operational-cue-'):
+        failed=case.endswith('failure')
+        phase('cue-preview',500,cue_requests=1,cue_completed=int(not failed),cue_failures=int(failed),
+            cue_available=not failed)
+        if failed:h['cue_connect_failures']=1
+        if case.endswith('burst'):
+            phase('cue-burst',600,cue_requests=30,cue_completed=2,cue_canceled=1)
+            phase('cue-decoded-before-edit',700)
+            phase('cue-during-decoded-speech',800,cue_requests=31,cue_canceled=2)
+            h.update(cue_press_hits=1,rx_synthesis_blocks=4)
+    elif case=='operational-volume-readback':
+        phase('volume-pending',300,headset_volume_pending=True,headset_volume_requested_percent=48,
+            headset_volume_requested_revision=2)
+        phase('volume-confirmed',400,headset_volume_pending=False,headset_volume_percent=48,
+            headset_volume_confirmed_revision=2)
+        phase('volume-failed',500,headset_volume_requested_percent=60,headset_volume_requested_revision=3,
+            headset_volume_failed_revision=3)
+        phase('volume-recovered',600,headset_volume_percent=55,headset_volume_requested_percent=55,
+            headset_volume_requested_revision=4,headset_volume_confirmed_revision=4)
+    elif case=='operational-volume-startup-fails':
+        common.update(headset_volume_initialized=False,headset_volume_ready=False,headset_volume_pending=True,
+            headset_volume_confirmed_revision=0,mic_health=2,mic_health_reason='startup',mic_meter_ready=False)
+    # Keep the final counters after the last synthetic phase. Existing finite
+    # source/TX/backend records remain authoritative for their own contracts.
+    h.update({key:common[key] for key in ('cue_requests','cue_completed','cue_canceled','cue_failures')})
+    end=max([row.get('ms',0) for row in rows]+[5000])+100
+    final=next(row for row in reversed(rows) if row.get('kind')=='sample' and 'phase' not in row)
+    final.update(common,ms=end,sampled_ms=end,rx_audio_last_ms=end,keys=h['keys'],turns=h['turns'],
+        submitted_mic=h['submitted_mic'],state=5 if h['fault']>1 else 6,pressed=False)
+    completion.update({key:value for key,value in final.items() if key not in ('kind','ms','phase')},
+        last_sample_ms=end,finalized_ms=end+1,usb_refinement_contract_version=1)
+    # The phase rows precede the already offset warm TX turn (when present).
+    rows=sorted(rows,key=lambda row:(-1 if row.get('kind')=='session' else row.get('ms',
+        row.get('closed_ms',row.get('completed_us',0)//1000)),row.get('kind','')))
+    completion['trace_rows']=sum(row.get('kind') in ('event','sample') for row in rows)
+    path.write_text(''.join(json.dumps(row)+'\n' for row in rows));atomic_json(cp,completion)
+    ready=next((row for row in rows if row.get('kind')=='startup-readiness'),None)
+    if ready:atomic_json(path.with_name(path.stem+'-readiness.json'),ready)
+    refresh_capture_contract_fixture(root,result)
+    rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()];completion=json.loads(cp.read_text())
+    files=dict(trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp))
+    contract=validate_refinement_contract(rows,completion)
+    result.update(usb_refinement_contract_version=1,refinement_contract=dict(
+        schema='x6200.usb.refinement-contract-set.v1',status='PASS',usb_refinement_contract_version=1,
+        sessions=[dict(contract,**files)]))
+    exercise=refinement_exercise(rows,completion,h,phases,case)
+    if phases:
+        pp=directory/'synthetic-refinement-phases.jsonl'
+        pp.write_text(''.join(json.dumps(record)+'\n' for record in phases))
+        exercise['phases_artifact']=dict(path=str(pp),sha256=sha(pp))
+    result['refinement_exercise']=exercise
+    result['operational']=operational_proof(rows,completion,h,case)
+    if case=='operational-volume-readback':
+        target='alsa_output.usb-fixture'
+        def sinks(level):
+            return {target:dict(mute=False,volume=[round(65536*level/100),round(65536*level*.75/100)]),
+                'radio_sink_fixture':dict(mute=False,volume=[65536,65536]),
+                'unrelated_sink':dict(mute=True,volume=[15073,12452])}
+        readbacks=[]
+        for name,record,level in zip(('volume-initial','volume-pending','volume-confirmed','volume-failed','volume-recovered'),
+                                    phases,(37,37,48,48,55)):
+            snapshot=dict(record,phase=name);pulse=sinks(level)
+            entry=dict(snapshot=snapshot,pulse=pulse)
+            for kind,body in (('snapshot',snapshot),('pulse',pulse)):
+                artifact=directory/('synthetic-'+name+'-'+kind+'.json');atomic_json(artifact,body)
+                entry.update({kind+'_path':str(artifact),kind+'_sha256':sha(artifact)})
+            readbacks.append(entry)
+        result['refinement_volume_readbacks']=dict(schema='x6200.usb.refinement-volume-readbacks.v1',
+            status='PASS',synthetic=True,initial_sinks=sinks(37),phases=readbacks)
+    if case.startswith('operational-cue-'):
+        monitor=root/'synthetic-cue.raw';ledger=root/'synthetic-cue.jsonl'
+        pcm=b'\0\0'*960 if case.endswith('failure') else b'\0\0'*960+cue_reference_pcm()+b'\0\0'*960
+        monitor.write_bytes(pcm);ledger.write_text(json.dumps(dict(kind='completion',error=0,synthetic=True))+'\n')
+        waveform=dict(status='NOT_PLAYED') if case.endswith('failure') else local_cue_waveform(pcm)
+        result['local_cue_output']=dict(schema='x6200.usb.local-cue-output.v1',status='PASS',synthetic=True,
+            waveform=waveform,monitor=dict(path=str(monitor),sha256=sha(monitor)),ledger=dict(path=str(ledger),sha256=sha(ledger)))
+        if case.endswith('burst'):result['actual_headset_output']=operational_headset_fixture(root,path)
 
 
 def operational_headset_fixture(root,trace):
@@ -777,7 +928,8 @@ class CampaignTests(unittest.TestCase):
         self.identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
         self.identity['usb_output_contract_version']=1
         self.identity['usb_capture_open_contract_version']=1
-        self.plan = {'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'profile': 'qualification', 'repetitions': 2,
+        self.identity['usb_refinement_contract_version']=1
+        self.plan = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'profile': 'qualification', 'repetitions': 2,
                      'expected_cases': ['normal'], 'selected_cases': ['normal'],
                      'debug_subset': False, 'case_timeout_seconds': {'normal': 90},
                      'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
@@ -804,7 +956,7 @@ class CampaignTests(unittest.TestCase):
             runs.append({'status': 'PASS', 'repeat': repeat, 'log_path': str(log),
                          'log_sha256': sha(log), 'case_record_path': str(case),
                          'case_record_sha256': sha(case),**extra})
-        result = {'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
+        result = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
                   'plan': self.plan, 'complete_matrix': status == 'PASS',
                   'expected_executions': ['normal@1', 'normal@2'],
                   'executed': ['normal@1', 'normal@2'], 'not_executed': [], 'skipped': [],
@@ -2233,6 +2385,136 @@ class OperationalEvidenceTests(unittest.TestCase):
                 else:(Path(directory)/'result/freedv-usb-session-unit-readiness.json').unlink()
                 with self.assertRaises((ValueError,OSError)):
                     validate_operational_run(run,'operational-leave-tx',verify_files=True)
+
+
+class RefinementEvidenceTests(unittest.TestCase):
+    """Synthetic gate negatives; these never claim an executed recovery/cue."""
+    def fixture(self,case,directory):
+        run=capture_case_fixture(case,directory)
+        run['case_record_path']=str(Path(directory)/'case-result.json')
+        return run
+
+    def validate(self,run,case,**kwargs):
+        from usb_test_campaign import validate_refinement_run
+        return validate_refinement_run(run,case,**kwargs)
+
+    def rewrite_phases(self,run,mutate):
+        proof=run['refinement_exercise'];artifact=proof['phases_artifact']
+        phases=copy.deepcopy(proof['phases']);mutate({row['phase']:row for row in phases})
+        proof['phases']=phases
+        path=Path(artifact['path']);path.write_text(''.join(json.dumps(row)+'\n' for row in phases))
+        artifact['sha256']=sha(path)
+
+    def test_all_twelve_typed_synthetic_refinement_cases_revalidate(self):
+        from usb_test_campaign import REFINEMENT_CASES
+        self.assertEqual(len(REFINEMENT_CASES),12)
+        for case in sorted(REFINEMENT_CASES):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture(case,directory)
+                self.assertIs(run['synthetic'],True)
+                self.validate(run,case,verify_files=True)
+                validate_operational_run(run,case,verify_files=True)
+                validate_capture_open_contract_run(run,verify_files=True)
+                validate_capture_close_run(run,verify_files=True)
+                validate_output_contract_run(run,verify_files=True)
+                validate_sink_turns_run(run,case,verify_files=True)
+
+    def test_missing_legacy_untyped_or_other_build_refinement_cannot_promote(self):
+        for mutation in ('missing','legacy','boolean','unknown','summary','case','identity'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                case='operational-mic-recover';run=self.fixture(case,directory)
+                if mutation=='missing':run.pop('refinement_contract')
+                elif mutation=='legacy':run['usb_refinement_contract_version']=0
+                elif mutation=='boolean':run['usb_refinement_contract_version']=True
+                elif mutation=='unknown':run['usb_refinement_contract_version']=2
+                elif mutation=='summary':run['refinement_exercise']['contract']['cue_completed']=99
+                elif mutation=='case':run['refinement_exercise']['case']='operational-cue-isolation'
+                else:run['refinement_contract']['sessions'][0]['build_id']='another-build'
+                with self.assertRaises(ValueError):
+                    self.validate(run,case,verify_files=True,expected_identity=run['identity'])
+
+    def test_altered_phase_files_and_matching_hash_cannot_hide_unsafe_recovery(self):
+        mutations=(('operational-mic-recover','recovering','armed',True),
+            ('operational-mic-recover','recovering','mic_age_ms',749),
+            ('operational-mic-recover','recovered','keys',1),
+            ('operational-mic-recover-held','recovered','armed',True),
+            ('operational-mic-recover-held','recovered','physical_release_sequence',1),
+            ('operational-mic-recover-timeout','retry-timeout','mic_recovery_attempts',1),
+            ('operational-mic-recover-timeout','unavailable','mic_health_changed_ms',2499),
+            ('operational-mic-recover-timeout','unavailable','mic_health_changed_ms',2651),
+            ('operational-mic-recover-retune','retune-canceled','mic_health_reason','fresh-capture'))
+        for case,name,key,value in mutations:
+            with self.subTest(case=case,key=key,value=value),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture(case,directory)
+                self.rewrite_phases(run,lambda phases:phases[name].update({key:value}))
+                with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
+
+    def test_optional_cue_cannot_enter_tx_or_mask_decoded_speech(self):
+        for mutation in ('microphone','burst','speech','failure'):
+            case='operational-cue-failure' if mutation=='failure' else 'operational-cue-burst'
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture(case,directory)
+                def change(phases):
+                    if mutation=='microphone':phases['cue-preview']['submitted_mic']=1
+                    elif mutation=='burst':phases['cue-burst']['cue_requests']=36
+                    elif mutation=='speech':phases['cue-during-decoded-speech']['cue_active']=True
+                    else:phases['cue-preview']['cue_available']=True
+                self.rewrite_phases(run,change)
+                with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
+
+    def test_actual_cue_artifacts_are_regraded_even_after_hash_update(self):
+        for case in ('operational-cue-isolation','operational-cue-failure'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture(case,directory);cue=run['local_cue_output'];artifact=cue['monitor']
+                path=Path(artifact['path'])
+                path.write_bytes(b'\1\0'*960 if case.endswith('failure') else b'\0'*path.stat().st_size)
+                artifact['sha256']=sha(path)
+                with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
+
+    def test_volume_request_needs_confirmed_revision_and_independent_sink_state(self):
+        for mutation in ('optimistic','wrong-ack','failure-hidden','unrelated','balance','changed-file'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                case='operational-volume-readback';run=self.fixture(case,directory)
+                if mutation=='optimistic':
+                    self.rewrite_phases(run,lambda phases:phases['volume-pending'].update(headset_volume_percent=48))
+                elif mutation=='wrong-ack':
+                    self.rewrite_phases(run,lambda phases:phases['volume-confirmed'].update(headset_volume_confirmed_revision=1))
+                elif mutation=='failure-hidden':
+                    self.rewrite_phases(run,lambda phases:phases['volume-failed'].update(headset_volume_failed_revision=0))
+                else:
+                    entry=run['refinement_volume_readbacks']['phases'][-1]
+                    if mutation=='unrelated':entry['pulse']['radio_sink_fixture']['volume'][0]-=1
+                    elif mutation=='balance':entry['pulse']['alsa_output.usb-fixture']['volume'][1]=0
+                    else:Path(entry['pulse_path']).write_text('{}\n')
+                with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
+
+    def test_raw_contract_budgets_and_runtime_types_cannot_be_relabelled(self):
+        for mutation in ('budget','future','counter','cue-tx','trace-deleted','phases-deleted'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                case='operational-mic-recover';run=self.fixture(case,directory)
+                item=run['refinement_contract']['sessions'][0]
+                path=Path(directory)/'result'/item['trace_file']
+                if mutation=='trace-deleted':path.unlink()
+                elif mutation=='phases-deleted':Path(run['refinement_exercise']['phases_artifact']['path']).unlink()
+                else:
+                    rows=[json.loads(line) for line in path.read_text().splitlines()]
+                    if mutation=='budget':rows[0]['mic_recovery_budget_ms']=1600
+                    else:
+                        sample=next(row for row in rows if row.get('kind')=='sample')
+                        if mutation=='future':sample['mic_health_changed_ms']=sample['sampled_ms']+1
+                        elif mutation=='counter':sample['cue_requests']=True
+                        else:sample.update(state=3,cue_active=True)
+                    path.write_text(''.join(json.dumps(row)+'\n' for row in rows));item['trace_sha256']=sha(path)
+                with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
+
+    def test_startup_volume_failure_cannot_fabricate_admitted_phases(self):
+        for mutation in ('phase','playback','rf'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                case='operational-volume-startup-fails';run=self.fixture(case,directory)
+                if mutation=='phase':run['refinement_exercise']['phases_artifact']={'path':'invented','sha256':'0'*64}
+                elif mutation=='playback':run['harness']['headset_payload_writes']=1
+                else:run['harness']['keys']=1
+                with self.assertRaises(ValueError):self.validate(run,case,verify_files=True)
 
 
 class AudioControlEvidenceTests(unittest.TestCase):

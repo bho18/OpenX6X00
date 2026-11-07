@@ -56,6 +56,7 @@ function global:scp {
    if(Test-Path -LiteralPath $item -PathType Leaf){
     if($global:usbRfEvidenceCase -eq 'missing_upload_dependency' -and [IO.Path]::GetFileName($item) -eq 'usb_output_contract.py'){continue}
     if($global:usbRfEvidenceCase -eq 'missing_capture_open_dependency' -and [IO.Path]::GetFileName($item) -eq 'usb_capture_open_contract.py'){continue}
+    if($global:usbRfEvidenceCase -eq 'missing_refinement_dependency' -and [IO.Path]::GetFileName($item) -eq 'usb_refinement_contract.py'){continue}
     Copy-Item -LiteralPath $item -Destination $global:usbRfRemote
    }
   }
@@ -78,21 +79,39 @@ function global:scp {
   if($global:usbRfEvidenceCase -eq 'mismatched_identity'){$identity.source_commit=('f'*40)}
   if($global:usbRfEvidenceCase -eq 'truncated_history'){$completion.trace_history_truncated=$true}
   if($global:usbRfEvidenceCase -eq 'persistence_failure'){$completion.storage_errno=5}
+  $ready=$null;$refinementVersion=0;$qualificationStatus='PASS'
+  if($global:usbRfEvidenceCase -in @('operational_success','operational_refinement_mismatch')){
+   $version=4;$qualificationStatus='NOT_REQUESTED';$refinementVersion=1
+   $completion.operational=$true;$completion.qualification_target=0;$completion.qualification_complete=$false
+   $completion.usb_refinement_contract_version=1
+   $ready=@{session_id=$identity.session_id;build_id=$identity.build_id;source_commit=$identity.source_commit;status='PASS';usb_refinement_contract_version=1}
+   if($global:usbRfEvidenceCase -eq 'operational_refinement_mismatch'){$completion.usb_refinement_contract_version=0}
+  }
   @{schema='x6200.usb-rf-evidence.v1';status=$status;rf_key_commands_sent=$false;
     usb_startup_contract_version=$version;usb_capture_open_contract_version=1;session_identity=$identity;runtime_completion=$completion;
+    usb_refinement_contract_version=$refinementVersion;runtime_startup_readiness=$ready;
     reason='Fixture microphone flush timeout';primary_failure_stage='gui';rf_disabled=$true;rf_tested=$rfTested;
-    stages=@{capture_open=@{status='PASS'};collection=@{status='PASS'};gui=@{status=$guiStatus};qualification=@{status='PASS'};session=@{status=$sessionStatus}}} |
+    stages=@{capture_open=@{status='PASS'};refinement=@{status='PASS'};startup=@{status='PASS'};collection=@{status='PASS'};gui=@{status=$guiStatus};qualification=@{status=$qualificationStatus};session=@{status=$sessionStatus}}} |
    ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $result 'rf-evidence.json')
   'partial recording placeholder' | Set-Content -LiteralPath (Join-Path $result 'microphone.raw')
  }
 }
 try {
- foreach($case in @('success','helper_failure','blocked_zero_exit','copy_failure','qualification','invalid_qualification','legacy_qualification','missing_completion','mismatched_identity','truncated_history','persistence_failure','missing_upload_dependency','missing_capture_open_dependency')){
+ foreach($case in @('success','helper_failure','blocked_zero_exit','copy_failure','qualification','invalid_qualification','legacy_qualification','missing_completion','mismatched_identity','truncated_history','persistence_failure','missing_upload_dependency','missing_capture_open_dependency','missing_refinement_dependency','operational_success','operational_refinement_mismatch')){
   $global:usbRfEvidenceCase=$case
+  $manifestPath=Join-Path $root 'rf-test-manifest.json'
+  $currentManifest=Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+  $currentManifest.usb_startup_contract_version=3
+  $currentManifest.PSObject.Properties.Remove('usb_refinement_contract_version')
+  if($case -in @('operational_success','operational_refinement_mismatch')){
+   $currentManifest.usb_startup_contract_version=4
+   $currentManifest | Add-Member -NotePropertyName usb_refinement_contract_version -NotePropertyValue 1
+  }
+  [IO.File]::WriteAllText($manifestPath,($currentManifest | ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
   $before=@(Get-ChildItem -LiteralPath $root -Filter '*.zip').Count
   $rejected=$false;$message=''
   try {& (Join-Path $root 'Invoke-UsbRfEvidence.ps1') -RadioIp '192.0.2.1'} catch {$rejected=$true;$message=$_.Exception.Message}
-  if($rejected -ne ($case -notin @('success','qualification'))){throw "Wrong result: $case"}
+  if($rejected -ne ($case -notin @('success','qualification','operational_success'))){throw "Wrong result: $case"}
   if($case -in @('helper_failure','blocked_zero_exit')){
    if($message -notlike '*Fixture microphone flush timeout*' -or $message -like '*Unexpected evidence*'){
     throw "Primary blocker lost: $case - $message"
@@ -104,10 +123,10 @@ try {
   $expanded=Join-Path $root ('inspect-'+$case)
   Expand-Archive -LiteralPath $latest.FullName -DestinationPath $expanded
   $collection=Get-Content -Raw -LiteralPath (Join-Path $expanded 'collection.json') | ConvertFrom-Json
-  if($collection.collection_completed -ne ($case -notin @('copy_failure','missing_upload_dependency','missing_capture_open_dependency'))){throw "Collection/test distinction lost: $case"}
-  if($collection.test_accepted -ne ($case -in @('success','qualification'))){throw "Acceptance result lost: $case"}
-  if($case -in @('missing_upload_dependency','missing_capture_open_dependency')){
-   $missingModule=if($case -eq 'missing_capture_open_dependency'){'usb_capture_open_contract'}else{'usb_output_contract'}
+  if($collection.collection_completed -ne ($case -notin @('copy_failure','missing_upload_dependency','missing_capture_open_dependency','missing_refinement_dependency'))){throw "Collection/test distinction lost: $case"}
+  if($collection.test_accepted -ne ($case -in @('success','qualification','operational_success'))){throw "Acceptance result lost: $case"}
+  if($case -in @('missing_upload_dependency','missing_capture_open_dependency','missing_refinement_dependency')){
+   $missingModule=if($case -eq 'missing_capture_open_dependency'){'usb_capture_open_contract'}elseif($case -eq 'missing_refinement_dependency'){'usb_refinement_contract'}else{'usb_output_contract'}
    $transport=Get-Content -Raw -LiteralPath (Join-Path $expanded 'transport.txt')
    if(!$global:usbRfImportFailed -or $transport -notlike "*ModuleNotFoundError*$missingModule*"){
     throw 'Missing transferred dependency was not caught by isolated import'
@@ -119,7 +138,7 @@ try {
    throw "Unexpected remote command: $command"
   }
  }
- if($global:usbRfImportChecks -ne 13){throw 'Not all staged Python import probes ran'}
+ if($global:usbRfImportChecks -ne 16){throw 'Not all staged Python import probes ran'}
  $global:LASTEXITCODE=0
  Write-Host 'PASS: actual kit upload/import closure; primary blocker, real/legacy exit mismatch, qualification scope and partial/copy evidence preservation; mocked SSH/SCP only.'
 } finally {

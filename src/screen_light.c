@@ -15,6 +15,7 @@
  * VFO-Knob or a browser), only the POWER key shows it for a while. While the panel is dark LVGL
  * stops drawing, unless a remote viewer (remote_server.c) is looking at the screen. */
 
+#define _POSIX_C_SOURCE 200809L
 #include "screen_light.h"
 #include "lvgl/lvgl.h"
 #include "util.h"
@@ -24,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 
 #define SYS_BL "/sys/class/backlight/backlight/"
 
@@ -33,6 +35,17 @@ static bool        blanked;             /* dark after the idle time (or always o
 static bool        viewers;             /* a remote viewer: drawn even when dark */
 static int16_t     shown = -1;          /* backlight_level() */
 static lv_timer_t *idle_timer, *blank_timer;
+static bool drawing_blocked;           /* exactly one owned invalidation level */
+static lv_disp_t *drawing_display;
+static uint64_t display_generation;
+static backlight_observer_fn observer;
+static void *observer_context;
+
+static uint64_t monotonic_ms(void) {
+    struct timespec value;
+    clock_gettime(CLOCK_MONOTONIC, &value);
+    return (uint64_t)value.tv_sec * 1000 + value.tv_nsec / 1000000;
+}
 
 /* The driver counts the other way: 10 - level */
 static void write_level(int16_t level) {
@@ -59,10 +72,45 @@ static bool dark(void) {
     return !screen_on || blanked;
 }
 
+void backlight_snapshot(fd_usb_display_event *out) {
+    if (!out) return;
+    lv_disp_t *display = lv_disp_get_default();
+    *out = (fd_usb_display_event){.monotonic_ms=monotonic_ms(), .generation=display_generation,
+        .reason=FD_USB_DISPLAY_SNAPSHOT, .dark=dark(), .viewers=viewers,
+        .drawing_enabled=display && lv_disp_is_invalidation_enabled(display),
+        .invalidation_count=display ? display->inv_en_cnt : 0, .brightness=shown};
+}
+
+static void observe(fd_usb_display_reason reason) {
+    ++display_generation;
+    if (observer) {
+        fd_usb_display_event value;
+        backlight_snapshot(&value);
+        value.reason=reason;
+        observer(&value, observer_context);
+    }
+}
+
+void backlight_set_observer(backlight_observer_fn callback, void *context) {
+    observer=callback;
+    observer_context=callback ? context : NULL;
+}
+
 /* Nothing drawn while the panel is dark and nobody is watching from afar */
 static void drawing_update(void) {
-    lv_disp_enable_invalidation(lv_disp_get_default(), !dark() || viewers);
-    if (!dark() || viewers) {
+    lv_disp_t *display = lv_disp_get_default();
+    bool block = dark() && !viewers;
+    if (display != drawing_display) {
+        /* A newly registered display starts enabled. Never carry a disabled
+         * level across display replacement or alter another owner's level. */
+        drawing_display=display;
+        drawing_blocked=false;
+    }
+    if (display && block != drawing_blocked) {
+        lv_disp_enable_invalidation(display, !block);
+        drawing_blocked=block;
+    }
+    if (display && !block) {
         lv_obj_invalidate(lv_scr_act());
     }
 }
@@ -84,18 +132,22 @@ static void panel_lit(void) {
 }
 
 static void idle_cb(lv_timer_t *t) {
+    (void)t;
     idle_timer = NULL;
     backlight_set_brightness(params.brightness_idle);
     keys_light(params.brightness_buttons == BUTTONS_LIGHT);
+    observe(FD_USB_DISPLAY_IDLE_DIM);
 }
 
 static void blank_cb(lv_timer_t *t) {
+    (void)t;
     blank_timer = NULL;
     if (!blanked) {
         blanked = true;
         if (screen_on) {
             panel_dark();
         }
+        observe(FD_USB_DISPLAY_IDLE_BLANK);
     }
 }
 
@@ -122,9 +174,11 @@ void backlight_init() {
     if (params.screen_off_always) {
         blanked = true;
         panel_dark();
+        observe(FD_USB_DISPLAY_BOOT);
         return;
     }
     backlight_tick();
+    observe(FD_USB_DISPLAY_BOOT);
 }
 
 /* A key or a knob: the idle time starts again, the light comes back if it was dimmed.
@@ -146,6 +200,7 @@ bool backlight_tick() {
             idle_timer = lv_timer_create(idle_cb, ms, NULL);
             lv_timer_set_repeat_count(idle_timer, 1);
         }
+        observe(FD_USB_DISPLAY_INPUT_WAKE);
         return true;
     }
     if (screen_on && !params.screen_off_always) {
@@ -177,6 +232,7 @@ void backlight_set_brightness(int16_t value) {
         write_level(value);
         write_power(true);
     }
+    observe(FD_USB_DISPLAY_BRIGHTNESS);
 }
 
 void backlight_set_buttons(buttons_light_t value) {
@@ -206,6 +262,7 @@ void backlight_switch() {
         }
         panel_dark();
     }
+    observe(FD_USB_DISPLAY_MANUAL_POWER);
 }
 
 /* The screen off settings changed (Settings, the web configurator) */
@@ -221,6 +278,7 @@ void backlight_settings_changed() {
             lv_timer_del(blank_timer);
             blank_timer = NULL;
         }
+        observe(FD_USB_DISPLAY_SETTINGS);
         return;
     }
     if (blanked && screen_on) {
@@ -228,11 +286,14 @@ void backlight_settings_changed() {
         panel_lit();
     }
     blank_arm();
+    observe(FD_USB_DISPLAY_SETTINGS);
 }
 
 void backlight_viewers(bool any) {
+    if (viewers == any) return;
     viewers = any;
     drawing_update();
+    observe(FD_USB_DISPLAY_VIEWERS);
 }
 
 bool backlight_is_dark() {

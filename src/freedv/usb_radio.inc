@@ -65,7 +65,7 @@ bool radio_usb_observe(void *unused,fd_usb_inputs *out){
     pthread_mutex_unlock(&usb_radio.queue_mutex);
     bool fresh=packet.known && packet.age_ms<=250;
     *out=(fd_usb_inputs){.valid=true,.pressed=pressed,.release=release,
-        .rf_valid=fresh,.rf_tx=packet.tx,.sequence=packet.sequence,
+        .rf_valid=fresh,.rf_tx=packet.tx,.sequence=packet.sequence,.rf_age_ms=packet.age_ms,
         .configuration_ready=wanted && wanted==atomic_load(&usb_radio.applied_revision) &&
             packet.sequence>atomic_load(&usb_radio.applied_sequence) && fresh && !packet.tx &&
             !atomic_load(&usb_radio.restoring) && !atomic_load(&usb_radio.failed),

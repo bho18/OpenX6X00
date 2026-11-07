@@ -64,6 +64,7 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
     manifest = dict(usb_startup_contract_version=4 if operational else 3, usb_output_contract_version=1, usb_capture_open_contract_version=1, on_device_readiness_required=True,
                     firmware_commit=expected_source_commit, build_id=expected_build_id,
                     gui_sha256=expected_binary_sha256)
+    if sessions[0].get('usb_refinement_contract_version')==1:manifest['usb_refinement_contract_version']=1
     output.mkdir(parents=True)
     result = collect_runtime(runtime, output/'actual', binary, manifest)
     last = samples[-1]
@@ -82,8 +83,21 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
         require(result['status'] == expected, 'Production collector misclassified actual controller result: '+str(result))
     require(result['rf_tested'] is False and result['rf_recording_decoded'] is False,
             'Simulated controller evidence was promoted to RF validation')
+    refinement=sessions[0].get('usb_refinement_contract_version')==1
+    if refinement and not storage_failure_expected:
+        recent=result.get('recent_diagnostics',{})
+        require(recent.get('status')=='DIAGNOSTIC_ONLY','Collector lost the separate bounded recent diagnostics')
+        for kind in ('recent','recent-fault'):
+            producer=trace.with_name(trace.stem+'-'+kind+'.json')
+            if not producer.exists():continue
+            entry=recent.get('records',{}).get(kind,{})
+            copied=output/'actual'/('runtime-'+kind+'.json')
+            require(entry.get('status')=='DIAGNOSTIC_ONLY' and entry.get('sha256')==sha(producer) and
+                    copied.is_file() and sha(copied)==sha(producer) and entry.get('record')==json.loads(producer.read_text()),
+                    'Collector omitted or changed the immutable actual C recent diagnostic receipt: '+kind)
     mutations = {}
-    for name in ('missing-completion', 'truncated-completion', 'truncated-trace'):
+    for name in ('missing-completion', 'truncated-completion', 'truncated-trace',
+                 *(('missing-recent','mismatched-recent') if refinement else ())):
         mutated = output/name/'runtime'
         mutated.mkdir(parents=True)
         for path in runtime.iterdir():
@@ -94,15 +108,24 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
         elif name == 'truncated-completion':
             data = (mutated/completion_path.name).read_bytes()
             (mutated/completion_path.name).write_bytes(data[:max(1,len(data)//2)])
-        else:
+        elif name=='truncated-trace':
             lines = (mutated/trace.name).read_text().splitlines()
             terminal = max(index for index,line in enumerate(lines) if json.loads(line).get('kind') == 'sample')
             del lines[terminal]
             (mutated/trace.name).write_text('\n'.join(lines)+'\n')
+        else:
+            recent=mutated/(trace.stem+'-recent.json')
+            if name=='missing-recent':recent.unlink()
+            else:
+                value=json.loads(recent.read_text());value['session_id']='freedv-usb-another-session'
+                recent.write_text(json.dumps(value)+'\n')
         rejected = collect_runtime(mutated, output/name/'collected', binary, manifest)
         require(rejected['status'] == 'BLOCKED' and rejected['ready_for_rf_test'] is False and
                 any(item['stage'] == 'collection' for item in rejected['blockers']),
                 'Production collector accepted incomplete actual C evidence: '+name)
+        if last['fault']>1:
+            require(rejected.get('first_gui_fault',{}).get('code')==last['fault'],
+                    'Malformed recent diagnostics hid the immutable original runtime failure')
         mutations[name] = dict(status='PASS', collector_status=rejected['status'],
                                report_sha256=sha(output/name/'collected/rf-evidence.json'))
     after = {str(path.relative_to(runtime)):sha(path) for path in runtime.rglob('*')

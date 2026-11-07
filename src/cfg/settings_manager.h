@@ -110,6 +110,14 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, {}, &global_params_};
     Parameter<int32_t> p_freedv_usb_gain_migrated{"freedv_usb_gain_migrated", 0, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
+    Parameter<std::string> p_freedv_usb_volumes{"freedv_usb_volumes", "", {},
+        StorageType::GLOBAL, pending_writes_, {}, &global_params_};
+    Parameter<std::string> p_freedv_usb_volume_legacy_id{"freedv_usb_volume_legacy_id", "", {},
+        StorageType::GLOBAL, pending_writes_, {}, &global_params_};
+    Parameter<int32_t> p_freedv_usb_volume_migrated{"freedv_usb_volume_migrated", 0, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    Parameter<int32_t> p_freedv_usb_preview_enabled{"freedv_usb_preview_enabled", 1, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_imic{"imic", 30, 0, 50,
         StorageType::GLOBAL, pending_writes_, &global_params_};
 #ifdef BOARD_X6200

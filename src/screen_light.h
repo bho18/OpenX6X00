@@ -12,6 +12,7 @@
 #define X6100_BACKLIGHT_H
 
 #include "params/params.h"
+#include "freedv/display_event.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -38,5 +39,11 @@ void backlight_settings_changed();
 void backlight_viewers(bool any);
 /* The panel is dark (POWER, the blank time or always off) */
 bool backlight_is_dark();
+
+/* GUI-thread observations. The callback must copy the value and must not
+ * perform audio, radio or storage I/O. Register NULL before its owner exits. */
+typedef void (*backlight_observer_fn)(const fd_usb_display_event *, void *context);
+void backlight_set_observer(backlight_observer_fn, void *context);
+void backlight_snapshot(fd_usb_display_event *);
 
 #endif

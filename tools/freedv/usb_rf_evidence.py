@@ -14,6 +14,7 @@ import wave
 from usb_headset_inventory import collect, command, sha256
 from usb_output_contract import validate_output_contract
 from usb_capture_open_contract import validate_capture_open_contract
+from usb_refinement_contract import validate_refinement_contract,validate_recent_diagnostics
 
 
 ERRORS = (OSError, ValueError, KeyError, EOFError, wave.Error, subprocess.SubprocessError)
@@ -149,6 +150,14 @@ def capture_open_contract_version(manifest):
     return version
 
 
+def refinement_contract_version(manifest):
+    if 'usb_refinement_contract_version' not in manifest:return 0
+    version=manifest['usb_refinement_contract_version']
+    if type(version) is not int or version!=1 or manifest.get('usb_startup_contract_version')!=4:
+        raise ValueError('USB refinement contract requires integer version1 and operational startup4.')
+    return version
+
+
 def collect_persistent_journal(output):
     """Keep bounded incident metadata across reboot, never qualify from it."""
     directory = Path('/mnt/freedv-usb-incidents')
@@ -160,7 +169,7 @@ def collect_persistent_journal(output):
     destination.mkdir()
     records = {}
     names = ['current-session.json'] + [f'slot-{slot:02d}-{kind}.json'
-             for slot in range(16) for kind in ('metadata', 'fault', 'completion', 'readiness', 'aborted')]
+             for slot in range(16) for kind in ('metadata', 'fault', 'completion', 'readiness', 'aborted','recent','recent-fault')]
     for name in names:
         path = directory / name
         if not path.exists() and not path.is_symlink():
@@ -184,19 +193,21 @@ def collect_persistent_journal(output):
                         type(record.get('slot')) is not int or not 0 <= record['slot'] < 16):
                     raise ValueError('Persistent current-session pointer is invalid.')
             else:
-                match = re.fullmatch(r'slot-(\d{2})-(metadata|fault|completion|readiness|aborted)\.json', name)
+                match = re.fullmatch(r'slot-(\d{2})-(metadata|fault|completion|readiness|aborted|recent|recent-fault)\.json', name)
                 nested = record.get('record')
                 if (record.get('schema') != 'x6200.usb.incident.v1' or not 0 <= int(match[1]) < 16 or
                         record.get('kind') != match[2] or not isinstance(nested, dict) or nested.get('session_id') != session_id or
                         (match[2] != 'aborted' and not all(isinstance(nested.get(field), str) and
                             0 < len(nested[field]) <= 200 for field in IDENTITY_FIELDS))):
                     raise ValueError('Persistent incident slot/kind/session mismatch: ' + name)
+                if match[2] in ('recent','recent-fault'):
+                    validate_recent_diagnostics(nested,frozen=match[2]=='recent-fault')
             records[name] = record
             report['entries'].append(name)
         except ERRORS as error:
             report['errors'].append(str(error))
     for name,record in list(records.items()):
-        match=re.fullmatch(r'slot-(\d{2})-(fault|completion|readiness|aborted)\.json',name)
+        match=re.fullmatch(r'slot-(\d{2})-(fault|completion|readiness|aborted|recent|recent-fault)\.json',name)
         if match:
             metadata=records.get(f'slot-{int(match[1]):02d}-metadata.json')
             if (not metadata or metadata['session_id'] != record['session_id'] or any(
@@ -207,7 +218,7 @@ def collect_persistent_journal(output):
     pointer = records.get('current-session.json')
     if pointer:
         selected = {}
-        for kind in ('metadata', 'fault', 'completion', 'readiness', 'aborted'):
+        for kind in ('metadata', 'fault', 'completion', 'readiness', 'aborted','recent','recent-fault'):
             record = records.get(f"slot-{pointer['slot']:02d}-{kind}.json")
             if record and record['session_id'] == pointer['session_id']:
                 selected[kind] = record['record']
@@ -342,14 +353,17 @@ def preserve_immutable_diagnostics(prefix, output):
     not presented as an immutable first-fault snapshot.
     """
     errors = []
-    for suffix in ('fault.json', 'completion.json', 'metadata.json', 'config.json', 'configuration.json', 'readiness.json'):
+    for suffix in ('fault.json', 'completion.json', 'metadata.json', 'config.json', 'configuration.json', 'readiness.json','recent.json','recent-fault.json'):
         path = Path(str(prefix) + '-' + suffix)
         if not path.exists():
             continue
         try:
+            recent=suffix in ('recent.json','recent-fault.json')
+            if recent and (path.is_symlink() or not path.is_file()):raise ValueError('Nonregular recent diagnostic artifact: '+suffix)
+            limit=16384 if recent else DIAGNOSTIC_LIMIT
             with path.open('rb') as source:
-                data = source.read(DIAGNOSTIC_LIMIT + 1)
-            if len(data) > DIAGNOSTIC_LIMIT:
+                data = source.read(limit + 1)
+            if len(data) > limit:
                 (output / ('runtime-' + suffix + '.header')).write_bytes(data[:4096])
                 raise ValueError('Immutable runtime diagnostics exceed collection bound: ' + suffix)
             # Preserve bounded corrupt/partial records as evidence too.
@@ -357,9 +371,43 @@ def preserve_immutable_diagnostics(prefix, output):
             record = json.loads(data)
             if not isinstance(record, dict):
                 raise ValueError('Immutable runtime diagnostics must be a JSON object: ' + suffix)
+            if recent:validate_recent_diagnostics(record,frozen=suffix=='recent-fault.json')
         except ERRORS as error:
             errors.append(str(error))
     return errors
+
+
+def collect_recent_records(output,manifest,identity=None,completion=None):
+    """Read only the already copied immutable windows, including blocked runs."""
+    report=dict(status='DIAGNOSTIC_ONLY',scope='Bounded recent context; primary trace and first-fault evidence remain authoritative',records={})
+    required=refinement_contract_version(manifest)==1
+    for kind,frozen in (('recent',False),('recent-fault',True)):
+        path=output/('runtime-'+kind+'.json')
+        if not path.exists():continue
+        with path.open('rb') as stream:data=stream.read(16385)
+        if len(data)>16384:raise ValueError('Recent diagnostic copy exceeds16KiB: '+kind)
+        record=json.loads(data)
+        validated=validate_recent_diagnostics(record,identity,frozen)
+        validate_identity(record,manifest,identity.get('session_id') if identity else None)
+        report['records'][kind]=dict(validated,record=record,path=path.name,bytes=len(data),sha256=sha256(path))
+    if required and completion is not None:
+        if 'recent' not in report['records']:raise ValueError('Refinement completion has no final bounded recent diagnostic window')
+        if fault_code(completion)>0 and 'recent-fault' not in report['records']:
+            raise ValueError('Refinement Stop/fault has no immutable first-failure recent context')
+    if set(report['records'])=={'recent','recent-fault'}:
+        latest=report['records']['recent']['record'];frozen=report['records']['recent-fault']['record']
+        if frozen['captured_ms']>latest['captured_ms']:
+            raise ValueError('Frozen first-failure context occurs after the final recent window')
+    fault=output/'runtime-fault.json'
+    if fault.exists():
+        report['immutable_first_fault_sha256']=sha256(fault)
+        if 'recent-fault' in report['records']:
+            first=json.loads(fault.read_text());context=('last_display','microphone','radio_age')
+            if not isinstance(first,dict):raise ValueError('Immutable first-fault context is not an object')
+            if required or all(name in first for name in context):
+                if any(first.get(name)!=report['records']['recent-fault']['record'][name] for name in context):
+                    raise ValueError('Frozen recent diagnostics conflict with the immutable first-fault context')
+    return report
 
 
 def collect_trace(output, manifest=None):
@@ -421,11 +469,14 @@ def collect_trace(output, manifest=None):
             summary['current_session'] = pointer
             summary['capture_open_contract'] = validate_capture_open_contract(rows, summary['completion'],
                 capture_open_contract_version(manifest), summary['session_identity'])
+            summary['refinement_contract'] = validate_refinement_contract(rows,summary['completion'],
+                refinement_contract_version(manifest),summary['session_identity'])
             summary['output_contract'] = validate_output_contract(
                 rows, summary['completion'], output_contract_version(manifest), summary['session_identity'])
         except ERRORS as error:
             diagnostic_errors.append(str(error))
     else:
+        summary['refinement_contract'] = validate_refinement_contract(rows,None,refinement_contract_version(manifest))
         summary['capture_open_contract'] = validate_capture_open_contract(rows,None,capture_open_contract_version(manifest))
         summary['output_contract'] = validate_output_contract(rows, None, output_contract_version(manifest))
     summary['audio_taps'] = {}
@@ -507,6 +558,7 @@ def collect_evidence(output, manifest, sdr=None):
                   usb_startup_contract_version=manifest.get('usb_startup_contract_version', 1),
                   usb_output_contract_version=manifest.get('usb_output_contract_version', 0),
                   usb_capture_open_contract_version=manifest.get('usb_capture_open_contract_version',0),
+                  usb_refinement_contract_version=manifest.get('usb_refinement_contract_version',0),
                   listening='UNASSESSED', physical_rf_off_timing='UNMEASURED', blockers=[],
                   stages=dict(collection={'status': 'PENDING'}, gui={'status': 'UNASSESSED'},
                               audio={'status': 'UNASSESSED'}, control_completion={'status': 'UNASSESSED'}, qualification={'status': 'NOT_REQUESTED'}, startup={'status': 'NOT_REQUESTED'},
@@ -540,6 +592,7 @@ def collect_evidence(output, manifest, sdr=None):
                 raise ValueError('Unsupported USB startup contract version.')
             output_contract_version(manifest)
             capture_open_contract_version(manifest)
+            refinement_contract_version(manifest)
             inventory = collect(expected_gui=manifest['gui_sha256'])
             save(output / 'inventory.json', inventory)
             result['inventory_status'] = inventory['status']
@@ -561,6 +614,8 @@ def collect_evidence(output, manifest, sdr=None):
             result['audio_taps'] = summary['audio_taps']
             result['capture_open_contract'] = summary['capture_open_contract']
             result['stages']['capture_open'] = summary['capture_open_contract']
+            result['refinement_contract'] = summary['refinement_contract']
+            result['stages']['refinement'] = summary['refinement_contract']
             result['output_contract'] = summary['output_contract']
             result['stages']['output_completion'] = summary['output_contract']
             if summary['output_contract']['status'] != 'PASS':
@@ -656,6 +711,19 @@ def collect_evidence(output, manifest, sdr=None):
             except ERRORS as sidecar_error:
                 result['immutable_fault_error'] = str(sidecar_error)
                 blocker('collection', 'Immutable first-fault evidence could not be reconciled: ' + str(sidecar_error))
+        try:
+            recent_identity=result.get('session_identity')
+            pointer_path=output/'runtime-current.json'
+            if recent_identity is None and pointer_path.exists():
+                pointer=json.loads(pointer_path.read_text());validate_identity(pointer,manifest)
+                recent_identity={name:pointer[name] for name in IDENTITY_FIELDS}
+            recent=collect_recent_records(output,manifest,recent_identity,result.get('runtime_completion'))
+            if recent['records'] or refinement_contract_version(manifest)==1:
+                result['recent_diagnostics']=recent;result['stages']['recent_diagnostics']=dict(status='DIAGNOSTIC_ONLY',
+                    scope=recent['scope'],records=sorted(recent['records']))
+        except ERRORS as recent_error:
+            result['recent_diagnostic_error']=str(recent_error)
+            blocker('collection','Recent diagnostic evidence could not be reconciled: '+str(recent_error))
         if not summary and not result.get('first_gui_fault'):
             # A reboot can remove /tmp. Preserve the previous incident's reason
             # without treating persistent metadata as a completed live test.

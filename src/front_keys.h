@@ -45,6 +45,8 @@ void keypad_set_long_time(uint32_t hold);
  * the panel is closed and the radio session is fully restored/released. */
 bool front_keys_diagnostic_input_acquire(void);
 void front_keys_diagnostic_input_release(void);
+/* Also recognizes the synchronous LONG dispatch of a retained fresh physical
+ * PRESS, after verifying its generation and the kernel's current held level. */
 bool front_keys_diagnostic_local_event(void);
 #ifdef ENABLE_FREEDV_VOICE
 bool front_keys_voice_local_event(void);

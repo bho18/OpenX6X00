@@ -182,7 +182,7 @@ static int mark_previous(int dir,const char *next){
 }
 int fd_usb_evidence_store(const char *directory,const char *id,const char *kind,const char *json){
     if(!directory||directory[0]!='/'||!valid_id(id)||!kind||!json)return -EINVAL;
-    if(strcmp(kind,"metadata")&&strcmp(kind,"fault")&&strcmp(kind,"completion")&&strcmp(kind,"readiness"))return -EINVAL;
+    if(strcmp(kind,"metadata")&&strcmp(kind,"fault")&&strcmp(kind,"completion")&&strcmp(kind,"readiness")&&strcmp(kind,"recent")&&strcmp(kind,"recent-fault"))return -EINVAL;
     size_t input_size=strnlen(json,FD_USB_EVIDENCE_MAX_RECORD+1);
     if(input_size>FD_USB_EVIDENCE_MAX_RECORD)return -EFBIG;
     int overhead=snprintf(NULL,0,"{\"schema\":\"x6200.usb.incident.v1\",\"session_id\":\"%s\",\"kind\":\"%s\",\"record\":}\n",id,kind);
@@ -208,7 +208,7 @@ int fd_usb_evidence_store(const char *directory,const char *id,const char *kind,
         if(e&&e!=-ENOENT){result=e;goto done;}
         slot=e==-ENOENT?0:(previous+1)%FD_USB_EVIDENCE_SLOTS;
         result=mark_previous(dir,id);if(result)goto done;
-        const char *kinds[]={"metadata","fault","completion","aborted","readiness"};
+        const char *kinds[]={"metadata","fault","completion","aborted","readiness","recent","recent-fault"};
         for(unsigned i=0;i<sizeof(kinds)/sizeof(kinds[0]);++i){char name[64];filename(name,sizeof(name),slot,kinds[i]);if(unlinkat(dir,name,0)<0&&errno!=ENOENT){result=-errno;goto done;}}
         if(fsync(dir)<0){result=-errno;goto done;}
         result=write_record(dir,slot,id,kind,json);if(result)goto done;
@@ -245,9 +245,9 @@ static bool runtime_temporary(const char *suffix,const char *base){
 static bool runtime_file(const char *name,char *session){
     if(strlen(name)<RUNTIME_SESSION_LENGTH||!runtime_session(name))return false;
     const char *suffix=name+RUNTIME_SESSION_LENGTH;
-    static const char *const known[]={".jsonl","-mic.raw","-radio-rx.raw","-modem.raw","-decoded.raw","-readiness.json","-completion.json","-fault.json","-fault.json.tmp"};
+    static const char *const known[]={".jsonl","-mic.raw","-radio-rx.raw","-modem.raw","-decoded.raw","-readiness.json","-completion.json","-fault.json","-fault.json.tmp","-recent.json","-recent-fault.json"};
     bool allowed=false;for(unsigned i=0;i<sizeof(known)/sizeof(known[0]);++i)if(!strcmp(suffix,known[i])){allowed=true;break;}
-    if(!allowed)allowed=runtime_temporary(suffix,"-readiness.json")||runtime_temporary(suffix,"-completion.json");
+    if(!allowed)allowed=runtime_temporary(suffix,"-readiness.json")||runtime_temporary(suffix,"-completion.json")||runtime_temporary(suffix,"-recent.json")||runtime_temporary(suffix,"-recent-fault.json");
     if(!allowed)return false;
     memcpy(session,name,RUNTIME_SESSION_LENGTH);session[RUNTIME_SESSION_LENGTH]=0;return true;
 }

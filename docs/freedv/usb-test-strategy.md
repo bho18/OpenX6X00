@@ -1,5 +1,33 @@
 # USB half-duplex qualification strategy
 
+The refinement campaign keeps the existing 75 controller cases and adds 12
+operational cases, all declared before qualification and repeated twice. The
+old cases leave `config.refinement` false, so their four required streams and
+diagnostic behavior remain a meaningful regression baseline.
+
+The added cases check inactive RX microphone staleness separately from active
+TX capture failure: one automatic recovery has a shared 1500 ms deadline,
+failed recovery keeps RX running, and explicit retry, held PTT, tuning, Stop,
+device loss and radio loss preserve their separate outcomes. A recovered
+capture frame restores health; the cleared 100 ms visual RMS window becomes
+ready afterward. The tests observe these separately and retain the resident
+codec across the later complete TX turn.
+
+Startup must confirm the selected headset's actual volume before uncorking its
+speech stream. Independent Pulse master queries verify initial, pending,
+confirmed, failed and recovered volume edits, including asymmetric channel
+balance and unchanged unrelated sinks. Local previews are optional 600 Hz,
+60 ms cues after confirmed idle RX volume edits. The actual headset monitor
+must contain the complete quiet cue; the modem output and microphone sample
+contracts remain unchanged. Burst edits, decoded speech, PTT and optional cue
+failure exercise cancellation and isolation.
+
+Operational images and their helper kits bind
+`usb_refinement_contract_version: 1` alongside startup4/output1/open1. The
+startup behavior receipt, samples and immutable completion must agree on
+budgets, monotonic health and volume revisions, and cue counters. Historical
+sessions without this marker remain diagnostic evidence for these additions.
+
 The target is a conversation using the USB headset microphone and earphones,
 Linux RADE processing, the radio audio endpoints and the on-device panel PTT.
 One direction owns processing at a time. A successful component experiment is
@@ -329,7 +357,12 @@ must print nothing. Record the full commit ID. Replace the example paths and
 build ID below with the retained release inputs; `--work` must be outside the
 source checkout.
 
+The host-only preview waveform observer also requires **NumPy 2.3.5**. Install
+it in the Python environment used for qualification; CI installs the same
+binary wheel. The on-radio collector and firmware do not require NumPy.
+
 ```sh
+python3 -m pip install --only-binary=:all: numpy==2.3.5
 git status --porcelain
 git rev-parse HEAD
 python3 tools/freedv/build_native_development.py \

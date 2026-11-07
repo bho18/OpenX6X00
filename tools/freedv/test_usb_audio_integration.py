@@ -31,6 +31,8 @@ from usb_transport_oracle import transport_chunks_for_turn,matched_decoder_contr
 from usb_collector_contract import validate_collector_contract
 from usb_output_contract import validate_output_contract
 from usb_capture_open_contract import validate_capture_open_contract
+from usb_refinement_contract import (validate_refinement_contract,refinement_exercise,
+    validate_volume_readbacks,local_cue_waveform)
 from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags,operational_proof
 
 CASES = (
@@ -56,7 +58,15 @@ CASES = (
     'operational-ready','operational-held-ptt','operational-retune','operational-receive-only',
     'operational-leave-tx','operational-abort','operational-device-loss','operational-timeout','operational-key-retune',
     'operational-open-prefix','operational-open-missing','operational-open-invalid','operational-open-stop','operational-open-release',
+    'operational-mic-recover','operational-mic-recover-held','operational-mic-recover-timeout',
+    'operational-mic-recover-retune','operational-mic-recover-stop',
+    'operational-mic-recover-device-loss','operational-mic-recover-radio-loss',
+    'operational-cue-isolation','operational-cue-burst','operational-cue-failure','operational-volume-readback',
+    'operational-volume-startup-fails',
 )
+REFINEMENT_CASES = frozenset(CASES[-12:])
+MIC_RECOVERY_CASES = frozenset(name for name in REFINEMENT_CASES if name.startswith('operational-mic-recover'))
+CUE_CASES = frozenset(name for name in REFINEMENT_CASES if name.startswith('operational-cue-'))
 OPERATIONAL_CASES = frozenset(name for name in CASES if name.startswith('operational-'))
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
 SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale',
@@ -64,8 +74,10 @@ SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole',
                 'cold-rx-resume', 'cold-qualification', 'many-turns', 'reopen', 'initial-pa-delay', 'return-pa-delay', 'full-session', 'io-pause150', 'eoo-backpressure',
                 'capture-release-split','capture-release-held150','capture-close-tail120',
                 'backend-fixed-pipe','audio-gain-turn'}
+SPEECH_CASES |= REFINEMENT_CASES-{'operational-mic-recover-stop','operational-mic-recover-device-loss',
+    'operational-mic-recover-radio-loss','operational-volume-startup-fails'}
 WAVEFORM_CASES = SPEECH_CASES | {'short-turn200'}
-RECEIVE_OUTPUT_CASES = {'rx-pause150','operational-retune'}
+RECEIVE_OUTPUT_CASES = {'rx-pause150','operational-retune','operational-cue-burst'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
 PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
             for prefix, phase in [('', 'tx'), ('initial-', 'initial-rx'), ('return-', 'rx-return')]
@@ -77,6 +89,7 @@ BACKEND_FAILURE_CASES={'backend-timing-missing':'missing','backend-timing-invali
 BACKEND_PROFILE_CASES={'backend-fixed-pipe':'fixed-pipe','io-pause150':'fixed-pipe','rx-pause150':'default'}
 INJECT_CASES = COLD_CASES | set(PA_CASES) | CAPTURE_RELEASE_CASES | CAPTURE_FAILURE_CASES | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure','capture-close-tail120'}
 INJECT_CASES |= set(BACKEND_FAILURE_CASES)|{'operational-open-prefix','operational-open-missing','operational-open-invalid','operational-open-stop','operational-open-release'}
+INJECT_CASES |= MIC_RECOVERY_CASES | {'operational-cue-failure','operational-volume-readback','operational-volume-startup-fails'}
 CASE_TIMEOUTS = {'many-turns': 120, 'reopen': 180, 'cold-idle': 100, 'drain-tx-loss': 60, 'full-session':120}
 
 
@@ -90,7 +103,15 @@ def injection_environment(case, root, library):
         return {}
     require(library and library.is_file(), 'This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
-    if case.startswith('operational-open-'):
+    if case=='operational-volume-startup-fails':
+        result['USB_TEST_VOLUME_MODE']='missing'
+    elif case=='operational-cue-failure':
+        result['USB_TEST_CUE_CONNECT_FAIL']='1'
+    elif case in MIC_RECOVERY_CASES:
+        result.update(USB_TEST_STALE_DEVICE='alsa_input.usb-fixture',USB_TEST_STALE_TRIGGER=str(root/'inject-stale'))
+        if case in {'operational-mic-recover','operational-mic-recover-held','operational-mic-recover-retune'}:
+            result['USB_TEST_STALE_DURATION_MS']='1100'
+    elif case.startswith('operational-open-'):
         result['USB_TEST_MIC_OPEN_MODE']=case.removeprefix('operational-open-')
         if case=='operational-open-prefix':result['USB_TEST_MIC_OBSERVER_PREFIX']=str(root/'result/mic-observer')
     elif case in BACKEND_FAILURE_CASES:
@@ -335,9 +356,12 @@ def sink_turn_oracle(root, trace_paths, recording_started, runner, commands, env
     return results
 
 
-def headset_oracle(root, trace_path, recording_started):
+def headset_oracle(root, trace_path, recording_started, end_before_tx=False):
     rows=[json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
     samples=[row for row in rows if row.get('kind')=='sample' and row.get('state')==1]
+    if end_before_tx:
+        first_tx=next(row['ms'] for row in rows if row.get('kind')=='event' and row.get('event')=='state' and row.get('state')==3)
+        samples=[row for row in samples if row['ms']<first_tx]
     rendered=next((row for row in samples if row.get('rendered_rx',0)>0),None)
     require(rendered is not None,'RX did not render decoded speech')
     reference=trace_path.with_name(trace_path.stem+'-decoded.raw').read_bytes()
@@ -471,7 +495,8 @@ def run_case(args):
         controls_phases=[]
         controls_initial=None
         control_names=(('baseline','up','down','gain6','gain24','gainminus12','gain0') if args.case=='audio-controls'
-                       else ('gain-turn-up','gain-turn-down','gain-turn-rx') if args.case=='audio-gain-turn' else ())
+                       else ('gain-turn-up','gain-turn-down','gain-turn-rx') if args.case=='audio-gain-turn'
+                       else ('volume-initial','volume-pending','volume-confirmed','volume-failed','volume-recovered') if args.case=='operational-volume-readback' else ())
         if control_names:
             for suffix, arguments in (
                     ('headset-volume',['set-sink-volume','alsa_output.usb-fixture','40%','30%']),
@@ -537,11 +562,11 @@ def run_case(args):
             nonlocal recorder,recording_started,headset_recorder,headset_recording_started
             # Admission is held at initial RX until these clients are ready.
             # They cannot mask the production controller's startup grants.
-            if args.case not in {'cold-idle',*RECEIVE_OUTPUT_CASES}:
+            if args.case not in {'cold-idle','rx-pause150','operational-retune'}:
                 recording_started=time.monotonic()
                 recorder=supervisor.start('modem-monitor',[monitor_binary,'--device','radio_sink_fixture.monitor','--rate','44100',
                     '--output',root/'radio-output.raw','--timing',root/'radio-output.jsonl'])
-            if args.case in RECEIVE_OUTPUT_CASES:
+            if args.case in RECEIVE_OUTPUT_CASES or args.case in CUE_CASES:
                 headset_recording_started=time.monotonic()
                 headset_recorder=supervisor.start('headset-monitor',[monitor_binary,'--device','alsa_output.usb-fixture.monitor',
                     '--rate','48000','--output',root/'headset-output.raw','--timing',root/'headset-output.jsonl'])
@@ -617,10 +642,10 @@ def run_case(args):
                 record['rx_fixture_silenced_ms']=stopped_at
                 record['rx_settle_contract']={'clocked_zero_settle_ms':2000,
                     'reason':'Retain complete decoded tail beyond <=1s sink capacity, codec and pending queues before Stop'}
-            if not changed and 'TX_ACTIVE' in text:
+            if not changed and ('TX_ACTIVE' in text or (args.case=='operational-mic-recover-device-loss' and 'MIC_RECOVERING' in text)):
                 endpoints('endpoints-active.txt')
                 changed = True
-                if args.case in ('disconnect','operational-device-loss'):
+                if args.case in ('disconnect','operational-device-loss','operational-mic-recover-device-loss'):
                     check_command(['pactl', 'unload-module', 'module-remap-source'], root, 'disconnect', commands, env)
             time.sleep(.02)
         supervisor.require_running(except_process=test)
@@ -633,7 +658,7 @@ def run_case(args):
         trace_paths = sorted((root/'result').glob('freedv-usb-session*.jsonl'))
         require(trace_paths, 'No controller trace was produced')
         rows, identities, capture_closes, abandoned_closes = [], [], [], 0
-        output_sessions=[];opening_sessions=[]
+        output_sessions=[];opening_sessions=[];refinement_sessions=[]
         for path in trace_paths:
             trace_rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
             status_rows = [row for row in trace_rows if row.get('kind') == 'sample']
@@ -649,6 +674,9 @@ def run_case(args):
                 trace_file=path.name,completion_file=completion_path.name,trace_sha256=sha(path),completion_sha256=sha(completion_path)))
             opening_sessions.append(dict(validate_capture_open_contract(trace_rows,json.loads(completion_path.read_text())),
                 trace_file=path.name,completion_file=completion_path.name,trace_sha256=sha(path),completion_sha256=sha(completion_path)))
+            refinement_sessions.append(dict(validate_refinement_contract(trace_rows,json.loads(completion_path.read_text()),
+                required_version=1 if args.case in REFINEMENT_CASES else 0),trace_file=path.name,completion_file=completion_path.name,
+                trace_sha256=sha(path),completion_sha256=sha(completion_path)))
             turns=completed_turns(trace_rows)
             abandoned_closes+=sum(row.get('kind')=='capture-close' and row.get('complete') is False for row in trace_rows)
             if turns or any(row.get('kind')=='capture-close' and row.get('complete') is True for row in trace_rows):
@@ -660,6 +688,11 @@ def run_case(args):
             rows.extend(trace_rows)
         if args.case in OPERATIONAL_CASES:
             record['operational']=operational_proof(rows,json.loads(completion_path.read_text()),harness,args.case)
+        if args.case in REFINEMENT_CASES:
+            phase_path=root/'result/refinement-phases.jsonl'
+            phases=[json.loads(line) for line in phase_path.read_text().splitlines() if line.strip()] if phase_path.exists() else []
+            record['refinement_exercise']=dict(refinement_exercise(rows,json.loads(completion_path.read_text()),harness,phases,args.case),
+                phases_artifact={'path':str(phase_path),'sha256':sha(phase_path)} if phase_path.exists() else None)
         validate_headset_volume_flags(rows,required=args.case in {'audio-controls','audio-gain-turn'})
         require(sum(turn['rf_completed'] for turn in capture_closes)==harness.get('total_turns',harness['turns']),
                 'Finite capture closure did not cover every completed controller turn')
@@ -668,6 +701,10 @@ def run_case(args):
                 'A healthy controller abandoned a completely closed capture interval')
         record['usb_capture_open_contract_version']=1
         record['capture_open_contract']={'schema':'x6200.usb.capture-open-contract-set.v1','status':'PASS','usb_capture_open_contract_version':1,'sessions':opening_sessions}
+        record['usb_refinement_contract_version']=1 if args.case in REFINEMENT_CASES else 0
+        record['refinement_contract']={'schema':'x6200.usb.refinement-contract-set.v1',
+            'status':'PASS' if args.case in REFINEMENT_CASES else 'DIAGNOSTIC_ONLY',
+            'usb_refinement_contract_version':record['usb_refinement_contract_version'],'sessions':refinement_sessions}
         record['usb_output_contract_version']=1
         record['output_contract']={'schema':'x6200.usb.output-contract-set.v1','status':'PASS',
             'usb_output_contract_version':1,'sessions':output_sessions}
@@ -759,6 +796,10 @@ def run_case(args):
                 'scope':'Actual codec TX/tail/RX with live controls and private-Pulse readback; fake RF only',
                 'initial_sinks':controls_initial,'phases':controls_phases}
             validate_audio_gain_turn_run(record,verify_files=True)
+        if args.case=='operational-volume-readback':
+            record['refinement_volume_readbacks']={'schema':'x6200.usb.refinement-volume-readbacks.v1','status':'PASS',
+                'initial_sinks':controls_initial,'phases':controls_phases}
+            validate_volume_readbacks(record['refinement_volume_readbacks'])
         record['event_count'] = len(rows)
         record['status_row_count'] = sum(row.get('kind') == 'sample' for row in rows)
         if recorder:
@@ -770,7 +811,7 @@ def run_case(args):
             record['monitor_clock']={'basis':'passive rendered receive-block ledger; not physical DAC time',
                 'pcm_frames':(root/'radio-output.raw').stat().st_size//2,'ledger_sha256':sha(root/'radio-output.jsonl')}
         if headset_recorder:
-            require(rx_source_started and rx_source_silenced,'RX fixture transitions were incomplete')
+            if args.case in RECEIVE_OUTPUT_CASES:require(rx_source_started and rx_source_silenced,'RX fixture transitions were incomplete')
             time.sleep(.2)
             supervisor.require_running(except_process=test)
             supervisor.stop(headset_recorder)
@@ -841,8 +882,17 @@ def run_case(args):
                 'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in record['actual_sink_turns']),
                 'synchronized_blocks':sum(turn['observed']['synchronized_blocks'] for turn in record['actual_sink_turns'])}
         if args.case in RECEIVE_OUTPUT_CASES:
-            require(harness['keys']==0 and harness['turns']==0,'RX resilience test attempted RF admission')
-            record['actual_headset_output']=headset_oracle(root,trace_paths[0],headset_recording_started)
+            if args.case!='operational-cue-burst':require(harness['keys']==0 and harness['turns']==0,'RX resilience test attempted RF admission')
+            record['actual_headset_output']=headset_oracle(root,trace_paths[0],headset_recording_started,end_before_tx=args.case=='operational-cue-burst')
+        if args.case in CUE_CASES:
+            cue_pcm=(root/'headset-output.raw').read_bytes()
+            if args.case=='operational-cue-failure':
+                require(not any(cue_pcm),'Failed optional cue produced unexpected headset payload')
+                waveform=dict(status='NOT_PLAYED',scope='Optional cue connect failure; no local PCM payload')
+            else:waveform=local_cue_waveform(cue_pcm)
+            record['local_cue_output']={'schema':'x6200.usb.local-cue-output.v1','status':'PASS','waveform':waveform,
+                'monitor':{'path':str(root/'headset-output.raw'),'sha256':sha(root/'headset-output.raw')},
+                'ledger':{'path':str(root/'headset-output.jsonl'),'sha256':sha(root/'headset-output.jsonl')}}
         record['status'] = 'PASS'
         print('PASS scenario:', args.case, flush=True)
     except BaseException as error:

@@ -7,6 +7,8 @@
  */
 
 #pragma once
+#include <stdbool.h>
+#include <stddef.h>
 
 #include "cfg/encoder_bind_types.h"
 
@@ -32,6 +34,12 @@ bool knobs_visible();
 /* For an app that draws the knobs itself (Field Ops): what VOL (vol true) or MFK controls, its value,
  * its level 0..1 (-1: no scale) and whether turning changes the value (else it chooses the control) */
 bool knobs_info(bool vol, const char **name, char *val, size_t size, float *level, bool *edit);
+/* GUI-owned effective CTRL_VOL context. Values are confirmed hardware
+ * readback; pending never replaces that value with an optimistic request. */
+void knobs_usb_volume_update(bool active,bool ready,unsigned percent,bool muted,bool pending);
+bool knobs_usb_volume_active(void);
+bool knobs_usb_volume_get(unsigned *percent,bool *muted,bool *pending);
+bool knobs_usb_volume_text(char *out,size_t size);
 
 #ifdef __cplusplus
 }

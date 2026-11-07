@@ -14,6 +14,7 @@
 #include "freedv/usb_voice.h"
 #include "freedv/usb_ui.h"
 #include "freedv/usb_navigation.h"
+#include "freedv/screen_layout.h"
 #include "control_owner.h"
 #include "freedv/writer_gate.h"
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
@@ -107,6 +108,8 @@ static lv_obj_t     *tx_info;
 static uint16_t     spectrum_height;        /* Settings > Display > Spectrum height, 76 by default */
 static uint16_t     freq_height = 36;       /* the frequency scale under the spectrum, 0 in deck themes */
 static lv_coord_t   wf_y;                   /* waterfall top */
+static lv_coord_t   scale_y;
+static bool         freedv_row_enabled;
 
 /* What an open app keeps the keys from changing. The frequency lock is a subject: the scale
  * greys out with it */
@@ -1400,26 +1403,27 @@ static void on_cluster_column_change(Subject *subj, void *user_data) {
  * invisible but still the key target, and the waterfall takes its place.
  * Returns the y under it (the frequency scale) */
 static lv_coord_t spectrum_layout(void) {
-    lv_coord_t y = 0;
-
-    if (param_i_get(cfg_spectrum_show)) {
-        y = FREQ_STRIP_Y + FREQ_STRIP_H + METER_ROW_H;     /* VISION: under the S-meter's row */
-        spectrum_height = param_i_get(cfg_spectrum_height);
+    bool visible=param_i_get(cfg_spectrum_show);
+    fd_main_layout geometry=fd_main_layout_compute(FREQ_STRIP_Y+FREQ_STRIP_H+METER_ROW_H,
+        visible,param_i_get(cfg_spectrum_height),theme_shape.deck,freq_height,
+        freedv_row_enabled,sony_18.line_height);
+    spectrum_height=geometry.spectrum_height;
+    scale_y=geometry.axis_y;
+    if (visible) {
         lv_obj_remove_local_style_prop(spectrum, LV_STYLE_OPA, 0);
     } else {
-        spectrum_height = FREQ_STRIP_Y + FREQ_STRIP_H + METER_ROW_H;
         lv_obj_set_style_opa(spectrum, LV_OPA_TRANSP, 0);
     }
-    lv_obj_set_y(spectrum, y);
+    lv_obj_set_y(spectrum, geometry.spectrum_y);
     lv_obj_set_height(spectrum, spectrum_height);
-    return y + spectrum_height;
+    return geometry.waterfall_y-freq_height;
 }
 
 /* Spectrum on/off or its height (Settings, the remote): what is under it moves, live */
 static void on_spectrum_layout_change(Subject *subj, void *user_data) {
     lv_coord_t y = spectrum_layout();
 
-    freq_scale_set_y(theme_shape.deck ? y - spectrum_height : y);   /* deck: the edges in the spectrum */
+    freq_scale_set_y(scale_y);   /* deck: the edges in the spectrum */
     y += freq_height;
     if (y == wf_y) {
         return;     /* the height of a spectrum that is off */
@@ -1428,6 +1432,22 @@ static void on_spectrum_layout_change(Subject *subj, void *user_data) {
     waterfall_set_height(480 - y);
     on_cluster_spots_wf_change(NULL, NULL);     /* waterfall, its lines, band plan, spots, cluster column */
     panel_keep_below(wf_y - 8);
+}
+
+void main_screen_freedv_row(bool enabled) {
+    if (freedv_row_enabled == enabled) return;
+    freedv_row_enabled=enabled;
+    if (obj && spectrum && waterfall) on_spectrum_layout_change(NULL,NULL);
+}
+
+bool main_screen_freedv_bounds(lv_area_t *bounds) {
+    if (!bounds || !freedv_row_enabled || !obj) return false;
+    fd_main_layout geometry=fd_main_layout_compute(FREQ_STRIP_Y+FREQ_STRIP_H+METER_ROW_H,
+        param_i_get(cfg_spectrum_show),param_i_get(cfg_spectrum_height),theme_shape.deck,
+        freq_height,true,sony_18.line_height);
+    *bounds=(lv_area_t){.x1=0,.x2=799,.y1=geometry.row_y,
+        .y2=geometry.row_y+geometry.row_height-1};
+    return true;
 }
 
 static void channels_poll_cb(lv_timer_t *t) {
@@ -1481,7 +1501,7 @@ static void build(void) {
 
     freq_height = theme_shape.deck ? 0 : 36;   /* deck: the edge frequencies go in the spectrum's top corners */
     y = spectrum_layout();
-    freq_scale_init(obj, theme_shape.deck ? y - spectrum_height : y);
+    freq_scale_init(obj, scale_y);
 
     /* Cluster spots: tags under the frequency labels, lines at the bottom of
      * the spectrum, or at the top of the waterfall when it is off */

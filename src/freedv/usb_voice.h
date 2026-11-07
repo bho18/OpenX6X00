@@ -5,6 +5,7 @@
 #include <stdatomic.h>
 #include "voice_engine.h"
 #include "qualified_profile.h"
+#include "display_event.h"
 #define FD_USB_MIC_GAIN_MIN_DB (-12)
 #define FD_USB_MIC_GAIN_MAX_DB 24
 /* Values 0..6 are retained for older evidence readers. */
@@ -16,6 +17,7 @@ typedef enum {
 typedef struct {
     bool valid,pressed,rf_valid,rf_tx,protection;
     uint64_t release,sequence;
+    uint64_t rf_age_ms; /* age reported by the radio packet observer */
     /* Operational radio configuration is submitted asynchronously. These are
      * software admission/readiness facts, not physical tuning readback. */
     bool configuration_ready,tx_eligible;
@@ -39,11 +41,17 @@ typedef struct {
     bool rf_disabled;
     bool operational; /* false retains version-3 diagnostic behavior */
     bool retain_runtime_traces; /* UI /tmp timestamp namespace: current + one previous */
+    bool refinement; /* operational refinement v1; legacy diagnostics default false */
+    bool cues_enabled; /* retained USB-only preview stream; default false */
+    bool headset_volume_initial_valid;
+    unsigned headset_volume_initial_percent; /* 0 is a real level; valid flag distinguishes unset */
+    bool headset_volume_initial_muted;
     unsigned tx_timeout_seconds; /* operational: 30..600, zero selects 180 */
     const char *headset_id; /* stable physical USB device ID; NULL/empty = unique auto */
     int mic_gain_db; /* Digital speech gain; zero preserves microphone PCM exactly. */
     unsigned qualification_turns,qualification_control_delay_ms,qualification_idle_ms,trace_pcm_seconds;
 } fd_usb_config;
+typedef enum { FD_USB_MIC_HEALTHY,FD_USB_MIC_RECOVERING,FD_USB_MIC_UNAVAILABLE } fd_usb_mic_health;
 typedef struct fd_usb_audio fd_usb_audio;
 typedef struct {
     fd_usb_state state;unsigned fault;uint64_t generation,turns,heartbeat_ms;
@@ -52,6 +60,8 @@ typedef struct {
     /* startup_ready retains initial proof; armed/configuration_ready describe current admission. */
     bool operational,startup_ready,leaving,configuration_ready,tx_eligible;
     uint64_t tuning_revision;
+    uint64_t sampled_ms,rx_sync_changed_ms,rx_audio_last_ms,rf_age_ms;
+    bool display_known;fd_usb_display_event display;
     bool rf_disabled,qualification_complete,qualification_running,qualification_loopback,rf_clear_confirmed;
     unsigned tx_timeout_seconds;
     unsigned qualification_target,qualification_turns,mic_rate_hz,rx_rate_hz,qualification_idle_remaining_ms;
@@ -69,6 +79,16 @@ typedef struct {
     uint64_t mic_clipped_samples; /* Accepted TX samples only; RX meter previews do not increment it. */
     unsigned headset_volume_percent;
     bool headset_volume_ready,headset_muted;
+    bool headset_volume_pending,headset_volume_initialized,headset_volume_requested_muted;
+    unsigned headset_volume_requested_percent;
+    uint64_t headset_volume_requested_revision,headset_volume_confirmed_revision,headset_volume_failed_revision;
+    fd_usb_mic_health mic_health;
+    uint64_t mic_health_changed_ms,mic_recovery_epoch,mic_recovery_started_ms;
+    unsigned mic_recovery_attempts;
+    bool mic_retry_available;
+    char mic_health_reason[64];
+    bool cue_available,cue_active;
+    uint64_t cue_requests,cue_completed,cue_canceled,cue_failures;
     char headset_id[256],headset_name[160];
     fd_voice_stats engine;
 } fd_usb_snapshot;
@@ -77,6 +97,10 @@ void fd_usb_audio_arm(fd_usb_audio *,bool);
 bool fd_usb_audio_set_tx_timeout(fd_usb_audio *,unsigned seconds);
 bool fd_usb_audio_set_mic_gain(fd_usb_audio *,int);
 bool fd_usb_audio_adjust_headset_volume(fd_usb_audio *,int delta_percent);
+bool fd_usb_audio_set_headset_volume(fd_usb_audio *,unsigned percent,bool muted);
+bool fd_usb_audio_retry_microphone(fd_usb_audio *);
+bool fd_usb_audio_set_cues_enabled(fd_usb_audio *,bool enabled);
+void fd_usb_audio_note_display(fd_usb_audio *,const fd_usb_display_event *);
 bool fd_usb_audio_start_qualification(fd_usb_audio *);
 bool fd_usb_audio_enable_rf(fd_usb_audio *);
 void fd_usb_audio_stop(fd_usb_audio *); /* fences admission and queues priority OFF; never waits for audio/I2C */

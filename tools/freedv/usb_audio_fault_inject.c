@@ -26,6 +26,49 @@ typedef struct {
     bool is_trigger;
 } delayed_operation;
 static delayed_operation pending;
+static pa_stream *test_headset_stream,*test_cue_stream;
+static atomic_uint test_headset_uncorks,test_headset_payload_writes,test_cue_connect_failures;
+unsigned usb_test_headset_uncorks(void){return atomic_load(&test_headset_uncorks);}
+unsigned usb_test_headset_payload_writes(void){return atomic_load(&test_headset_payload_writes);}
+unsigned usb_test_cue_connect_failures(void){return atomic_load(&test_cue_connect_failures);}
+pa_stream *pa_stream_new(pa_context *context,const char *name,const pa_sample_spec *spec,const pa_channel_map *map){
+    pa_stream *(*real)(pa_context*,const char*,const pa_sample_spec*,const pa_channel_map*)=dlsym(RTLD_NEXT,"pa_stream_new");
+    pa_stream *stream=real(context,name,spec,map);
+    if(name&&!strcmp(name,"USB decoded speech"))test_headset_stream=stream;
+    if(name&&!strcmp(name,"x6200-local-level-preview"))test_cue_stream=stream;
+    return stream;
+}
+int pa_stream_connect_playback(pa_stream *stream,const char *device,const pa_buffer_attr *attr,pa_stream_flags_t flags,const pa_cvolume *volume,pa_stream *sync){
+    int (*real)(pa_stream*,const char*,const pa_buffer_attr*,pa_stream_flags_t,const pa_cvolume*,pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_connect_playback");
+    if(stream==test_cue_stream&&getenv("USB_TEST_CUE_CONNECT_FAIL")){
+        atomic_fetch_add(&test_cue_connect_failures,1);fprintf(stderr,"INJECT optional local cue connect failed required_headset_untouched=1\n");return -1;
+    }
+    return real(stream,device,attr,flags,volume,sync);
+}
+typedef struct {
+    pa_operation *operation;pa_context *context;pa_context_success_cb_t callback;void *userdata;
+    unsigned mode;unsigned long long issued;atomic_int done,success;
+} volume_test_operation;
+static volume_test_operation volume_pending;
+static atomic_uint volume_test_mode;
+static atomic_bool volume_test_override;
+void usb_test_volume_mode(unsigned mode){atomic_store(&volume_test_mode,mode);atomic_store(&volume_test_override,true);}
+static unsigned selected_volume_mode(void){
+    if(atomic_load(&volume_test_override))return atomic_load(&volume_test_mode);
+    const char *mode=getenv("USB_TEST_VOLUME_MODE");return mode&&!strcmp(mode,"missing")?3u:0u;
+}
+static void volume_test_done(pa_context *context,int success,void *unused){
+    (void)context;(void)unused;atomic_store(&volume_pending.success,success);atomic_store(&volume_pending.done,1);
+}
+pa_operation *pa_context_set_sink_volume_by_name(pa_context *context,const char *name,const pa_cvolume *volume,pa_context_success_cb_t callback,void *userdata){
+    pa_operation *(*real)(pa_context*,const char*,const pa_cvolume*,pa_context_success_cb_t,void*)=dlsym(RTLD_NEXT,"pa_context_set_sink_volume_by_name");
+    unsigned mode=selected_volume_mode();
+    if(!mode||!name||strcmp(name,"alsa_output.usb-fixture"))return real(context,name,volume,callback,userdata);
+    fprintf(stderr,"INJECT headset volume mode=%u target=%s issued_ms=%llu\n",mode,name,now_ms());
+    if(mode==2)return NULL; /* Actual API failure; the server receives no edit. */
+    volume_pending=(volume_test_operation){.context=context,.callback=callback,.userdata=userdata,.mode=mode,.issued=now_ms()};
+    volume_pending.operation=real(context,name,volume,volume_test_done,NULL);return volume_pending.operation;
+}
 static unsigned matches;
 static atomic_int current_phase;
 static int phase_code(const char *name){return !strcmp(name,"tx")?1:!strcmp(name,"rx-return")?2:0;}
@@ -137,6 +180,7 @@ pa_operation *pa_stream_flush(pa_stream *stream,pa_stream_success_cb_t callback,
 pa_operation *pa_stream_cork(pa_stream *stream,int cork,pa_stream_success_cb_t callback,void *userdata) {
     pa_operation *(*real)(pa_stream*,int,pa_stream_success_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_cork");
     const char *action=cork?"cork":"uncork";
+    if(stream==test_headset_stream&&!cork)atomic_fetch_add(&test_headset_uncorks,1);
     if(!selected(stream,action))return real(stream,cork,callback,userdata);
     begin(stream,callback,userdata,action);
     pending.operation=real(stream,cork,completed,NULL);return pending.operation;
@@ -233,6 +277,14 @@ const pa_timing_info *pa_stream_get_timing_info(pa_stream *stream){
 pa_operation_state_t pa_operation_get_state(const pa_operation *operation) {
     pa_operation_state_t (*real)(const pa_operation*)=dlsym(RTLD_NEXT,"pa_operation_get_state");
     pa_operation_state_t state=real(operation);
+    if(operation==volume_pending.operation&&state!=PA_OPERATION_CANCELLED){
+        if(volume_pending.mode==3||now_ms()-volume_pending.issued<500)return PA_OPERATION_RUNNING;
+        if(atomic_load(&volume_pending.done)){
+            pa_context_success_cb_t callback=volume_pending.callback;volume_pending.operation=NULL;
+            if(callback)callback(volume_pending.context,atomic_load(&volume_pending.success),volume_pending.userdata);
+        }
+        return state;
+    }
     if(operation!=pending.operation || state==PA_OPERATION_CANCELLED)return state;
     const char *mode=setting("USB_TEST_PA_MODE","");
     if(!strcmp(mode,"missing"))return PA_OPERATION_RUNNING;
@@ -265,6 +317,7 @@ pa_operation_state_t pa_operation_get_state(const pa_operation *operation) {
 void pa_operation_cancel(pa_operation *operation) {
     void (*real)(pa_operation*)=dlsym(RTLD_NEXT,"pa_operation_cancel");
     if(operation==pending.operation)pending.operation=NULL;
+    if(operation==volume_pending.operation)volume_pending.operation=NULL;
     real(operation);
 }
 typedef struct {uint64_t start,end,tap;unsigned frames;unsigned long long ms;} mic_observation;
@@ -413,6 +466,9 @@ void pa_stream_set_write_callback(pa_stream *stream,pa_stream_request_cb_t callb
 int pa_stream_write(pa_stream *stream,const void *data,size_t bytes,pa_free_cb_t free_cb,int64_t offset,pa_seek_mode_t seek){
     int (*real)(pa_stream*,const void*,size_t,pa_free_cb_t,int64_t,pa_seek_mode_t)=dlsym(RTLD_NEXT,"pa_stream_write");
     const char *device=pa_stream_get_device_name(stream),*target=getenv("USB_TEST_IO_PAUSE_DEVICE");
+    if(stream==test_headset_stream&&data&&bytes){
+        const unsigned char *pcm=data;for(size_t i=0;i<bytes;++i)if(pcm[i]){atomic_fetch_add(&test_headset_payload_writes,1);break;}
+    }
     if(device&&target&&!strcmp(device,target)&&bytes){
         const unsigned char *pcm=data;bool nonzero=false;for(size_t i=0;i<bytes;++i)if(pcm[i]){nonzero=true;break;}
         unsigned long long now=now_ms(),first=atomic_load(&io_payload_started);

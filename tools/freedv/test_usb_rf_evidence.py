@@ -78,7 +78,7 @@ class CollectionTests(unittest.TestCase):
     def collect_fixture(self, root, fault=1, rate=None, decoder_failure=False, rows=None, manifest_fields=None,
                         active_worker=False, immutable_fault=None, decoded_success=False,
                         completion=None, pointer=None, inventory_status='USB_DUPLEX_CANDIDATE',
-                        extra_trace=None, journal=None, mic_frames=480, readiness=None):
+                        extra_trace=None, journal=None, mic_frames=480, readiness=None,recent_records=None):
         traces=root/'traces';traces.mkdir()
         (root/'proc').mkdir()
         if rows is None:
@@ -92,6 +92,10 @@ class CollectionTests(unittest.TestCase):
                 completion if isinstance(completion, str) else json.dumps(completion))
         if readiness is not None:
             (traces/'freedv-usb-fixture-readiness.json').write_text(json.dumps(readiness))
+        for kind,record in (recent_records or {}).items():
+            path=traces/('freedv-usb-fixture-'+kind+'.json')
+            if isinstance(record,bytes):path.write_bytes(record)
+            else:path.write_text(json.dumps(record))
         if extra_trace is not None:
             (traces/'freedv-usb-newer.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in extra_trace))
         if immutable_fault:
@@ -695,6 +699,82 @@ class CurrentSessionTests(unittest.TestCase):
             self.assertTrue((output/f'persistent-incidents/slot-{wrong:02d}-fault.json').exists())
 
 
+class RecentDiagnosticTests(unittest.TestCase):
+    def recent(self,frozen=False):
+        from usb_refinement_contract import RECENT_EVENT_COLUMNS,RECENT_SNAPSHOT_COLUMNS
+        return dict(kind='recent-diagnostics',schema='x6200.usb.recent.v1',usb_refinement_contract_version=1,
+            frozen_at_first_fault=frozen,captured_ms=400 if frozen else 500,**CurrentSessionTests.identity,
+            last_display=dict(known=True,monotonic_ms=399,generation=80,reason=5,dark=False,
+                viewers=False,drawing_enabled=True,invalidation_count=42,brightness=70),
+            microphone=dict(last_valid_ms=350,captured_frames=48000,recovery_epoch=1),radio_age=dict(known=True,age_ms=20),
+            window=dict(schema='x6200.usb.recent-window.v1',frozen=frozen,event_capacity=64,snapshot_capacity=16,
+                events_evicted=100,snapshots_evicted=50,events_rejected=0,snapshots_rejected=0,
+                labels='printable-ascii-prefixes-23B',event_columns=RECENT_EVENT_COLUMNS,snapshot_columns=RECENT_SNAPSHOT_COLUMNS,
+                events=[[10+i,1,'display','manual-power',4,0,0,0] for i in range(64)],
+                snapshots=[[100+i,1,0,0,0,0,0,1,0,37,False,False,False,80,False,True] for i in range(16)]))
+
+    def test_closed_collection_preserves_recent_and_frozen_context_hashes(self):
+        receipts={'recent':self.recent(),'recent-fault':self.recent(True)}
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=CurrentSessionTests().fixture(Path(temp),recent_records=receipts)
+            recent=result['recent_diagnostics'];self.assertEqual(recent['status'],'DIAGNOSTIC_ONLY')
+            for kind,record in receipts.items():
+                saved=output/('runtime-'+kind+'.json')
+                self.assertEqual(json.loads(saved.read_text()),record)
+                self.assertEqual(recent['records'][kind]['sha256'],subject.sha256(saved))
+                self.assertEqual(recent['records'][kind]['events_evicted'],100)
+
+    def test_malformed_nested_context_is_value_error_and_primary_fault_survives(self):
+        from usb_refinement_contract import validate_recent_diagnostics
+        for key in ('last_display','microphone','radio_age','window'):
+            for bad in (None,[], 'broken'):
+                record=self.recent();record[key]=bad
+                with self.subTest(key=key,bad=bad),self.assertRaises(ValueError):validate_recent_diagnostics(record)
+        with tempfile.TemporaryDirectory() as temp:
+            bad=self.recent(True);bad['window']=None
+            result,output,_=CurrentSessionTests().fixture(Path(temp),active_worker=True,
+                immutable_fault=CurrentSessionTests().fault(),recent_records={'recent-fault':bad})
+            self.assertEqual(result['status'],'BLOCKED')
+            self.assertEqual(result['first_gui_fault']['code'],17)
+            self.assertTrue((output/'runtime-recent-fault.json').exists())
+
+    def test_oversized_or_wrong_session_recent_receipt_cannot_hide_first_fault(self):
+        wrong=self.recent();wrong['session_id']='freedv-usb-another'
+        for record in (wrong,b'{"padding":"'+b'x'*17000+b'"}'):
+            with self.subTest(record_type=type(record).__name__),tempfile.TemporaryDirectory() as temp:
+                result,output,_=CurrentSessionTests().fixture(Path(temp),immutable_fault=CurrentSessionTests().fault(),
+                    recent_records={'recent':record})
+                self.assertEqual(result['status'],'BLOCKED');self.assertEqual(result['first_gui_fault']['code'],17)
+                self.assertTrue((output/'runtime-recent.json').exists() or (output/'runtime-recent.json.header').exists())
+
+    def test_reboot_journal_preserves_both_recent_kinds_without_promoting_them(self):
+        identity=CurrentSessionTests.identity;slot=3
+        journal={'current-session.json':dict(schema='x6200.usb.incident-pointer.v1',slot=slot,session_id=identity['session_id'])}
+        records={'metadata':dict(kind='session',**identity),'fault':CurrentSessionTests().fault(),
+                 'recent':self.recent(),'recent-fault':self.recent(True)}
+        for kind,record in records.items():
+            journal[f'slot-{slot:02d}-{kind}.json']=dict(schema='x6200.usb.incident.v1',kind=kind,session_id=identity['session_id'],record=record)
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_=CurrentSessionTests().fixture(Path(temp),pointer_missing=True,journal=journal)
+            self.assertEqual(result['status'],'BLOCKED');self.assertFalse(result['ready_for_rf_test'])
+            selected=result['persistent_journal']['current_session']['records']
+            self.assertEqual(result['persistent_journal']['status'],'COLLECTED')
+            for kind in ('recent','recent-fault'):
+                self.assertEqual(selected[kind],records[kind]);self.assertTrue((output/f'persistent-incidents/slot-{slot:02d}-{kind}.json').exists())
+
+    def test_malformed_first_fault_container_stays_a_bounded_collection_error(self):
+        identity=CurrentSessionTests.identity
+        manifest=dict(usb_startup_contract_version=4,usb_refinement_contract_version=1,
+                      firmware_commit=identity['source_commit'],build_id=identity['build_id'])
+        for invalid in (None,[], 'not-an-object'):
+            with self.subTest(invalid=invalid),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp)
+                for kind in ('recent','recent-fault'):(root/('runtime-'+kind+'.json')).write_text(json.dumps(self.recent(kind=='recent-fault')))
+                fault=root/'runtime-fault.json';fault.write_text(json.dumps(invalid));before=fault.read_bytes()
+                with self.assertRaises(ValueError):subject.collect_recent_records(root,manifest,identity,dict(fault=1))
+                self.assertEqual(fault.read_bytes(),before)
+
+
 class KitContractTests(unittest.TestCase):
     def test_cli_kit_requires_startup_v3_and_preserves_exact_hashes(self):
         script=Path(subject.__file__).with_name('build_usb_rf_kit.py')
@@ -732,6 +812,7 @@ class KitContractTests(unittest.TestCase):
                 self.assertEqual(kit['usb_output_contract_version'],1)
                 self.assertIn('usb_output_contract.py',kit['files'])
                 self.assertIn('usb_capture_open_contract.py',kit['files'])
+                self.assertIn('usb_refinement_contract.py',kit['files'])
                 self.assertEqual(kit['usb_capture_open_contract_version'],1)
                 self.assertTrue(kit['on_device_readiness_required'])
                 self.assertFalse(kit['rf_commands'])
@@ -740,8 +821,16 @@ class KitContractTests(unittest.TestCase):
                 for name,digest in kit['files'].items():
                     self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(),digest)
             manifest['usb_startup_contract_version']=4
-            path.write_text(json.dumps(manifest))
             operational_command=[*command[:-1],str(root/'operational-kit.zip')]
+            for marker in (None,0,2,True,'1'):
+                if marker is None:manifest.pop('usb_refinement_contract_version',None)
+                else:manifest['usb_refinement_contract_version']=marker
+                path.write_text(json.dumps(manifest))
+                rejected=subprocess.run(operational_command,capture_output=True,text=True,timeout=15)
+                self.assertNotEqual(rejected.returncode,0)
+                self.assertFalse((root/'operational-kit.zip').exists())
+            manifest['usb_refinement_contract_version']=1
+            path.write_text(json.dumps(manifest))
             accepted=subprocess.run(operational_command,capture_output=True,text=True,timeout=15)
             self.assertEqual(accepted.returncode,0,accepted.stderr)
             with zipfile.ZipFile(root/'operational-kit.zip') as z:
@@ -776,6 +865,7 @@ class CliTests(unittest.TestCase):
             shutil.copy2(Path(subject.__file__),root/'usb_rf_evidence.py')
             shutil.copy2(Path(subject.__file__).with_name('usb_output_contract.py'),root/'usb_output_contract.py')
             shutil.copy2(Path(subject.__file__).with_name('usb_capture_open_contract.py'),root/'usb_capture_open_contract.py')
+            shutil.copy2(Path(subject.__file__).with_name('usb_refinement_contract.py'),root/'usb_refinement_contract.py')
             (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',
                 usb_startup_contract_version=3,usb_output_contract_version=1,on_device_readiness_required=True,
                 firmware_commit=fixture.identity['source_commit'],build_id=fixture.identity['build_id'])))
@@ -819,6 +909,7 @@ class CliTests(unittest.TestCase):
             shutil.copy2(Path(subject.__file__),root/'usb_rf_evidence.py')
             shutil.copy2(Path(subject.__file__).with_name('usb_output_contract.py'),root/'usb_output_contract.py')
             shutil.copy2(Path(subject.__file__).with_name('usb_capture_open_contract.py'),root/'usb_capture_open_contract.py')
+            shutil.copy2(Path(subject.__file__).with_name('usb_refinement_contract.py'),root/'usb_refinement_contract.py')
             (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',runner_sha256='fixture',rade_sha256='fixture')))
             if damaged_manifest:
                 (root/'rf-test-manifest.json').write_text('{damaged transfer')

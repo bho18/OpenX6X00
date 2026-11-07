@@ -30,8 +30,9 @@ class UsbReleaseGateTests(unittest.TestCase):
         identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
         identity['usb_output_contract_version']=1
         identity['usb_capture_open_contract_version']=1
+        identity['usb_refinement_contract_version']=1
         expected = list(USB_CONTROLLER_CASES)
-        plan = {'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
+        plan = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
                 'selected_cases':expected, 'debug_subset':False,
                 'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
                 'host_resource_configuration':identity['host_resource_configuration']}
@@ -63,7 +64,7 @@ class UsbReleaseGateTests(unittest.TestCase):
         finally:
             campaign.close()
         matrix = {**matrix, 'campaign':snapshot, 'promotion_eligible':snapshot['promotion_eligible']}
-        return {**identity, 'usb_integration': {'status':'PASS', 'contract_version':3,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,
+        return {**identity, 'usb_integration': {'status':'PASS', 'contract_version':3,'usb_capture_open_contract_version':1,'usb_refinement_contract_version':1,'usb_output_contract_version':1,
                 'evidence_cli':{'status':'PASS'}, 'matrix':matrix}}
 
     def test_old_pass_and_incomplete_or_failed_evaluation_cannot_release(self):
@@ -80,6 +81,9 @@ class UsbReleaseGateTests(unittest.TestCase):
 
     def test_executed_contract_acceptance_does_not_claim_hardware_qualification(self):
         evidence = self.evidence()
+        self.assertEqual(len(evidence['usb_integration']['matrix']['cases']),87)
+        self.assertTrue(all(json.loads(Path(run['case_record_path']).read_text()).get('synthetic') is True
+                            for case in evidence['usb_integration']['matrix']['cases'].values() for run in case['runs']))
         verify_usb_integration(evidence)
         self.assertNotIn('hardware_qualified', evidence)
         evidence['usb_integration']['contract_version']=4
@@ -110,6 +114,23 @@ class UsbReleaseGateTests(unittest.TestCase):
         evidence=self.evidence()
         evidence['usb_integration']['matrix']['campaign']['blockers']=['prior-failure']
         with self.assertRaises(ValueError):verify_usb_integration(evidence)
+
+    def test_new_refinement_contract_and_all_case_receipts_are_required(self):
+        from usb_test_campaign import REFINEMENT_CASES
+        evidence=self.evidence()
+        self.assertTrue(REFINEMENT_CASES.issubset(evidence['usb_integration']['matrix']['cases']))
+        for mutation in ('legacy','boolean','missing-phase','missing-refinement','missing-case'):
+            with self.subTest(mutation=mutation):
+                import copy
+                candidate=copy.deepcopy(evidence)
+                matrix=candidate['usb_integration']['matrix']
+                run=matrix['cases']['operational-mic-recover']['runs'][0]
+                if mutation=='legacy':candidate['usb_integration']['usb_refinement_contract_version']=0
+                elif mutation=='boolean':matrix['usb_refinement_contract_version']=True
+                elif mutation=='missing-phase':run['refinement_exercise'].pop('phases_artifact')
+                elif mutation=='missing-refinement':run.pop('refinement_contract')
+                else:matrix['cases'].pop('operational-cue-burst')
+                with self.assertRaises(ValueError):verify_usb_integration(candidate)
 
 
 class ImageTests(unittest.TestCase):

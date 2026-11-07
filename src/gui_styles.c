@@ -27,6 +27,8 @@ lv_style_t dialog_style, freq_strip_style;
 lv_style_t dialog_item_style, dialog_item_focus_style, dialog_item_edited_style;
 lv_style_t dialog_dropdown_list_style, dialog_dropdown_sel_style;
 lv_style_t cw_tune_style, popup_style;
+lv_style_t popup_item_style, popup_item_selected_style, popup_item_edit_style;
+static lv_style_t popup_check_style, popup_check_on_style;
 
 int top_bar_h = TOP_BAR_STD_H, freq_strip_h = FREQ_STRIP_STD_H, clock_w = 168, meter_row_h = 0;
 
@@ -245,6 +247,8 @@ void styles_init(void) {
         &dialog_item_edited_style, &dialog_dropdown_list_style, &dialog_dropdown_sel_style,
         &clock_style, &knobs_style, &info_style, &info_row_style, &info_item_style,
         &meter_style, &tx_info_style, &popup_style, &cw_tune_style,
+        &popup_item_style, &popup_item_selected_style, &popup_item_edit_style,
+        &popup_check_style, &popup_check_on_style,
     };
 
     bar_sizes();
@@ -371,11 +375,41 @@ static void popup_colours(bool strong, lv_color_t text) {
         lv_style_set_border_color(pops[i], TC(popup_border));
         lv_style_set_border_width(pops[i], strong ? 3 : theme_shape.border);
         lv_style_set_radius(pops[i], theme_shape.radius_popup);
+        lv_style_set_text_color(pops[i], text);
     }
     lv_style_set_text_color(&dialog_dropdown_list_style, text);
     lv_style_set_bg_color(&dialog_dropdown_sel_style, TC(sel_bg));
     lv_style_set_bg_opa(&dialog_dropdown_sel_style, LV_OPA_COVER);
     lv_style_set_text_color(&dialog_dropdown_sel_style, TC(sel_text));
+    lv_style_set_bg_opa(&popup_item_style, LV_OPA_TRANSP);
+    lv_style_set_text_color(&popup_item_style, text);
+    lv_style_set_border_width(&popup_item_style, 0);
+    lv_style_set_shadow_width(&popup_item_style, 0);
+    /* Native button transitions animate transparent -> selected fill. In
+     * monochrome this becomes checkerboarding behind the selected text.
+     * APP/Modes rows select immediately; popup controls use that behavior. */
+    lv_style_set_radius(&popup_item_style, theme_shape.radius_btn);
+    lv_style_set_pad_hor(&popup_item_style, 8);
+    lv_style_set_pad_ver(&popup_item_style, 4);
+    lv_style_set_bg_color(&popup_item_selected_style, TC(sel_bg));
+    lv_style_set_bg_opa(&popup_item_selected_style, LV_OPA_COVER);
+    lv_style_set_text_color(&popup_item_selected_style, TC(sel_text));
+    lv_style_set_border_width(&popup_item_selected_style, strong ? 3 : 2);
+    lv_style_set_border_color(&popup_item_selected_style, TC(sel_border));
+    /* Editing changes the whole value, not a digit cursor. Keep the menu's
+     * paired text/surface roles and distinguish it with the edited outline. */
+    lv_style_set_outline_color(&popup_item_edit_style, TC(edited));
+    lv_style_set_outline_opa(&popup_item_edit_style, LV_OPA_COVER);
+    lv_style_set_outline_width(&popup_item_edit_style, strong ? 3 : 2);
+    lv_style_set_outline_pad(&popup_item_edit_style, 2);
+    lv_style_set_bg_color(&popup_check_style, TC(switch_off));
+    lv_style_set_bg_opa(&popup_check_style, LV_OPA_COVER);
+    lv_style_set_border_color(&popup_check_style, TC(control_border));
+    lv_style_set_border_width(&popup_check_style, strong ? 3 : 1);
+    lv_style_set_radius(&popup_check_style, theme_shape.radius_btn);
+    lv_style_set_bg_color(&popup_check_on_style, TC(toggle_on));
+    lv_style_set_border_color(&popup_check_on_style, TC(toggle_focus));
+    lv_style_set_text_color(&popup_check_on_style, TC(focus_text));
 }
 
 /* The theme's pictures at the size of each surface (buttons 160 px wide, inset by the gap) */
@@ -487,6 +521,28 @@ void styles_dropdown_list(lv_obj_t *list) {
     lv_obj_add_style(list, &dialog_dropdown_list_style, 0);
     lv_obj_add_style(list, &dialog_dropdown_sel_style, LV_PART_SELECTED | LV_STATE_CHECKED);
     lv_obj_add_style(list, &dialog_dropdown_sel_style, LV_PART_SELECTED | LV_STATE_PRESSED);
+}
+
+void styles_popup_item(lv_obj_t *item) {
+    /* LVGL combines transition descriptors from every attached style; an
+     * empty override does not suppress the native button descriptor. Remove
+     * those descriptors before the control first receives keyboard focus. */
+    for (unsigned i = 0; i < item->style_cnt;) {
+        lv_style_value_t value;
+        lv_style_t *style = item->styles[i].style;
+        if (lv_style_get_prop(style, LV_STYLE_TRANSITION, &value) == LV_STYLE_RES_FOUND) {
+            lv_obj_remove_style(item, style, LV_PART_ANY | LV_STATE_ANY);
+            i = 0;
+        } else ++i;
+    }
+    lv_obj_add_style(item, &popup_item_style, 0);
+    lv_obj_add_style(item, &popup_item_selected_style, LV_STATE_FOCUSED);
+    lv_obj_add_style(item, &popup_item_selected_style, LV_STATE_EDITED);
+    lv_obj_add_style(item, &popup_item_edit_style, LV_STATE_EDITED);
+    if (lv_obj_check_type(item, &lv_checkbox_class)) {
+        lv_obj_add_style(item, &popup_check_style, LV_PART_INDICATOR);
+        lv_obj_add_style(item, &popup_check_on_style, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    }
 }
 
 /* For screens laid out elsewhere (walkie.c); built again after a theme change (walkie_drop()) */

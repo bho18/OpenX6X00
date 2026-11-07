@@ -33,6 +33,7 @@ USB_REQUIRED_COVERAGE = {
     'infrastructure_failure_preservation',
     'capture_close', 'source_boundary',
     'host_resources', 'matched_decoder_control', 'release_lock_protocol', 'capture_pipeline_tail', 'backend_profiles', 'backend_timing_faults', 'rf_window_integrity',
+    'refinement_microphone_recovery','refinement_local_cues','refinement_confirmed_volume',
 }
 
 
@@ -42,6 +43,8 @@ def verify_usb_integration(verification, startup_version=None):
     matrix = evidence.get('matrix', {})
     if (evidence.get('status') != 'PASS' or type(evidence.get('contract_version')) is not int or evidence['contract_version'] not in (3,4) or
             (startup_version is not None and evidence['contract_version'] != startup_version) or
+            type(evidence.get('usb_refinement_contract_version')) is not int or evidence['usb_refinement_contract_version']!=1 or
+            type(matrix.get('usb_refinement_contract_version')) is not int or matrix['usb_refinement_contract_version']!=1 or
             type(evidence.get('usb_capture_open_contract_version')) is not int or evidence['usb_capture_open_contract_version']!=1 or
             type(matrix.get('usb_capture_open_contract_version')) is not int or matrix['usb_capture_open_contract_version']!=1 or
             type(evidence.get('usb_output_contract_version')) is not int or evidence['usb_output_contract_version']!=1 or
@@ -210,6 +213,7 @@ def main():
                       hardware_status='BETA_FIELD_VALIDATION_PENDING',
                       validation_scope='Complete source-bound repeated diagnostic and operational software campaign passed; RF receive needs a known RADE V1 peer',
                       usb_startup_contract_version=4,
+                      usb_refinement_contract_version=1,
                       rf_arm_policy='Automatic after actual prepared-stream readiness and released panel PTT; panel PTT only; shared standard radio power control',
                       startup_policy='No synthetic qualification turns or fixed idle; qualification not requested',
                       operational_mode=True)

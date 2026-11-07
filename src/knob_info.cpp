@@ -28,6 +28,7 @@
 extern "C" {
 #include "gui_styles.h"
 #include "theme.h"
+#include "scheduler.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,12 +37,23 @@ extern "C" {
 #define LINE_H 26
 #define LEFT   2
 
+enum {HP_READY=1<<8,HP_ACTIVE=1<<9,HP_MUTED=1<<10,HP_PENDING=1<<11};
+/* Only the GUI snapshot bridge writes this Subject. Both knob subscriptions
+ * observe it; audio callbacks never notify LVGL or touch settings. */
+static SubjectT<int32_t> headphone_volume{0};
+static std::string headphone_value() {
+    int state=headphone_volume.get();
+    if(!(state&HP_READY))return "--";
+    return std::to_string(state&127)+"%"+((state&HP_MUTED)?" muted":"")+((state&HP_PENDING)?" pending":"");
+}
+
 /* A control as the label shows it: its name and its value now */
 struct Knob {
     const char                   *name;
     Subject                      *subj;     /* nullptr: the cluster column (controls.cpp refreshes it) */
     std::function<std::string()>  value;
 };
+static const Knob headphone_knob{"Headphones",&headphone_volume,headphone_value};
 
 static Knob num(const char *name, SubjectT<int32_t> &s) {
     return {name, &s, [&s] { return std::to_string(s.get()); }};
@@ -198,6 +210,11 @@ class KnobLine {
         *is_edit = edit;
 
         /* the settings' ranges (settings_manager.h) */
+        if(ctrl==CTRL_VOL && knobs_usb_volume_active()){
+            unsigned percent=0;bool muted=false,pending=false;
+            *level=knobs_usb_volume_get(&percent,&muted,&pending)?percent/100.0f:-1.0f;
+            return true;
+        }
         float max = ctrl == CTRL_VOL                                            ? BOARD_VOL_MAX
                   : ctrl == CTRL_SQL || ctrl == CTRL_RFG || ctrl == CTRL_MONI ? 100
                   : ctrl == CTRL_PWR                                            ? 10
@@ -251,7 +268,7 @@ static void set_param(KnobLine &line, cfg_ctrl_t ctrl, const char *knob) {
         LV_LOG_WARN("%s control %d has no knob line, skip", knob, ctrl);
         return;
     }
-    line.set_knob(&k->second);
+    line.set_knob(ctrl==CTRL_VOL && knobs_usb_volume_active()?&headphone_knob:&k->second);
     buttons_refresh_marks();
 }
 
@@ -269,4 +286,32 @@ void knobs_set_mfk_state(bool edit) {
 
 void knobs_set_mfk_param(cfg_ctrl_t control) {
     set_param(mfk_line, control, "MFK");
+}
+void knobs_usb_volume_update(bool active,bool ready,unsigned percent,bool muted,bool pending) {
+    if(!scheduler_on_gui_thread())return;
+    if(percent>100)ready=false;
+    const bool changed=active!=knobs_usb_volume_active();
+    headphone_volume.set((active?HP_ACTIVE:0)|(ready?HP_READY:0)|(muted?HP_MUTED:0)|
+        (pending?HP_PENDING:0)|(ready?(int)percent:0));
+    if(changed){
+        /* Rebind only the view of the selected control. Never initialize a
+         * knob, alter its bindings or reset its edit/select state. */
+        knobs_set_vol_param(vol_get_ctrl());knobs_set_mfk_param(mfk_ctrl);
+    }
+}
+bool knobs_usb_volume_active(void){return (headphone_volume.get()&HP_ACTIVE)!=0;}
+bool knobs_usb_volume_get(unsigned *percent,bool *muted,bool *pending) {
+    int state=headphone_volume.get();if(!(state&HP_ACTIVE) || !(state&HP_READY))return false;
+    if(percent)*percent=(unsigned)(state&127);
+    if(muted)*muted=(state&HP_MUTED)!=0;
+    if(pending)*pending=(state&HP_PENDING)!=0;
+    return true;
+}
+bool knobs_usb_volume_text(char *out,size_t size) {
+    if(!knobs_usb_volume_active())return false;
+    unsigned percent=0;bool muted=false,pending=false;
+    if(knobs_usb_volume_get(&percent,&muted,&pending))
+        snprintf(out,size,"Headphones: %u%%%s%s",percent,muted?" (muted)":"",pending?" (pending)":"");
+    else snprintf(out,size,"Headphones: preparing");
+    return true;
 }

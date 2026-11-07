@@ -9,7 +9,7 @@
  * threads. Returns 0 or a negative errno. Records are immutable: a duplicate
  * kind for the same session returns -EEXIST, without replacing its bytes.
  *
- * Start with kind="metadata"; later kinds are "readiness", "fault" and "completion".
+ * Start with kind="metadata"; later kinds are "readiness", "fault", "completion", "recent" and "recent-fault".
  * Starting a new session marks the previous uncompleted session "aborted".
  * A rotating ring retains the last 16 committed sessions; a late write cannot
  * join another session's records. The current-session.json pointer identifies the latest

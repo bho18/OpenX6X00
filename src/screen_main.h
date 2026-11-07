@@ -29,6 +29,10 @@ void main_screen_notify_rx_tx(bool tx);
 void main_screen_notify_low_power(bool is_low);
 /* Temporary owned profiles also change scale/spot alignment without cfg edits. */
 void main_screen_refresh_effective(void);
+/* FreeDV reserves its status strip below all theme-dependent header rows.
+ * Bounds use main-screen coordinates and the current themed font metrics. */
+void main_screen_freedv_row(bool enabled);
+bool main_screen_freedv_bounds(lv_area_t *bounds);
 
 /* Another theme, live (Settings, the remote) */
 void main_screen_set_theme(const char *name);

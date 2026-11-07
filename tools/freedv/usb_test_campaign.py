@@ -21,6 +21,9 @@ MATRIX_SCHEMA = 'x6200.usb.integration.matrix.v3'
 CAMPAIGN_SCHEMA = 'x6200.usb.campaign.v1'
 MIN_QUALIFICATION_REPEATS = 2
 USB_OUTPUT_CONTRACT_VERSION = 1
+REFINEMENT_CASES = frozenset(('operational-mic-recover','operational-mic-recover-held','operational-mic-recover-timeout',
+    'operational-mic-recover-retune','operational-mic-recover-stop','operational-mic-recover-device-loss','operational-mic-recover-radio-loss',
+    'operational-cue-isolation','operational-cue-burst','operational-cue-failure','operational-volume-readback','operational-volume-startup-fails'))
 INFRASTRUCTURE_PREREQUISITES = ('unexpected_runtime_failure',)
 INFRASTRUCTURE_CHECKS = ('driver_failed', 'harness_failed', 'terminal_fault_retained', 'collector_blocked')
 INFRASTRUCTURE_FILES = ('case_result', 'harness_failure', 'completion', 'collector_report', 'first_fault', 'trace')
@@ -281,6 +284,8 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
         raise ValueError('Qualification did not bind its loaded transport library dependency')
     if any(type(item.get('usb_capture_open_contract_version')) is not int or item['usb_capture_open_contract_version']!=1 for item in (matrix,plan,matrix.get('identity',{}))):
         raise ValueError('USB qualification requires explicit indexed capture opening contract version1')
+    if any(type(item.get('usb_refinement_contract_version')) is not int or item['usb_refinement_contract_version']!=1 for item in (matrix,plan,matrix.get('identity',{}))):
+        raise ValueError('USB qualification requires explicit operational refinement contract version1')
     validate_host_resources(matrix, verify_files=verify_files)
     validate_infrastructure_prerequisites(matrix, verify_files=verify_files)
     if plan.get('expected_cases') != expected or plan.get('selected_cases') != expected:
@@ -308,6 +313,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
             validate_observer_admission_run(run,name,verify_files=verify_files)
             validate_capture_close_run(run,verify_files=verify_files)
             validate_operational_run(run,name,verify_files=verify_files)
+            validate_refinement_run(run,name,verify_files=verify_files,expected_identity=matrix['identity'])
             validate_sink_turns_run(run,name,verify_files=verify_files,expected_transport_sha256=matrix['identity']['transport_library_sha256'])
             if name in ('capture-release-split','capture-release-held150'):
                 validate_capture_source_boundary_run(run,name,verify_files=verify_files)
@@ -336,7 +342,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                         raise ValueError('Retained USB case evidence changed: ' + name)
                 details=_load(run['case_record_path'])
                 for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
-                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','usb_capture_open_contract_version','capture_open_contract','observer_admission','audio_controls','audio_gain_turn','operational','actual_headset_output','capture_open_prefix'):
+                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','usb_capture_open_contract_version','capture_open_contract','usb_refinement_contract_version','refinement_contract','refinement_exercise','refinement_volume_readbacks','local_cue_output','observer_admission','audio_controls','audio_gain_turn','operational','actual_headset_output','capture_open_prefix'):
                     retained=details.get(key)
                     if key=='actual_sink_turns' and key not in details:
                         from test_usb_audio_integration import WAVEFORM_CASES
@@ -405,23 +411,32 @@ def operational_proof(rows, completion, harness, case):
     manifest=dict(usb_startup_contract_version=4, firmware_commit=header.get('source_commit'), build_id=header.get('build_id'))
     validate_completion(summary,manifest,completion)
     receipts=[row for row in rows if row.get('kind')=='startup-readiness']
+    if case=='operational-volume-startup-fails':
+        if (receipts or harness.get('startup_ready') is not False or harness.get('fault')!=13 or
+                harness.get('first_fault_origin')!='headset-initial-volume-not-confirmed' or
+                any(harness.get(key)!=0 for key in ('keys','turns','submitted_mic','headset_uncorks','headset_payload_writes')) or
+                harness.get('rf_clear_confirmed') is not True or completion.get('completion_reason')!='fault'):
+            raise ValueError('Unconfirmed startup volume did not block headset playback and RF admission')
+        return dict(schema='x6200.usb.operational-exercise.v1',status='PASS',case=case,startup_readiness=None,
+            completion_reason='fault',final_tuning_revision=1,physical_release_sequence=0,close_trigger=None,
+            qualifier='Actual controller records with simulated radio control; no RF hardware qualification')
     if len(receipts)!=1:raise ValueError('Operational exercise never reached actual startup readiness')
     validate_operational_readiness(summary,rows,manifest,receipts[0])
     ready=receipts[0]
     if (harness.get('operational') is not True or harness.get('startup_ready') is not True or
             harness.get('qualification_complete') is not False or harness.get('qualification_turns')!=0 or
             harness.get('tx_timeout_seconds')!=(30 if case=='operational-timeout' else 180) or harness.get('physical_tx') is not False or
-            harness.get('rf_clear_confirmed') is not True or
+            (harness.get('rf_clear_confirmed') is not True and case!='operational-mic-recover-radio-loss') or
             any(harness.get(key)!=1 for key in ('rade_creations','encoder_creations','decoder_creations')) or
             any(row.get('event') in ('qualification-start','qualification_complete') for row in rows)):
         raise ValueError('Operational exercise lost automatic readiness, warm codec, RX clearance, or truthful qualification')
-    fault=23 if case in ('operational-open-missing','operational-open-invalid') else 1 if case=='operational-open-stop' else 10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
-    expected_turns=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release'))
+    fault=23 if case in ('operational-open-missing','operational-open-invalid') else 1 if case in ('operational-open-stop','operational-mic-recover-stop') else 10 if case=='operational-timeout' else 2 if case in ('operational-device-loss','operational-mic-recover-device-loss') else 4 if case=='operational-mic-recover-radio-loss' else 1 if case=='operational-abort' else 0
+    expected_turns=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release') or (case in REFINEMENT_CASES and fault==0))
     if (harness.get('fault')!=fault or harness.get('turns')!=expected_turns or
             harness.get('eoo')!=expected_turns or
             completion.get('completion_reason')!=('fault' if fault>1 else 'stop' if fault else 'navigation')):
         raise ValueError('Operational exit did not preserve graceful completion versus abort/fault semantics')
-    revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune') else 1
+    revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune','operational-mic-recover-retune') else 1
     if harness.get('tuning_revision')!=revision or harness.get('configuration_ready') is not True:
         raise ValueError('Operational configuration revision was not restored before exit')
     if case=='operational-retune' and harness.get('rx_synthesis_blocks',0)<4:
@@ -535,6 +550,71 @@ def validate_operational_run(run,case,verify_files=True):
         raise ValueError('Operational startup/exit evidence is missing or malformed: '+str(error)) from error
 
 
+def validate_refinement_run(run,case,verify_files=True,expected_identity=None):
+    if case not in REFINEMENT_CASES:return
+    try:
+        from usb_refinement_contract import (validate_refinement_contract,refinement_exercise,
+                                            validate_volume_readbacks,local_cue_waveform)
+        proof=run.get('refinement_contract',{})
+        if (run.get('usb_refinement_contract_version')!=1 or type(run.get('usb_refinement_contract_version')) is not int or
+                proof.get('schema')!='x6200.usb.refinement-contract-set.v1' or proof.get('status')!='PASS' or
+                proof.get('usb_refinement_contract_version')!=1 or len(proof.get('sessions',[]))!=1):
+            raise ValueError('Refinement exercise lacks its bound runtime contract1')
+        item=proof['sessions'][0]
+        if item.get('status')!='PASS' or item.get('schema')!='x6200.usb.refinement-contract.v1':
+            raise ValueError('Refinement session did not pass its typed runtime evidence')
+        if expected_identity is not None and any(item.get(key)!=expected_identity.get(key) for key in ('source_commit','build_id')):
+            raise ValueError('Refinement session source/build differs from its campaign')
+        exercise=run.get('refinement_exercise',{})
+        if (exercise.get('schema')!='x6200.usb.refinement-exercise.v1' or exercise.get('status')!='PASS' or
+                exercise.get('case')!=case or exercise.get('contract')!={key:value for key,value in item.items()
+                    if key not in ('trace_file','completion_file','trace_sha256','completion_sha256')}):
+            raise ValueError('Refinement case omitted its actual operational phase exercise')
+        if case=='operational-volume-readback':validate_volume_readbacks(run.get('refinement_volume_readbacks',{}))
+        if case=='operational-cue-burst':validate_operational_headset_output(run,verify_files=verify_files)
+        if case.startswith('operational-cue-'):
+            cue=run.get('local_cue_output',{})
+            if cue.get('schema')!='x6200.usb.local-cue-output.v1' or cue.get('status')!='PASS':
+                raise ValueError('Local cue lacks independent headset output evidence')
+        if verify_files:
+            directory=Path(run['case_record_path']).parent/'result'
+            trace,completion=directory/item['trace_file'],directory/item['completion_file']
+            if sha(trace)!=item['trace_sha256'] or sha(completion)!=item['completion_sha256']:
+                raise ValueError('Refinement controller evidence changed')
+            rows=[json.loads(line) for line in trace.read_text().splitlines() if line.strip()]
+            actual=validate_refinement_contract(rows,_load(completion),expected_identity=item)
+            if any(item.get(key)!=value for key,value in actual.items()):
+                raise ValueError('Refinement summary differs from produced controller records')
+            phase_artifact=exercise.get('phases_artifact')
+            if case=='operational-volume-startup-fails':
+                if phase_artifact is not None:raise ValueError('Startup volume failure fabricated successful mode phases')
+                phases=[]
+            else:
+                if not isinstance(phase_artifact,dict) or sha(phase_artifact['path'])!=phase_artifact['sha256']:
+                    raise ValueError('Refinement C phase receipt changed or is missing')
+                phases=[json.loads(line) for line in Path(phase_artifact['path']).read_text().splitlines() if line.strip()]
+            actual_exercise=refinement_exercise(rows,_load(completion),run['harness'],phases,case)
+            if any(exercise.get(key)!=value for key,value in actual_exercise.items()):
+                raise ValueError('Refinement exercise differs from the executed C phase records')
+            if case=='operational-volume-readback':
+                for phase in run['refinement_volume_readbacks']['phases']:
+                    for name in ('snapshot','pulse'):
+                        if sha(phase[name+'_path'])!=phase[name+'_sha256'] or _load(phase[name+'_path'])!=phase[name]:
+                            raise ValueError('Independent confirmed-volume readback changed')
+            if case.startswith('operational-cue-'):
+                for name in ('monitor','ledger'):
+                    if sha(cue[name]['path'])!=cue[name]['sha256']:raise ValueError('Local cue output evidence changed')
+                pcm=Path(cue['monitor']['path']).read_bytes()
+                if case=='operational-cue-failure':
+                    if any(pcm) or cue.get('waveform',{}).get('status')!='NOT_PLAYED':
+                        raise ValueError('Failed optional cue wrote unexpected headset payload')
+                elif local_cue_waveform(pcm)!=cue.get('waveform'):
+                    raise ValueError('Local cue waveform differs from independently recorded headset PCM')
+        return proof
+    except (OSError,KeyError,TypeError,AttributeError) as error:
+        raise ValueError('Refinement evidence is missing or malformed: '+str(error)) from error
+
+
 def _validate_operational_run(run,case,verify_files=True):
     if not case.startswith('operational-'):return
     proof=run.get('operational')
@@ -550,7 +630,8 @@ def _validate_operational_run(run,case,verify_files=True):
         completion=_load(directory/entry['completion_file'])
         if operational_proof(rows,completion,run['harness'],case)!=proof:
             raise ValueError('Operational proof differs from immutable controller records')
-        readiness=_load(directory/(Path(entry['trace_file']).stem+'-readiness.json'))
+        readiness_path=directory/(Path(entry['trace_file']).stem+'-readiness.json')
+        readiness=_load(readiness_path) if readiness_path.exists() else None
         if readiness!=proof['startup_readiness']:
             raise ValueError('Operational proof has no matching immutable readiness sidecar')
     return proof

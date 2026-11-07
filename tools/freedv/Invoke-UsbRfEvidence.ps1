@@ -55,6 +55,10 @@ try {
  if($manifest.usb_capture_open_contract_version -eq 1 -and ($report.usb_capture_open_contract_version -ne 1 -or $report.stages.capture_open.status -ne 'PASS')){
   throw 'Current kit requires the indexed capture opening contract and completed session evidence.'
  }
+ if($manifest.usb_refinement_contract_version -eq 1 -and ($report.usb_refinement_contract_version -ne 1 -or $report.stages.refinement.status -ne 'PASS' -or
+     $report.runtime_completion.usb_refinement_contract_version -ne 1 -or $report.runtime_startup_readiness.usb_refinement_contract_version -ne 1)){
+  throw 'Current kit requires confirmed refinement runtime evidence matching this operational image.'
+ }
  if($manifest.usb_startup_contract_version -in @(3,4)){
   if($report.usb_startup_contract_version -ne $manifest.usb_startup_contract_version -or $report.stages.session.status -ne 'COMPLETE'){
    throw 'Current kit requires a completed runtime session matching its startup version; legacy or partial evidence cannot be accepted.'
