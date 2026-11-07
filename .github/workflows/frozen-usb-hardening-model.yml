@@ -303,7 +303,7 @@ jobs:
           --rade-library "$RUNNER_TEMP/usb-controller-build/codec/rade_c/src/librade.so.0.1" \
           --output "$RUNNER_TEMP/usb-controller-matrix" --profile regression \
           --campaign-root "$RUNNER_TEMP/usb-controller-campaigns" \
-          --source-commit "$GITHUB_SHA" --build-id "usb-controller-ci-${GITHUB_SHA}" \
+          --source-commit "$TESTED_SOURCE_COMMIT" --build-id "usb-controller-ci-${GITHUB_SHA}" \
           > "$RUNNER_TEMP/usb-controller-matrix.log" 2>&1 || {
             task_status=$?
             python3 tools/freedv/usb_ci_diagnostics.py --work-root "$RUNNER_TEMP"
