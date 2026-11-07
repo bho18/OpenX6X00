@@ -24,6 +24,23 @@ USB_OUTPUT_CONTRACT_VERSION = 1
 REFINEMENT_CASES = frozenset(('operational-mic-recover','operational-mic-recover-held','operational-mic-recover-timeout',
     'operational-mic-recover-retune','operational-mic-recover-stop','operational-mic-recover-device-loss','operational-mic-recover-radio-loss',
     'operational-cue-isolation','operational-cue-burst','operational-cue-failure','operational-volume-readback','operational-volume-startup-fails'))
+HARDENING_CASES = frozenset('operational-hardening-'+name for name in (
+    'volume-paced-rounded','volume-retry','volume-unavailable-retry','volume-external-zero',
+    'cue-final-gesture','cue-recovery','cue-unavailable-retry','mic-overload',
+    'radio-recover','radio-recover-held','radio-recover-timeout','radio-recover-flapping',
+    'radio-recover-clear-blocked','radio-recover-operation-deadline','radio-recover-unexpected-tx','radio-recover-protection','radio-loss-tx'))
+HARDENING_FAULTS = {'operational-hardening-radio-recover-timeout':4,
+    'operational-hardening-radio-recover-flapping':4,'operational-hardening-radio-recover-operation-deadline':4,'operational-hardening-radio-recover-clear-blocked':20,
+    'operational-hardening-radio-recover-unexpected-tx':4,'operational-hardening-radio-recover-protection':5,
+    'operational-hardening-radio-loss-tx':4}
+HARDENING_CUE_CASES = frozenset(case for case in HARDENING_CASES if '-cue-' in case)
+HARDENING_VOLUME_CASES = frozenset(case for case in HARDENING_CASES if '-volume-' in case)
+
+
+def refinement_version(case):
+    return 2 if case in HARDENING_CASES else 1 if case in REFINEMENT_CASES else 0
+
+
 INFRASTRUCTURE_PREREQUISITES = ('unexpected_runtime_failure',)
 INFRASTRUCTURE_CHECKS = ('driver_failed', 'harness_failed', 'terminal_fault_retained', 'collector_blocked')
 INFRASTRUCTURE_FILES = ('case_result', 'harness_failure', 'completion', 'collector_report', 'first_fault', 'trace')
@@ -284,7 +301,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
         raise ValueError('Qualification did not bind its loaded transport library dependency')
     if any(type(item.get('usb_capture_open_contract_version')) is not int or item['usb_capture_open_contract_version']!=1 for item in (matrix,plan,matrix.get('identity',{}))):
         raise ValueError('USB qualification requires explicit indexed capture opening contract version1')
-    if any(type(item.get('usb_refinement_contract_version')) is not int or item['usb_refinement_contract_version']!=1 for item in (matrix,plan,matrix.get('identity',{}))):
+    if any(type(item.get('usb_refinement_contract_version')) is not int or item['usb_refinement_contract_version']!=2 for item in (matrix,plan,matrix.get('identity',{}))):
         raise ValueError('USB qualification requires explicit operational refinement contract version1')
     validate_host_resources(matrix, verify_files=verify_files)
     validate_infrastructure_prerequisites(matrix, verify_files=verify_files)
@@ -342,7 +359,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                         raise ValueError('Retained USB case evidence changed: ' + name)
                 details=_load(run['case_record_path'])
                 for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
-                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','usb_capture_open_contract_version','capture_open_contract','usb_refinement_contract_version','refinement_contract','refinement_exercise','refinement_volume_readbacks','local_cue_output','observer_admission','audio_controls','audio_gain_turn','operational','actual_headset_output','capture_open_prefix'):
+                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','usb_capture_open_contract_version','capture_open_contract','usb_refinement_contract_version','refinement_contract','refinement_exercise','refinement_volume_readbacks','hardening_volume_readbacks','local_cue_output','observer_admission','audio_controls','audio_gain_turn','operational','actual_headset_output','capture_open_prefix'):
                     retained=details.get(key)
                     if key=='actual_sink_turns' and key not in details:
                         from test_usb_audio_integration import WAVEFORM_CASES
@@ -409,6 +426,7 @@ def operational_proof(rows, completion, harness, case):
     if len(headers)!=1:raise ValueError('Operational exercise has no unique session')
     header=headers[0]
     manifest=dict(usb_startup_contract_version=4, firmware_commit=header.get('source_commit'), build_id=header.get('build_id'))
+    if case in HARDENING_CASES:manifest['usb_refinement_contract_version']=2
     validate_completion(summary,manifest,completion)
     receipts=[row for row in rows if row.get('kind')=='startup-readiness']
     if case=='operational-volume-startup-fails':
@@ -426,17 +444,18 @@ def operational_proof(rows, completion, harness, case):
     if (harness.get('operational') is not True or harness.get('startup_ready') is not True or
             harness.get('qualification_complete') is not False or harness.get('qualification_turns')!=0 or
             harness.get('tx_timeout_seconds')!=(30 if case=='operational-timeout' else 180) or harness.get('physical_tx') is not False or
-            (harness.get('rf_clear_confirmed') is not True and case!='operational-mic-recover-radio-loss') or
+            (harness.get('rf_clear_confirmed') is not True and case!='operational-mic-recover-radio-loss' and case not in HARDENING_FAULTS) or
             any(harness.get(key)!=1 for key in ('rade_creations','encoder_creations','decoder_creations')) or
             any(row.get('event') in ('qualification-start','qualification_complete') for row in rows)):
         raise ValueError('Operational exercise lost automatic readiness, warm codec, RX clearance, or truthful qualification')
     fault=23 if case in ('operational-open-missing','operational-open-invalid') else 1 if case in ('operational-open-stop','operational-mic-recover-stop') else 10 if case=='operational-timeout' else 2 if case in ('operational-device-loss','operational-mic-recover-device-loss') else 4 if case=='operational-mic-recover-radio-loss' else 1 if case=='operational-abort' else 0
-    expected_turns=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release') or (case in REFINEMENT_CASES and fault==0))
+    fault=HARDENING_FAULTS.get(case,fault)
+    expected_turns=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release') or (case in REFINEMENT_CASES and fault==0) or (case in HARDENING_CASES and fault==0 and not case.endswith('mic-overload')))
     if (harness.get('fault')!=fault or harness.get('turns')!=expected_turns or
             harness.get('eoo')!=expected_turns or
             completion.get('completion_reason')!=('fault' if fault>1 else 'stop' if fault else 'navigation')):
         raise ValueError('Operational exit did not preserve graceful completion versus abort/fault semantics')
-    revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune','operational-mic-recover-retune') else 1
+    revision=2 if case in ('operational-hardening-cue-recovery','operational-retune','operational-receive-only','operational-key-retune','operational-mic-recover-retune') else 1
     if harness.get('tuning_revision')!=revision or harness.get('configuration_ready') is not True:
         raise ValueError('Operational configuration revision was not restored before exit')
     if case=='operational-retune' and harness.get('rx_synthesis_blocks',0)<4:
@@ -550,7 +569,160 @@ def validate_operational_run(run,case,verify_files=True):
         raise ValueError('Operational startup/exit evidence is missing or malformed: '+str(error)) from error
 
 
+def pulse_preview_gain(raw_volume):
+    """Independent official Pulse conversion; the radio does not implement it."""
+    import ctypes
+    import ctypes.util
+    if type(raw_volume) is not int or not 0<=raw_volume<=65536:
+        raise ValueError('Preview gain requires bounded authoritative Pulse volume units')
+    library=ctypes.CDLL(ctypes.util.find_library('pulse') or 'libpulse.so.0')
+    convert=library.pa_sw_volume_to_linear;convert.argtypes=[ctypes.c_uint32];convert.restype=ctypes.c_double
+    return convert(raw_volume)
+
+
+def validate_hardening_volume_readbacks(proof,case,verify_files=True,phases=None):
+    if proof.get('schema')!='x6200.usb.hardening-volume-readbacks.v1' or proof.get('status')!='PASS':
+        raise ValueError('Hardening volume control omitted independent Pulse readbacks')
+    expected=(('earlier-preview',) if case=='operational-hardening-cue-final-gesture' else
+              ('up1','up5','up9','up10','up15','up100') if case.endswith('paced-rounded') else
+              ('external51','restored30') if case.endswith('external-zero') else ('final55',))
+    canonical={row.get('phase'):row for row in phases or []}
+    initial=proof.get('initial_sinks',{});readbacks=proof.get('phases',[])
+    target='alsa_output.usb-fixture';others={'radio_sink_fixture','unrelated_sink'}
+    if set(initial)!={target,*others} or tuple(item.get('snapshot',{}).get('phase') for item in readbacks)!=expected:
+        raise ValueError('Hardening volume readbacks omitted required phases or unrelated sinks')
+    external_anchor=None
+    for item in readbacks:
+        pulse=item.get('pulse',{});snapshot=item.get('snapshot',{})
+        phase=canonical.get(snapshot.get('phase'),{})
+        shared=('headset_volume_percent','headset_muted','headset_volume_ready','headset_volume_requested_percent',
+                'headset_volume_requested_revision','headset_volume_confirmed_revision')
+        if (not phase or any(name not in snapshot or name not in phase or snapshot[name]!=phase[name] for name in shared) or
+                any(type(snapshot[name]) is not int for name in ('headset_volume_percent','headset_volume_requested_percent',
+                    'headset_volume_requested_revision','headset_volume_confirmed_revision')) or
+                any(type(snapshot[name]) is not bool for name in ('headset_muted','headset_volume_ready'))):
+            raise ValueError('Independent headphone readback conflicts with its canonical controller phase')
+        if set(pulse)!=set(initial) or any(pulse[name]!=initial[name] for name in others):
+            raise ValueError('Headphone control changed an unrelated sink')
+        channels=pulse[target].get('volume',[])
+        if (len(channels)!=2 or any(type(value) is not int or not 0<=value<=65536 for value in channels) or
+                pulse[target].get('mute') is not snapshot.get('headset_muted') or snapshot.get('headset_volume_ready') is not True):
+            raise ValueError('Headphone readback omitted usable channel/mute state')
+        actual=min(100,(max(channels)*100+32768)//65536)
+        if actual!=snapshot.get('headset_volume_percent'):
+            raise ValueError('Displayed confirmed volume disagrees with independently queried Pulse state')
+        if case!='operational-hardening-cue-final-gesture':
+            if case=='operational-hardening-volume-external-zero':
+                if snapshot['phase']=='external51':
+                    if not max(channels) or abs(channels[1]*2-channels[0])>1:
+                        raise ValueError('External device did not report the independently requested half balance')
+                    external_anchor=list(channels)
+                anchor=external_anchor
+            else:anchor=initial[target].get('volume')
+            if (type(anchor) is not list or len(anchor)!=2 or any(type(value) is not int or value<0 for value in anchor) or
+                    anchor[0]<=0):
+                raise ValueError('Headphone balance has no independently measured nonzero raw anchor')
+            # pa_cvolume scaling rounds integer channel values. Compare against
+            # the actual measured rational anchor, within ONE Pulse unit. The
+            # nominal 40/30 percentages have already been rounded by pactl.
+            if max(channels) and abs(channels[1]*anchor[0]-channels[0]*anchor[1])>anchor[0]:
+                raise ValueError('Headphone control lost its measured stereo balance through integer rounding')
+        if verify_files:
+            for name in ('snapshot','pulse'):
+                if sha(item[name+'_path'])!=item[name+'_sha256'] or _load(item[name+'_path'])!=item[name]:
+                    raise ValueError('Hardening volume readback artifact changed')
+    return proof
+
+
+def validate_hardening_run(run,case,verify_files=True,expected_identity=None):
+    from usb_refinement_contract import validate_refinement_contract,hardening_exercise,local_cue_waveform
+    proof=run.get('refinement_contract',{})
+    if (type(run.get('usb_refinement_contract_version')) is not int or run['usb_refinement_contract_version']!=2 or
+            proof.get('schema')!='x6200.usb.refinement-contract-set.v1' or proof.get('status')!='PASS' or
+            type(proof.get('usb_refinement_contract_version')) is not int or proof['usb_refinement_contract_version']!=2 or
+            len(proof.get('sessions',[]))!=1):
+        raise ValueError('Hardening exercise lacks its bound runtime contract2')
+    item=proof['sessions'][0]
+    if item.get('status')!='PASS' or item.get('schema')!='x6200.usb.refinement-contract.v2':
+        raise ValueError('Hardening session did not pass its typed runtime evidence')
+    if expected_identity is not None and any(item.get(key)!=expected_identity.get(key) for key in ('source_commit','build_id')):
+        raise ValueError('Hardening session source/build differs from its campaign')
+    exercise=run.get('refinement_exercise',{})
+    if (exercise.get('schema')!='x6200.usb.refinement-exercise.v2' or exercise.get('status')!='PASS' or
+            exercise.get('case')!=case or exercise.get('contract')!={key:value for key,value in item.items()
+                if key not in ('trace_file','completion_file','trace_sha256','completion_sha256')}):
+        raise ValueError('Hardening exercise omitted its actual controller phase observations')
+    if case=='operational-hardening-cue-final-gesture':validate_operational_headset_output(run,verify_files=verify_files)
+    if case in HARDENING_VOLUME_CASES:
+        validate_hardening_volume_readbacks(run.get('hardening_volume_readbacks',{}),case,verify_files,exercise.get('phases',[]))
+    if case in HARDENING_CUE_CASES:
+        cue=run.get('local_cue_output',{});window=cue.get('gesture_window',{})
+        if (cue.get('schema')!='x6200.usb.local-cue-output.v2' or cue.get('status')!='PASS' or
+                any(type(window.get(key)) is not int for key in ('start_ms','end_ms','frame_start','frame_end')) or
+                not 0<=window['start_ms']<window['end_ms'] or not 0<=window['frame_start']<window['frame_end'] or
+                cue.get('waveform',{}).get('duration_ms')!=500):
+            raise ValueError('Hardening preview lacks final-gesture output evidence')
+        if case=='operational-hardening-cue-final-gesture':
+            low=cue.get('low_level_waveform',{});mapping=cue.get('gain_mapping',{})
+            if (mapping!={'method':'pa_sw_volume_to_linear','raw_volume':32768,'linear_gain':.125} or
+                    low.get('duration_ms')!=500 or low.get('expected_gain')!=.125 or
+                    type(cue.get('level_ratio')) not in (int,float) or not 7.5<=cue['level_ratio']<=8.5):
+                raise ValueError('Preview loudness did not follow independently verified 50-to-100 output levels')
+            validate_hardening_volume_readbacks(cue.get('low_level_readbacks',{}),case,verify_files,exercise.get('phases',[]))
+    if verify_files:
+        directory=Path(run['case_record_path']).parent/'result'
+        trace,completion=directory/item['trace_file'],directory/item['completion_file']
+        if sha(trace)!=item['trace_sha256'] or sha(completion)!=item['completion_sha256']:
+            raise ValueError('Hardening controller evidence changed')
+        rows=[json.loads(line) for line in trace.read_text().splitlines() if line.strip()]
+        terminal=_load(completion)
+        actual=validate_refinement_contract(rows,terminal,required_version=2,expected_identity=item)
+        if any(item.get(key)!=value for key,value in actual.items()):
+            raise ValueError('Hardening summary differs from produced controller evidence')
+        artifact=exercise.get('phases_artifact',{})
+        if sha(artifact['path'])!=artifact.get('sha256'):
+            raise ValueError('Hardening phase observations changed')
+        phases=[json.loads(line) for line in Path(artifact['path']).read_text().splitlines() if line.strip()]
+        actual_exercise=hardening_exercise(rows,terminal,run['harness'],phases,case)
+        if any(exercise.get(key)!=value for key,value in actual_exercise.items()):
+            raise ValueError('Hardening verdict differs from its executed phase evidence')
+        if case in HARDENING_CUE_CASES:
+            for name in ('monitor','ledger'):
+                if sha(cue[name]['path'])!=cue[name]['sha256']:
+                    raise ValueError('Final preview monitor evidence changed')
+            start=next(phase['ms'] for phase in phases if phase['phase']=='final-gesture-start')
+            end=next(phase['ms'] for phase in phases if phase['phase']=='final-preview')+200
+            ledger=[json.loads(line) for line in Path(cue['ledger']['path']).read_text().splitlines() if line.strip()]
+            selected=[entry for entry in ledger if entry.get('kind')=='block' and start*1000000<=entry['received_ns']<=end*1000000]
+            if not selected:raise ValueError('Final volume gesture has no recorded output blocks')
+            expected_window=dict(start_ms=start,end_ms=end,frame_start=selected[0]['frame_start'],
+                frame_end=selected[-1]['frame_start']+selected[-1]['frames'])
+            if window!=expected_window:
+                raise ValueError('Final preview window is not bound to the last controller gesture')
+            actual_waveform=local_cue_waveform(Path(cue['monitor']['path']).read_bytes(),version=2,
+                frame_start=window['frame_start'],frame_end=window['frame_end'])
+            if actual_waveform!=cue.get('waveform'):
+                raise ValueError('Final preview did not match its complete independently captured output')
+            if case=='operational-hardening-cue-final-gesture':
+                low_start=next(phase['ms'] for phase in phases if phase['phase']=='earlier-gesture-start')
+                low_end=next(phase['ms'] for phase in phases if phase['phase']=='earlier-preview')+200
+                low_blocks=[entry for entry in ledger if entry.get('kind')=='block' and low_start*1000000<=entry['received_ns']<=low_end*1000000]
+                if not low_blocks:raise ValueError('Lower-volume preview has no independent output blocks')
+                low_window=dict(start_ms=low_start,end_ms=low_end,frame_start=low_blocks[0]['frame_start'],frame_end=low_blocks[-1]['frame_start']+low_blocks[-1]['frames'])
+                if cue.get('low_level_window')!=low_window:raise ValueError('Lower-volume preview is not bound to its own gesture')
+                readback=cue['low_level_readbacks']['phases'][0]['pulse']['alsa_output.usb-fixture']
+                if readback.get('volume')!=[32768,32768] or readback.get('mute') is not False:
+                    raise ValueError('Lower preview has no authoritative equal-channel 50-unit volume readback')
+                gain=pulse_preview_gain(32768)
+                low_waveform=local_cue_waveform(Path(cue['monitor']['path']).read_bytes(),version=2,
+                    frame_start=low_window['frame_start'],frame_end=low_window['frame_end'],expected_gain=gain)
+                if low_waveform!=cue.get('low_level_waveform') or cue['level_ratio']!=actual_waveform['measured_gain']/low_waveform['measured_gain']:
+                    raise ValueError('Preview level ratio differs from the independently captured complete waveforms')
+    return proof
+
+
 def validate_refinement_run(run,case,verify_files=True,expected_identity=None):
+    if case in HARDENING_CASES:return validate_hardening_run(run,case,verify_files,expected_identity)
     if case not in REFINEMENT_CASES:return
     try:
         from usb_refinement_contract import (validate_refinement_contract,refinement_exercise,

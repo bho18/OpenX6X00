@@ -30,7 +30,7 @@ static inline uint64_t fd_usb_pcm_gain(int16_t *out,const int16_t *in,size_t n,i
     return clipped;
 }
 typedef struct {
-    uint64_t samples,input_squares,output_squares;
+    uint64_t samples,input_squares,output_squares,overload_samples;
     uint32_t input_peak,output_peak;
 } fd_usb_level_window;
 static inline uint32_t fd_usb_sample_magnitude(int16_t sample){return sample<0?(uint32_t)-(int32_t)sample:(uint32_t)sample;}
@@ -39,7 +39,9 @@ static inline void fd_usb_level_add(fd_usb_level_window *w,const int16_t *in,siz
     gain_db=fd_usb_mic_gain_clamp(gain_db);double factor=gain_db?fd_usb_mic_gain_factor(gain_db):1.0;
     for(size_t i=0;i<n;++i){
         uint32_t raw=fd_usb_sample_magnitude(in[i]);
-        int16_t processed=gain_db?fd_usb_gain_sample(in[i],factor,NULL):in[i];
+        bool clipped=false;
+        int16_t processed=gain_db?fd_usb_gain_sample(in[i],factor,&clipped):in[i];
+        if(clipped||in[i]==INT16_MAX||in[i]==INT16_MIN)++w->overload_samples;
         uint32_t out=fd_usb_sample_magnitude(processed);
         w->input_squares+=(uint64_t)raw*raw;w->output_squares+=(uint64_t)out*out;
         if(raw>w->input_peak)w->input_peak=raw;

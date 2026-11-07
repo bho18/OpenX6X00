@@ -490,3 +490,28 @@ The operator should receive one image-bound guide and one result ZIP containing
 all attempted stages, including failures. Previously accepted component results
 stay in the evidence history. The next operator task is the integrated
 controller/RF scenario, not another round of basic audio experiments.
+
+
+## Audio hardening revision
+
+The production hardening image requires refinement contract 2. Legacy diagnostic
+cases retain their original contracts, while new paced volume, preview, overload
+and RX status-recovery cases execute the hardening path explicitly. The image
+gate requires their source-bound receipts as well as the existing half-duplex
+campaign; a legacy pass cannot qualify this revision.
+
+Volume tests retain desired revisions and actual channel readback separately,
+including rounding, external changes, zero-to-positive balance and bounded
+rejection/timeout recovery. Preview tests locate the final gesture in the sink
+recording and check its complete 500 ms waveform, level, ramp and cancellation;
+an earlier good cue cannot satisfy a later failed gesture. The headset's own
+earcon may be generated downstream of host recording and is not classified as
+a FreeDV waveform or used as a calibration reference.
+
+RX status interruption tests distinguish bounded recovery from hard faults. They
+assert immediate admission denial, no keying during recovery, clear completion,
+fresh RX/configuration/capture, and release followed by a new press before TX.
+TX status loss, unexpected TX, protection and failed clearing remain stop cases.
+Healthy codec and stream creation counts must remain unchanged through permitted
+recovery. Separate UI/storage tests verify real knob routing, popup selection,
+nonblocking preference saves and lifecycle cleanup.

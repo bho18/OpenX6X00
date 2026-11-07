@@ -153,8 +153,8 @@ def capture_open_contract_version(manifest):
 def refinement_contract_version(manifest):
     if 'usb_refinement_contract_version' not in manifest:return 0
     version=manifest['usb_refinement_contract_version']
-    if type(version) is not int or version!=1 or manifest.get('usb_startup_contract_version')!=4:
-        raise ValueError('USB refinement contract requires integer version1 and operational startup4.')
+    if type(version) is not int or version not in (1,2) or manifest.get('usb_startup_contract_version')!=4:
+        raise ValueError('USB refinement contract requires integer version1 or2 and operational startup4.')
     return version
 
 
@@ -380,14 +380,14 @@ def preserve_immutable_diagnostics(prefix, output):
 def collect_recent_records(output,manifest,identity=None,completion=None):
     """Read only the already copied immutable windows, including blocked runs."""
     report=dict(status='DIAGNOSTIC_ONLY',scope='Bounded recent context; primary trace and first-fault evidence remain authoritative',records={})
-    required=refinement_contract_version(manifest)==1
+    required=refinement_contract_version(manifest) in (1,2)
     for kind,frozen in (('recent',False),('recent-fault',True)):
         path=output/('runtime-'+kind+'.json')
         if not path.exists():continue
         with path.open('rb') as stream:data=stream.read(16385)
         if len(data)>16384:raise ValueError('Recent diagnostic copy exceeds16KiB: '+kind)
         record=json.loads(data)
-        validated=validate_recent_diagnostics(record,identity,frozen)
+        validated=validate_recent_diagnostics(record,identity,frozen,refinement_contract_version(manifest) or None)
         validate_identity(record,manifest,identity.get('session_id') if identity else None)
         report['records'][kind]=dict(validated,record=record,path=path.name,bytes=len(data),sha256=sha256(path))
     if required and completion is not None:
@@ -718,7 +718,7 @@ def collect_evidence(output, manifest, sdr=None):
                 pointer=json.loads(pointer_path.read_text());validate_identity(pointer,manifest)
                 recent_identity={name:pointer[name] for name in IDENTITY_FIELDS}
             recent=collect_recent_records(output,manifest,recent_identity,result.get('runtime_completion'))
-            if recent['records'] or refinement_contract_version(manifest)==1:
+            if recent['records'] or refinement_contract_version(manifest) in (1,2):
                 result['recent_diagnostics']=recent;result['stages']['recent_diagnostics']=dict(status='DIAGNOSTIC_ONLY',
                     scope=recent['scope'],records=sorted(recent['records']))
         except ERRORS as recent_error:

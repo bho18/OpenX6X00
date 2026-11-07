@@ -1,7 +1,7 @@
 # X6200 FreeDV operational Beta
 
-Use the `freedv-operational-beta-20261107.1` GitHub release and its matching
-helper kit on a spare SD card. Keep the working `freedv-operational-beta-20261106.1`
+Use the `freedv-operational-beta-20261107.2` GitHub release and its matching
+helper kit on a spare SD card. Keep the working `freedv-operational-beta-20261107.1`
 card as a fallback. Stock baseband firmware is unchanged. The operating path
 is **half-duplex RADE V1**, using a USB headset microphone and headphones or a
 paired USB microphone/speaker device, plus the radio's own panel PTT.
@@ -17,7 +17,7 @@ does not ask you to repeat those component tests.
    from the GitHub release. Verify their SHA-256 hashes, extract the image and
    flash a spare card using your usual image-writing tool. Image and kit must
    share the same build ID, image hash, **startup contract 4** and **output
-   contract 1** and **capture opening contract 1** and **refinement contract 1**. No baseband update is needed.
+   contract 1** and **capture opening contract 1** and **refinement contract 2**. No baseband update is needed.
 2. Plug the USB headset or its USB receiver into the radio's **HOST** port.
    Power and pair it, then start at a comfortable low volume. Built-in mic,
    hand mic and radio speaker are unsupported for FreeDV audio in this build.
@@ -34,7 +34,7 @@ does not ask you to repeat those component tests.
    turns or wait through a fixed 20-second idle.
 
 With multiple USB devices, select the intended paired device under **Audio**.
-The saved physical device identity is reused; unplugging it stops the session
+Confirm a device in the dropdown to apply it; Close dismisses the menu without another confirmation. A change waits for released PTT and confirmed RX. The saved physical device identity is reused; unplugging it stops the session
 and does not move audio or TX to another device. A receive-only frequency can
 still receive, but is not eligible for TX. Split, transverter and native-radio
 mic/speaker operation are outside this Beta.
@@ -55,7 +55,7 @@ mic/speaker operation are outside this Beta.
 If existing settings are retained, the saved **+16 dB** gain migrates for the
 Loop110. On a fresh card, select **+16 dB** for your current headset and confirm
 its meter. A new device starts at 0 dB. Aim for normal speech peaks near
-−12 to −6 dBFS with room for louder syllables. Avoid CLIP. This is speech gain
+−12 to −6 dBFS with room for louder syllables. The live meter warns **Near maximum** at −1 dBFS and **Mic overload—lower gain** for digital saturation or PCM limits; it works with PTT released as well as during TX. These measurements cannot diagnose every form of clipping inside a headset. This is speech gain
 before encoding, not modem/RF drive or automatic gain control. Speaking with
 PTT released previews the meter without sending speech to RF.
 
@@ -70,13 +70,15 @@ control and can be applied during TX; choose a suitable power for your setup.
 
 ## Headphone volume and idle recovery
 
-The normal **Volume** control becomes **Headphones** in FreeDV, wherever that control is assigned. Its displayed percentage and scale use confirmed USB readback, with pending adjustments identified separately. Selecting another control still selects and edits that control; FreeDV does not rebind either knob. The radio's speaker-volume setting is preserved and its normal display returns on exit.
+The normal **Volume** control becomes **Headphones** in FreeDV, wherever that control is assigned. The display uses the usual plain **0–100** units, for example **Headphones 30**, from confirmed USB readback. Selecting another control still selects and edits that control; FreeDV does not rebind either knob. The radio's speaker setting is preserved and its normal display returns on exit.
 
-Each USB device remembers its own headphone percentage and mute state. A genuinely new device starts at **30%**. Upgrading the previously selected headset imports its confirmed existing USB level once; a saved zero or mute is retained. A preference-save error does not undo working audio and is displayed as **not saved**.
+Each USB device remembers its own headphone level and mute state. A genuinely new device starts at **30**; saved zero and mute remain valid. Preferences save in the background after volume settles. A save failure does not undo working audio. The headset may have its own local volume or end-stop sound; its internal setting is only observable when the USB device reports it. FreeDV does not infer limits from that sound or impose a minimum of 10.
 
-Audio offers an optional **Volume preview** setting, enabled by default. A short, quiet tone follows a confirmed user volume change when RX has no decoded speech. It is suppressed during speech, PTT, tuning, faults and exit, and is sent only to the USB headset. Startup restoration and selecting Volume do not produce a cue.
+Audio offers an optional **Volume preview**, enabled by default. A quiet half-second tone follows a confirmed adjustment after a short pause in dial movement, when RX has no decoded speech. Further dial movement changes the playing tone's level without chopping it into snippets. Speech, PTT, tuning, faults, mute/zero and exit cancel it. The tone goes only to the USB headset; startup restoration and selecting Volume do not produce it. Preview and volume-control failures have bounded independent recovery and do not stop otherwise healthy audio.
 
-Normal screen blank/wake keeps the codec and audio streams running. If microphone delivery stops, the meter becomes unavailable and new TX is inhibited while healthy reception continues. One bounded microphone recovery runs in RX on the same endpoint. If it cannot recover, use the visible **Retry mic** action; hold that button to open **Audio**. Release PTT before recovery, then press it again after capture is healthy. Device loss, radio faults and other hard failures remain stopped with a clear recovery message.
+Normal screen blank/wake keeps the codec and audio streams running. If microphone delivery stops, new TX is inhibited while healthy reception continues and one bounded microphone recovery runs on the same endpoint. If it cannot recover, Audio shows the relevant explanation and **Try again**. Release PTT and make a new press after recovery.
+
+A brief radio-status interruption in RX immediately blocks TX and enters **Recovering radio connection** for up to two seconds, retaining healthy audio and the codec. Recovery requires confirmed RX, stable configuration, healthy capture and released PTT. It never resumes a held transmission. Persistent loss, status loss during TX, unexpected TX, protection or an unsuccessful RF clear stops operation with a specific explanation. Audio provides contextual recovery where it can be performed safely; it never silently selects a different device.
 
 ## Receive and make a reply
 
@@ -107,13 +109,19 @@ A navigation close is recorded separately from an actual physical PTT release.
 If an immediate stop is needed, use a **second distinct Exit/Stop now press**.
 Protection faults, lost USB/server and shutdown use immediate abort behavior.
 Hard faults do not automatically reconnect, change devices or resume TX. Review
-the displayed fault before reopening FreeDV. Shutdown is bounded even if PTT
+the displayed fault and use the contextual Audio recovery action when offered. Shutdown is bounded even if PTT
 remains held. A software RX confirmation is telemetry evidence; antenna-level
 RF-off timing has not been independently measured.
 
 ## Combined field check for this revision
 
-Use one normal operating session: verify the chosen theme's notice/settings text; browse controls with both rings; edit, apply and cancel gain/timeout; select Volume and then Power and confirm each affects its own setting. Check the headphone level and optional cue, then make alternating RADE V1 turns with the known working peer. Allow the configured screen timeout to blank the panel, leave it dark for the interval that previously caused the problem, wake it and check the microphone meter and a fresh PTT press. Repeat once with the screen left on to distinguish display blanking from headset idle behavior. Exit through GEN or APP and confirm normal speaker volume and knob selection remain intact.
+Use one normal operating session:
+
+1. Open Mic Gain. Confirm click/dial/apply and cancel work without plus/minus buttons. Speak with PTT released and check the live warning responds to loud speech.
+2. Select Volume using each knob's usual workflow, then select Power or another control and verify it retains its normal function. Check the plain headphone number, slower adjustments, fast turns and reversals through the lower range, including zero and back upward. At a comfortable level, pause after a change and listen for a useful half-second preview. The headset's own end-stop sound is separate.
+3. Open Audio and Mode. Check there are no missing-glyph rectangles or diagnostic rows; confirming a different connected device applies without Use device. Close returns normally.
+4. Allow screen timeout, leave the panel dark for the interval that previously caused trouble, then wake it and check the mic meter, volume control and a fresh PTT press. Exit through GEN or APP and confirm normal speaker volume and knob selection remain intact.
+5. When a known working RADE V1 peer is available, check received first/last words and make alternating replies. This remains the outstanding live receive milestone.
 
 The earlier recording, codec and RF-transmit milestones need not be repeated. Software checks simulate endpoint interruptions; actual headset idle behavior remains a field observation. If a failure recurs, preserve its incident before repeatedly exiting/reopening the mode.
 
@@ -132,11 +140,11 @@ IQ files are not decoded by this helper. It sends **no TX/PTT commands**.
 Return the printed ZIP if there is a fault, missing speech or an exit problem;
 it contains microphone/audio taps, so review it before sharing.
 
-For startup contract 4 with refinement contract 1, expect **startup: PASS**, **qualification: NOT_REQUESTED**,
+For startup contract 4 with refinement contract 2, expect **startup: PASS**, **qualification: NOT_REQUESTED**,
 **control_completion: CONFIRMED_RX**, **capture_open: PASS**, **refinement: PASS**, **output_completion: PASS** and
 **session: COMPLETE** after a healthy exit. No SDR file normally gives
 `COLLECTED_NO_SDR_RECORDING`; that is not a failure or a claim of RF reception.
 A fault, missing readiness, incomplete terminal receipt or mismatched build is
 BLOCKED. A decoded file still needs listening review. Detailed test evidence
 and the distinction between software gates and radio observations are in
-[the test strategy](https://github.com/bho18/OpenX6X00/blob/freedv-operational-beta-20261107.1/docs/freedv/usb-test-strategy.md).
+[the test strategy](https://github.com/bho18/OpenX6X00/blob/freedv-operational-beta-20261107.2/docs/freedv/usb-test-strategy.md).

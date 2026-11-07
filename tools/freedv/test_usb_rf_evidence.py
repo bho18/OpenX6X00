@@ -724,6 +724,30 @@ class RecentDiagnosticTests(unittest.TestCase):
                 self.assertEqual(recent['records'][kind]['sha256'],subject.sha256(saved))
                 self.assertEqual(recent['records'][kind]['events_evicted'],100)
 
+    def test_hardening_reader_requires_matching_recent_version_and_preserves_bytes(self):
+        identity=CurrentSessionTests.identity
+        manifest=dict(usb_startup_contract_version=4,usb_refinement_contract_version=2,
+                      firmware_commit=identity['source_commit'],build_id=identity['build_id'])
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);record=self.recent();record['usb_refinement_contract_version']=2
+            path=root/'runtime-recent.json';path.write_text(json.dumps(record));original=path.read_bytes()
+            proof=subject.collect_recent_records(root,manifest,identity,dict(fault=0))
+            self.assertEqual(proof['records']['recent']['record'],record)
+            self.assertEqual(path.read_bytes(),original)
+            record['usb_refinement_contract_version']=1;path.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError,'refinement version'):
+                subject.collect_recent_records(root,manifest,identity,dict(fault=0))
+
+    def test_refinement_manifest_version_is_typed_and_startup_bound(self):
+        for version in (1,2):
+            self.assertEqual(subject.refinement_contract_version(dict(
+                usb_startup_contract_version=4,usb_refinement_contract_version=version)),version)
+        for version in (None,0,True,3,'2'):
+            with self.subTest(version=version),self.assertRaises(ValueError):
+                subject.refinement_contract_version(dict(usb_startup_contract_version=4,usb_refinement_contract_version=version))
+        with self.assertRaises(ValueError):subject.refinement_contract_version(dict(
+            usb_startup_contract_version=3,usb_refinement_contract_version=2))
+
     def test_malformed_nested_context_is_value_error_and_primary_fault_survives(self):
         from usb_refinement_contract import validate_recent_diagnostics
         for key in ('last_display','microphone','radio_age','window'):
@@ -822,14 +846,14 @@ class KitContractTests(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(),digest)
             manifest['usb_startup_contract_version']=4
             operational_command=[*command[:-1],str(root/'operational-kit.zip')]
-            for marker in (None,0,2,True,'1'):
+            for marker in (None,0,1,3,True,'2'):
                 if marker is None:manifest.pop('usb_refinement_contract_version',None)
                 else:manifest['usb_refinement_contract_version']=marker
                 path.write_text(json.dumps(manifest))
                 rejected=subprocess.run(operational_command,capture_output=True,text=True,timeout=15)
                 self.assertNotEqual(rejected.returncode,0)
                 self.assertFalse((root/'operational-kit.zip').exists())
-            manifest['usb_refinement_contract_version']=1
+            manifest['usb_refinement_contract_version']=2
             path.write_text(json.dumps(manifest))
             accepted=subprocess.run(operational_command,capture_output=True,text=True,timeout=15)
             self.assertEqual(accepted.returncode,0,accepted.stderr)
@@ -837,6 +861,7 @@ class KitContractTests(unittest.TestCase):
                 kit=json.loads(z.read('rf-test-manifest.json'))
                 self.assertEqual(kit['usb_startup_contract_version'],4)
                 self.assertEqual(kit['usb_output_contract_version'],1)
+                self.assertEqual(kit['usb_refinement_contract_version'],2)
 
 
 @unittest.skipIf(sys.platform == 'win32', 'The radio CLI uses Linux /tmp.')

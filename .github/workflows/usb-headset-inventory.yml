@@ -1,7 +1,7 @@
 name: USB headset and controller checks
 on:
   push:
-    branches: [test/usb-headset-20261105, beta/usb-voice-20261106, feature/freedv-operational-ui-20261106, feature/freedv-refinement-20261107]
+    branches: [test/usb-headset-20261105, beta/usb-voice-20261106, feature/freedv-operational-ui-20261106, feature/freedv-refinement-20261107, feature/freedv-audio-hardening-20261107]
   workflow_dispatch:
 permissions:
   contents: read

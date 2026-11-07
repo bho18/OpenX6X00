@@ -40,12 +40,13 @@ static atomic_bool usb_active,abort_pending;
 static pthread_mutex_t pointer_mutex=PTHREAD_MUTEX_INITIALIZER;
 static fd_usb_audio *audio;
 static ui_stage stage;
-static bool exit_requested,restart_requested,terminal_exit,main_quiet,input_owned;
+static bool exit_requested,restart_requested,terminal_exit,main_quiet,input_owned,volume_exit_queued,volume_exit_warned,volume_rejection_seen;
+static uint32_t volume_exit_tick;
 static lv_timer_t *timer;
 static buttons_page_t *previous_page;
 static lv_obj_t *status_box,*status_label,*compact_meter,*compact_clip,*volume_label,*mic_health_label;
 static lv_obj_t *popup,*popup_message,*usage_check,*mic_level_label,*edit_hint,*preview_check;
-static lv_obj_t *mic_rms_bar,*mic_peak_bar,*clip_label,*headset_label,*audio_list;
+static lv_obj_t *mic_rms_bar,*mic_peak_bar,*clip_label,*headset_label,*audio_list,*retry_button;
 typedef enum { NUMBER_NONE,NUMBER_GAIN,NUMBER_TIMEOUT } number_kind;
 static struct {lv_obj_t *row,*value;number_kind kind;int draft,original;bool editing,long_press;} number;
 static popup_kind popup_type;
@@ -61,9 +62,11 @@ static fd_usb_headset_catalog catalog;
 static const struct {const char *name;} supported_modes[]={{"RADE V1"}};
 static char selected_id[256],selected_name[160],trace_prefix[160],problem[192];
 static int selected_gain;
-static uint64_t seen_mic_clips;
-static uint32_t clip_tick;
-static bool clip_seen,updating_controls,volume_legacy_import;
+static uint32_t overload_tick,near_maximum_tick;
+static bool overload_seen,near_maximum_seen,updating_controls,volume_legacy_import,audio_placeholder;
+/* A confirmed dropdown selection is intent. An active audio device only
+ * changes after released PTT and fresh RX have made teardown safe. */
+static struct {char id[256],name[160];bool pending;} device_choice;
 static fd_usb_snapshot latest;
 static struct {pthread_t thread;atomic_bool done;bool running,target,ok;} quiet_job;
 static void service(lv_timer_t *);
@@ -71,6 +74,8 @@ static void popup_open(popup_kind);
 static void popup_close(void);
 static void start_discovery(void);
 static void request_restart(void);
+static void audio_status(void);
+static void retry_current_problem(void);
 static void display_observed(const fd_usb_display_event *event,void *context){
     (void)context;if(audio)fd_usb_audio_note_display(audio,event);
 }
@@ -115,8 +120,16 @@ bool freedv_usb_ptt(bool pressed){
 }
 bool freedv_usb_volume(int delta){
     if(!freedv_usb_active())return false;
-    if(front_keys_voice_local_event() && audio && !exit_requested)
-        fd_usb_audio_adjust_headset_volume(audio,delta);
+    if(front_keys_voice_local_event() && audio && !exit_requested){
+        bool accepted=fd_usb_audio_adjust_headset_volume(audio,delta);
+        if(accepted)volume_rejection_seen=false;
+        else if(!volume_rejection_seen){
+            volume_rejection_seen=true;
+            msg_schedule_text_fmt("Headphone volume unavailable. Open Audio to reconnect.");
+        }
+    }
+    /* Consume the contextual control even when unavailable; falling through
+     * would unexpectedly change the separate radio speaker setting. */
     return true;
 }
 bool freedv_usb_volume_percent(unsigned *percent,bool *muted){
@@ -134,7 +147,7 @@ void freedv_usb_abort(void){
 }
 bool freedv_usb_leave(void){
     if(!freedv_usb_active())return false;
-    exit_requested=true;restart_requested=false;cfg_freedv_usb_volume_flush();popup_close();
+    exit_requested=true;restart_requested=false;device_choice.pending=false;cfg_freedv_usb_volume_flush();popup_close();
     if(scan)fd_usb_headsets_scan_cancel(scan);
     pthread_mutex_lock(&pointer_mutex);if(audio)fd_usb_audio_leave(audio);pthread_mutex_unlock(&pointer_mutex);
     return true;
@@ -146,7 +159,7 @@ void freedv_usb_terminal_leave(void){
 static const char *mode_button_text(void){static char text[40];snprintf(text,sizeof(text),"Mode:\n%s",supported_modes[0].name);return text;}
 static const char *gain_button_text(void){static char text[32];snprintf(text,sizeof(text),"Mic gain:\n%+d dB",selected_gain);return text;}
 static const char *exit_button_text(void){return exit_requested?"Stop now":number.editing?"Cancel edit":popup?"Close":"Exit";}
-static const char *audio_button_text(void){return latest.mic_health==FD_USB_MIC_UNAVAILABLE && latest.mic_retry_available?"Retry mic\nHold: Audio":"Audio";}
+static const char *audio_button_text(void){return "Audio";}
 static void soft_button(button_data_t *button);
 static void audio_hold(button_data_t *button);
 static button_data_t mode_button={.type=BTN_TEXT_FN,.label_fn=mode_button_text,.press=soft_button,.ctrl=0};
@@ -178,7 +191,7 @@ static void dropdown_ready(lv_event_t *event){
     lv_obj_set_style_max_height(list,180,0);
 }
 static void popup_dropdown(lv_obj_t *item){
-    popup_item(item);lv_dropdown_set_dir(item,LV_DIR_TOP);
+    popup_item(item);lv_dropdown_set_dir(item,LV_DIR_TOP);lv_dropdown_set_symbol(item,NULL);
     lv_obj_add_event_cb(item,dropdown_ready,LV_EVENT_READY,NULL);
 }
 static void clicked(lv_event_t *e);
@@ -207,7 +220,7 @@ static void popup_close(void){
     lv_group_set_editing(keyboard_group,previous_editing);
     memset(&number,0,sizeof(number));
     popup_type=POP_NONE;popup_message=usage_check=mic_level_label=edit_hint=preview_check=NULL;
-    mic_rms_bar=mic_peak_bar=clip_label=headset_label=audio_list=NULL;
+    mic_rms_bar=mic_peak_bar=clip_label=headset_label=audio_list=retry_button=NULL;
 }
 static void popup_begin(popup_kind kind,int height,const char *title){
     popup_close();popup_type=kind;previous_focus=lv_group_get_focused(keyboard_group);
@@ -273,7 +286,7 @@ static void number_click(lv_event_t *event){
             if(ok){param_i_set(cfg_freedv_timeout,number.draft);if(voice)fd_writer_voice_end();else fd_writer_exit();}
         }
     }
-    if(!ok){if(edit_hint)lv_label_set_text(edit_hint,number.kind==NUMBER_TIMEOUT?"Release PTT and wait for Receiving, then click to apply.":"Microphone unavailable. Use Audio / Retry, then apply.");return;}
+    if(!ok){if(edit_hint)lv_label_set_text(edit_hint,number.kind==NUMBER_TIMEOUT?"Release PTT and wait for Receiving, then click to apply.":"Microphone unavailable. Open Audio to reconnect, then apply.");return;}
     number.original=number.draft;number.editing=false;lv_group_set_editing(popup_group,false);number_draw();
 }
 static lv_obj_t *number_row(number_kind kind,int value,int x,int y,int width){
@@ -282,25 +295,105 @@ static lv_obj_t *number_row(number_kind kind,int value,int x,int y,int width){
     number.value=lv_label_create(number.row);lv_obj_center(number.value);popup_item(number.row);
     lv_obj_add_event_cb(number.row,number_click,LV_EVENT_ALL,NULL);number_draw();return number.row;
 }
-static int selected_catalog_index(void){for(unsigned i=0;i<catalog.count;++i)if(!strcmp(catalog.devices[i].id,selected_id))return (int)i;return -1;}
+static int catalog_index(const char *id){for(unsigned i=0;i<catalog.count;++i)if(!strcmp(catalog.devices[i].id,id))return (int)i;return -1;}
+static int selected_catalog_index(void){return catalog_index(selected_id);}
+typedef enum { RETRY_NONE,RETRY_SESSION,RETRY_MIC,RETRY_CONTROLS } retry_kind;
+static retry_kind current_retry(void){
+    if(exit_requested || restart_requested || stage>=UI_STOP || catalog.pending)return RETRY_NONE;
+    if(stage==UI_FAILED || (audio && latest.fault))return RETRY_SESSION;
+    if(device_choice.pending)return RETRY_NONE;
+    if(!audio || latest.radio_recovering)return RETRY_NONE;
+    if(latest.mic_health==FD_USB_MIC_UNAVAILABLE && latest.mic_retry_available)return RETRY_MIC;
+    if(latest.headset_volume_unavailable || (cfg_freedv_usb_preview_enabled() && latest.cue_unavailable))return RETRY_CONTROLS;
+    return RETRY_NONE;
+}
+static const char *fault_message(const fd_usb_snapshot *snapshot){
+    const char *origin=snapshot->first_fault_origin;
+    if(!strcmp(origin,"radio-status-recovery-timeout") || !strcmp(origin,"radio-packet-stale"))return "radio connection lost";
+    if(!strcmp(origin,"radio-status-recovery-repeated-loss"))return "Radio connection unstable.";
+    if(!strcmp(origin,"radio-recovery-clear-timeout"))return "Radio TX clear did not complete.";
+    if(strstr(origin,"unexpected-tx"))return "unexpected radio transmission";
+    if(strstr(origin,"tx-status-disappeared"))return "transmit status lost";
+    if(!strcmp(origin,"radio-protection"))return "radio protection triggered";
+    if(!strcmp(origin,"context-state"))return "audio server disconnected";
+    if(!strcmp(origin,"stream-state"))return "USB audio connection lost";
+    return fd_usb_fault_text(snapshot->fault);
+}
+static const char *fault_banner(const fd_usb_snapshot *snapshot){
+    const char *origin=snapshot->first_fault_origin;
+    /* This row has 280 pixels. Keep the visible fault useful; the Audio
+     * popup supplies the full explanation and contextual recovery action. */
+    if(!strcmp(origin,"radio-status-recovery-timeout") || !strcmp(origin,"radio-packet-stale"))return "FreeDV: radio status lost";
+    if(!strcmp(origin,"radio-status-recovery-repeated-loss"))return "FreeDV: radio link unstable";
+    if(!strcmp(origin,"radio-recovery-clear-timeout"))return "FreeDV: TX clear failed";
+    if(strstr(origin,"unexpected-tx"))return "FreeDV: unexpected TX";
+    if(strstr(origin,"tx-status-disappeared"))return "FreeDV: TX status lost";
+    if(!strcmp(origin,"radio-protection"))return "FreeDV: radio protection";
+    if(!strcmp(origin,"context-state"))return "FreeDV: audio server lost";
+    if(!strcmp(origin,"stream-state"))return "FreeDV: USB audio lost";
+    return "FreeDV: audio stopped";
+}
+static void audio_status(void){
+    if(popup_type!=POP_AUDIO || !popup_message)return;
+    const char *message="";
+    if(restart_requested || (stage>=UI_STOP && !exit_requested))message="Connecting USB headset...";
+    else if(audio && latest.fault)message=fault_message(&latest);
+    else if(device_choice.pending)message="Release radio PTT and wait for RX to change the headset.";
+    else if(catalog.pending)message="Finding USB microphone and playback devices...";
+    else if(catalog.error)message="USB discovery failed. Check HOST USB, then Try again.";
+    else if(!catalog.count)message="Connect a USB microphone and headphones to HOST USB, then Try again.";
+    else if(stage==UI_FAILED)message=problem;
+    else if(audio && latest.radio_recovering)message="Recovering radio connection...";
+    else if(audio && latest.mic_health==FD_USB_MIC_RECOVERING)message="Recovering microphone...";
+    else if(audio && latest.mic_health==FD_USB_MIC_UNAVAILABLE)message="Microphone unavailable. Check the headset, then Try again.";
+    else if(audio && latest.headset_volume_recovering)message="Recovering headphone volume control...";
+    else if(audio && latest.headset_volume_unavailable)message="Headphone volume unavailable. Try again.";
+    else if(audio && cfg_freedv_usb_preview_enabled() && latest.cue_recovering)message="Recovering volume preview...";
+    else if(audio && cfg_freedv_usb_preview_enabled() && latest.cue_unavailable)message="Volume preview unavailable. Try again.";
+    else if(selected_catalog_index()<0)message="Select a connected USB headset.";
+    lv_label_set_text(popup_message,message);
+    if(retry_button){
+        bool show=current_retry()!=RETRY_NONE;
+        if(show)lv_obj_clear_flag(retry_button,LV_OBJ_FLAG_HIDDEN);
+        else {
+            /* Never leave encoder focus on an invisible recovery action. */
+            if(lv_group_get_focused(popup_group)==retry_button && audio_list)lv_group_focus_obj(audio_list);
+            lv_obj_add_flag(retry_button,LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
 static void populate_audio(void){
     if(!audio_list || !popup_message)return;
-    char options[FD_USB_HEADSET_MAX*170];size_t used=0;options[0]=0;
+    char options[FD_USB_HEADSET_MAX*170+64];size_t used=0;options[0]=0;
+    int selected=catalog_index(device_choice.pending?device_choice.id:selected_id);
+    audio_placeholder=selected<0;
+    if(audio_placeholder)used=(size_t)snprintf(options,sizeof(options),"Select USB headset...");
     for(unsigned i=0;i<catalog.count;++i){
         char name[160];snprintf(name,sizeof(name),"%s",catalog.devices[i].name);
         for(char *p=name;*p;++p)if(*p=='\n' || *p=='\r')*p=' ';
-        int n=snprintf(options+used,sizeof(options)-used,"%s%s",i?"\n":"",name);
+        int n=snprintf(options+used,sizeof(options)-used,"%s%s",used?"\n":"",name);
         if(n<0 || (size_t)n>=sizeof(options)-used)break;
         used+=(size_t)n;
     }
-    lv_dropdown_set_options(audio_list,used?options:"No paired USB headset");
-    int selected=selected_catalog_index();lv_dropdown_set_selected(audio_list,selected>=0?(unsigned)selected:0);
-    if(catalog.pending)lv_label_set_text(popup_message,"Finding USB devices with both microphone and playback...");
-    else if(catalog.error)lv_label_set_text(popup_message,"USB discovery failed. Check the HOST connection, then Retry.");
-    else if(!catalog.count)lv_label_set_text(popup_message,"No paired USB audio device. Connect one to HOST USB, then Retry.");
-    else if(*selected_id && selected<0)lv_label_set_text(popup_message,"Saved headset is absent. Select a connected headset and Use device.");
-    else lv_label_set_text(popup_message,"Choose one physical USB headset. The radio modem connection stays fixed.");
+    updating_controls=true;
+    lv_dropdown_set_options(audio_list,used?options:"Select USB headset...");
+    lv_dropdown_set_selected(audio_list,selected>=0?(unsigned)selected+(audio_placeholder?1u:0u):0);
+    updating_controls=false;
     if(catalog.pending || !catalog.count)lv_obj_add_state(audio_list,LV_STATE_DISABLED);else lv_obj_clear_state(audio_list,LV_STATE_DISABLED);
+    audio_status();
+}
+static void audio_selected(lv_event_t *event){
+    if(updating_controls || !front_keys_voice_local_event() || catalog.pending || !audio_list || exit_requested)return;
+    unsigned index=lv_dropdown_get_selected(lv_event_get_target(event));
+    if(audio_placeholder){if(!index)return;--index;}
+    if(index>=catalog.count)return;
+    fd_usb_headset *device=&catalog.devices[index];
+    if(!strcmp(device->id,selected_id) && stage!=UI_FAILED && !(audio && latest.fault)){
+        device_choice.pending=false;audio_status();return;
+    }
+    snprintf(device_choice.id,sizeof(device_choice.id),"%s",device->id);
+    snprintf(device_choice.name,sizeof(device_choice.name),"%s",device->name);device_choice.pending=true;
+    audio_status();
 }
 static const char usage_text[]=
     "FreeDV requires a USB audio device with microphone input and headphones or speaker output, connected to the HOST USB port. "
@@ -359,12 +452,10 @@ static void popup_open(popup_kind kind){
         popup_height(y+control+24);lv_group_focus_obj(mode);
     }else if(kind==POP_MIC){
         popup_begin(kind,320,"Microphone gain");int y=heading+4;
-        label(popup,"Speech gain",0,y+8,200);number_row(NUMBER_GAIN,selected_gain,220,y,190);
-        lv_obj_t *down=popup_button("-",430,y,66,5),*up=popup_button("+",510,y,66,6);
-        lv_obj_set_height(down,control);lv_obj_set_height(up,control);y+=control+12;
+        label(popup,"Speech gain",0,y+8,260);number_row(NUMBER_GAIN,selected_gain,320,y,260);y+=control+12;
         mic_level_label=label(popup,"Mic RMS -- | Peak -- dBFS",0,y,590);y+=line+6;
         mic_rms_bar=meter(popup,0,y,580,12,TC(ok_bar));mic_peak_bar=meter(popup,0,y+18,580,5,TC(warn));y+=30;
-        clip_label=label(popup,"Clipped TX samples: 0",0,y,590);y+=line+4;
+        clip_label=label(popup,"",0,y,590);y+=line+4;
         headset_label=label(popup,"",0,y,590);y+=line+8;
         edit_hint=label(popup,"",0,y,590);number_draw();y+=line*2+10;
         lv_obj_t *close=popup_button("Close",466,y,126,3);lv_obj_set_height(close,control);
@@ -373,14 +464,13 @@ static void popup_open(popup_kind kind){
         popup_begin(kind,320,"USB audio device");int y=heading+2;
         popup_message=label(popup,"",0,y,590);lv_obj_set_height(popup_message,line*2+2);y+=line*2+10;
         audio_list=lv_dropdown_create(popup);lv_obj_set_pos(audio_list,0,y);lv_obj_set_size(audio_list,590,control);
-        popup_dropdown(audio_list);populate_audio();y+=control+10;
+        popup_dropdown(audio_list);lv_obj_add_event_cb(audio_list,audio_selected,LV_EVENT_VALUE_CHANGED,NULL);populate_audio();y+=control+10;
         preview_check=lv_checkbox_create(popup);lv_checkbox_set_text(preview_check,"Volume preview");
         lv_obj_set_pos(preview_check,0,y);if(cfg_freedv_usb_preview_enabled())lv_obj_add_state(preview_check,LV_STATE_CHECKED);
         popup_item(preview_check);lv_obj_add_event_cb(preview_check,preview_changed,LV_EVENT_VALUE_CHANGED,NULL);y+=line+14;
-        edit_hint=label(popup,latest.mic_health_reason,0,y,590);lv_label_set_long_mode(edit_hint,LV_LABEL_LONG_DOT);y+=line+10;
-        static const char *names[]={"Retry mic","Retry audio","Use device","Close"};
-        static const unsigned actions[]={9,7,8,3};
-        for(unsigned i=0;i<4;++i){lv_obj_t *b=popup_button(names[i],(int)i*150,y,140,actions[i]);lv_obj_set_height(b,control);}
+        retry_button=popup_button("Try again",310,y,140,7);lv_obj_set_height(retry_button,control);
+        lv_obj_t *close=popup_button("Close",466,y,126,3);lv_obj_set_height(close,control);
+        audio_status();
         popup_height(y+control+24);lv_group_focus_obj(audio_list);
     }
     lv_group_set_editing(popup_group,false);
@@ -398,21 +488,7 @@ static void clicked(lv_event_t *e){
     if(action==2){freedv_navigation_request(FD_NAV_HOME,0,0,NULL);return;}
     if(action==3){if(number.editing)number_cancel();else popup_close();return;}
     if(action==4){popup_open(POP_HELP);return;}
-    if(action==5 || action==6){number_step(action==5?-1:1);return;}
-    if(action==7){request_restart();return;}
-    if(action==9){
-        if(!audio || !fd_usb_audio_retry_microphone(audio))msg_schedule_text_fmt("Release PTT and wait for Receiving before Retry mic");
-        return;
-    }
-    if(action==8 && !catalog.pending && catalog.count){
-        unsigned index=lv_dropdown_get_selected(audio_list);if(index>=catalog.count)return;
-        fd_usb_headset *device=&catalog.devices[index];
-        if(!cfg_freedv_usb_select_headset(device->id))msg_schedule_text_fmt("Headset selected for this session; preference was not saved");
-        bool changed=strcmp(selected_id,device->id)!=0;
-        snprintf(selected_id,sizeof(selected_id),"%s",device->id);snprintf(selected_name,sizeof(selected_name),"%s",device->name);
-        selected_gain=cfg_freedv_usb_gain_for(selected_id,selected_name);buttons_refresh(&gain_button);
-        popup_close();if(changed || stage==UI_FAILED)request_restart();
-    }
+    if(action==7)retry_current_problem();
 }
 bool freedv_usb_softkey(unsigned index,bool hold){
     if(!freedv_usb_active())return false;
@@ -425,11 +501,8 @@ bool freedv_usb_softkey(unsigned index,bool hold){
     if(stage==UI_NOTICE){if(index==4)acknowledge();else if(index==3)freedv_navigation_request(FD_NAV_HOME,0,0,NULL);return true;}
     if(index==4){if(exit_requested)freedv_usb_abort();else if(number.editing)number_cancel();else if(popup)popup_close();else freedv_navigation_request(FD_NAV_HOME,0,0,NULL);return true;}
     if(exit_requested)return true;
-    if(index==0)popup_open(POP_MODE);else if(index==1)popup_open(POP_MIC);else if(index==2){
-        if(!popup && latest.mic_health==FD_USB_MIC_UNAVAILABLE && latest.mic_retry_available){
-            if(!audio || !fd_usb_audio_retry_microphone(audio))msg_schedule_text_fmt("Release PTT and wait for Receiving before Retry mic");
-        }else popup_open(POP_AUDIO);
-    }else if(index==3){popup_close();return false;} /* ordinary TX-power action */
+    if(index==0)popup_open(POP_MODE);else if(index==1)popup_open(POP_MIC);else if(index==2)popup_open(POP_AUDIO);
+    else if(index==3){popup_close();return false;} /* ordinary TX-power action */
     return true;
 }
 static void soft_button(button_data_t *button){freedv_usb_softkey((unsigned)button->ctrl,false);}
@@ -443,6 +516,11 @@ bool freedv_usb_popup_key(uint32_t code){
     if(code==KEY_MFK_PREV || code==KEY_MFK_NEXT){
         int delta=code==KEY_MFK_PREV?-1:1;
         if(number.editing)number_step(delta);
+        else if(lv_obj_check_type(lv_group_get_focused(popup_group),&lv_dropdown_class) &&
+                lv_dropdown_is_open(lv_group_get_focused(popup_group))){
+            uint32_t key=delta<0?LV_KEY_UP:LV_KEY_DOWN;
+            lv_event_send(lv_group_get_focused(popup_group),LV_EVENT_KEY,&key);
+        }
         else if(delta<0)lv_group_focus_prev(popup_group);else lv_group_focus_next(popup_group);
         return true;
     }
@@ -451,7 +529,9 @@ bool freedv_usb_popup_key(uint32_t code){
     }
     if(code==LV_KEY_ESC){
         if(number.editing){number_cancel();return true;}
-        if(audio_list && lv_dropdown_is_open(audio_list)){lv_dropdown_close(audio_list);return true;}
+        if(audio_list && lv_dropdown_is_open(audio_list)){
+            lv_dropdown_close(audio_list);populate_audio();lv_group_set_editing(popup_group,false);return true;
+        }
         if(stage==UI_NOTICE)freedv_navigation_request(FD_NAV_HOME,0,0,NULL);else popup_close();return true;
     }
     if(code>=KEYBOARD_F1 && code<=KEYBOARD_F5)return freedv_usb_softkey(code-KEYBOARD_F1,false);
@@ -459,29 +539,32 @@ bool freedv_usb_popup_key(uint32_t code){
 }
 static void dbfs_text(char *out,size_t size,int value){int magnitude=value<0?-value:value;snprintf(out,size,"%s%d.%d",value<0?"-":"",magnitude/10,magnitude%10);}
 static void audio_controls(const fd_usb_snapshot *s){
-    if(s->mic_clipped_samples<seen_mic_clips)clip_seen=false;
-    if(s->mic_clipped_samples>seen_mic_clips){clip_seen=true;clip_tick=lv_tick_get();}
-    seen_mic_clips=s->mic_clipped_samples;bool clipping=clip_seen && lv_tick_elaps(clip_tick)<1500;
-    if(compact_meter)lv_bar_set_value(compact_meter,s->mic_meter_ready?s->mic_rms_dbfs10:-600,LV_ANIM_OFF);
-    if(compact_clip)lv_label_set_text(compact_clip,clipping?"CLIP":"");
+    bool meter_ready=s->mic_meter_ready && !s->fault && !s->stopped;
+    if(meter_ready && s->mic_overload){overload_seen=true;overload_tick=lv_tick_get();}
+    if(meter_ready && s->mic_near_maximum){near_maximum_seen=true;near_maximum_tick=lv_tick_get();}
+    bool overload=!s->fault && overload_seen && lv_tick_elaps(overload_tick)<1500;
+    bool near_maximum=!s->fault && near_maximum_seen && lv_tick_elaps(near_maximum_tick)<1500;
+    if(compact_meter)lv_bar_set_value(compact_meter,meter_ready?s->mic_rms_dbfs10:-600,LV_ANIM_OFF);
+    if(compact_clip){lv_label_set_text(compact_clip,overload?"CLIP":near_maximum?"HIGH":"");
+        lv_obj_set_style_text_color(compact_clip,overload?TC(err):TC(warn),0);}
     if(!mic_level_label)return;
-    if(s->mic_meter_ready){char rms[20],peak[20];dbfs_text(rms,sizeof(rms),s->mic_rms_dbfs10);dbfs_text(peak,sizeof(peak),s->mic_peak_dbfs10);
+    if(meter_ready){char rms[20],peak[20];dbfs_text(rms,sizeof(rms),s->mic_rms_dbfs10);dbfs_text(peak,sizeof(peak),s->mic_peak_dbfs10);
         lv_label_set_text_fmt(mic_level_label,"Mic RMS %s | Peak %s dBFS",rms,peak);
         lv_bar_set_value(mic_rms_bar,s->mic_rms_dbfs10,LV_ANIM_OFF);lv_bar_set_value(mic_peak_bar,s->mic_peak_dbfs10,LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(mic_peak_bar,s->mic_peak_dbfs10>=-10?TC(err):TC(warn),LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(mic_peak_bar,overload?TC(err):near_maximum?TC(warn):TC(ok_bar),LV_PART_INDICATOR);
     }else {lv_label_set_text(mic_level_label,"Mic RMS -- | Peak -- dBFS");lv_bar_set_value(mic_rms_bar,-600,LV_ANIM_OFF);lv_bar_set_value(mic_peak_bar,-600,LV_ANIM_OFF);}
-    if(clipping)lv_label_set_text(clip_label,"CLIP: lower mic gain");else lv_label_set_text_fmt(clip_label,"Clipped TX samples: %llu",(unsigned long long)s->mic_clipped_samples);
-    lv_obj_set_style_text_color(clip_label,clipping?TC(err):TC(text_dim),0);
-    if(s->headset_volume_ready)lv_label_set_text_fmt(headset_label,"Headphones: %u%%%s | turn VOL",s->headset_volume_percent,s->headset_muted?" (muted)":"");
+    lv_label_set_text(clip_label,overload?"Mic overload - lower gain":near_maximum?"Near maximum":"");
+    lv_obj_set_style_text_color(clip_label,overload?TC(err):near_maximum?TC(warn):TC(text),0);
+    if(s->headset_volume_ready)lv_label_set_text_fmt(headset_label,"Headphones: %u%s | turn VOL",s->headset_volume_percent,s->headset_muted?" (muted)":"");
     else lv_label_set_text(headset_label,"Headphones: USB volume unavailable");
-    if(s->headset_volume_pending && s->headset_volume_ready)lv_label_set_text_fmt(headset_label,"Headphones: %u%%%s (pending)",s->headset_volume_percent,s->headset_muted?" muted":"");
 }
 static const char *state_text(fd_usb_state value){
     switch(value){case FD_USB_PREPARE:return "Preparing audio";case FD_USB_RX:return "Receiving";
         case FD_USB_START:return "Preparing TX";case FD_USB_KEY_PENDING:return "Waiting for TX";
         case FD_USB_TX:return "Transmitting";case FD_USB_DRAIN:return "Finishing speech";
         case FD_USB_UNKEY:return "Clearing TX";case FD_USB_RX_READY:return "Waiting for RX";
-        case FD_USB_TUNING:return "Tuning";case FD_USB_FAULT:return "Stopped";case FD_USB_DONE:return "Stopped";default:return "Working";}
+        case FD_USB_TUNING:return "Tuning";case FD_USB_RECOVERING:return "Recovering radio connection";
+        case FD_USB_FAULT:return "Stopped";case FD_USB_DONE:return "Stopped";default:return "Working";}
 }
 static void *quiet_worker(void *unused){(void)unused;quiet_job.ok=audio_freedv_main_quiet(quiet_job.target);atomic_store(&quiet_job.done,true);return NULL;}
 static bool quiet_start(bool target){
@@ -507,10 +590,10 @@ static void poll_discovery(void){
 }
 static bool choose_headset(void){
     if(catalog.pending)return false;
-    if(catalog.error){set_problem("USB discovery failed; open Audio and Retry");return false;}
+    if(catalog.error){set_problem("USB discovery failed. Open Audio to reconnect.");return false;}
     int index=selected_catalog_index();
     if(index<0 && !*selected_id && catalog.count==1)index=0;
-    if(index<0){set_problem(catalog.count?"Select a USB headset in Audio":"Connect a USB headset to HOST; Audio > Retry");return false;}
+    if(index<0){set_problem(catalog.count?"Select a USB headset in Audio":"Connect a USB headset to HOST, then open Audio");return false;}
     fd_usb_headset *device=&catalog.devices[index];snprintf(selected_id,sizeof(selected_id),"%s",device->id);
     snprintf(selected_name,sizeof(selected_name),"%s",device->name);
     if(!cfg_freedv_usb_capture_legacy_volume() || !cfg_freedv_usb_select_headset(selected_id))msg_schedule_text_fmt("Headset selected for this session; preference was not saved");
@@ -527,22 +610,50 @@ static bool open_audio(void){
     snprintf(trace_prefix,sizeof(trace_prefix),"/tmp/freedv-usb-%lld-%09ld",(long long)now.tv_sec,now.tv_nsec);
     fd_usb_config config={.radio_source=BOARD_PA_SOURCE,.radio_sink=BOARD_PA_SINK,.trace_prefix=trace_prefix,
         .control={.observe=radio_usb_observe,.key=radio_usb_key,.clear=radio_usb_clear,.inhibit=radio_usb_inhibit,.permit=radio_usb_permit},
-        .operational=true,.refinement=true,.cues_enabled=cfg_freedv_usb_preview_enabled(),.retain_runtime_traces=true,
+        .operational=true,.refinement=true,.hardening=true,.cues_enabled=cfg_freedv_usb_preview_enabled(),.retain_runtime_traces=true,
         .headset_volume_initial_valid=!volume.legacy_import,.headset_volume_initial_percent=volume.percent,.headset_volume_initial_muted=volume.muted,
         .tx_timeout_seconds=(unsigned)param_i_get(cfg_freedv_timeout),.headset_id=selected_id,
         .incident_dir=BOARD_DATA "/freedv-usb-incidents",.mic_gain_db=selected_gain};
     fd_usb_audio *created=fd_usb_audio_open(&config);
     pthread_mutex_lock(&pointer_mutex);audio=created;if(audio && atomic_load(&abort_pending))fd_usb_audio_stop(audio);pthread_mutex_unlock(&pointer_mutex);
-    if(!audio){set_problem("Audio preparation failed; open Audio and Retry");return false;}
+    if(!audio){set_problem("Audio preparation failed. Open Audio to reconnect.");return false;}
     backlight_set_observer(display_observed,NULL);fd_usb_display_event event;backlight_snapshot(&event);fd_usb_audio_note_display(audio,&event);
     stage=UI_RUNNING;return true;
 }
 static void request_restart(void){
     if(exit_requested)return;
-    restart_requested=true;cfg_freedv_usb_volume_flush();popup_close();if(audio)fd_usb_audio_leave(audio);
+    restart_requested=true;cfg_freedv_usb_volume_flush();
+    if(popup_type!=POP_AUDIO)popup_close();
+    if(audio)fd_usb_audio_leave(audio);
     /* A device selection/retry can arrive while normal audio is still being
      * quieted. Let that worker acknowledge before restore/reclaim starts. */
     if(!quiet_job.running)stage=UI_STOP;
+}
+static void retry_current_problem(void){
+    switch(current_retry()){
+    case RETRY_SESSION:request_restart();break;
+    case RETRY_MIC:
+        if(!fd_usb_audio_retry_microphone(audio))msg_schedule_text_fmt("Release PTT and wait for RX before reconnecting the microphone");
+        break;
+    case RETRY_CONTROLS:
+        if(!fd_usb_audio_retry_controls(audio))msg_schedule_text_fmt("Release PTT and wait for RX before reconnecting headphone controls");
+        break;
+    default:break;
+    }
+    audio_status();
+}
+static void apply_device_choice(const fd_usb_snapshot *snapshot){
+    if(!device_choice.pending || exit_requested || restart_requested || stage>=UI_STOP || catalog.pending)return;
+    if(radio_usb_owned()){
+        fd_usb_inputs input={0};
+        if(!radio_usb_observe(NULL,&input) || !input.valid || !input.rf_valid || input.rf_tx || input.pressed || input.protection)return;
+        if(audio && !snapshot->stopped && (snapshot->state!=FD_USB_RX || snapshot->radio_recovering || snapshot->pressed))return;
+    }else if(audio)return;
+    snprintf(selected_id,sizeof(selected_id),"%s",device_choice.id);
+    snprintf(selected_name,sizeof(selected_name),"%s",device_choice.name);device_choice.pending=false;
+    if(!cfg_freedv_usb_select_headset(selected_id))msg_schedule_text_fmt("Headset selected for this session; preference was not saved");
+    selected_gain=cfg_freedv_usb_gain_for(selected_id,selected_name);buttons_refresh(&gain_button);
+    request_restart();
 }
 static void finish(void){
     backlight_set_observer(NULL,NULL);popup_close();if(status_box){lv_obj_del(status_box);status_box=status_label=compact_meter=compact_clip=volume_label=mic_health_label=NULL;}
@@ -554,17 +665,18 @@ static void finish(void){
     freedv_navigation_completed();
 }
 static void service(lv_timer_t *unused){
-    (void)unused;poll_discovery();
+    (void)unused;cfg_freedv_usb_volume_poll();poll_discovery();
     fd_usb_snapshot snapshot={.state=FD_USB_PREPARE,.stopped=true};if(audio)snapshot=fd_usb_audio_snapshot(audio);
     status_layout();
     if(audio){
         controls_observed(&snapshot);audio_controls(&snapshot);
-        if(snapshot.headset_volume_ready)lv_label_set_text_fmt(volume_label,"HP %u%%%s%s",snapshot.headset_volume_percent,snapshot.headset_muted?" muted":"",snapshot.headset_volume_pending?" pending":"");
+        if(snapshot.headset_volume_ready)lv_label_set_text_fmt(volume_label,"Headphones %u%s",snapshot.headset_volume_percent,snapshot.headset_muted?" muted":"");
         else lv_label_set_text(volume_label,"HP unavailable");
-        lv_label_set_text(mic_health_label,snapshot.mic_health==FD_USB_MIC_RECOVERING?"Mic recovering":snapshot.mic_health==FD_USB_MIC_UNAVAILABLE?"Mic unavailable":snapshot.mic_meter_ready?"Mic ready":"Mic awaiting audio");
-        if(popup_type==POP_AUDIO && edit_hint)lv_label_set_text(edit_hint,snapshot.mic_health_reason[0]?snapshot.mic_health_reason:"Microphone ready");
-        if(preview_check && snapshot.startup_ready)lv_checkbox_set_text(preview_check,snapshot.cue_available?"Volume preview":"Volume preview (unavailable)");
+        lv_label_set_text(mic_health_label,snapshot.fault || snapshot.stopped?"Audio stopped":snapshot.radio_recovering?"TX paused":
+            snapshot.mic_health==FD_USB_MIC_RECOVERING?"Mic recovering":snapshot.mic_health==FD_USB_MIC_UNAVAILABLE?"Mic unavailable":snapshot.mic_meter_ready?"Mic ready":"Mic preparing");
     }
+    if(stage==UI_FAILED && mic_health_label)lv_label_set_text(mic_health_label,"Audio unavailable");
+    apply_device_choice(&snapshot);audio_status();
     if(status_label){
         if(exit_requested){
             fd_usb_inputs input={0};bool held=!terminal_exit && radio_usb_observe(NULL,&input) && input.valid && input.pressed;
@@ -576,7 +688,11 @@ static void service(lv_timer_t *unused){
         else if(stage==UI_CLAIM)lv_label_set_text(status_label,"FreeDV: release PTT; waiting for radio RX");
         else if(stage==UI_QUIET)lv_label_set_text(status_label,"FreeDV: preparing audio");
         else if(restart_requested)lv_label_set_text(status_label,"FreeDV: changing audio device");
-        else if(snapshot.fault)lv_label_set_text_fmt(status_label,"FreeDV: %s - Audio > Retry",fd_usb_fault_text(snapshot.fault));
+        else if(snapshot.fault)lv_label_set_text(status_label,fault_banner(&snapshot));
+        else if(snapshot.radio_recovering)lv_label_set_text(status_label,"FreeDV: recovering radio connection");
+        else if(snapshot.mic_health==FD_USB_MIC_RECOVERING)lv_label_set_text(status_label,"FreeDV: recovering microphone");
+        else if(snapshot.mic_health==FD_USB_MIC_UNAVAILABLE)lv_label_set_text(status_label,"FreeDV: microphone unavailable");
+        else if(snapshot.state==FD_USB_RX && !snapshot.armed && snapshot.pressed)lv_label_set_text(status_label,"FreeDV: release radio PTT to resume");
         else if(snapshot.startup_ready && !snapshot.tx_eligible)lv_label_set_text(status_label,"FreeDV: RX only (outside TX bands)");
         else lv_label_set_text_fmt(status_label,"FreeDV: %s%s",state_text(snapshot.state),snapshot.state==FD_USB_RX && !snapshot.armed?" [TX pending]":"");
     }
@@ -592,12 +708,12 @@ static void service(lv_timer_t *unused){
             info_refresh_effective();
             if(main_quiet)open_audio();
             else if(quiet_start(true)){main_quiet=true;stage=UI_QUIET;}
-            else set_problem("Could not start audio preparation; Audio > Retry");
-        }else if(radio_usb_owned())set_problem("Radio preparation failed; Audio > Retry");
+            else set_problem("Could not start audio. Open Audio to reconnect.");
+        }else if(radio_usb_owned())set_problem("Radio preparation failed. Open Audio to reconnect.");
     }
     if(stage==UI_QUIET){bool ok;if(quiet_finished(&ok)){
         if(exit_requested || restart_requested)stage=UI_STOP;
-        else if(!ok)set_problem("Could not quiet normal audio; Audio > Retry");else open_audio();
+        else if(!ok)set_problem("Could not prepare audio. Open Audio to reconnect.");else open_audio();
     }}
     if(stage==UI_STOP){
         if(scan){fd_usb_headsets_scan_cancel(scan);return;}
@@ -623,12 +739,24 @@ static void service(lv_timer_t *unused){
         if(!ok){/* Retry restoration on later GUI ticks without blocking input. */stage=UI_RESTORE;return;}
         main_quiet=false;stage=UI_RELEASE;
     }
-    if(stage==UI_RELEASE){if(radio_usb_release())finish();}
+    if(stage==UI_RELEASE){
+        if(!volume_exit_queued){cfg_freedv_usb_volume_flush();volume_exit_queued=true;volume_exit_tick=lv_tick_get();}
+        cfg_freedv_usb_volume_poll();
+        bool busy=cfg_freedv_usb_volume_busy();
+        if(busy && lv_tick_elaps(volume_exit_tick)<2500)return;
+        if(busy && !volume_exit_warned){
+            volume_exit_warned=true;msg_schedule_text_fmt("Headphone preference save is still pending.");
+        }
+        /* The metadata worker owns immutable data, never radio ownership or
+         * widgets. Slow storage must not trap the user in FreeDV. */
+        if(radio_usb_release())finish();
+    }
 }
 void freedv_usb_open(void){
     if(!scheduler_on_gui_thread() || freedv_usb_active())return;
     if(!front_keys_diagnostic_input_acquire()){msg_schedule_text_fmt("Release panel controls, then select FreeDV again");return;}
-    input_owned=true;exit_requested=restart_requested=terminal_exit=main_quiet=false;audio=NULL;
+    input_owned=true;exit_requested=restart_requested=terminal_exit=main_quiet=false;audio=NULL;memset(&device_choice,0,sizeof(device_choice));
+    volume_exit_queued=volume_exit_warned=volume_rejection_seen=false;
     atomic_store(&abort_pending,false);selected_name[0]=problem[0]=0;selected_gain=0;
     memset(&latest,0,sizeof(latest));volume_legacy_import=false;
     cfg_freedv_usb_capture_legacy_volume();
@@ -648,9 +776,10 @@ void freedv_usb_open(void){
     mic_health_label=label(status_box,"Mic preparing",506,4,168);lv_label_set_long_mode(mic_health_label,LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(mic_health_label,&sony_14,0);
     compact_meter=meter(status_box,684,9,78,7,TC(ok_bar));compact_clip=label(status_box,"",768,4,30);
+    lv_obj_set_style_text_font(compact_clip,&sony_14,0);
     status_layout();
     lv_obj_set_style_text_color(compact_clip,TC(err),0);
-    seen_mic_clips=0;clip_seen=false;
+    overload_seen=near_maximum_seen=false;
     buttons_load_page(stage==UI_NOTICE?&notice_page:&normal_page);
     timer=lv_timer_create(service,50,NULL);
     if(stage==UI_NOTICE)popup_open(POP_NOTICE);else start_discovery();

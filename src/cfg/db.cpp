@@ -10,6 +10,7 @@
  * per-call name lookups.
  */
 #include "db.h"
+#include "freedv_preferences.h"
 #include "../freedv/writer_gate.h"
 
 #include "../lvgl/lvgl.h"
@@ -1062,6 +1063,8 @@ extern "C" bool cfg_db_init(sqlite3 *database) {
 }
 
 void cfg_db_shutdown() {
+    // Finish admitted immutable volume saves before finalizing shared statements.
+    cfg_freedv_usb_volume_storage_shutdown();
     ParamsTable::Shutdown();
     BandsTable::Shutdown();
     BandParamsTable::Shutdown();

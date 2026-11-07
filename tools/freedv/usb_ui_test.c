@@ -15,6 +15,8 @@
 void usb_ui_cfg_init(void);
 void usb_ui_cfg_verify_hidden(bool);
 void usb_ui_cfg_verify_profiles(void);
+void usb_ui_cfg_pause_volume_storage(void);
+void usb_ui_cfg_release_volume_storage(void);
 void usb_ui_cfg_close(void);
 lv_group_t *keyboard_group;
 encoder_t *mfk;
@@ -25,8 +27,9 @@ static keypad_t *panel;
 static bool panel_down[KEY_MAX+1];
 static rotary_t *inner;
 static bool row_reserved;
-static unsigned volume_edits,volume_selects,volume_presses,mic_retries,display_notes;
+static unsigned volume_edits,volume_selects,volume_presses,mic_retries,control_retries,display_notes;
 static unsigned native_power_actions;
+static unsigned volume_save_pending_warnings;
 static cfg_ctrl_t selected_volume_control=CTRL_VOL;
 button_data_t btn_tx_pwr={.type=BTN_TEXT,.label="TX power"};
 buttons_page_t buttons_page_vol_1;
@@ -34,6 +37,9 @@ static buttons_page_t *shown_page=&buttons_page_vol_1;
 static fd_usb_snapshot observed;
 static unsigned headset_changes,mic_changes,claim_count,restore_count,open_count,close_count,leave_count,stop_count,completion_count;
 static bool adapter_owned,leave_pending;
+static bool second_headset,radio_input_pressed,radio_input_tx,radio_input_stale;
+static bool honor_startup_volume;
+static unsigned opened_initial_volume;
 static pthread_t gui_thread;
 static atomic_uint quiet_calls;
 static atomic_bool quiet_block;
@@ -59,7 +65,7 @@ bool freedv_mode_radio_ptt(bool pressed){return freedv_usb_ptt(pressed);}
 radio_state_t radio_get_state(void){return RADIO_RX;}
 bool keyboard_diagnostic_reset(void){return true;}
 bool keyboard_voice_local_event(lv_indev_t *i,unsigned g){(void)i;(void)g;return false;}
-void msg_schedule_text_fmt(const char *format,...){(void)format;}
+void msg_schedule_text_fmt(const char *format,...){if(!strcmp(format,"Headphone preference save is still pending."))++volume_save_pending_warnings;}
 void freq_strip_set_app(const char *name){(void)name;}
 void info_refresh_effective(void){}
 void buttons_load_page(buttons_page_t *page){shown_page=page;}
@@ -75,7 +81,8 @@ bool radio_usb_claim(void){assert(stage!=UI_NOTICE);++claim_count;assert(!adapte
 bool radio_usb_restore(void){++restore_count;return true;}
 bool radio_usb_terminal_restore(void){return radio_usb_restore();}
 bool radio_usb_release(void){if(adapter_owned){adapter_owned=false;fd_writer_release();}return true;}
-bool radio_usb_observe(void *unused,fd_usb_inputs *in){(void)unused;*in=(fd_usb_inputs){.valid=true,.rf_valid=true,.configuration_ready=true,.tx_eligible=true};return true;}
+bool radio_usb_observe(void *unused,fd_usb_inputs *in){(void)unused;*in=(fd_usb_inputs){.valid=true,.rf_valid=!radio_input_stale,
+    .pressed=radio_input_pressed,.rf_tx=radio_input_tx,.configuration_ready=true,.tx_eligible=true};return true;}
 bool radio_usb_key(void *unused,uint64_t release){(void)unused;(void)release;assert(0);return false;}
 void radio_usb_clear(void *unused,bool halt){(void)unused;(void)halt;}
 void radio_usb_inhibit(void *unused){(void)unused;}
@@ -87,11 +94,14 @@ bool audio_freedv_main_quiet(bool quiet){
     return true;
 }
 fd_usb_audio *fd_usb_audio_open(const fd_usb_config *config){
-    assert(config->operational && config->refinement && config->retain_runtime_traces && config->tx_timeout_seconds>=30 && !config->rf_disabled);
+    assert(config->operational && config->refinement && config->hardening && config->retain_runtime_traces && config->tx_timeout_seconds>=30 && !config->rf_disabled);
     assert(!config->qualification_turns && !config->qualification_idle_ms);
-    assert(!strcmp(config->headset_id,"loop110-stable"));assert(config->mic_gain_db==16 || config->mic_gain_db==7);
+    assert(!strcmp(config->headset_id,"loop110-stable") || !strcmp(config->headset_id,"second-stable"));
+    assert(config->mic_gain_db==16 || config->mic_gain_db==7 || config->mic_gain_db==0);
+    opened_initial_volume=config->headset_volume_initial_percent;
     ++open_count;observed=(fd_usb_snapshot){.state=FD_USB_RX,.startup_ready=true,.tx_eligible=true,.armed=true,
         .mic_gain_db=config->mic_gain_db,.headset_volume_percent=40,.headset_volume_ready=true,.headset_volume_initialized=true,.headset_volume_requested_revision=1,.headset_volume_confirmed_revision=1,.mic_health=FD_USB_MIC_HEALTHY};
+    if(honor_startup_volume){assert(config->headset_volume_initial_valid);observed.headset_volume_percent=opened_initial_volume;}
     snprintf(observed.headset_id,sizeof(observed.headset_id),"%s",config->headset_id);return &fake_audio;
 }
 fd_usb_snapshot fd_usb_audio_snapshot(fd_usb_audio *a){assert(a==&fake_audio);return observed;}
@@ -100,14 +110,16 @@ bool fd_usb_audio_adjust_headset_volume(fd_usb_audio *a,int delta){assert(a==&fa
 bool fd_usb_audio_set_tx_timeout(fd_usb_audio *a,unsigned seconds){assert(a==&fake_audio && seconds>=30 && seconds<=600);return observed.state==FD_USB_RX;}
 bool fd_usb_audio_set_cues_enabled(fd_usb_audio *a,bool enabled){assert(a==&fake_audio);(void)enabled;return true;}
 bool fd_usb_audio_retry_microphone(fd_usb_audio *a){assert(a==&fake_audio);++mic_retries;return observed.state==FD_USB_RX && !observed.pressed;}
+bool fd_usb_audio_retry_controls(fd_usb_audio *a){assert(a==&fake_audio);++control_retries;return observed.state==FD_USB_RX && !observed.pressed;}
 
 void fd_usb_audio_stop(fd_usb_audio *a){assert(a==&fake_audio);++stop_count;observed.stopped=true;}
 void fd_usb_audio_leave(fd_usb_audio *a){assert(a==&fake_audio);++leave_count;leave_pending=true;if(observed.state==FD_USB_RX)observed.stopped=true;}
 void fd_usb_audio_close(fd_usb_audio *a){assert(a==&fake_audio && observed.stopped);++close_count;}
 const char *fd_usb_fault_text(unsigned fault){(void)fault;return "injected fault";}
 fd_usb_headset_scan *fd_usb_headsets_scan_open(void){fake_scan.cancelled=false;return &fake_scan;}
-fd_usb_headset_catalog fd_usb_headsets_scan_snapshot(fd_usb_headset_scan *s){assert(s==&fake_scan);fd_usb_headset_catalog c={.count=s->cancelled?0:1};
-    snprintf(c.devices[0].id,sizeof(c.devices[0].id),"loop110-stable");snprintf(c.devices[0].name,sizeof(c.devices[0].name),"Loop110 USB audio");return c;}
+fd_usb_headset_catalog fd_usb_headsets_scan_snapshot(fd_usb_headset_scan *s){assert(s==&fake_scan);fd_usb_headset_catalog c={.count=s->cancelled?0:second_headset?2:1};
+    snprintf(c.devices[0].id,sizeof(c.devices[0].id),"loop110-stable");snprintf(c.devices[0].name,sizeof(c.devices[0].name),"Loop110 USB audio");
+    snprintf(c.devices[1].id,sizeof(c.devices[1].id),"second-stable");snprintf(c.devices[1].name,sizeof(c.devices[1].name),"Second USB headset");return c;}
 void fd_usb_headsets_scan_cancel(fd_usb_headset_scan *s){s->cancelled=true;}
 bool fd_usb_headsets_scan_close(fd_usb_headset_scan *s){(void)s;return true;}
 static void flush(lv_disp_drv_t *d,const lv_area_t *a,lv_color_t *p){
@@ -131,6 +143,11 @@ bool front_keys_test_held(int fd,uint16_t code){return panel && fd==panel->fd &&
 static void panel_key(uint16_t code,int down){assert(code<=KEY_MAX);panel_down[code]=down!=0;struct input_event e={.type=EV_KEY,.code=code,.value=down};assert(write(panel->fd,&e,sizeof(e))==(ssize_t)sizeof(e));pump();}
 static void mfk_click(void){panel_key(BTN_TRIGGER_HAPPY27,1);panel_key(BTN_TRIGGER_HAPPY27,0);}
 static void inner_turn(int direction){struct input_event e={.type=EV_REL,.value=direction};assert(write(inner->fd,&e,sizeof(e))==(ssize_t)sizeof(e));pump();}
+static void local_escape(void){
+    /* Send ESC through the real local FIFO/indev path, keeping the input
+     * fence active rather than invoking the popup handler out of context. */
+    uint32_t prior=inner->left[inner->state];inner->left[inner->state]=LV_KEY_ESC;inner_turn(1);inner->left[inner->state]=prior;
+}
 static void panel_event(lv_event_t *event){
     event_keypad_t *e=lv_event_get_param(event);
     if(e->key>=KEYPAD_F1 && e->key<=KEYPAD_F5 && (e->state==KEYPAD_LONG || e->state==KEYPAD_RELEASE)){
@@ -140,7 +157,8 @@ static void panel_event(lv_event_t *event){
 }
 static void mfk_turn(int direction){struct input_event e={.type=EV_REL,.code=REL_Y,.value=direction};assert(write(mfk->fd,&e,sizeof(e))==(ssize_t)sizeof(e));pump();}
 static void touch(lv_obj_t *button){lv_obj_update_layout(button);lv_area_t a;lv_obj_get_coords(button,&a);pointer_position=(lv_point_t){(a.x1+a.x2)/2,(a.y1+a.y2)/2};pointer_state=LV_INDEV_STATE_PRESSED;pump();pointer_state=LV_INDEV_STATE_RELEASED;pump();}
-static lv_obj_t *find_button(const char *text){for(unsigned i=0;i<lv_obj_get_child_cnt(popup);++i){lv_obj_t *item=lv_obj_get_child(popup,i);if(lv_obj_check_type(item,&lv_btn_class) && !strcmp(lv_label_get_text(lv_obj_get_child(item,0)),text))return item;}assert(0);return NULL;}
+static lv_obj_t *maybe_button(const char *text){for(unsigned i=0;i<lv_obj_get_child_cnt(popup);++i){lv_obj_t *item=lv_obj_get_child(popup,i);if(lv_obj_check_type(item,&lv_btn_class) && !strcmp(lv_label_get_text(lv_obj_get_child(item,0)),text))return item;}return NULL;}
+static lv_obj_t *find_button(const char *text){lv_obj_t *item=maybe_button(text);assert(item);return item;}
 static void fits(lv_obj_t *object){lv_area_t a,b;lv_obj_get_coords(object,&a);lv_obj_get_coords(popup,&b);assert(a.x1>=b.x1 && a.y1>=b.y1 && a.x2<=b.x2 && a.y2<=b.y2);assert(b.y2<480-BUTTONS_H);}
 static void wait_running(void){for(unsigned n=0;n<30 && !audio;++n)pump();assert(audio && stage==UI_RUNNING && observed.armed);}
 static void wait_closed(void){for(unsigned n=0;n<30 && freedv_usb_active();++n)pump();assert(!freedv_usb_active() && !timer && !popup && !audio);}
@@ -226,34 +244,80 @@ int main(void){
     mfk_click();inner_turn(-1);assert(number.draft==19 && observed.mic_gain_db==18);
     touch(find_button("Close"));assert(popup && !number.editing && observed.mic_gain_db==18);touch(find_button("Close"));assert(!popup);
     popup_open(POP_MIC);pump();
+    assert(!maybe_button("+") && !maybe_button("-"));
     uint32_t injected=KEY_VOL_RIGHT_EDIT;lv_event_send(lv_group_get_focused(popup_group),LV_EVENT_KEY,&injected);assert(!headset_changes);
     turn(-1);turn(1);assert(volume_edits==2 && headset_changes==2 && observed.headset_volume_percent==40);
     vol->state=VOL_STATE_SELECT;turn(-1);turn(1);assert(volume_selects==2 && headset_changes==2);
     panel_key(BTN_TRIGGER_HAPPY21,1);panel_key(BTN_TRIGGER_HAPPY21,0);assert(volume_presses==1 && vol->state==VOL_STATE_EDIT);
     assert(param_i_get(cfg_volume)==27);
-    for(unsigned i=0;i<30;++i)touch(find_button("+"));
+    mfk_click();for(unsigned i=0;i<30;++i)inner_turn(-1);
     assert(number.draft==24 && observed.mic_gain_db==18);
-    touch(number.row);assert(observed.mic_gain_db==24 && !number.editing);
-    for(unsigned i=0;i<50;++i)touch(find_button("-"));
+    mfk_click();assert(observed.mic_gain_db==24 && !number.editing);
+    mfk_click();for(unsigned i=0;i<50;++i)inner_turn(1);
     assert(number.draft==-12 && observed.mic_gain_db==24);
-    touch(number.row);assert(observed.mic_gain_db==-12);
-    for(unsigned i=0;i<19;++i)touch(find_button("+"));
-    touch(number.row);assert(observed.mic_gain_db==7);
+    mfk_click();assert(observed.mic_gain_db==-12);
+    mfk_click();for(unsigned i=0;i<19;++i)inner_turn(-1);
+    mfk_click();assert(observed.mic_gain_db==7);
     observed.mic_meter_ready=true;observed.mic_rms_dbfs10=-241;observed.mic_peak_dbfs10=-68;observed.mic_clipped_samples=3;pump();
-    assert(strstr(lv_label_get_text(mic_level_label),"-24.1") && strstr(lv_label_get_text(mic_level_label),"-6.8"));assert(strstr(lv_label_get_text(clip_label),"CLIP"));
+    assert(strstr(lv_label_get_text(mic_level_label),"-24.1") && strstr(lv_label_get_text(mic_level_label),"-6.8"));
+    assert(!*lv_label_get_text(clip_label)); /* Historical TX count is diagnostic, not live clipping. */
+    observed.mic_peak_dbfs10=-5;observed.mic_near_maximum=true;pump();assert(!strcmp(lv_label_get_text(clip_label),"Near maximum"));
+    observed.mic_near_maximum=false;lv_tick_inc(1600);pump();assert(!*lv_label_get_text(clip_label));
+    observed.mic_overload=true;pump();assert(strstr(lv_label_get_text(clip_label),"Mic overload"));
+    assert(observed.state==FD_USB_RX && observed.mic_clipped_samples==3); /* RX preview warns too. */
+    observed.state=FD_USB_TX;pump();assert(strstr(lv_label_get_text(clip_label),"Mic overload"));
+    observed.state=FD_USB_RX;observed.mic_overload=false;lv_tick_inc(1600);pump();assert(!*lv_label_get_text(clip_label));
+    assert(!strchr(lv_label_get_text(headset_label),'%') && !strstr(lv_label_get_text(headset_label),"pending"));
     fits(number.row);fits(mic_level_label);fits(mic_rms_bar);fits(mic_peak_bar);fits(clip_label);fits(headset_label);
     touch(find_button("Close"));assert(vol->indev->group==keyboard_group && open_count==1 && !close_count && !leave_count);
-    popup_open(POP_MODE);pump();fits(number.row);lv_group_focus_obj(number.row);mfk_click();inner_turn(-1);assert(number.draft==210 && param_i_get(cfg_freedv_timeout)==180);
+    popup_open(POP_MODE);pump();fits(number.row);assert(!lv_dropdown_get_symbol(lv_obj_get_child(popup,2)));
+    lv_group_focus_obj(number.row);mfk_click();inner_turn(-1);assert(number.draft==210 && param_i_get(cfg_freedv_timeout)==180);
     observed.state=FD_USB_TX;mfk_click();assert(number.editing && param_i_get(cfg_freedv_timeout)==180 && strstr(lv_label_get_text(edit_hint),"Release PTT"));
     observed.state=FD_USB_RX;mfk_click();assert(!number.editing && param_i_get(cfg_freedv_timeout)==210);
     touch(find_button("Help"));assert(strstr(lv_label_get_text(popup_message),"HOST USB"));touch(find_button("Close"));
     popup_open(POP_MIC);pump();mfk_click();inner_turn(-1);assert(number.editing && number.draft==8);
     panel_key(BTN_TRIGGER_HAPPY19,1);panel_key(BTN_TRIGGER_HAPPY19,0);assert(!popup && native_power_actions==1 && observed.mic_gain_db==7);
     observed.tx_eligible=false;pump();assert(strstr(lv_label_get_text(status_label),"RX only"));observed.tx_eligible=true;
-    popup_open(POP_AUDIO);pump();fits(audio_list);assert(lv_dropdown_get_option_cnt(audio_list)==1);touch(find_button("Close"));assert(open_count==1 && !close_count);
+    popup_open(POP_AUDIO);pump();fits(audio_list);assert(lv_dropdown_get_option_cnt(audio_list)==1 && !lv_dropdown_get_symbol(audio_list));
+    assert(!maybe_button("Use device") && !maybe_button("Retry mic") && !maybe_button("Retry audio"));
+    assert(!*lv_label_get_text(popup_message) && lv_obj_has_flag(retry_button,LV_OBJ_FLAG_HIDDEN));
+    assert(!edit_hint && !strstr(lv_label_get_text(volume_label),"pending") && !strchr(lv_label_get_text(volume_label),'%'));
+    screenshot("legacy","audio");
+    touch(find_button("Close"));assert(open_count==1 && !close_count);
     observed.mic_health=FD_USB_MIC_UNAVAILABLE;observed.mic_retry_available=true;pump();keypad_set_long_time(100);
     panel_key(BTN_TRIGGER_HAPPY15,1);pump();panel_key(BTN_TRIGGER_HAPPY15,0);assert(popup_type==POP_AUDIO && mic_retries==0);touch(find_button("Close"));
-    panel_key(BTN_TRIGGER_HAPPY15,1);panel_key(BTN_TRIGGER_HAPPY15,0);assert(mic_retries==1 && !popup);observed.mic_health=FD_USB_MIC_HEALTHY;pump();
+    panel_key(BTN_TRIGGER_HAPPY15,1);panel_key(BTN_TRIGGER_HAPPY15,0);assert(!mic_retries && popup_type==POP_AUDIO);
+    assert(!lv_obj_has_flag(retry_button,LV_OBJ_FLAG_HIDDEN));touch(retry_button);assert(mic_retries==1 && popup_type==POP_AUDIO);
+    observed.mic_health=FD_USB_MIC_HEALTHY;pump();assert(lv_obj_has_flag(retry_button,LV_OBJ_FLAG_HIDDEN));
+    observed.headset_volume_unavailable=true;pump();assert(strstr(lv_label_get_text(popup_message),"Headphone volume unavailable"));
+    touch(retry_button);assert(control_retries==1);observed.headset_volume_unavailable=false;
+    observed.radio_recovering=true;observed.state=FD_USB_RECOVERING;pump();
+    assert(strstr(lv_label_get_text(status_label),"recovering radio connection") && !strcmp(lv_label_get_text(mic_health_label),"TX paused"));
+    assert(lv_obj_has_flag(retry_button,LV_OBJ_FLAG_HIDDEN));
+    observed.fault=4;snprintf(observed.first_fault_origin,sizeof(observed.first_fault_origin),"radio-status-recovery-timeout");pump();
+    if(!strstr(lv_label_get_text(status_label),"radio status lost") || strcmp(lv_label_get_text(mic_health_label),"Audio stopped"))
+        fprintf(stderr,"Fault UI: status='%s', microphone='%s'\n",lv_label_get_text(status_label),lv_label_get_text(mic_health_label));
+    assert(strstr(lv_label_get_text(status_label),"radio status lost") && strstr(lv_label_get_text(popup_message),"radio connection lost"));
+    assert(!strcmp(lv_label_get_text(mic_health_label),"Audio stopped"));
+    assert(lv_bar_get_value(compact_meter)==-600);
+    assert(!lv_obj_has_flag(retry_button,LV_OBJ_FLAG_HIDDEN));
+    screenshot("legacy","radio-unavailable");
+    static const struct {unsigned fault;const char *origin,*banner,*message,*picture;} radio_faults[]={
+        {4,"radio-status-recovery-repeated-loss","FreeDV: radio link unstable","Radio connection unstable.","radio-link-unstable"},
+        {20,"radio-recovery-clear-timeout","FreeDV: TX clear failed","Radio TX clear did not complete.","radio-clear-failed"},
+    };
+    for(unsigned i=0;i<sizeof(radio_faults)/sizeof(radio_faults[0]);++i){
+        observed.fault=radio_faults[i].fault;
+        snprintf(observed.first_fault_origin,sizeof(observed.first_fault_origin),"%s",radio_faults[i].origin);pump();
+        assert(!strcmp(lv_label_get_text(status_label),radio_faults[i].banner));
+        assert(!strcmp(lv_label_get_text(popup_message),radio_faults[i].message));
+        assert(!strcmp(lv_label_get_text(mic_health_label),"Audio stopped") && !lv_obj_has_flag(retry_button,LV_OBJ_FLAG_HIDDEN));
+        screenshot("legacy",radio_faults[i].picture);
+    }
+    observed.fault=0;observed.first_fault_origin[0]=0;observed.radio_recovering=false;observed.state=FD_USB_RX;
+    observed.cue_unavailable=true;pump();assert(strstr(lv_label_get_text(popup_message),"Volume preview unavailable"));
+    touch(retry_button);assert(control_retries==2);observed.cue_unavailable=false;pump();
+    touch(find_button("Close"));
 
     observed.state=FD_USB_TX;observed.stopped=false;assert(freedv_usb_leave());pump();assert(leave_pending && freedv_usb_active() && !stop_count && !close_count);
     observed.state=FD_USB_RX;observed.stopped=true;wait_closed();assert(close_count==1 && completion_count==2 && atomic_load(&quiet_calls)==2);
@@ -269,7 +333,61 @@ int main(void){
     assert(stage==UI_QUIET && adapter_owned && restore_count==before_restore && open_count==3);
     atomic_store(&quiet_block,false);wait_running();assert(open_count==4);
     freedv_usb_leave();wait_closed();assert(close_count==4);
+    /* Selection commits without an extra Use device button. Programmatic
+     * population and browsing do not commit, and a live TX defers switching. */
+    second_headset=true;freedv_usb_open();wait_running();popup_open(POP_AUDIO);pump();
+    unsigned before_open=open_count,before_leave=leave_count;
+    assert(lv_dropdown_get_option_cnt(audio_list)==2 && !device_choice.pending);
+    lv_dropdown_set_selected(audio_list,1);pump();assert(!device_choice.pending && open_count==before_open);
+    populate_audio();assert(lv_dropdown_get_selected(audio_list)==0 && !device_choice.pending);
+    mfk_click();inner_turn(-1);assert(lv_dropdown_get_selected(audio_list)==1 && !device_choice.pending);
+    local_escape();assert(!lv_dropdown_is_open(audio_list) && lv_dropdown_get_selected(audio_list)==0 && !device_choice.pending);
+    observed.state=FD_USB_TX;observed.pressed=true;radio_input_pressed=radio_input_tx=true;
+    mfk_click();assert(lv_dropdown_is_open(audio_list));inner_turn(-1);
+    assert(!device_choice.pending && !strcmp(selected_id,"loop110-stable"));
+    mfk_click();pump();assert(device_choice.pending && open_count==before_open && leave_count==before_leave);
+    assert(popup_type==POP_AUDIO && strstr(lv_label_get_text(popup_message),"Release radio PTT"));
+    mfk_click();inner_turn(1);local_escape();
+    assert(!lv_dropdown_is_open(audio_list) && lv_dropdown_get_selected(audio_list)==1 && device_choice.pending);
+    mfk_click();inner_turn(1);assert(device_choice.pending); /* Browsing back does not cancel the committed choice. */
+    mfk_click();assert(!device_choice.pending && !strcmp(selected_id,"loop110-stable") && leave_count==before_leave);
+    mfk_click();inner_turn(-1);mfk_click();assert(device_choice.pending && leave_count==before_leave);
+    observed.state=FD_USB_RX;observed.pressed=false;radio_input_pressed=radio_input_tx=false;radio_input_stale=true;
+    pump();assert(device_choice.pending && leave_count==before_leave);radio_input_stale=false;
+    for(unsigned n=0;n<40 && open_count==before_open;++n)pump();
+    assert(open_count==before_open+1 && !strcmp(selected_id,"second-stable") && popup_type==POP_AUDIO);
+    assert(vol->indev->group==popup_group && !device_choice.pending);
+    screenshot("legacy","audio-device-changed");
+    touch(find_button("Close"));assert(!popup && audio && open_count==before_open+1);
+    popup_open(POP_AUDIO);pump();mfk_click();assert(lv_dropdown_is_open(audio_list));inner_turn(1);mfk_click();
+    for(unsigned n=0;n<40 && open_count==before_open+1;++n)pump();
+    assert(open_count==before_open+2 && !strcmp(selected_id,"loop110-stable") && popup_type==POP_AUDIO);
+    /* A missing saved device needs an explicit placeholder so choosing the
+     * first real option emits a change rather than appearing preselected. */
+    snprintf(selected_id,sizeof(selected_id),"absent-headset");populate_audio();
+    assert(audio_placeholder && lv_dropdown_get_option_cnt(audio_list)==3 && lv_dropdown_get_selected(audio_list)==0);
+    snprintf(selected_id,sizeof(selected_id),"loop110-stable");populate_audio();assert(!device_choice.pending);
+    /* A stalled metadata write cannot retain radio ownership indefinitely.
+     * LVGL's test clock advances through the finite GUI wait while the real
+     * worker remains blocked inside SQLite. No join may run here. */
+    observed.headset_volume_percent=52;observed.headset_volume_requested_revision=observed.headset_volume_confirmed_revision=2;pump();
+    unsigned before_warning=volume_save_pending_warnings;usb_ui_cfg_pause_volume_storage();freedv_usb_leave();
+    for(unsigned n=0;n<30 && stage!=UI_RELEASE;++n)pump();
+    assert(stage==UI_RELEASE && freedv_usb_active() && cfg_freedv_usb_volume_busy() && adapter_owned);
+    assert(lv_tick_elaps(volume_exit_tick)<2500);lv_tick_inc(2499-lv_tick_elaps(volume_exit_tick));service(NULL);assert(freedv_usb_active());
+    lv_tick_inc(1);service(NULL);assert(!freedv_usb_active() && !adapter_owned && cfg_freedv_usb_volume_busy());
+    assert(volume_save_pending_warnings==before_warning+1);
+    /* Reentry must use the latest confirmed in-session target even though
+     * the worker has not durably committed it yet, and must not rewrite the
+     * already-selected headset through the blocked SQLite connection. */
+    honor_startup_volume=true;freedv_usb_open();wait_running();
+    assert(opened_initial_volume==52 && observed.headset_volume_percent==52 && cfg_freedv_usb_volume_busy());
+    freedv_usb_leave();for(unsigned n=0;n<30 && stage!=UI_RELEASE;++n)pump();
+    assert(stage==UI_RELEASE && freedv_usb_active() && cfg_freedv_usb_volume_busy());
+    assert(lv_tick_elaps(volume_exit_tick)<2500);lv_tick_inc(2500-lv_tick_elaps(volume_exit_tick));service(NULL);
+    assert(!freedv_usb_active() && !adapter_owned && cfg_freedv_usb_volume_busy() && volume_save_pending_warnings==before_warning+2);
+    usb_ui_cfg_release_volume_storage();assert(vol->indev->group==keyboard_group);
     usb_ui_cfg_verify_profiles();usb_ui_cfg_close();close(vol->fd);close(mfk->fd);close(panel->fd);close(inner->fd);
-    puts("PASS: native-screen FreeDV notice precedes profile/audio; cancellation and durable skip; paired-device gain migration; local VOL/mic/meters; warm popups; RX-only; graceful and terminal teardown");
+    puts("PASS: native-screen FreeDV notice, whole-value gain, live overload feedback, native headphone units, contextual recovery, committed RX-safe device selection, warm popups, and graceful teardown");
     return 0;
 }

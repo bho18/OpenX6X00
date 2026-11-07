@@ -14,6 +14,8 @@ bool cfg_freedv_usb_select_headset(const char *id);
 int cfg_freedv_usb_gain_for(const char *id,const char *name);
 bool cfg_freedv_usb_save_gain(const char *id,int gain);
 typedef struct {
+    /* present includes a confirmed in-process profile awaiting persistence;
+     * it does not claim that the latest write is durable on disk. */
     bool present,legacy_import;
     unsigned percent;
     bool muted;
@@ -23,14 +25,21 @@ typedef struct {
 bool cfg_freedv_usb_capture_legacy_volume(void);
 bool cfg_freedv_usb_volume_target(const char *id,cfg_freedv_usb_volume *);
 bool cfg_freedv_usb_confirm_legacy_volume(const char *id,unsigned percent,bool muted);
+/* Queue a confirmed value. Success means admitted, never proof of durability.
+ * Legacy confirmation becomes true only after its migration receipt arrives. */
 bool cfg_freedv_usb_save_volume(const char *id,unsigned percent,bool muted);
 /* Observe only actual readback under the immutable physical headset identity.
  * settled means initialized, no request pending, confirmed revision equals the
  * latest request and that revision did not fail. Writes debounce for 500 ms. */
 bool cfg_freedv_usb_volume_observe(const char *id,uint64_t revision,bool settled,
     unsigned percent,bool muted,uint64_t monotonic_ms);
-bool cfg_freedv_usb_volume_flush(void); /* last still-settled value, e.g. exit */
+bool cfg_freedv_usb_volume_flush(void); /* enqueue last still-settled value, e.g. exit */
 bool cfg_freedv_usb_volume_saved(void);
+void cfg_freedv_usb_volume_poll(void); /* GUI-only completion application; no storage I/O */
+bool cfg_freedv_usb_volume_busy(void); /* short queue check; does not wait for storage */
+/* Database lifetime hook, after stopping new GUI work; drains admitted jobs.
+ * This is not an ordinary mode-exit operation. Idempotent, rejects new jobs. */
+void cfg_freedv_usb_volume_storage_shutdown(void);
 bool cfg_freedv_usb_preview_enabled(void);
 bool cfg_freedv_usb_set_preview_enabled(bool enabled);
 #ifdef __cplusplus

@@ -39,6 +39,10 @@ def observed_transport_library():
 
 
 COVERAGE = {
+    'hardening_volume_resilience':{case for case in CASES if case.startswith('operational-hardening-volume-')},
+    'hardening_preview_recovery':{case for case in CASES if case.startswith('operational-hardening-cue-')},
+    'hardening_microphone_overload':{'operational-hardening-mic-overload'},
+    'hardening_radio_recovery':{case for case in CASES if case.startswith('operational-hardening-radio-')},
     'refinement_microphone_recovery':{'operational-mic-recover','operational-mic-recover-held','operational-mic-recover-timeout','operational-mic-recover-retune','operational-mic-recover-stop','operational-mic-recover-device-loss','operational-mic-recover-radio-loss'},
     'refinement_local_cues':{'operational-cue-isolation','operational-cue-burst','operational-cue-failure'},
     'refinement_confirmed_volume':{'operational-volume-readback','operational-volume-startup-fails'},
@@ -158,13 +162,13 @@ def main():
     timeouts = {name: args.case_timeout or CASE_TIMEOUTS.get(name, 90) for name in selected}
     resource_config=host_resource_configuration('qualification' if args.profile=='qualification' else 'regression',
         args.resource_reclaim_root,args.resource_min_start_bytes,args.resource_min_end_bytes)
-    plan = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'profile': args.profile, 'repetitions': repetitions,
+    plan = {'usb_refinement_contract_version':2,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'profile': args.profile, 'repetitions': repetitions,
             'expected_cases': expected, 'selected_cases': selected,
             'debug_subset': bool(args.only), 'case_timeout_seconds': timeouts,
             'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
             'host_resource_configuration':resource_config}
     executions = [name + '@' + str(repeat + 1) for repeat in range(repetitions) for name in selected]
-    record = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'schema': MATRIX_SCHEMA, 'status': 'FAIL', 'plan': plan,
+    record = {'usb_refinement_contract_version':2,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,'schema': MATRIX_SCHEMA, 'status': 'FAIL', 'plan': plan,
               'scope': 'Actual codec and four-stream controller; fake RF transport, never hardware qualification',
               'radio_accessed': False, 'hardware_qualified': False, 'cases': {}, 'coverage': [],
               'infrastructure_prerequisites':{},
@@ -192,7 +196,7 @@ def main():
                     'rade_library_sha256': sha(args.rade_library.resolve()) if args.rade_library else None,
                     'fault_injector_source_sha256': sha(here/'usb_audio_fault_inject.c'),
                     'compiler_sha256': sha(Path(compiler).resolve()),
-                    'host_resource_configuration':resource_config,'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,
+                    'host_resource_configuration':resource_config,'usb_refinement_contract_version':2,'usb_capture_open_contract_version':1,'usb_output_contract_version':USB_OUTPUT_CONTRACT_VERSION,
                     'transport_library_sha256':observed_transport_library()['library_sha256'],
                     'pulse_tools_sha256': {name: sha(Path(shutil.which(name)).resolve()) for name in
                         ('pulseaudio','paplay','parec','pactl') if shutil.which(name)},
@@ -281,7 +285,7 @@ def main():
                        'usb_output_contract_version':details.get('usb_output_contract_version'),'output_contract':details.get('output_contract'),
                        'usb_capture_open_contract_version':details.get('usb_capture_open_contract_version'),'capture_open_contract':details.get('capture_open_contract'),
                        'usb_refinement_contract_version':details.get('usb_refinement_contract_version'),'refinement_contract':details.get('refinement_contract'),
-                       'refinement_exercise':details.get('refinement_exercise'),'refinement_volume_readbacks':details.get('refinement_volume_readbacks'),
+                       'refinement_exercise':details.get('refinement_exercise'),'refinement_volume_readbacks':details.get('refinement_volume_readbacks'),'hardening_volume_readbacks':details.get('hardening_volume_readbacks'),
                        'local_cue_output':details.get('local_cue_output'),
                        'backend_profile':details.get('backend_profile'),'backend_failure':details.get('backend_failure'),'observer_admission':details.get('observer_admission'),
                        'collector_contract':details.get('collector_contract'),

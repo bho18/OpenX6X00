@@ -81,10 +81,10 @@ function global:scp {
   if($global:usbRfEvidenceCase -eq 'persistence_failure'){$completion.storage_errno=5}
   $ready=$null;$refinementVersion=0;$qualificationStatus='PASS'
   if($global:usbRfEvidenceCase -in @('operational_success','operational_refinement_mismatch')){
-   $version=4;$qualificationStatus='NOT_REQUESTED';$refinementVersion=1
+   $version=4;$qualificationStatus='NOT_REQUESTED';$refinementVersion=2
    $completion.operational=$true;$completion.qualification_target=0;$completion.qualification_complete=$false
-   $completion.usb_refinement_contract_version=1
-   $ready=@{session_id=$identity.session_id;build_id=$identity.build_id;source_commit=$identity.source_commit;status='PASS';usb_refinement_contract_version=1}
+   $completion.usb_refinement_contract_version=2
+   $ready=@{session_id=$identity.session_id;build_id=$identity.build_id;source_commit=$identity.source_commit;status='PASS';usb_refinement_contract_version=2}
    if($global:usbRfEvidenceCase -eq 'operational_refinement_mismatch'){$completion.usb_refinement_contract_version=0}
   }
   @{schema='x6200.usb-rf-evidence.v1';status=$status;rf_key_commands_sent=$false;
@@ -105,7 +105,7 @@ try {
   $currentManifest.PSObject.Properties.Remove('usb_refinement_contract_version')
   if($case -in @('operational_success','operational_refinement_mismatch')){
    $currentManifest.usb_startup_contract_version=4
-   $currentManifest | Add-Member -NotePropertyName usb_refinement_contract_version -NotePropertyValue 1
+   $currentManifest | Add-Member -NotePropertyName usb_refinement_contract_version -NotePropertyValue 2
   }
   [IO.File]::WriteAllText($manifestPath,($currentManifest | ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
   $before=@(Get-ChildItem -LiteralPath $root -Filter '*.zip').Count

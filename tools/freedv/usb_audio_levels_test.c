@@ -54,4 +54,22 @@ static void meters(void){
     assert(fd_usb_level_dbfs10(w.output_peak)==FD_USB_LEVEL_FLOOR_DBFS10);
     assert(fd_usb_level_rms_dbfs10(0,0)==FD_USB_LEVEL_FLOOR_DBFS10);
 }
-int main(void){zero_is_identity();gain_and_saturation();meters();puts("PASS: USB speech gain identity, clamps, saturation and RMS/peak preview");return 0;}
+static void overload_is_distinct_from_peak(void){
+    /* A near-full-scale sample is useful warning evidence, not proof of clipping. */
+    const int16_t near[]={30000,-30000};
+    fd_usb_level_window w={0};fd_usb_level_add(&w,near,2,0);
+    assert(fd_usb_level_dbfs10(w.output_peak)>=-10 && !w.overload_samples);
+    /* Already-railed USB input must remain visible even at zero or negative gain. */
+    const int16_t rails[]={INT16_MAX,INT16_MIN,0};
+    w=(fd_usb_level_window){0};fd_usb_level_add(&w,rails,3,0);
+    assert(w.overload_samples==2 && fd_usb_level_dbfs10(w.output_peak)==0);
+    w=(fd_usb_level_window){0};fd_usb_level_add(&w,rails,3,-12);
+    assert(w.overload_samples==2 && fd_usb_level_dbfs10(w.output_peak)<-100);
+    /* Digital gain can saturate otherwise clean input. Counting must not alter PCM. */
+    int16_t copy[2];memcpy(copy,near,sizeof(copy));
+    w=(fd_usb_level_window){0};fd_usb_level_add(&w,near,2,6);
+    assert(w.overload_samples==2 && !memcmp(near,copy,sizeof(copy)));
+    const int16_t quiet[]={1000,-1000};fd_usb_level_add(&w,quiet,2,0);
+    assert(w.overload_samples==2 && w.samples==4);
+}
+int main(void){zero_is_identity();gain_and_saturation();meters();overload_is_distinct_from_peak();puts("PASS: USB speech gain, RMS/peak preview and live input/digital overload distinction");return 0;}

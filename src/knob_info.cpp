@@ -44,7 +44,7 @@ static SubjectT<int32_t> headphone_volume{0};
 static std::string headphone_value() {
     int state=headphone_volume.get();
     if(!(state&HP_READY))return "--";
-    return std::to_string(state&127)+"%"+((state&HP_MUTED)?" muted":"")+((state&HP_PENDING)?" pending":"");
+    return std::to_string(state&127)+((state&HP_MUTED)?" muted":"");
 }
 
 /* A control as the label shows it: its name and its value now */
@@ -311,7 +311,7 @@ bool knobs_usb_volume_text(char *out,size_t size) {
     if(!knobs_usb_volume_active())return false;
     unsigned percent=0;bool muted=false,pending=false;
     if(knobs_usb_volume_get(&percent,&muted,&pending))
-        snprintf(out,size,"Headphones: %u%%%s%s",percent,muted?" (muted)":"",pending?" (pending)":"");
-    else snprintf(out,size,"Headphones: preparing");
+        snprintf(out,size,"Headphones: %u%s",percent,muted?" (muted)":"");
+    else snprintf(out,size,"Headphones: unavailable");
     return true;
 }

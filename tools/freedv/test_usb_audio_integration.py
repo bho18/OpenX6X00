@@ -32,8 +32,8 @@ from usb_collector_contract import validate_collector_contract
 from usb_output_contract import validate_output_contract
 from usb_capture_open_contract import validate_capture_open_contract
 from usb_refinement_contract import (validate_refinement_contract,refinement_exercise,
-    validate_volume_readbacks,local_cue_waveform)
-from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags,operational_proof
+    validate_volume_readbacks,local_cue_waveform,hardening_exercise)
+from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags,operational_proof,HARDENING_CASES,HARDENING_CUE_CASES,HARDENING_VOLUME_CASES,HARDENING_FAULTS,refinement_version,pulse_preview_gain
 
 CASES = (
     'normal', 'rx-signal', 'block-key', 'stop-during-key', 'release-during-key',
@@ -65,6 +65,7 @@ CASES = (
     'operational-volume-startup-fails',
 )
 REFINEMENT_CASES = frozenset(CASES[-12:])
+CASES += tuple(sorted(HARDENING_CASES))
 MIC_RECOVERY_CASES = frozenset(name for name in REFINEMENT_CASES if name.startswith('operational-mic-recover'))
 CUE_CASES = frozenset(name for name in REFINEMENT_CASES if name.startswith('operational-cue-'))
 OPERATIONAL_CASES = frozenset(name for name in CASES if name.startswith('operational-'))
@@ -76,8 +77,9 @@ SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole',
                 'backend-fixed-pipe','audio-gain-turn'}
 SPEECH_CASES |= REFINEMENT_CASES-{'operational-mic-recover-stop','operational-mic-recover-device-loss',
     'operational-mic-recover-radio-loss','operational-volume-startup-fails'}
+SPEECH_CASES |= HARDENING_CASES-set(HARDENING_FAULTS)-{'operational-hardening-mic-overload'}
 WAVEFORM_CASES = SPEECH_CASES | {'short-turn200'}
-RECEIVE_OUTPUT_CASES = {'rx-pause150','operational-retune','operational-cue-burst'}
+RECEIVE_OUTPUT_CASES = {'rx-pause150','operational-retune','operational-cue-burst','operational-hardening-cue-final-gesture'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
 PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
             for prefix, phase in [('', 'tx'), ('initial-', 'initial-rx'), ('return-', 'rx-return')]
@@ -89,6 +91,7 @@ BACKEND_FAILURE_CASES={'backend-timing-missing':'missing','backend-timing-invali
 BACKEND_PROFILE_CASES={'backend-fixed-pipe':'fixed-pipe','io-pause150':'fixed-pipe','rx-pause150':'default'}
 INJECT_CASES = COLD_CASES | set(PA_CASES) | CAPTURE_RELEASE_CASES | CAPTURE_FAILURE_CASES | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure','capture-close-tail120'}
 INJECT_CASES |= set(BACKEND_FAILURE_CASES)|{'operational-open-prefix','operational-open-missing','operational-open-invalid','operational-open-stop','operational-open-release'}
+INJECT_CASES |= (HARDENING_VOLUME_CASES-{'operational-hardening-volume-external-zero'}) | HARDENING_CUE_CASES | {'operational-hardening-radio-recover-operation-deadline'}
 INJECT_CASES |= MIC_RECOVERY_CASES | {'operational-cue-failure','operational-volume-readback','operational-volume-startup-fails'}
 CASE_TIMEOUTS = {'many-turns': 120, 'reopen': 180, 'cold-idle': 100, 'drain-tx-loss': 60, 'full-session':120}
 
@@ -103,7 +106,9 @@ def injection_environment(case, root, library):
         return {}
     require(library and library.is_file(), 'This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
-    if case=='operational-volume-startup-fails':
+    if case=='operational-hardening-radio-recover-operation-deadline':
+        result.update(USB_TEST_PA_MODE='delay',USB_TEST_PA_DEVICE='radio_sink_fixture',USB_TEST_PA_ACTION='flush',USB_TEST_PA_PHASE='rx-return',USB_TEST_PA_DELAY_MS='650',USB_TEST_PA_TRIGGER=str(root/'inject-recovery-operation'))
+    elif case=='operational-volume-startup-fails':
         result['USB_TEST_VOLUME_MODE']='missing'
     elif case=='operational-cue-failure':
         result['USB_TEST_CUE_CONNECT_FAIL']='1'
@@ -496,15 +501,19 @@ def run_case(args):
         controls_initial=None
         control_names=(('baseline','up','down','gain6','gain24','gainminus12','gain0') if args.case=='audio-controls'
                        else ('gain-turn-up','gain-turn-down','gain-turn-rx') if args.case=='audio-gain-turn'
-                       else ('volume-initial','volume-pending','volume-confirmed','volume-failed','volume-recovered') if args.case=='operational-volume-readback' else ())
-        if control_names:
+                       else ('volume-initial','volume-pending','volume-confirmed','volume-failed','volume-recovered') if args.case=='operational-volume-readback'
+                       else ('up1','up5','up9','up10','up15','up100') if args.case=='operational-hardening-volume-paced-rounded'
+                       else ('external51','restored30') if args.case=='operational-hardening-volume-external-zero'
+                       else ('final55',) if args.case in {'operational-hardening-volume-retry','operational-hardening-volume-unavailable-retry'}
+                       else ('earlier-preview',) if args.case=='operational-hardening-cue-final-gesture' else ())
+        if control_names and args.case not in HARDENING_CUE_CASES:
             for suffix, arguments in (
                     ('headset-volume',['set-sink-volume','alsa_output.usb-fixture','40%','30%']),
                     ('headset-mute',['set-sink-mute','alsa_output.usb-fixture','1']),
                     ('radio-volume',['set-sink-volume','radio_sink_fixture','100%','100%']),
                     ('unrelated-volume',['set-sink-volume','unrelated_sink','23%','19%'])):
                 check_command(['pactl',*arguments],root,'controls-initial-'+suffix,commands,env)
-            controls_initial=pulse_control_sinks(root,'controls-initial-readback',commands,env)
+        if control_names:controls_initial=pulse_control_sinks(root,'controls-initial-readback',commands,env)
         fifo_reader=None
         if profile=='fixed-pipe':
             fifo_reader=supervisor.start('fifo-clock',[sys.executable,Path(__file__).with_name('usb_fifo_clock.py'),
@@ -517,7 +526,7 @@ def run_case(args):
             require(speech.getcomptype() == 'NONE', 'Speech fixture must be PCM WAV')
             speech_args = continuous_fixture(root/'continuous-speech.raw', speech.readframes(speech.getnframes()),
                                              speech.getframerate(), speech.getnchannels(), speech.getsampwidth(), horizon)
-        if args.case=='audio-controls':
+        if args.case in {'audio-controls','operational-hardening-mic-overload'}:
             # A stable -12 dBFS peak tone separates gain/meter behavior from
             # the changing envelope of a speech fixture. It is never keyed.
             tone=array('h',(round(8192*math.sin(2*math.pi*400*i/16000)) for i in range(16000)))
@@ -566,7 +575,7 @@ def run_case(args):
                 recording_started=time.monotonic()
                 recorder=supervisor.start('modem-monitor',[monitor_binary,'--device','radio_sink_fixture.monitor','--rate','44100',
                     '--output',root/'radio-output.raw','--timing',root/'radio-output.jsonl'])
-            if args.case in RECEIVE_OUTPUT_CASES or args.case in CUE_CASES:
+            if args.case in RECEIVE_OUTPUT_CASES or args.case in CUE_CASES or args.case in HARDENING_CUE_CASES:
                 headset_recording_started=time.monotonic()
                 headset_recorder=supervisor.start('headset-monitor',[monitor_binary,'--device','alsa_output.usb-fixture.monitor',
                     '--rate','48000','--output',root/'headset-output.raw','--timing',root/'headset-output.jsonl'])
@@ -602,12 +611,16 @@ def run_case(args):
         test = supervisor.start('test', [args.binary, '.', '--'+args.case], env=child_env, cwd=root/'result')
         until = time.monotonic() + CASE_TIMEOUTS.get(args.case, 75)
         changed = False
+        hardening_external_applied=False
         rx_source_started=rx_source_silenced=False
         observers_started=False
         while test.poll() is None:
             supervisor.require_running(except_process=test)
             require(time.monotonic() <= until, 'Controller scenario timed out')
             text = (root/'test.log').read_text()
+            if args.case=='operational-hardening-volume-external-zero' and not hardening_external_applied and 'HARDENING_EXTERNAL_VOLUME' in text:
+                check_command(['pactl','set-sink-volume','alsa_output.usb-fixture','51%','25.5%'],root,'hardening-external-change',commands,env)
+                hardening_external_applied=True
             if not observers_started and 'FIXTURE_OUTPUT_READY' in text:
                 start_observers();observers_started=True
             if control_names and len(controls_phases)<len(control_names):
@@ -653,6 +666,19 @@ def run_case(args):
         print(text, flush=True)
         record['controller_exit_code']=test.returncode
         require(test.returncode == 0, 'Controller scenario failed with exit '+str(test.returncode))
+        if args.case=='operational-hardening-radio-recover-operation-deadline':
+            require('INJECT PA flush mode=delay device=radio_sink_fixture delay=650ms phase=rx-return' in text,
+                    'Recovery deadline did not exercise its delayed nested Pulse operation')
+        if args.case=='operational-hardening-cue-recovery':
+            require('INJECT optional cue underflow callback index=1 headset_untouched=1' in text,
+                    'Optional preview recovery did not exercise its real registered underflow callback')
+        if args.case=='operational-hardening-cue-final-gesture':
+            witness=re.search(r'INJECT optional cue I/O pause requested_ms=50 actual_ms=(\d+) full_prebuffer_required=1',text)
+            require(witness is not None and 50<=int(witness[1])<=150,
+                    'Preview buffering was not exercised by the declared bounded I/O pause')
+        if args.case=='operational-hardening-volume-retry':
+            require('INJECT headset volume mode=5' in text and 'INJECT headset volume mode=6' in text,
+                    'Volume recovery did not exercise both rejected and missing-callback transactions')
         harness = json.loads((root/'result/harness-result.json').read_text())
         require(harness['status'] == 'PASS' and not harness['physical_tx'], str(harness))
         trace_paths = sorted((root/'result').glob('freedv-usb-session*.jsonl'))
@@ -675,7 +701,7 @@ def run_case(args):
             opening_sessions.append(dict(validate_capture_open_contract(trace_rows,json.loads(completion_path.read_text())),
                 trace_file=path.name,completion_file=completion_path.name,trace_sha256=sha(path),completion_sha256=sha(completion_path)))
             refinement_sessions.append(dict(validate_refinement_contract(trace_rows,json.loads(completion_path.read_text()),
-                required_version=1 if args.case in REFINEMENT_CASES else 0),trace_file=path.name,completion_file=completion_path.name,
+                required_version=refinement_version(args.case)),trace_file=path.name,completion_file=completion_path.name,
                 trace_sha256=sha(path),completion_sha256=sha(completion_path)))
             turns=completed_turns(trace_rows)
             abandoned_closes+=sum(row.get('kind')=='capture-close' and row.get('complete') is False for row in trace_rows)
@@ -688,10 +714,10 @@ def run_case(args):
             rows.extend(trace_rows)
         if args.case in OPERATIONAL_CASES:
             record['operational']=operational_proof(rows,json.loads(completion_path.read_text()),harness,args.case)
-        if args.case in REFINEMENT_CASES:
-            phase_path=root/'result/refinement-phases.jsonl'
+        if args.case in REFINEMENT_CASES or args.case in HARDENING_CASES:
+            phase_path=root/'result'/('hardening-phases.jsonl' if args.case in HARDENING_CASES else 'refinement-phases.jsonl')
             phases=[json.loads(line) for line in phase_path.read_text().splitlines() if line.strip()] if phase_path.exists() else []
-            record['refinement_exercise']=dict(refinement_exercise(rows,json.loads(completion_path.read_text()),harness,phases,args.case),
+            record['refinement_exercise']=dict((hardening_exercise if args.case in HARDENING_CASES else refinement_exercise)(rows,json.loads(completion_path.read_text()),harness,phases,args.case),
                 phases_artifact={'path':str(phase_path),'sha256':sha(phase_path)} if phase_path.exists() else None)
         validate_headset_volume_flags(rows,required=args.case in {'audio-controls','audio-gain-turn'})
         require(sum(turn['rf_completed'] for turn in capture_closes)==harness.get('total_turns',harness['turns']),
@@ -701,9 +727,9 @@ def run_case(args):
                 'A healthy controller abandoned a completely closed capture interval')
         record['usb_capture_open_contract_version']=1
         record['capture_open_contract']={'schema':'x6200.usb.capture-open-contract-set.v1','status':'PASS','usb_capture_open_contract_version':1,'sessions':opening_sessions}
-        record['usb_refinement_contract_version']=1 if args.case in REFINEMENT_CASES else 0
+        record['usb_refinement_contract_version']=refinement_version(args.case)
         record['refinement_contract']={'schema':'x6200.usb.refinement-contract-set.v1',
-            'status':'PASS' if args.case in REFINEMENT_CASES else 'DIAGNOSTIC_ONLY',
+            'status':'PASS' if args.case in REFINEMENT_CASES or args.case in HARDENING_CASES else 'DIAGNOSTIC_ONLY',
             'usb_refinement_contract_version':record['usb_refinement_contract_version'],'sessions':refinement_sessions}
         record['usb_output_contract_version']=1
         record['output_contract']={'schema':'x6200.usb.output-contract-set.v1','status':'PASS',
@@ -882,8 +908,38 @@ def run_case(args):
                 'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in record['actual_sink_turns']),
                 'synchronized_blocks':sum(turn['observed']['synchronized_blocks'] for turn in record['actual_sink_turns'])}
         if args.case in RECEIVE_OUTPUT_CASES:
-            if args.case!='operational-cue-burst':require(harness['keys']==0 and harness['turns']==0,'RX resilience test attempted RF admission')
-            record['actual_headset_output']=headset_oracle(root,trace_paths[0],headset_recording_started,end_before_tx=args.case=='operational-cue-burst')
+            if args.case not in {'operational-cue-burst','operational-hardening-cue-final-gesture'}:require(harness['keys']==0 and harness['turns']==0,'RX resilience test attempted RF admission')
+            record['actual_headset_output']=headset_oracle(root,trace_paths[0],headset_recording_started,end_before_tx=args.case in {'operational-cue-burst','operational-hardening-cue-final-gesture'})
+        if args.case in HARDENING_CUE_CASES:
+            start=next(phase for phase in phases if phase['phase']=='final-gesture-start')['ms']
+            end=next(phase for phase in phases if phase['phase']=='final-preview')['ms']+200
+            ledger=json_rows(root/'headset-output.jsonl')
+            selected=[row for row in ledger if row.get('kind')=='block' and start*1000000<=row['received_ns']<=end*1000000]
+            require(selected,'Final headphone-volume gesture has no independently recorded output blocks')
+            first,last=selected[0]['frame_start'],selected[-1]['frame_start']+selected[-1]['frames']
+            waveform=local_cue_waveform((root/'headset-output.raw').read_bytes(),version=2,frame_start=first,frame_end=last)
+            record['local_cue_output']={'schema':'x6200.usb.local-cue-output.v2','status':'PASS','waveform':waveform,
+                'gesture_window':{'start_ms':start,'end_ms':end,'frame_start':first,'frame_end':last},
+                'monitor':{'path':str(root/'headset-output.raw'),'sha256':sha(root/'headset-output.raw')},
+                'ledger':{'path':str(root/'headset-output.jsonl'),'sha256':sha(root/'headset-output.jsonl')}}
+            if args.case=='operational-hardening-cue-final-gesture':
+                low_start=next(phase for phase in phases if phase['phase']=='earlier-gesture-start')['ms']
+                low_end=next(phase for phase in phases if phase['phase']=='earlier-preview')['ms']+200
+                low_blocks=[row for row in ledger if row.get('kind')=='block' and low_start*1000000<=row['received_ns']<=low_end*1000000]
+                require(low_blocks,'Lower-volume headphone preview has no independent output blocks')
+                low_first,low_last=low_blocks[0]['frame_start'],low_blocks[-1]['frame_start']+low_blocks[-1]['frames']
+                require(len(controls_phases)==1,'Lower-volume preview omitted its independent Pulse readback')
+                low_readback=controls_phases[0];channels=low_readback['pulse']['alsa_output.usb-fixture']['volume']
+                require(channels==[32768,32768],'Lower-volume preview did not use confirmed equal 50-unit output channels')
+                gain=pulse_preview_gain(channels[0])
+                low=local_cue_waveform((root/'headset-output.raw').read_bytes(),version=2,frame_start=low_first,frame_end=low_last,expected_gain=gain)
+                record['local_cue_output'].update(low_level_window={'start_ms':low_start,'end_ms':low_end,'frame_start':low_first,'frame_end':low_last},
+                    low_level_waveform=low,level_ratio=waveform['measured_gain']/low['measured_gain'],
+                    gain_mapping={'method':'pa_sw_volume_to_linear','raw_volume':channels[0],'linear_gain':gain},
+                    low_level_readbacks={'schema':'x6200.usb.hardening-volume-readbacks.v1','status':'PASS','initial_sinks':controls_initial,'phases':controls_phases})
+        if args.case in HARDENING_VOLUME_CASES and control_names:
+            record['hardening_volume_readbacks']={'schema':'x6200.usb.hardening-volume-readbacks.v1','status':'PASS',
+                'initial_sinks':controls_initial,'phases':controls_phases}
         if args.case in CUE_CASES:
             cue_pcm=(root/'headset-output.raw').read_bytes()
             if args.case=='operational-cue-failure':

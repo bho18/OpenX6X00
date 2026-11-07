@@ -12,7 +12,7 @@
 typedef enum {
     FD_USB_PREPARE, FD_USB_RX, FD_USB_START, FD_USB_TX, FD_USB_DRAIN,
     FD_USB_FAULT, FD_USB_DONE, FD_USB_KEY_PENDING, FD_USB_UNKEY, FD_USB_RX_READY,
-    FD_USB_TUNING
+    FD_USB_TUNING, FD_USB_RECOVERING
 } fd_usb_state;
 typedef struct {
     bool valid,pressed,rf_valid,rf_tx,protection;
@@ -42,6 +42,7 @@ typedef struct {
     bool operational; /* false retains version-3 diagnostic behavior */
     bool retain_runtime_traces; /* UI /tmp timestamp namespace: current + one previous */
     bool refinement; /* operational refinement v1; legacy diagnostics default false */
+    bool hardening; /* refinement v2: resilient controls and RX status recovery */
     bool cues_enabled; /* retained USB-only preview stream; default false */
     bool headset_volume_initial_valid;
     unsigned headset_volume_initial_percent; /* 0 is a real level; valid flag distinguishes unset */
@@ -76,6 +77,7 @@ typedef struct {
     unsigned mic_holes,rx_holes,headset_underflows,modem_underflows;
     int mic_gain_db,mic_input_rms_dbfs10,mic_input_peak_dbfs10,mic_rms_dbfs10,mic_peak_dbfs10;
     bool mic_meter_ready;
+    bool mic_near_maximum,mic_overload; /* Live post-gain window, in RX and TX. */
     uint64_t mic_clipped_samples; /* Accepted TX samples only; RX meter previews do not increment it. */
     unsigned headset_volume_percent;
     bool headset_volume_ready,headset_muted;
@@ -87,6 +89,15 @@ typedef struct {
     unsigned mic_recovery_attempts;
     bool mic_retry_available;
     char mic_health_reason[64];
+    bool radio_recovering;
+    uint64_t radio_recovery_started_ms;
+    unsigned radio_recovery_attempts;
+    bool headset_volume_recovering,headset_volume_unavailable;
+    unsigned headset_volume_retries,headset_volume_operation,headset_volume_channels;
+    uint64_t headset_volume_operation_age_ms;
+    uint32_t headset_volume_channel_values[32]; /* raw Pulse channel units */
+    bool cue_recovering,cue_unavailable;
+    unsigned cue_retries;
     bool cue_available,cue_active;
     uint64_t cue_requests,cue_completed,cue_canceled,cue_failures;
     char headset_id[256],headset_name[160];
@@ -99,6 +110,7 @@ bool fd_usb_audio_set_mic_gain(fd_usb_audio *,int);
 bool fd_usb_audio_adjust_headset_volume(fd_usb_audio *,int delta_percent);
 bool fd_usb_audio_set_headset_volume(fd_usb_audio *,unsigned percent,bool muted);
 bool fd_usb_audio_retry_microphone(fd_usb_audio *);
+bool fd_usb_audio_retry_controls(fd_usb_audio *);
 bool fd_usb_audio_set_cues_enabled(fd_usb_audio *,bool enabled);
 void fd_usb_audio_note_display(fd_usb_audio *,const fd_usb_display_event *);
 bool fd_usb_audio_start_qualification(fd_usb_audio *);

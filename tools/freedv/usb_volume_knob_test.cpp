@@ -37,9 +37,10 @@ int main(){
     assert(!std::strcmp(name,"Headphones") && !std::strcmp(value,"--") && level==-1 && !editing);
     knobs_usb_volume_update(true,true,46,false,false);assert(notifications==2);
     assert(knobs_info(false,&name,value,sizeof(value),&level,&editing));
-    assert(!std::strcmp(value,"46%") && std::fabs(level-.46f)<.001f && editing);
+    assert(!std::strcmp(value,"46") && std::fabs(level-.46f)<.001f && editing);
     knobs_usb_volume_update(true,true,46,false,true);
-    assert(knobs_usb_volume_text(value,sizeof(value)) && std::strstr(value,"46%") && std::strstr(value,"pending"));
+    assert(knobs_usb_volume_text(value,sizeof(value)) && !std::strcmp(value,"Headphones: 46"));
+    assert(!std::strchr(value,'%') && !std::strstr(value,"pending"));
     unsigned percent=0;bool muted=false,pending=false;
     assert(knobs_usb_volume_get(&percent,&muted,&pending) && percent==46 && pending && !muted);
     knobs_usb_volume_update(true,true,0,true,false);

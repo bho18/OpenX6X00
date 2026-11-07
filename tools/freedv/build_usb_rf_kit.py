@@ -25,8 +25,8 @@ def main():
         parser.error('The verified USB output completion contract version 1 image is required')
     if type(image.get('usb_capture_open_contract_version')) is not int or image['usb_capture_open_contract_version']!=1:
         parser.error('Verified capture opening contract version1 is required')
-    if image['usb_startup_contract_version']==4 and (type(image.get('usb_refinement_contract_version')) is not int or image['usb_refinement_contract_version']!=1):
-        parser.error('Operational images require verified USB refinement contract1')
+    if image['usb_startup_contract_version']==4 and (type(image.get('usb_refinement_contract_version')) is not int or image['usb_refinement_contract_version']!=2):
+        parser.error('Operational images require verified USB refinement contract2')
     if not isinstance(image.get('build_id'), str) or not image['build_id']:
         parser.error('A build identity is required for the session/completion contract')
     here=Path(__file__).resolve().parent
@@ -36,7 +36,7 @@ def main():
     manifest.update(schema='x6200.usb-rf-kit.v2',usb_startup_contract_version=image['usb_startup_contract_version'],on_device_readiness_required=True,
                     usb_output_contract_version=1,usb_capture_open_contract_version=1,
                     files={n:sha(p) for n,p in files.items()},rf_commands=False)
-    if image['usb_startup_contract_version']==4:manifest['usb_refinement_contract_version']=1
+    if image['usb_startup_contract_version']==4:manifest['usb_refinement_contract_version']=2
     with zipfile.ZipFile(args.output,'x',compression=zipfile.ZIP_DEFLATED) as archive:
         for n,p in files.items():archive.write(p,n)
         archive.writestr('rf-test-manifest.json',json.dumps(manifest,indent=2)+'\n')

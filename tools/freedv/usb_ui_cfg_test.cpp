@@ -5,7 +5,21 @@
 #include "src/freedv/mode.h"
 #include <cassert>
 #include <cstring>
+#include <chrono>
+#include <thread>
+#include <atomic>
 static sqlite3 *database;
+static std::atomic<bool> volume_storage_paused{false},volume_storage_released{false};
+static int pause_volume_storage(void*,int action,const char *table,const char*,const char*,const char*){
+    if(action==SQLITE_INSERT && table && !std::strcmp(table,"params") && !volume_storage_released.load()){
+        volume_storage_paused=true;
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(!volume_storage_released.load() && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        assert(volume_storage_released.load());
+    }
+    return SQLITE_OK;
+}
 extern "C" {
 bool scheduler_on_gui_thread(void){return true;}
 bool freedv_mode_active(void){return false;}
@@ -36,8 +50,39 @@ void usb_ui_cfg_verify_profiles(void){
     assert(!cfg_freedv_usb_save_gain("bad",25));
     assert(cfg_sm.p_volume.get()==27);
 }
+void usb_ui_cfg_pause_volume_storage(void){
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(cfg_freedv_usb_volume_busy()){
+        cfg_freedv_usb_volume_poll();assert(std::chrono::steady_clock::now()<deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    volume_storage_paused=false;volume_storage_released=false;
+    assert(sqlite3_set_authorizer(database,pause_volume_storage,nullptr)==SQLITE_OK);
+    assert(cfg_freedv_usb_save_volume("loop110-stable",41,false));
+    while(!volume_storage_paused.load()){
+        assert(std::chrono::steady_clock::now()<deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(cfg_freedv_usb_volume_busy());
+}
+void usb_ui_cfg_release_volume_storage(void){
+    volume_storage_released=true;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(cfg_freedv_usb_volume_busy()){
+        cfg_freedv_usb_volume_poll();assert(std::chrono::steady_clock::now()<deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    cfg_freedv_usb_volume_poll();assert(sqlite3_set_authorizer(database,nullptr,nullptr)==SQLITE_OK);
+}
 void usb_ui_cfg_close(void){
     assert(!fd_writer_voice_owned());
+    cfg_freedv_usb_volume_flush();
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(cfg_freedv_usb_volume_busy()){
+        cfg_freedv_usb_volume_poll();assert(std::chrono::steady_clock::now()<deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    cfg_freedv_usb_volume_storage_shutdown();
     cfg_sm.pending_writes_.flush_storage(StorageType::GLOBAL,-1);
     ParamsTable::Shutdown();sqlite3_close(database);
 }

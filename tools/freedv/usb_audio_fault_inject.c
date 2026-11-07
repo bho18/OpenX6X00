@@ -28,6 +28,14 @@ typedef struct {
 static delayed_operation pending;
 static pa_stream *test_headset_stream,*test_cue_stream;
 static atomic_uint test_headset_uncorks,test_headset_payload_writes,test_cue_connect_failures;
+static atomic_uint hardening_cue_mode,hardening_cue_failures,hardening_cue_pause_count;
+static atomic_ullong hardening_cue_pause_duration;
+static pa_stream_notify_cb_t hardening_cue_underflow_callback;static void *hardening_cue_underflow_userdata;
+static atomic_bool hardening_force_cue_underflow;
+void usb_test_cue_mode(unsigned mode){atomic_store(&hardening_cue_mode,mode);}
+unsigned usb_test_cue_failures(void){return atomic_load(&hardening_cue_failures);}
+unsigned usb_test_cue_pauses(void){return atomic_load(&hardening_cue_pause_count);}
+unsigned long long usb_test_cue_pause_duration_ms(void){return atomic_load(&hardening_cue_pause_duration);}
 unsigned usb_test_headset_uncorks(void){return atomic_load(&test_headset_uncorks);}
 unsigned usb_test_headset_payload_writes(void){return atomic_load(&test_headset_payload_writes);}
 unsigned usb_test_cue_connect_failures(void){return atomic_load(&test_cue_connect_failures);}
@@ -45,6 +53,15 @@ int pa_stream_connect_playback(pa_stream *stream,const char *device,const pa_buf
     }
     return real(stream,device,attr,flags,volume,sync);
 }
+void pa_stream_set_underflow_callback(pa_stream *stream,pa_stream_notify_cb_t callback,void *userdata){
+    void (*real)(pa_stream*,pa_stream_notify_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_set_underflow_callback");
+    if(stream==test_cue_stream){hardening_cue_underflow_callback=callback;hardening_cue_underflow_userdata=userdata;}
+    real(stream,callback,userdata);
+}
+int64_t pa_stream_get_underflow_index(const pa_stream *stream){
+    int64_t (*real)(const pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_get_underflow_index");
+    return stream==test_cue_stream&&atomic_load(&hardening_force_cue_underflow)?1:real(stream);
+}
 typedef struct {
     pa_operation *operation;pa_context *context;pa_context_success_cb_t callback;void *userdata;
     unsigned mode;unsigned long long issued;atomic_int done,success;
@@ -52,7 +69,10 @@ typedef struct {
 static volume_test_operation volume_pending;
 static atomic_uint volume_test_mode;
 static atomic_bool volume_test_override;
-void usb_test_volume_mode(unsigned mode){atomic_store(&volume_test_mode,mode);atomic_store(&volume_test_override,true);}
+static atomic_uint hardening_volume_calls,hardening_volume_failures;
+unsigned usb_test_volume_calls(void){return atomic_load(&hardening_volume_calls);}
+unsigned usb_test_volume_failures(void){return atomic_load(&hardening_volume_failures);}
+void usb_test_volume_mode(unsigned mode){atomic_store(&volume_test_mode,mode);atomic_store(&volume_test_override,true);atomic_store(&hardening_volume_calls,0);atomic_store(&hardening_volume_failures,0);}
 static unsigned selected_volume_mode(void){
     if(atomic_load(&volume_test_override))return atomic_load(&volume_test_mode);
     const char *mode=getenv("USB_TEST_VOLUME_MODE");return mode&&!strcmp(mode,"missing")?3u:0u;
@@ -65,7 +85,19 @@ pa_operation *pa_context_set_sink_volume_by_name(pa_context *context,const char 
     unsigned mode=selected_volume_mode();
     if(!mode||!name||strcmp(name,"alsa_output.usb-fixture"))return real(context,name,volume,callback,userdata);
     fprintf(stderr,"INJECT headset volume mode=%u target=%s issued_ms=%llu\n",mode,name,now_ms());
-    if(mode==2)return NULL; /* Actual API failure; the server receives no edit. */
+    unsigned call=atomic_fetch_add(&hardening_volume_calls,1)+1;
+    if(mode==2||(mode==5&&call==1)){atomic_fetch_add(&hardening_volume_failures,1);return NULL;} /* Server receives no edit. */
+    if(mode==4){
+        /* A real server edit with a five-unit hardware step. Only rounding the
+         * setter leaves independent pactl readback authoritative. */
+        pa_cvolume stepped=*volume;pa_volume_t maximum=pa_cvolume_max(volume);
+        unsigned units=(unsigned)(((uint64_t)maximum*100+PA_VOLUME_NORM/2)/PA_VOLUME_NORM);
+        unsigned step=((units+2)/5)*5;if(step>100)step=100;
+        pa_cvolume_scale(&stepped,(pa_volume_t)((uint64_t)step*PA_VOLUME_NORM/100));
+        return real(context,name,&stepped,callback,userdata);
+    }
+    if(mode==5||(mode==6&&call>1))return real(context,name,volume,callback,userdata);
+    if(mode==6)mode=3; /* First real edit succeeds, but its callback never arrives. */
     volume_pending=(volume_test_operation){.context=context,.callback=callback,.userdata=userdata,.mode=mode,.issued=now_ms()};
     volume_pending.operation=real(context,name,volume,volume_test_done,NULL);return volume_pending.operation;
 }
@@ -149,6 +181,7 @@ static const char *setting(const char *key,const char *fallback) {
 }
 static int selected(pa_stream *stream,const char *action) {
     const char *mode=getenv("USB_TEST_PA_MODE");
+    const char *trigger=getenv("USB_TEST_PA_TRIGGER");if(trigger&&access(trigger,F_OK))return 0;
     const char *device=pa_stream_get_device_name(stream);
     if(!mode || !device || strcmp(device,setting("USB_TEST_PA_DEVICE","radio_sink_fixture")) ||
        strcmp(action,setting("USB_TEST_PA_ACTION","flush")))return 0;
@@ -466,6 +499,21 @@ void pa_stream_set_write_callback(pa_stream *stream,pa_stream_request_cb_t callb
 int pa_stream_write(pa_stream *stream,const void *data,size_t bytes,pa_free_cb_t free_cb,int64_t offset,pa_seek_mode_t seek){
     int (*real)(pa_stream*,const void*,size_t,pa_free_cb_t,int64_t,pa_seek_mode_t)=dlsym(RTLD_NEXT,"pa_stream_write");
     const char *device=pa_stream_get_device_name(stream),*target=getenv("USB_TEST_IO_PAUSE_DEVICE");
+    if(stream==test_cue_stream&&bytes){
+        unsigned mode=atomic_load(&hardening_cue_mode),failures=atomic_load(&hardening_cue_failures);
+        if(mode==2||(mode==1&&!failures)){
+            atomic_fetch_add(&hardening_cue_failures,1);
+            if(mode==1&&hardening_cue_underflow_callback){
+                atomic_store(&hardening_force_cue_underflow,true);hardening_cue_underflow_callback(stream,hardening_cue_underflow_userdata);atomic_store(&hardening_force_cue_underflow,false);
+                fprintf(stderr,"INJECT optional cue underflow callback index=1 headset_untouched=1\n");
+            }else fprintf(stderr,"INJECT optional cue write rejected mode=%u headset_untouched=1\n",mode);
+            return -1;
+        }
+        if(mode==3&&!atomic_exchange(&hardening_cue_pause_count,1)){
+            unsigned long long began=now_ms();struct timespec pause={0,50000000};nanosleep(&pause,NULL);atomic_store(&hardening_cue_pause_duration,now_ms()-began);
+            fprintf(stderr,"INJECT optional cue I/O pause requested_ms=50 actual_ms=%llu full_prebuffer_required=1\n",now_ms()-began);
+        }
+    }
     if(stream==test_headset_stream&&data&&bytes){
         const unsigned char *pcm=data;for(size_t i=0;i<bytes;++i)if(pcm[i]){atomic_fetch_add(&test_headset_payload_writes,1);break;}
     }

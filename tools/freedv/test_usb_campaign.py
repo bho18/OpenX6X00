@@ -632,7 +632,7 @@ def opening_prefix_fixture(root):
 
 def capture_case_fixture(case,root,identity=None):
     from test_usb_audio_integration import SPEECH_CASES,WAVEFORM_CASES
-    from usb_test_campaign import REFINEMENT_CASES
+    from usb_test_campaign import REFINEMENT_CASES,HARDENING_CASES,HARDENING_FAULTS
     if case in ('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'):
         return backend_failure_fixture(case,root,identity)
     if case=='operational-open-prefix':result=opening_prefix_fixture(root)
@@ -648,7 +648,10 @@ def capture_case_fixture(case,root,identity=None):
         result={'harness':{'turns':count,'total_turns':count,'eoo':count,'fault':1},'capture_close':capture_close_fixture(count)}
     if case.startswith('operational-'):
         fault=13 if case=='operational-volume-startup-fails' else 23 if case in ('operational-open-missing','operational-open-invalid') else 1 if case in ('operational-open-stop','operational-mic-recover-stop') else 10 if case=='operational-timeout' else 2 if case in ('operational-device-loss','operational-mic-recover-device-loss') else 4 if case=='operational-mic-recover-radio-loss' else 1 if case=='operational-abort' else 0
-        count=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release') or (case in REFINEMENT_CASES and fault==0))
+        fault=HARDENING_FAULTS.get(case,fault)
+        count=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release') or
+                  (case in REFINEMENT_CASES and fault==0) or
+                  (case in HARDENING_CASES and fault==0 and not case.endswith('mic-overload')))
         result['harness'].update(turns=count,total_turns=count,eoo=count,fault=fault,operational=True,
             startup_ready=case!='operational-volume-startup-fails',qualification_complete=False,qualification_turns=0,tx_timeout_seconds=30 if case=='operational-timeout' else 180,
             physical_tx=False,rf_clear_confirmed=case!='operational-mic-recover-radio-loss',configuration_ready=True,tuning_revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune','operational-mic-recover-retune') else 1,
@@ -658,7 +661,7 @@ def capture_case_fixture(case,root,identity=None):
             submitted_mic=count*96000,key_attempts=2 if case in ('operational-key-retune','operational-open-release') else count,key_denials=int(case=='operational-key-retune'),
             rade_creations=1,encoder_creations=1,decoder_creations=1,rx_synthesis_blocks=4 if case=='operational-retune' else 0)
         if case!='operational-open-prefix':result['capture_close']=capture_close_fixture(count)
-        if case in REFINEMENT_CASES:
+        if case in REFINEMENT_CASES or case in HARDENING_CASES:
             # Put refinement phases before the finite TX interval. Durations,
             # source indices and sample counts retain their independent values.
             for interval in result['capture_close']['turns']:
@@ -667,6 +670,12 @@ def capture_case_fixture(case,root,identity=None):
             result['harness'].update(physical_release_sequence=2 if case=='operational-mic-recover-held' else int(bool(count)),
                 physical_ptt_pressed=False,headset_uncorks=int(case!='operational-volume-startup-fails'),headset_payload_writes=0,
                 first_fault_origin='headset-initial-volume-not-confirmed' if case=='operational-volume-startup-fails' else '')
+        if case in HARDENING_CASES:
+            result['synthetic']=True
+            result['harness'].update(keys=1 if case.endswith('radio-loss-tx') else count,
+                key_attempts=1 if case.endswith('radio-loss-tx') else count,
+                physical_release_sequence=2 if case.endswith('radio-recover-held') else int(bool(count)),
+                tuning_revision=2 if case=='operational-hardening-cue-recovery' else 1)
         if count:sink_turn_fixture(result['capture_close'],False,root) # Produce raw finite-close fixture records.
     if case in WAVEFORM_CASES:
         result['actual_sink_turns']=sink_turn_fixture(result['capture_close'],case in SPEECH_CASES,root)
@@ -740,12 +749,16 @@ def operational_case_fixture(case,root,result):
     refresh_capture_contract_fixture(root,result)
     rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()];completion=json.loads(cp.read_text())
     if case=='operational-open-release':h.update(rx_ready_repress_hits=1,rx_ready_repress_up=True,rx_ready_repress_release=1,rx_ready_repress_sequence=30)
-    from usb_test_campaign import REFINEMENT_CASES
-    if case in REFINEMENT_CASES:
+    from usb_test_campaign import REFINEMENT_CASES,HARDENING_CASES
+    if case in HARDENING_CASES:
+        from usb_hardening_fixtures import hardening_case_fixture
+        hardening_case_fixture(root,result,case)
+    elif case in REFINEMENT_CASES:
         refinement_case_fixture(case,root,result)
     else:
         result['operational']=operational_proof(rows,completion,h,case)
-    if case=='operational-retune':result['actual_headset_output']=operational_headset_fixture(root,path)
+    if case in ('operational-retune','operational-hardening-cue-final-gesture'):
+        result['actual_headset_output']=operational_headset_fixture(root,path)
 
 
 def refinement_case_fixture(case,root,result):
@@ -928,8 +941,8 @@ class CampaignTests(unittest.TestCase):
         self.identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
         self.identity['usb_output_contract_version']=1
         self.identity['usb_capture_open_contract_version']=1
-        self.identity['usb_refinement_contract_version']=1
-        self.plan = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'profile': 'qualification', 'repetitions': 2,
+        self.identity['usb_refinement_contract_version']=2
+        self.plan = {'usb_refinement_contract_version':2,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'profile': 'qualification', 'repetitions': 2,
                      'expected_cases': ['normal'], 'selected_cases': ['normal'],
                      'debug_subset': False, 'case_timeout_seconds': {'normal': 90},
                      'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
@@ -956,7 +969,7 @@ class CampaignTests(unittest.TestCase):
             runs.append({'status': 'PASS', 'repeat': repeat, 'log_path': str(log),
                          'log_sha256': sha(log), 'case_record_path': str(case),
                          'case_record_sha256': sha(case),**extra})
-        result = {'usb_refinement_contract_version':1,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
+        result = {'usb_refinement_contract_version':2,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
                   'plan': self.plan, 'complete_matrix': status == 'PASS',
                   'expected_executions': ['normal@1', 'normal@2'],
                   'executed': ['normal@1', 'normal@2'], 'not_executed': [], 'skipped': [],
@@ -1223,24 +1236,24 @@ class CollectorProofBoundaryTests(unittest.TestCase):
         return identity,proof
 
     def test_matrix_accepts_exact_legacy_three_and_refinement_five_proofs(self):
-        for version,count in ((0,3),(1,5)):
+        for version,count in ((0,3),(1,5),(2,5)):
             identity,proof=self.fixture(version)
             self.assertEqual(len(proof['mutations']),count)
             self.assertIs(matrix.validate_collector_contract_proof(proof,identity,version),proof)
 
     def test_matrix_rejects_every_missing_old_and_new_mutation(self):
-        for version in (0,1):
+        for version in (0,1,2):
             for name in matrix.collector_mutation_names(version):
                 identity,proof=self.fixture(version);proof['mutations'].pop(name)
                 with self.subTest(version=version,missing=name),self.assertRaises(ValueError):
                     matrix.validate_collector_contract_proof(proof,identity,version)
 
     def test_matrix_rejects_extra_mutations_and_unsupported_or_boolean_versions(self):
-        for version in (None,False,True,-1,2,'1'):
+        for version in (None,False,True,-1,3,'1'):
             identity,proof=self.fixture(1)
             with self.subTest(version=version),self.assertRaises(ValueError):
                 matrix.validate_collector_contract_proof(proof,identity,version)
-        for version in (0,1):
+        for version in (0,1,2):
             identity,proof=self.fixture(version);proof['mutations']['unregistered']={'status':'PASS'}
             with self.subTest(version=version),self.assertRaises(ValueError):matrix.validate_collector_contract_proof(proof,identity,version)
         identity,proof=self.fixture(1)

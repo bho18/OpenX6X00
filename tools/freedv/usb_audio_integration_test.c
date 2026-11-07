@@ -51,6 +51,12 @@ extern void usb_test_volume_mode(unsigned) __attribute__((weak));
 extern unsigned usb_test_headset_uncorks(void) __attribute__((weak));
 extern unsigned usb_test_headset_payload_writes(void) __attribute__((weak));
 extern unsigned usb_test_cue_connect_failures(void) __attribute__((weak));
+extern void usb_test_cue_mode(unsigned) __attribute__((weak));
+extern unsigned usb_test_cue_failures(void) __attribute__((weak));
+extern unsigned usb_test_cue_pauses(void) __attribute__((weak));
+extern unsigned long long usb_test_cue_pause_duration_ms(void) __attribute__((weak));
+extern unsigned usb_test_volume_calls(void) __attribute__((weak));
+extern unsigned usb_test_volume_failures(void) __attribute__((weak));
 static void stop_from_close(void *audio){fd_usb_audio_stop(audio);}
 static bool cold_case,cold_rx_case,cold_late_tx_case,key_retune_case,open_prefix_case;
 static atomic_uint recovered_observations;
@@ -268,11 +274,12 @@ static void controls_phase(fd_usb_audio *audio,fake *f,const char *directory,con
            s.engine.resampler_creations==4&&s.engine.worker_creations==2);
     char path[PATH_MAX];int n=snprintf(path,sizeof(path),"%s/audio-controls-%s.json",directory,name);
     assert(n>0&&(size_t)n<sizeof(path));FILE *out=fopen(path,"w");assert(out);
-    fprintf(out,"{\"phase\":\"%s\",\"monotonic_ms\":%llu,\"state\":%u,\"generation\":%llu,\"armed\":%s,\"keys\":%u,\"rf_tx\":%s,\"turns\":%llu,\"submitted_mic\":%llu,\"mic_clipped_samples\":%llu,\"mic_gain_db\":%d,\"mic_meter_ready\":%s,\"mic_input_rms_dbfs10\":%d,\"mic_input_peak_dbfs10\":%d,\"mic_rms_dbfs10\":%d,\"mic_peak_dbfs10\":%d,\"headset_volume_ready\":%s,\"headset_volume_percent\":%u,\"headset_muted\":%s,\"rade_creations\":%u,\"encoder_creations\":%u,\"decoder_creations\":%u,\"resampler_creations\":%u,\"worker_creations\":%u}\n",
+    fprintf(out,"{\"phase\":\"%s\",\"monotonic_ms\":%llu,\"state\":%u,\"generation\":%llu,\"armed\":%s,\"keys\":%u,\"rf_tx\":%s,\"turns\":%llu,\"submitted_mic\":%llu,\"mic_clipped_samples\":%llu,\"mic_gain_db\":%d,\"mic_meter_ready\":%s,\"mic_input_rms_dbfs10\":%d,\"mic_input_peak_dbfs10\":%d,\"mic_rms_dbfs10\":%d,\"mic_peak_dbfs10\":%d,\"headset_volume_ready\":%s,\"headset_volume_percent\":%u,\"headset_muted\":%s,\"headset_volume_requested_percent\":%u,\"headset_volume_requested_revision\":%llu,\"headset_volume_confirmed_revision\":%llu,\"rade_creations\":%u,\"encoder_creations\":%u,\"decoder_creations\":%u,\"resampler_creations\":%u,\"worker_creations\":%u}\n",
         name,(unsigned long long)ms(),s.state,(unsigned long long)s.generation,s.armed?"true":"false",atomic_load(&f->keys),s.rf_tx?"true":"false",
         (unsigned long long)s.turns,(unsigned long long)s.submitted_mic,(unsigned long long)s.mic_clipped_samples,s.mic_gain_db,
         s.mic_meter_ready?"true":"false",s.mic_input_rms_dbfs10,s.mic_input_peak_dbfs10,s.mic_rms_dbfs10,s.mic_peak_dbfs10,
-        s.headset_volume_ready?"true":"false",s.headset_volume_percent,s.headset_muted?"true":"false",
+        s.headset_volume_ready?"true":"false",s.headset_volume_percent,s.headset_muted?"true":"false",s.headset_volume_requested_percent,
+        (unsigned long long)s.headset_volume_requested_revision,(unsigned long long)s.headset_volume_confirmed_revision,
         s.engine.rade_creations,s.engine.encoder_creations,s.engine.decoder_creations,s.engine.resampler_creations,s.engine.worker_creations);
     assert(!fclose(out));
     n=snprintf(path,sizeof(path),"%s/audio-controls-%s-ack",directory,name);assert(n>0&&(size_t)n<sizeof(path));
@@ -395,11 +402,235 @@ static void result(const char *directory,const char *scenario,fake *f,fd_usb_sna
         s.cue_available?"true":"false",s.cue_active?"true":"false",(unsigned long long)s.cue_requests,(unsigned long long)s.cue_completed,(unsigned long long)s.cue_canceled,(unsigned long long)s.cue_failures);
     fprintf(out,"\"headset_uncorks\":%u,\"headset_payload_writes\":%u,\"cue_connect_failures\":%u,\"cue_press_hits\":%u,",
         usb_test_headset_uncorks?usb_test_headset_uncorks():0,usb_test_headset_payload_writes?usb_test_headset_payload_writes():0,usb_test_cue_connect_failures?usb_test_cue_connect_failures():0,atomic_load(&cue_press_hits));
+    fprintf(out,"\"mic_near_maximum\":%s,\"mic_overload\":%s,\"radio_recovering\":%s,\"radio_recovery_started_ms\":%llu,\"radio_recovery_attempts\":%u,\"headset_volume_recovering\":%s,\"headset_volume_unavailable\":%s,\"headset_volume_retries\":%u,\"cue_recovering\":%s,\"cue_unavailable\":%s,\"cue_retries\":%u,\"volume_calls\":%u,\"volume_failures\":%u,\"cue_injected_failures\":%u,\"cue_io_pauses\":%u,\"cue_io_pause_ms\":%llu,",
+        s.mic_near_maximum?"true":"false",s.mic_overload?"true":"false",s.radio_recovering?"true":"false",(unsigned long long)s.radio_recovery_started_ms,s.radio_recovery_attempts,
+        s.headset_volume_recovering?"true":"false",s.headset_volume_unavailable?"true":"false",s.headset_volume_retries,s.cue_recovering?"true":"false",s.cue_unavailable?"true":"false",s.cue_retries,
+        usb_test_volume_calls?usb_test_volume_calls():0,usb_test_volume_failures?usb_test_volume_failures():0,usb_test_cue_failures?usb_test_cue_failures():0,usb_test_cue_pauses?usb_test_cue_pauses():0,usb_test_cue_pause_duration_ms?usb_test_cue_pause_duration_ms():0);
     fprintf(out,"\"io_service_pause\":{\"count\":%u,\"started_ms\":%llu,\"duration_ms\":%llu},\"render_queue\":{\"limit_frames\":%u,\"output_bound_frames\":%u,\"high_water_frames\":%u,\"deferred_calls\":%u,\"final_deferred_calls\":%u,\"final_flush_calls\":%u,\"final_flush_frames\":%llu,\"generated_frames\":%llu,\"written_frames\":%llu},\"render_hold\":{\"started_ms\":%llu,\"ended_ms\":%llu,\"hits\":%u}}\n",
         usb_test_io_pause_count?usb_test_io_pause_count():0,usb_test_io_pause_started_ms?usb_test_io_pause_started_ms():0,usb_test_io_pause_duration_ms?usb_test_io_pause_duration_ms():0,
         FD_USB_TX_QUEUE_FRAMES,FD_USB_RENDER_OUTPUT_FRAMES,s.render_queue_high_water,s.render_deferred_count,s.render_final_deferred_count,s.render_final_flush_calls,(unsigned long long)s.transport_tail_frames,(unsigned long long)(s.rendered_modem+s.transport_tail_frames),(unsigned long long)s.modem_written_frames,
         usb_test_render_hold_started_ms?usb_test_render_hold_started_ms():0,usb_test_render_hold_ended_ms?usb_test_render_hold_ended_ms():0,usb_test_render_hold_hits?usb_test_render_hold_hits():0);fclose(out);stop_telemetry(f);
 }
+/* Hardening observations are distinct from verdicts: independent Pulse and
+ * monitor readers bind these phase boundaries to the actual device output. */
+static fd_usb_snapshot hardening_phase(fd_usb_audio *audio,const char *name){
+    fd_usb_snapshot s=fd_usb_audio_snapshot(audio);char path[PATH_MAX];
+    int n=snprintf(path,sizeof(path),"%s/hardening-phases.jsonl",run_directory);assert(n>0&&(size_t)n<sizeof(path));
+    FILE *out=fopen(path,"a");assert(out);
+    fprintf(out,"{\"phase\":\"%s\",\"ms\":%llu,\"state\":%u,\"fault\":%u,\"armed\":%s,\"pressed\":%s,\"rf_valid\":%s,\"rf_tx\":%s,\"physical_release_sequence\":%llu,\"keys\":%u,\"clears\":%u,\"submitted_mic\":%llu,\"turns\":%llu,\"headset_volume_percent\":%u,\"headset_volume_requested_percent\":%u,\"headset_muted\":%s,\"headset_volume_ready\":%s,\"headset_volume_pending\":%s,\"headset_volume_initialized\":%s,\"headset_volume_requested_revision\":%llu,\"headset_volume_confirmed_revision\":%llu,\"headset_volume_failed_revision\":%llu,\"headset_volume_recovering\":%s,\"headset_volume_unavailable\":%s,\"headset_volume_retries\":%u,\"cue_available\":%s,\"cue_active\":%s,\"cue_recovering\":%s,\"cue_unavailable\":%s,\"cue_retries\":%u,\"cue_requests\":%llu,\"cue_completed\":%llu,\"cue_canceled\":%llu,\"cue_failures\":%llu,\"radio_recovering\":%s,\"radio_recovery_started_ms\":%llu,\"radio_recovery_attempts\":%u,\"mic_meter_ready\":%s,\"mic_near_maximum\":%s,\"mic_overload\":%s,\"mic_peak_dbfs10\":%d,\"mic_clipped_samples\":%llu,\"rade_creations\":%u,\"encoder_creations\":%u,\"decoder_creations\":%u,\"volume_calls\":%u,\"volume_failures\":%u,\"cue_injected_failures\":%u,\"cue_io_pauses\":%u,\"cue_io_pause_ms\":%llu}\n",
+        name,(unsigned long long)ms(),s.state,s.fault,s.armed?"true":"false",s.pressed?"true":"false",s.rf_valid?"true":"false",s.rf_tx?"true":"false",
+        (unsigned long long)atomic_load(&run_control->release),atomic_load(&run_control->keys),atomic_load(&run_control->clears),(unsigned long long)s.submitted_mic,(unsigned long long)s.turns,
+        s.headset_volume_percent,s.headset_volume_requested_percent,s.headset_muted?"true":"false",s.headset_volume_ready?"true":"false",s.headset_volume_pending?"true":"false",s.headset_volume_initialized?"true":"false",
+        (unsigned long long)s.headset_volume_requested_revision,(unsigned long long)s.headset_volume_confirmed_revision,(unsigned long long)s.headset_volume_failed_revision,
+        s.headset_volume_recovering?"true":"false",s.headset_volume_unavailable?"true":"false",s.headset_volume_retries,
+        s.cue_available?"true":"false",s.cue_active?"true":"false",s.cue_recovering?"true":"false",s.cue_unavailable?"true":"false",s.cue_retries,
+        (unsigned long long)s.cue_requests,(unsigned long long)s.cue_completed,(unsigned long long)s.cue_canceled,(unsigned long long)s.cue_failures,
+        s.radio_recovering?"true":"false",(unsigned long long)s.radio_recovery_started_ms,s.radio_recovery_attempts,
+        s.mic_meter_ready?"true":"false",s.mic_near_maximum?"true":"false",s.mic_overload?"true":"false",s.mic_peak_dbfs10,(unsigned long long)s.mic_clipped_samples,
+        s.engine.rade_creations,s.engine.encoder_creations,s.engine.decoder_creations,
+        usb_test_volume_calls?usb_test_volume_calls():0,usb_test_volume_failures?usb_test_volume_failures():0,
+        usb_test_cue_failures?usb_test_cue_failures():0,usb_test_cue_pauses?usb_test_cue_pauses():0,usb_test_cue_pause_duration_ms?usb_test_cue_pause_duration_ms():0);
+    assert(!fclose(out));return s;
+}
+static fd_usb_snapshot hardening_volume(fd_usb_audio *audio,unsigned target,unsigned actual,unsigned timeout){
+    uint64_t until=ms()+timeout;fd_usb_snapshot s={0};
+    do{s=healthy_snapshot(audio,"hardening-volume-fault");
+        if(s.headset_volume_ready&&!s.headset_volume_pending&&!s.headset_volume_unavailable&&
+           s.headset_volume_requested_percent==target&&s.headset_volume_percent==actual&&
+           s.headset_volume_requested_revision==s.headset_volume_confirmed_revision)return s;
+        pause_ms(5);
+    }while(ms()<until);failed_wait(audio,"hardening-volume-timeout",s);
+}
+static fd_usb_snapshot hardening_flag(fd_usb_audio *audio,unsigned wanted,unsigned timeout){
+    uint64_t until=ms()+timeout;fd_usb_snapshot s={0};
+    do{s=healthy_snapshot(audio,"hardening-health-fault");bool found=
+        wanted==1?s.headset_volume_recovering:wanted==2?s.headset_volume_unavailable:
+        wanted==3?s.cue_recovering:wanted==4?s.cue_unavailable:wanted==5?s.radio_recovering&&!s.armed&&!s.turns&&!s.submitted_mic:
+        wanted==6?s.cue_active:wanted==7?s.mic_near_maximum&&!s.mic_overload:
+        wanted==8?s.mic_overload:wanted==9?s.mic_meter_ready&&!s.mic_near_maximum&&!s.mic_overload:
+        wanted==11?s.state==FD_USB_RX&&!s.armed&&!s.radio_recovering&&s.pressed&&s.rf_valid&&!s.rf_tx&&s.configuration_ready&&s.rf_clear_confirmed:
+        s.state==FD_USB_RX&&s.armed&&!s.radio_recovering&&s.rf_valid&&!s.rf_tx&&s.configuration_ready&&s.rf_clear_confirmed;
+        if(found)return s;pause_ms(2);
+    }while(ms()<until);failed_wait(audio,"hardening-health-timeout",s);
+}
+static fd_usb_snapshot hardening_cue_completed(fd_usb_audio *audio,uint64_t before){
+    uint64_t until=ms()+6000;fd_usb_snapshot s={0};
+    do{s=healthy_snapshot(audio,"hardening-cue-fault");if(s.cue_completed>before&&!s.cue_active)return s;pause_ms(5);}while(ms()<until);
+    failed_wait(audio,"hardening-cue-completion-timeout",s);
+}
+static fd_usb_snapshot hardening_fault(fd_usb_audio *audio,unsigned expected,const char *origin,unsigned timeout){
+    uint64_t until=ms()+timeout;fd_usb_snapshot s={0};
+    do{s=fd_usb_audio_snapshot(audio);
+        /* Fault is an immediate atomic gate; its immutable origin is published
+         * separately. Wait for both observations rather than asserting an old
+         * cached snapshot at the admission boundary. */
+        if(s.fault&&s.first_fault_code==s.fault&&s.first_fault_origin[0]){
+            assert(s.fault==expected&&!strcmp(s.first_fault_origin,origin));return s;
+        }pause_ms(5);
+    }while(ms()<until);
+    failed_wait(audio,"hardening-expected-fault-timeout",s);
+}
+static void hardening_freeze(fake *f,unsigned duration){
+    pthread_mutex_lock(&f->packet_mutex);atomic_store(&f->freeze,true);atomic_store(&f->freeze_until,duration?ms()+duration:0);pthread_mutex_unlock(&f->packet_mutex);
+}
+static void hardening_cases(fd_usb_audio *audio,fake *f,fd_usb_snapshot ready,const char *scenario,const char *directory){
+    const char *name=scenario+24; /* --operational-hardening- */
+    assert(!strncmp(scenario,"--operational-hardening-",24));
+    assert(ready.headset_volume_initialized&&ready.headset_volume_percent==37&&!ready.headset_muted);
+    hardening_phase(audio,"initial");bool finish_turn=true;unsigned expected_fault=0;
+    if(!strcmp(name,"volume-paced-rounded")){
+        assert(usb_test_volume_mode);usb_test_volume_mode(4);
+        assert(fd_usb_audio_set_headset_volume(audio,0,false));hardening_volume(audio,0,0,4000);hardening_phase(audio,"low0");
+        const unsigned targets[]={1,5,9,10,15,100};const char *labels[]={"up1","up5","up9","up10","up15","up100"};unsigned desired=0;
+        for(unsigned point=0;point<6;++point){
+            while(desired<targets[point]){assert(fd_usb_audio_adjust_headset_volume(audio,1));++desired;pause_ms(desired<16?70:4);}
+            hardening_volume(audio,desired,((desired+2)/5)*5,4000);fd_usb_snapshot observed=hardening_phase(audio,labels[point]);
+            controls_phase(audio,f,directory,labels[point],observed);
+        }
+        while(desired>9){assert(fd_usb_audio_adjust_headset_volume(audio,-1));--desired;pause_ms(desired<16?70:4);}
+        hardening_volume(audio,9,10,4000);hardening_phase(audio,"down9");
+        while(desired<15){assert(fd_usb_audio_adjust_headset_volume(audio,1));++desired;pause_ms(70);}
+        hardening_volume(audio,15,15,4000);hardening_phase(audio,"final15");usb_test_volume_mode(0);
+    }else if(!strcmp(name,"volume-retry")){
+        assert(usb_test_volume_mode);usb_test_volume_mode(5);assert(fd_usb_audio_set_headset_volume(audio,51,false));
+        hardening_flag(audio,1,2000);hardening_phase(audio,"recovering");
+        for(unsigned i=0;i<4;++i){assert(fd_usb_audio_adjust_headset_volume(audio,1));pause_ms(35);}
+        hardening_volume(audio,55,55,5000);hardening_phase(audio,"rejected-recovered");
+        usb_test_volume_mode(6);assert(fd_usb_audio_set_headset_volume(audio,54,false));hardening_flag(audio,1,2200);
+        assert(fd_usb_audio_adjust_headset_volume(audio,1));hardening_volume(audio,55,55,5000);fd_usb_snapshot observed=hardening_phase(audio,"final55");controls_phase(audio,f,directory,"final55",observed);usb_test_volume_mode(0);
+    }else if(!strcmp(name,"volume-unavailable-retry")){
+        assert(usb_test_volume_mode);usb_test_volume_mode(2);assert(fd_usb_audio_set_headset_volume(audio,55,false));
+        fd_usb_snapshot unavailable=hardening_flag(audio,2,6000);assert(!unavailable.headset_volume_ready&&unavailable.headset_volume_retries==2);
+        hardening_phase(audio,"volume-unavailable");
+        usb_test_volume_mode(0);assert(fd_usb_audio_retry_controls(audio));fd_usb_snapshot retried=hardening_volume(audio,55,55,5000);assert(retried.headset_volume_confirmed_revision>unavailable.headset_volume_failed_revision);fd_usb_snapshot observed=hardening_phase(audio,"final55");controls_phase(audio,f,directory,"final55",observed);
+    }else if(!strcmp(name,"volume-external-zero")){
+        puts("HARDENING_EXTERNAL_VOLUME");fflush(stdout);hardening_volume(audio,51,51,5000);fd_usb_snapshot external=hardening_phase(audio,"external51");
+        controls_phase(audio,f,directory,"external51",external);
+        assert(fd_usb_audio_set_headset_volume(audio,0,false));hardening_volume(audio,0,0,4000);hardening_phase(audio,"zero");
+        assert(fd_usb_audio_adjust_headset_volume(audio,30));hardening_volume(audio,30,30,4000);fd_usb_snapshot restored=hardening_phase(audio,"restored30");
+        controls_phase(audio,f,directory,"restored30",restored);
+    }else if(!strncmp(name,"cue-",4)){
+        assert(usb_test_cue_mode);unsigned earlier=!strcmp(name,"cue-final-gesture")?50:41;
+        hardening_phase(audio,"earlier-gesture-start");assert(fd_usb_audio_set_headset_volume(audio,earlier,false));hardening_volume(audio,earlier,earlier,4000);
+        hardening_cue_completed(audio,ready.cue_completed);fd_usb_snapshot earlier_preview=hardening_phase(audio,"earlier-preview");
+        if(!strcmp(name,"cue-final-gesture"))controls_phase(audio,f,directory,"earlier-preview",earlier_preview);
+        pause_ms(400);
+        if(!strcmp(name,"cue-recovery"))usb_test_cue_mode(1);
+        else if(!strcmp(name,"cue-unavailable-retry"))usb_test_cue_mode(2);
+        else usb_test_cue_mode(3);
+        hardening_phase(audio,"gesture-start");
+        assert(fd_usb_audio_set_headset_volume(audio,70,false));hardening_volume(audio,70,70,4000);
+        if(strcmp(name,"cue-final-gesture")){
+            if(!strcmp(name,"cue-unavailable-retry")){
+                fd_usb_snapshot unavailable=hardening_flag(audio,4,6000);assert(unavailable.cue_retries==2);hardening_phase(audio,"cue-unavailable");
+                usb_test_cue_mode(0);assert(fd_usb_audio_retry_controls(audio));
+            }else{
+                hardening_flag(audio,3,2500);hardening_phase(audio,"cue-recovering");
+                uint64_t completed=fd_usb_audio_snapshot(audio).cue_completed;
+                atomic_store(&f->configuration_ready,false);atomic_store(&f->tuning_revision,2);
+                wait_state(audio,FD_USB_TUNING,2500);pause_ms(700);atomic_store(&f->configuration_ready,true);
+                hardening_flag(audio,10,4000);pause_ms(750);
+                fd_usb_snapshot canceled=hardening_phase(audio,"backoff-canceled");
+                assert(!canceled.cue_active&&canceled.cue_completed==completed&&!atomic_load(&f->keys));
+            }
+        }else{
+            fd_usb_snapshot playing=hardening_flag(audio,6,2500);pause_ms(75);
+            assert(fd_usb_audio_adjust_headset_volume(audio,1));pause_ms(35);assert(fd_usb_audio_adjust_headset_volume(audio,-1));pause_ms(25);
+            fd_usb_snapshot edited=hardening_phase(audio,"active-preview-edit");
+            assert(edited.cue_active&&edited.cue_canceled==playing.cue_canceled&&!atomic_load(&f->keys));
+        }
+        /* The measured final gesture starts after all earlier playback has
+         * drained. Its oracle cannot borrow the earlier successful cue. */
+        pause_ms(1600);
+        fd_usb_snapshot before=healthy_snapshot(audio,"hardening-final-gesture-fault");
+        assert(!before.cue_active&&!before.cue_recovering&&!before.cue_unavailable);
+        hardening_phase(audio,"final-gesture-start");assert(fd_usb_audio_set_headset_volume(audio,100,false));hardening_volume(audio,100,100,4000);
+        hardening_cue_completed(audio,before.cue_completed);pause_ms(200);hardening_phase(audio,"final-preview");
+        fd_usb_snapshot final=healthy_snapshot(audio,"hardening-final-preview-fault");assert(!final.submitted_mic&&!atomic_load(&f->keys)&&final.cue_available&&!final.cue_unavailable);
+        if(!strcmp(name,"cue-final-gesture")){
+            assert(usb_test_cue_pauses&&usb_test_cue_pauses()==1&&usb_test_cue_pause_duration_ms&&usb_test_cue_pause_duration_ms()>=50&&usb_test_cue_pause_duration_ms()<=150);
+            puts("RX_FIXTURE_READY");fflush(stdout);uint64_t decode_until=ms()+12000;
+            while(healthy_snapshot(audio,"hardening-cue-rx-fault").engine.synthesis_blocks<4&&ms()<decode_until)pause_ms(10);
+            fd_usb_snapshot speaking=healthy_snapshot(audio,"hardening-cue-rx-fault");assert(speaking.engine.synthesis_blocks>=4);
+            hardening_phase(audio,"decoded-before-edit");uint64_t completed=speaking.cue_completed;
+            assert(fd_usb_audio_set_headset_volume(audio,99,false));hardening_volume(audio,99,99,4000);
+            assert(fd_usb_audio_set_headset_volume(audio,100,false));hardening_volume(audio,100,100,4000);
+            fd_usb_snapshot during=hardening_phase(audio,"decoded-after-edit");assert(!during.cue_active&&during.cue_completed==completed);
+            puts("RX_SOURCE_TO_SILENCE");fflush(stdout);char ack[PATH_MAX];snprintf(ack,sizeof(ack),"%s/rx-source-silenced",directory);
+            unsigned long fixture_ms=strtoul(getenv("USB_TEST_RX_FIXTURE_MS"),NULL,10);assert(fixture_ms&&fixture_ms<=30000);
+            decode_until=ms()+fixture_ms+5000;while(access(ack,F_OK)&&ms()<decode_until){(void)healthy_snapshot(audio,"hardening-cue-rx-source-fault");pause_ms(5);}assert(!access(ack,F_OK));
+            pause_ms(2000);uint64_t synthesis=fd_usb_audio_snapshot(audio).engine.synthesis_blocks;pause_ms(500);
+            fd_usb_snapshot settled=healthy_snapshot(audio,"hardening-cue-rx-settle-fault");assert(!settled.output_queue&&!settled.engine.output_depth&&settled.engine.synthesis_blocks==synthesis);
+            assert(settled.cue_completed==completed);hardening_phase(audio,"decoded-settled");
+        }
+        atomic_store(&cue_press_armed,true);assert(fd_usb_audio_set_headset_volume(audio,99,false));
+        uint64_t until=ms()+3000;while(!atomic_load(&cue_press_hits)&&ms()<until){(void)healthy_snapshot(audio,"hardening-cue-ptt-fault");pause_ms(2);}assert(atomic_load(&cue_press_hits)==1);
+    }else if(!strcmp(name,"mic-overload")){
+        finish_turn=false;assert(fd_usb_audio_set_mic_gain(audio,12));hardening_flag(audio,7,1500);hardening_phase(audio,"near-maximum");
+        assert(fd_usb_audio_set_mic_gain(audio,24));hardening_flag(audio,8,1500);hardening_phase(audio,"overload");
+        assert(!fd_usb_audio_snapshot(audio).mic_clipped_samples&&!atomic_load(&f->keys));
+        assert(fd_usb_audio_set_mic_gain(audio,0));hardening_flag(audio,9,1500);hardening_phase(audio,"clean");
+    }else if(!strcmp(name,"radio-loss-tx")){
+        atomic_store(&f->pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(300);hardening_freeze(f,0);
+        hardening_fault(audio,4,"radio-packet-stale",2500);expected_fault=4;hardening_phase(audio,"tx-status-lost");
+    }else{
+        bool concurrent=!strcmp(name,"radio-recover");uint64_t previews_before=ready.cue_completed;
+        if(concurrent){
+            assert(fd_usb_audio_set_headset_volume(audio,39,false));hardening_volume(audio,39,39,4000);
+            hardening_flag(audio,6,2500);fd_usb_snapshot preview=hardening_phase(audio,"preview-before-status");
+            assert(preview.cue_active&&!preview.submitted_mic&&!atomic_load(&f->keys));previews_before=preview.cue_completed;
+        }
+        bool blocked=!strcmp(name,"radio-recover-clear-blocked");if(blocked)atomic_store(&f->block_clear,2500);
+        bool operation_deadline=!strcmp(name,"radio-recover-operation-deadline");if(operation_deadline){atomic_store(&f->block_clear,1400);marker("USB_TEST_PA_TRIGGER");}
+        hardening_freeze(f,!strcmp(name,"radio-recover-timeout")||blocked?0:650);
+        hardening_flag(audio,5,1500);fd_usb_snapshot recovering=hardening_phase(audio,"radio-recovering");
+        assert(!recovering.armed&&!atomic_load(&f->permitted)&&!atomic_load(&f->keys)&&!recovering.submitted_mic);
+        if(concurrent){
+            for(unsigned detent=0;detent<6;++detent){assert(fd_usb_audio_adjust_headset_volume(audio,1));pause_ms(20);}
+            hardening_volume(audio,45,45,1500);fd_usb_snapshot controls=hardening_phase(audio,"controls-during-recovery");
+            assert(controls.radio_recovering&&!controls.armed&&!controls.cue_active&&!atomic_load(&f->keys)&&!controls.submitted_mic);
+        }
+        if(!strcmp(name,"radio-recover-held"))atomic_store(&f->pressed,true);
+        if(!strcmp(name,"radio-recover-unexpected-tx")){
+            set_physical_tx(f,true);atomic_store(&f->freeze,false);atomic_store(&f->freeze_until,0);emit_packet(f);
+            hardening_fault(audio,4,"unexpected-tx-during-radio-recovery",2500);expected_fault=4;
+        }else if(!strcmp(name,"radio-recover-protection")){
+            atomic_store(&f->protection,true);hardening_fault(audio,5,"radio-protection",2500);expected_fault=5;
+        }else if(!strcmp(name,"radio-recover-timeout")){
+            hardening_fault(audio,4,"radio-status-recovery-timeout",3000);expected_fault=4;
+        }else if(operation_deadline){
+            hardening_fault(audio,4,"radio-status-recovery-timeout",3000);atomic_store(&f->block_clear,0);expected_fault=4;
+        }else if(blocked){
+            hardening_fault(audio,20,"radio-recovery-clear-timeout",3000);atomic_store(&f->block_clear,0);expected_fault=20;
+        }else if(!strcmp(name,"radio-recover-held")){
+            hardening_flag(audio,11,3000);fd_usb_snapshot held=hardening_phase(audio,"held-restored");assert(!held.armed&&!atomic_load(&f->keys));
+            release_ptt(f);hardening_flag(audio,10,2500);hardening_phase(audio,"radio-restored");
+        }else{
+            hardening_flag(audio,10,3000);hardening_phase(audio,"radio-restored");
+            if(concurrent){pause_ms(750);fd_usb_snapshot quiet=hardening_phase(audio,"canceled-preview-settled");
+                assert(!quiet.cue_active&&quiet.cue_completed==previews_before&&quiet.headset_volume_percent==45&&!atomic_load(&f->keys));}
+            if(!strcmp(name,"radio-recover-flapping")){
+                hardening_phase(audio,"first-restored");hardening_freeze(f,0);
+                hardening_fault(audio,4,"radio-status-recovery-repeated-loss",2000);expected_fault=4;hardening_phase(audio,"repeated-loss");
+            }
+        }
+    }
+    if(expected_fault){
+        hardening_phase(audio,"fault");
+        fd_usb_snapshot last=wait_stopped(audio,7000);assert(last.fault==expected_fault&&!atomic_load(&f->physical_tx));
+        assert(last.engine.rade_creations==ready.engine.rade_creations&&last.engine.encoder_creations==ready.engine.encoder_creations&&last.engine.decoder_creations==ready.engine.decoder_creations);
+        atomic_store(&f->freeze,false);atomic_store(&f->freeze_until,0);atomic_store(&f->protection,false);emit_packet(f);
+        hardening_phase(audio,"stopped");result(directory,scenario,f,last);fd_usb_audio_close(audio);return;
+    }
+    if(finish_turn){
+        if(!atomic_load(&f->pressed))atomic_store(&f->pressed,true);wait_state(audio,FD_USB_TX,10000);puts("TX_ACTIVE");fflush(stdout);pause_ms(1700);release_ptt(f);
+        fd_usb_snapshot returned=wait_completed_turn(audio,1,1,10000);assert(returned.turns==1&&returned.engine.eoo_count==1);hardening_phase(audio,"after-turn");
+    }
+    fd_usb_audio_leave(audio);fd_usb_snapshot last=wait_stopped(audio,10000);
+    assert(!last.fault&&last.rf_clear_confirmed&&last.engine.rade_creations==ready.engine.rade_creations&&last.engine.encoder_creations==ready.engine.encoder_creations&&last.engine.decoder_creations==ready.engine.decoder_creations);
+    result(directory,scenario,f,last);fd_usb_audio_close(audio);
+}
+
 int main(int argc,char **argv) {
     if(argc==2&&!strcmp(argv[1],"--release-lock-protocol-selftest"))return release_lock_protocol_selftest();
     assert(argc==2 || argc==3);const char *scenario=argc==3?argv[2]:"--normal";
@@ -421,7 +652,8 @@ int main(int argc,char **argv) {
     bool operational=!strncmp(scenario,"--operational-",14);
     bool refine_mic=!strncmp(scenario,"--operational-mic-recover",25);
     bool refine_cue=!strncmp(scenario,"--operational-cue-",18);
-    bool refinement=refine_mic||refine_cue||!strcmp(scenario,"--operational-volume-readback")||!strcmp(scenario,"--operational-volume-startup-fails");
+    bool hardening=!strncmp(scenario,"--operational-hardening-",24);
+    bool refinement=hardening||refine_mic||refine_cue||!strcmp(scenario,"--operational-volume-readback")||!strcmp(scenario,"--operational-volume-startup-fails");
     key_retune_case=!strcmp(scenario,"--operational-key-retune");
     open_prefix_case=!strcmp(scenario,"--operational-open-prefix");
     if(!strcmp(scenario,"--operational-held-ptt"))atomic_store(&f.pressed,true);
@@ -436,7 +668,7 @@ int main(int argc,char **argv) {
         .radio_source="radio_source_fixture",.radio_sink="radio_sink_fixture",.trace_prefix=prefix,
         .control={.context=&f,.observe=observe,.key=key,.clear=clear,.inhibit=inhibit,.permit=operational?permit:NULL},
         .operational=operational,.tx_timeout_seconds=operational?180:0,
-        .refinement=refinement,.cues_enabled=refine_cue,
+        .refinement=refinement,.hardening=hardening,.cues_enabled=refine_cue||(hardening&&strstr(scenario,"-cue-"))||!strcmp(scenario,"--operational-hardening-radio-recover"),
         .headset_volume_initial_valid=refinement,.headset_volume_initial_percent=37,.headset_volume_initial_muted=false,
         .rf_disabled=qualification,.qualification_turns=3,.qualification_control_delay_ms=450,
         .qualification_idle_ms=!strcmp(scenario,"--cold-idle")?20000:0,.incident_dir=incident_dir,
@@ -480,6 +712,7 @@ int main(int argc,char **argv) {
         assert(ready.operational&&ready.startup_ready&&(ready.armed||!strcmp(scenario,"--operational-receive-only"))&&ready.configuration_ready&&!ready.qualification_complete&&!ready.qualification_running&&!ready.qualification_turns&&!ready.turns);
         assert(ready.tx_timeout_seconds==180&&!fd_usb_audio_set_tx_timeout(audio,29)&&!fd_usb_audio_set_tx_timeout(audio,601));
         assert(fd_usb_audio_set_tx_timeout(audio,30));assert(fd_usb_audio_set_tx_timeout(audio,600));assert(fd_usb_audio_set_tx_timeout(audio,180));
+        if(hardening){hardening_cases(audio,&f,ready,scenario,argv[1]);return 0;}
         if(refine_cue||!strcmp(scenario,"--operational-volume-readback")){
             assert(ready.headset_volume_initialized&&ready.headset_volume_ready&&ready.headset_volume_percent==37&&!ready.headset_muted);
             refinement_phase(audio,"initial");

@@ -19,7 +19,7 @@ REFINEMENT_COLLECTOR_MUTATIONS = LEGACY_COLLECTOR_MUTATIONS + ('missing-recent',
 
 def collector_mutation_names(refinement_version):
     """Keep the evidence producer and matrix consumer on the same contract."""
-    if type(refinement_version) is not int or refinement_version not in (0,1):
+    if type(refinement_version) is not int or refinement_version not in (0,1,2):
         raise ValueError('Unsupported collector refinement mutation contract version')
     return REFINEMENT_COLLECTOR_MUTATIONS if refinement_version else LEGACY_COLLECTOR_MUTATIONS
 
@@ -74,7 +74,9 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
     manifest = dict(usb_startup_contract_version=4 if operational else 3, usb_output_contract_version=1, usb_capture_open_contract_version=1, on_device_readiness_required=True,
                     firmware_commit=expected_source_commit, build_id=expected_build_id,
                     gui_sha256=expected_binary_sha256)
-    if sessions[0].get('usb_refinement_contract_version')==1:manifest['usb_refinement_contract_version']=1
+    refinement_version=sessions[0].get('usb_refinement_contract_version',0)
+    collector_mutation_names(refinement_version)
+    if refinement_version:manifest['usb_refinement_contract_version']=refinement_version
     output.mkdir(parents=True)
     result = collect_runtime(runtime, output/'actual', binary, manifest)
     last = samples[-1]
@@ -93,7 +95,7 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
         require(result['status'] == expected, 'Production collector misclassified actual controller result: '+str(result))
     require(result['rf_tested'] is False and result['rf_recording_decoded'] is False,
             'Simulated controller evidence was promoted to RF validation')
-    refinement=sessions[0].get('usb_refinement_contract_version')==1
+    refinement=refinement_version in (1,2)
     if refinement and not storage_failure_expected:
         recent=result.get('recent_diagnostics',{})
         require(recent.get('status')=='DIAGNOSTIC_ONLY','Collector lost the separate bounded recent diagnostics')
@@ -106,7 +108,7 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
                     copied.is_file() and sha(copied)==sha(producer) and entry.get('record')==json.loads(producer.read_text()),
                     'Collector omitted or changed the immutable actual C recent diagnostic receipt: '+kind)
     mutations = {}
-    for name in collector_mutation_names(1 if refinement else 0):
+    for name in collector_mutation_names(refinement_version):
         mutated = output/name/'runtime'
         mutated.mkdir(parents=True)
         for path in runtime.iterdir():
