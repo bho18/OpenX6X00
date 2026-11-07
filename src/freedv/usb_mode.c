@@ -72,6 +72,7 @@ static struct {pthread_t thread;atomic_bool done;bool running,target,ok;} quiet_
 static void service(lv_timer_t *);
 static void popup_open(popup_kind);
 static void popup_close(void);
+static void number_cancel(void);
 static void start_discovery(void);
 static void request_restart(void);
 static void audio_status(void);
@@ -147,6 +148,7 @@ void freedv_usb_abort(void){
 }
 bool freedv_usb_leave(void){
     if(!freedv_usb_active())return false;
+    if(exit_requested)return true;
     exit_requested=true;restart_requested=false;device_choice.pending=false;cfg_freedv_usb_volume_flush();popup_close();
     if(scan)fd_usb_headsets_scan_cancel(scan);
     pthread_mutex_lock(&pointer_mutex);if(audio)fd_usb_audio_leave(audio);pthread_mutex_unlock(&pointer_mutex);
@@ -158,7 +160,7 @@ void freedv_usb_terminal_leave(void){
 }
 static const char *mode_button_text(void){static char text[40];snprintf(text,sizeof(text),"Mode:\n%s",supported_modes[0].name);return text;}
 static const char *gain_button_text(void){static char text[32];snprintf(text,sizeof(text),"Mic gain:\n%+d dB",selected_gain);return text;}
-static const char *exit_button_text(void){return exit_requested?"Stop now":number.editing?"Cancel edit":popup?"Close":"Exit";}
+static const char *exit_button_text(void){return exit_requested?"Leaving":number.editing?"Cancel edit":popup?"Close":"Exit";}
 static const char *audio_button_text(void){return "Audio";}
 static void soft_button(button_data_t *button);
 static void audio_hold(button_data_t *button);
@@ -210,6 +212,9 @@ static lv_obj_t *meter(lv_obj_t *parent,int x,int y,int w,int h,lv_color_t color
 }
 static void popup_close(void){
     if(!popup)return;
+    /* A microphone draft is already audible. Closing or navigating away
+     * cancels it just like F5/ESC, before its rollback state is discarded. */
+    number_cancel();
     /* Restore indev bindings before removing the widgets they may focus. Drop
      * their half-presses so a popup close cannot activate an underlying item. */
     for(unsigned i=0;i<redirected_count;++i){lv_indev_reset(redirected[i].input,NULL);lv_indev_set_group(redirected[i].input,redirected[i].group);}
@@ -238,14 +243,18 @@ static void popup_begin(popup_kind kind,int height,const char *title){
     lv_obj_t *heading=label(popup,title,0,0,590);lv_obj_set_style_text_font(heading,&sony_22,0);
     lv_obj_set_style_text_color(heading,TC(text_head),0);
 }
-static bool change_gain(int gain){
+static bool preview_gain(int gain){
     if(gain<FD_USB_MIC_GAIN_MIN_DB)gain=FD_USB_MIC_GAIN_MIN_DB;
     if(gain>FD_USB_MIC_GAIN_MAX_DB)gain=FD_USB_MIC_GAIN_MAX_DB;
     if(gain==selected_gain)return true;
     if(!audio || stage!=UI_RUNNING || restart_requested || exit_requested || !fd_usb_audio_set_mic_gain(audio,gain))return false;
     selected_gain=gain;
-    if(!cfg_freedv_usb_save_gain(selected_id,gain))msg_schedule_text_fmt("Mic gain changed; could not save preference");
     buttons_refresh(&gain_button);
+    return true;
+}
+static bool commit_gain(int gain){
+    if(!audio || stage!=UI_RUNNING || restart_requested || exit_requested || !preview_gain(gain))return false;
+    if(gain!=number.original && !cfg_freedv_usb_save_gain(selected_id,gain))msg_schedule_text_fmt("Mic gain changed; could not save preference");
     return true;
 }
 static void number_draw(void){
@@ -253,11 +262,19 @@ static void number_draw(void){
     if(number.kind==NUMBER_GAIN)lv_label_set_text_fmt(number.value,"%+d dB",number.draft);
     else lv_label_set_text_fmt(number.value,"%d s",number.draft);
     if(number.editing)lv_obj_add_state(number.row,LV_STATE_EDITED);else lv_obj_clear_state(number.row,LV_STATE_EDITED);
-    if(edit_hint)lv_label_set_text(edit_hint,number.editing?"Turn to change whole value; click MFK to apply. F5 cancels edit.":"MFK: choose a setting; click to edit the whole value.");
+    if(edit_hint)lv_label_set_text(edit_hint,number.editing?
+        number.kind==NUMBER_GAIN?"Gain and meter update live; click MFK to save. F5 restores previous gain.":"Turn to change whole value; click MFK to apply. F5 cancels edit.":
+        "MFK: choose a setting; click to edit the whole value.");
     buttons_refresh(&exit_button);
 }
 static void number_cancel(void){
     if(!number.editing)return;
+    if(number.kind==NUMBER_GAIN && selected_gain!=number.original){
+        /* Rollback is also needed after leave/restart was requested. A
+         * stopped controller may reject it; its saved preference is intact. */
+        if(audio)fd_usb_audio_set_mic_gain(audio,number.original);
+        selected_gain=number.original;buttons_refresh(&gain_button);
+    }
     number.draft=number.original;number.editing=false;
     lv_group_set_editing(popup_group,false);number_draw();
 }
@@ -269,6 +286,11 @@ static void number_step(int delta){
     int value=number.draft+delta*(number.kind==NUMBER_GAIN?1:30);
     if(value<minimum)value=minimum;
     if(value>maximum)value=maximum;
+    if(number.kind==NUMBER_GAIN && !preview_gain(value)){
+        number_draw();
+        if(edit_hint)lv_label_set_text(edit_hint,"Microphone unavailable. Open Audio to reconnect, then adjust gain.");
+        return;
+    }
     number.draft=value;number_draw();
 }
 static void number_click(lv_event_t *event){
@@ -278,7 +300,7 @@ static void number_click(lv_event_t *event){
     if(code!=LV_EVENT_CLICKED || number.long_press || !front_keys_voice_local_event())return;
     if(!number.editing){number.original=number.draft;number.editing=true;lv_group_set_editing(popup_group,true);number_draw();return;}
     bool ok;
-    if(number.kind==NUMBER_GAIN)ok=change_gain(number.draft);
+    if(number.kind==NUMBER_GAIN)ok=commit_gain(number.draft);
     else {
         ok=!audio || fd_usb_audio_set_tx_timeout(audio,(unsigned)number.draft);
         if(ok){
@@ -499,7 +521,7 @@ bool freedv_usb_softkey(unsigned index,bool hold){
         return true;
     }
     if(stage==UI_NOTICE){if(index==4)acknowledge();else if(index==3)freedv_navigation_request(FD_NAV_HOME,0,0,NULL);return true;}
-    if(index==4){if(exit_requested)freedv_usb_abort();else if(number.editing)number_cancel();else if(popup)popup_close();else freedv_navigation_request(FD_NAV_HOME,0,0,NULL);return true;}
+    if(index==4){if(exit_requested)return true;else if(number.editing)number_cancel();else if(popup)popup_close();else freedv_navigation_request(FD_NAV_HOME,0,0,NULL);return true;}
     if(exit_requested)return true;
     if(index==0)popup_open(POP_MODE);else if(index==1)popup_open(POP_MIC);else if(index==2)popup_open(POP_AUDIO);
     else if(index==3){popup_close();return false;} /* ordinary TX-power action */
@@ -649,6 +671,9 @@ static void apply_device_choice(const fd_usb_snapshot *snapshot){
         if(!radio_usb_observe(NULL,&input) || !input.valid || !input.rf_valid || input.rf_tx || input.pressed || input.protection)return;
         if(audio && !snapshot->stopped && (snapshot->state!=FD_USB_RX || snapshot->radio_recovering || snapshot->pressed))return;
     }else if(audio)return;
+    /* A queued device choice may become safe while another popup is open.
+     * Restore its live draft before switching the selected profile. */
+    number_cancel();
     snprintf(selected_id,sizeof(selected_id),"%s",device_choice.id);
     snprintf(selected_name,sizeof(selected_name),"%s",device_choice.name);device_choice.pending=false;
     if(!cfg_freedv_usb_select_headset(selected_id))msg_schedule_text_fmt("Headset selected for this session; preference was not saved");
@@ -680,7 +705,7 @@ static void service(lv_timer_t *unused){
     if(status_label){
         if(exit_requested){
             fd_usb_inputs input={0};bool held=!terminal_exit && radio_usb_observe(NULL,&input) && input.valid && input.pressed;
-            lv_label_set_text(status_label,audio && !snapshot.stopped?"FreeDV: finishing - F5 Stop now":held?"FreeDV: release radio PTT to finish":"FreeDV: restoring radio");
+            lv_label_set_text(status_label,audio && !snapshot.stopped?"FreeDV: leaving":held?"FreeDV: release radio PTT to finish":"FreeDV: restoring radio");
         }
         else if(stage==UI_NOTICE)lv_label_set_text(status_label,"FreeDV: acknowledgement required");
         else if(stage==UI_FAILED)lv_label_set_text_fmt(status_label,"FreeDV: %s",problem);

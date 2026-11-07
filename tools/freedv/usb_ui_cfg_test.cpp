@@ -9,6 +9,14 @@
 #include <thread>
 #include <atomic>
 static sqlite3 *database;
+static std::atomic<unsigned> gain_profile_writes{0};
+static int count_gain_profile_writes(unsigned,void*,void *statement,void*){
+    auto *query=static_cast<sqlite3_stmt *>(statement);
+    if(sqlite3_stmt_readonly(query))return 0;
+    char *expanded=sqlite3_expanded_sql(query);assert(expanded);
+    if(std::strstr(expanded,"'freedv_usb_gains'"))++gain_profile_writes;
+    sqlite3_free(expanded);return 0;
+}
 static std::atomic<bool> volume_storage_paused{false},volume_storage_released{false};
 static int pause_volume_storage(void*,int action,const char *table,const char*,const char*,const char*){
     if(action==SQLITE_INSERT && table && !std::strcmp(table,"params") && !volume_storage_released.load()){
@@ -36,7 +44,9 @@ void usb_ui_cfg_init(void){
     cfg_sm.p_volume.set(27);
     /* An actual previous-beta setting, rather than its fresh-image default. */
     cfg_sm.p_freedv_usb_mic_gain.set(16);assert(cfg_sm.p_freedv_usb_mic_gain.save()==SUCCESS);
+    assert(sqlite3_trace_v2(database,SQLITE_TRACE_STMT,count_gain_profile_writes,nullptr)==SQLITE_OK);
 }
+unsigned usb_ui_cfg_gain_writes(void){return gain_profile_writes.load();}
 void usb_ui_cfg_verify_hidden(bool expected){
     auto value=storage_policy_for(StorageType::GLOBAL).load_int(0,"freedv_usage_hidden");
     assert(value && bool(*value)==expected);

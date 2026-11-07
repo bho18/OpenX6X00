@@ -30,9 +30,9 @@ fd_nav_offer fd_nav_offer_action(fd_nav_state *, const fd_nav_action *);
 bool fd_nav_take_action(fd_nav_state *, fd_nav_action *);
 void fd_nav_replay_finished(fd_nav_state *);
 typedef struct { bool held; unsigned generation; } fd_nav_exit_latch;
-typedef enum { FD_NAV_EXIT_PASS, FD_NAV_EXIT_CONSUME, FD_NAV_EXIT_LEAVE, FD_NAV_EXIT_STOP } fd_nav_exit_result;
+typedef enum { FD_NAV_EXIT_PASS, FD_NAV_EXIT_CONSUME, FD_NAV_EXIT_LEAVE } fd_nav_exit_result;
 /* Called only for the physical F5 key. Long/repeat/release of an accepted
- * press is consumed; a second distinct press may stop a graceful leave. */
+ * press and later presses during cleanup are consumed. */
 fd_nav_exit_result fd_nav_exit_key(fd_nav_exit_latch *, bool press, bool release,
     bool enabled, bool finishing, bool local, unsigned generation);
 

@@ -63,8 +63,13 @@ static void physical_exit_edges(void){
     assert(fd_nav_exit_key(&latch,true,false,true,true,true,1)==FD_NAV_EXIT_CONSUME);
     assert(fd_nav_exit_key(&latch,false,false,true,true,true,1)==FD_NAV_EXIT_CONSUME);
     assert(fd_nav_exit_key(&latch,false,true,true,true,true,1)==FD_NAV_EXIT_CONSUME);
-    assert(fd_nav_exit_key(&latch,true,false,true,true,true,1)==FD_NAV_EXIT_STOP);
+    /* A second distinct press while leaving cannot force an abort. The same
+     * rule covers a navigation exit whose first F5 arrives during cleanup. */
+    assert(fd_nav_exit_key(&latch,true,false,true,true,true,1)==FD_NAV_EXIT_CONSUME);
     assert(fd_nav_exit_key(&latch,false,true,true,true,true,1)==FD_NAV_EXIT_CONSUME);
+    fd_nav_exit_latch navigation_latch={0};
+    assert(fd_nav_exit_key(&navigation_latch,true,false,true,true,true,1)==FD_NAV_EXIT_CONSUME);
+    assert(fd_nav_exit_key(&navigation_latch,false,true,true,true,true,1)==FD_NAV_EXIT_CONSUME);
     assert(fd_nav_exit_key(&latch,true,false,true,false,true,1)==FD_NAV_EXIT_LEAVE);
     /* Input-drain barrier may discard the initial release. Its new generation
      * makes the next physical press independent, without an ignored press. */

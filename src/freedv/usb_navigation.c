@@ -30,7 +30,9 @@ fd_nav_exit_result fd_nav_exit_key(fd_nav_exit_latch *latch,bool press,bool rele
     if(!press || !enabled)return FD_NAV_EXIT_PASS;
     if(!local)return FD_NAV_EXIT_CONSUME;
     latch->held=true;latch->generation=generation;
-    return finishing?FD_NAV_EXIT_STOP:FD_NAV_EXIT_LEAVE;
+    /* Cleanup is already in progress. A later press must not interrupt the
+     * accepted speech tail or bypass the normal RX/ownership restoration. */
+    return finishing?FD_NAV_EXIT_CONSUME:FD_NAV_EXIT_LEAVE;
 }
 
 #if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)

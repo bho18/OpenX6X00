@@ -763,7 +763,6 @@ static void front_key_cb(lv_event_t *e) {
             freedv_usb_active() && !freedv_usb_entry_pending() && !freedv_usb_popup_active(),
             freedv_usb_finishing(), front_keys_voice_local_event(), ctl_remote_input_generation());
         if (action == FD_NAV_EXIT_LEAVE) freedv_navigation_request(FD_NAV_HOME, 0, 0, NULL);
-        if (action == FD_NAV_EXIT_STOP) freedv_usb_abort();
         if (action != FD_NAV_EXIT_PASS) return;
     }
 #endif

@@ -12,9 +12,11 @@
 #include <stdlib.h>
 #include <math.h>
 #include <png.h>
+#include "src/freedv/usb_audio_levels.h"
 void usb_ui_cfg_init(void);
 void usb_ui_cfg_verify_hidden(bool);
 void usb_ui_cfg_verify_profiles(void);
+unsigned usb_ui_cfg_gain_writes(void);
 void usb_ui_cfg_pause_volume_storage(void);
 void usb_ui_cfg_release_volume_storage(void);
 void usb_ui_cfg_close(void);
@@ -39,6 +41,7 @@ static unsigned headset_changes,mic_changes,claim_count,restore_count,open_count
 static bool adapter_owned,leave_pending;
 static bool second_headset,radio_input_pressed,radio_input_tx,radio_input_stale;
 static bool honor_startup_volume;
+static bool sample_gain_meter;
 static unsigned opened_initial_volume;
 static pthread_t gui_thread;
 static atomic_uint quiet_calls;
@@ -105,7 +108,16 @@ fd_usb_audio *fd_usb_audio_open(const fd_usb_config *config){
     snprintf(observed.headset_id,sizeof(observed.headset_id),"%s",config->headset_id);return &fake_audio;
 }
 fd_usb_snapshot fd_usb_audio_snapshot(fd_usb_audio *a){assert(a==&fake_audio);return observed;}
-bool fd_usb_audio_set_mic_gain(fd_usb_audio *a,int gain){assert(a==&fake_audio && gain>=-12 && gain<=24);++mic_changes;observed.mic_gain_db=gain;return true;}
+static void gain_meter_samples(void){
+    /* Exercise the same level/gain arithmetic on fixed microphone PCM. Only
+     * the gain received by the controller changes this rendered meter. */
+    const int16_t input[]={256,-256,256,-256};fd_usb_level_window level={0};
+    fd_usb_level_add(&level,input,sizeof(input)/sizeof(input[0]),observed.mic_gain_db);
+    observed.mic_meter_ready=true;
+    observed.mic_rms_dbfs10=fd_usb_level_rms_dbfs10(level.output_squares,level.samples);
+    observed.mic_peak_dbfs10=fd_usb_level_dbfs10(level.output_peak);
+}
+bool fd_usb_audio_set_mic_gain(fd_usb_audio *a,int gain){assert(a==&fake_audio && gain>=-12 && gain<=24);++mic_changes;observed.mic_gain_db=gain;if(sample_gain_meter)gain_meter_samples();return true;}
 bool fd_usb_audio_adjust_headset_volume(fd_usb_audio *a,int delta){assert(a==&fake_audio && !fd_writer_voice_authorized());assert(delta==-1 || delta==1);++headset_changes;observed.headset_volume_percent+=delta;return true;}
 bool fd_usb_audio_set_tx_timeout(fd_usb_audio *a,unsigned seconds){assert(a==&fake_audio && seconds>=30 && seconds<=600);return observed.state==FD_USB_RX;}
 bool fd_usb_audio_set_cues_enabled(fd_usb_audio *a,bool enabled){assert(a==&fake_audio);(void)enabled;return true;}
@@ -237,12 +249,21 @@ int main(void){
     popup_open(POP_MIC);pump();assert(vol->indev->group==popup_group && !number.editing);
     assert(lv_color_to32(lv_obj_get_style_text_color(popup,0))==lv_color_to32(TC(text)));
     assert(lv_color_to32(lv_obj_get_style_text_color(number.row,0))==lv_color_to32(TC(sel_text)));
-    mfk_click();assert(number.editing);mfk_turn(-1);inner_turn(-1);
-    assert(number.draft==18 && observed.mic_gain_db==16 && mic_changes==0);
+    unsigned gain_writes=usb_ui_cfg_gain_writes();sample_gain_meter=true;gain_meter_samples();pump();int baseline_meter=lv_bar_get_value(mic_rms_bar);
+    mfk_click();assert(number.editing);mfk_turn(-1);
+    assert(number.draft==17 && observed.mic_gain_db==17 && mic_changes==1 && lv_bar_get_value(mic_rms_bar)>baseline_meter);
+    inner_turn(-1);
+    assert(number.draft==18 && observed.mic_gain_db==18 && mic_changes==2);
+    assert(lv_bar_get_value(mic_rms_bar)==observed.mic_rms_dbfs10 && lv_bar_get_value(mic_rms_bar)>baseline_meter);
+    assert(usb_ui_cfg_gain_writes()==gain_writes && cfg_freedv_usb_gain_for(selected_id,selected_name)==16);
+    assert(strstr(lv_label_get_text(edit_hint),"update live"));
     panel_key(BTN_TRIGGER_HAPPY14,1);panel_key(BTN_TRIGGER_HAPPY14,0);assert(number.editing && number.draft==18); /* no softkey reset */
-    mfk_click();assert(!number.editing && observed.mic_gain_db==18 && mic_changes==1);
-    mfk_click();inner_turn(-1);assert(number.draft==19 && observed.mic_gain_db==18);
-    touch(find_button("Close"));assert(popup && !number.editing && observed.mic_gain_db==18);touch(find_button("Close"));assert(!popup);
+    mfk_click();assert(!number.editing && observed.mic_gain_db==18 && mic_changes==2);
+    assert(usb_ui_cfg_gain_writes()==gain_writes+1 && cfg_freedv_usb_gain_for(selected_id,selected_name)==18);
+    mfk_click();inner_turn(-1);assert(number.draft==19 && observed.mic_gain_db==19);
+    touch(find_button("Close"));assert(popup && !number.editing && observed.mic_gain_db==18);
+    assert(usb_ui_cfg_gain_writes()==gain_writes+1 && cfg_freedv_usb_gain_for(selected_id,selected_name)==18);
+    touch(find_button("Close"));assert(!popup);
     popup_open(POP_MIC);pump();
     assert(!maybe_button("+") && !maybe_button("-"));
     uint32_t injected=KEY_VOL_RIGHT_EDIT;lv_event_send(lv_group_get_focused(popup_group),LV_EVENT_KEY,&injected);assert(!headset_changes);
@@ -251,13 +272,17 @@ int main(void){
     panel_key(BTN_TRIGGER_HAPPY21,1);panel_key(BTN_TRIGGER_HAPPY21,0);assert(volume_presses==1 && vol->state==VOL_STATE_EDIT);
     assert(param_i_get(cfg_volume)==27);
     mfk_click();for(unsigned i=0;i<30;++i)inner_turn(-1);
-    assert(number.draft==24 && observed.mic_gain_db==18);
+    assert(number.draft==24 && observed.mic_gain_db==24);
     mfk_click();assert(observed.mic_gain_db==24 && !number.editing);
     mfk_click();for(unsigned i=0;i<50;++i)inner_turn(1);
-    assert(number.draft==-12 && observed.mic_gain_db==24);
+    assert(number.draft==-12 && observed.mic_gain_db==-12);
     mfk_click();assert(observed.mic_gain_db==-12);
     mfk_click();for(unsigned i=0;i<19;++i)inner_turn(-1);
     mfk_click();assert(observed.mic_gain_db==7);
+    gain_writes=usb_ui_cfg_gain_writes();observed.state=FD_USB_TX;mfk_click();inner_turn(-1);
+    assert(number.draft==8 && observed.mic_gain_db==8 && observed.state==FD_USB_TX);
+    local_escape();assert(!number.editing && observed.mic_gain_db==7 && cfg_freedv_usb_gain_for(selected_id,selected_name)==7);
+    assert(usb_ui_cfg_gain_writes()==gain_writes);observed.state=FD_USB_RX;sample_gain_meter=false;
     observed.mic_meter_ready=true;observed.mic_rms_dbfs10=-241;observed.mic_peak_dbfs10=-68;observed.mic_clipped_samples=3;pump();
     assert(strstr(lv_label_get_text(mic_level_label),"-24.1") && strstr(lv_label_get_text(mic_level_label),"-6.8"));
     assert(!*lv_label_get_text(clip_label)); /* Historical TX count is diagnostic, not live clipping. */
@@ -275,7 +300,7 @@ int main(void){
     observed.state=FD_USB_TX;mfk_click();assert(number.editing && param_i_get(cfg_freedv_timeout)==180 && strstr(lv_label_get_text(edit_hint),"Release PTT"));
     observed.state=FD_USB_RX;mfk_click();assert(!number.editing && param_i_get(cfg_freedv_timeout)==210);
     touch(find_button("Help"));assert(strstr(lv_label_get_text(popup_message),"HOST USB"));touch(find_button("Close"));
-    popup_open(POP_MIC);pump();mfk_click();inner_turn(-1);assert(number.editing && number.draft==8);
+    popup_open(POP_MIC);pump();mfk_click();inner_turn(-1);assert(number.editing && number.draft==8 && observed.mic_gain_db==8);
     panel_key(BTN_TRIGGER_HAPPY19,1);panel_key(BTN_TRIGGER_HAPPY19,0);assert(!popup && native_power_actions==1 && observed.mic_gain_db==7);
     observed.tx_eligible=false;pump();assert(strstr(lv_label_get_text(status_label),"RX only"));observed.tx_eligible=true;
     popup_open(POP_AUDIO);pump();fits(audio_list);assert(lv_dropdown_get_option_cnt(audio_list)==1 && !lv_dropdown_get_symbol(audio_list));
@@ -319,7 +344,13 @@ int main(void){
     touch(retry_button);assert(control_retries==2);observed.cue_unavailable=false;pump();
     touch(find_button("Close"));
 
-    observed.state=FD_USB_TX;observed.stopped=false;assert(freedv_usb_leave());pump();assert(leave_pending && freedv_usb_active() && !stop_count && !close_count);
+    popup_open(POP_MIC);pump();mfk_click();inner_turn(-1);assert(number.editing && observed.mic_gain_db==8);
+    gain_writes=usb_ui_cfg_gain_writes();observed.state=FD_USB_TX;observed.stopped=false;assert(freedv_usb_leave());pump();assert(leave_pending && freedv_usb_active() && !stop_count && !close_count);
+    assert(observed.mic_gain_db==7 && selected_gain==7 && usb_ui_cfg_gain_writes()==gain_writes);
+    assert(!strcmp(exit_button_text(),"Leaving") && !strstr(lv_label_get_text(status_label),"Stop now"));
+    unsigned before_repeat_leave=leave_count;
+    panel_key(BTN_TRIGGER_HAPPY20,1);panel_key(BTN_TRIGGER_HAPPY20,0);
+    assert(freedv_usb_leave());pump();assert(freedv_usb_active() && !stop_count && !close_count && leave_count==before_repeat_leave);
     observed.state=FD_USB_RX;observed.stopped=true;wait_closed();assert(close_count==1 && completion_count==2 && atomic_load(&quiet_calls)==2);
     freedv_usb_open();pump();assert(freedv_usb_entry_pending());touch(usage_check);touch(find_button("Continue"));wait_running();usb_ui_cfg_verify_hidden(true);
     assert(selected_gain==7);freedv_usb_leave();pump();wait_closed();freedv_usb_open();wait_running();assert(!freedv_usb_entry_pending());
@@ -352,10 +383,13 @@ int main(void){
     mfk_click();inner_turn(1);assert(device_choice.pending); /* Browsing back does not cancel the committed choice. */
     mfk_click();assert(!device_choice.pending && !strcmp(selected_id,"loop110-stable") && leave_count==before_leave);
     mfk_click();inner_turn(-1);mfk_click();assert(device_choice.pending && leave_count==before_leave);
+    popup_open(POP_MIC);pump();mfk_click();inner_turn(-1);assert(observed.mic_gain_db==8 && number.editing);
     observed.state=FD_USB_RX;observed.pressed=false;radio_input_pressed=radio_input_tx=false;radio_input_stale=true;
     pump();assert(device_choice.pending && leave_count==before_leave);radio_input_stale=false;
     for(unsigned n=0;n<40 && open_count==before_open;++n)pump();
-    assert(open_count==before_open+1 && !strcmp(selected_id,"second-stable") && popup_type==POP_AUDIO);
+    assert(open_count==before_open+1 && !strcmp(selected_id,"second-stable") && !popup);
+    assert(selected_gain==0 && observed.mic_gain_db==0 && cfg_freedv_usb_gain_for("loop110-stable","Loop110 USB audio")==7);
+    popup_open(POP_AUDIO);pump();
     assert(vol->indev->group==popup_group && !device_choice.pending);
     screenshot("legacy","audio-device-changed");
     touch(find_button("Close"));assert(!popup && audio && open_count==before_open+1);
@@ -388,6 +422,6 @@ int main(void){
     assert(!freedv_usb_active() && !adapter_owned && cfg_freedv_usb_volume_busy() && volume_save_pending_warnings==before_warning+2);
     usb_ui_cfg_release_volume_storage();assert(vol->indev->group==keyboard_group);
     usb_ui_cfg_verify_profiles();usb_ui_cfg_close();close(vol->fd);close(mfk->fd);close(panel->fd);close(inner->fd);
-    puts("PASS: native-screen FreeDV notice, whole-value gain, live overload feedback, native headphone units, contextual recovery, committed RX-safe device selection, warm popups, and graceful teardown");
+    puts("PASS: native-screen FreeDV notice, live gain/meter editing with commit and rollback, live overload feedback, native headphone units, contextual recovery, RX-safe device selection, warm popups, and non-escalating graceful teardown");
     return 0;
 }

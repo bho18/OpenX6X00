@@ -1,7 +1,7 @@
 # X6200 FreeDV operational Beta
 
-Use the `freedv-operational-beta-20261107.2` GitHub release and its matching
-helper kit on a spare SD card. Keep the working `freedv-operational-beta-20261107.1`
+Use the `freedv-operational-beta-20261107.3` GitHub release and its matching
+helper kit on a spare SD card. Keep the working `freedv-operational-beta-20261107.2`
 card as a fallback. Stock baseband firmware is unchanged. The operating path
 is **half-duplex RADE V1**, using a USB headset microphone and headphones or a
 paired USB microphone/speaker device, plus the radio's own panel PTT.
@@ -47,9 +47,9 @@ mic/speaker operation are outside this Beta.
 | **Mic Gain** | Saved speech gain from −12 to +24 dB and live input/encoder level meters. |
 | **Audio** | Select the USB device that provides both capture and playback. |
 | **Power** | The radio's usual power setting and knob-binding behavior, using the shared 0.1–10 W control. |
-| **F5** | **Cancel edit** discards an unconfirmed value; **Close** returns from a settings popup. On the normal screen, **Exit** gracefully closes FreeDV and restores normal operation; a second distinct press while leaving is **Stop now**. |
+| **F5** | **Cancel edit** restores the previous microphone gain or discards an unconfirmed timeout; **Close** returns from a settings popup. On the normal screen, **Exit** runs cleanup and restores normal operation. Further Exit presses are ignored while cleanup finishes. |
 | **VOL** | Keep the usual select/edit workflow and bindings, including in popups. With Volume selected, adjust USB **Headphones**; other selected controls, including Power, keep their existing behavior. |
-| **MFK** | On the main screen, both rings keep their normal control-selection/edit behavior. In a FreeDV popup, turn to focus a row, click to edit, turn the inner ring or outer encoder to change the whole value, then click to apply. Use **Cancel edit/F5** to discard a draft, then **Close/F5** to return. |
+| **MFK** | On the main screen, both rings keep their normal control-selection/edit behavior. In a FreeDV popup, turn to focus a row, click to edit, turn the inner ring or outer encoder to change the whole value, then click to save/confirm. Use **Cancel edit/F5** to discard a draft, then **Close/F5** to return. |
 | **Tuning** | Tune normally in RX. TX admission pauses while the latest frequency/profile is applied and fresh RX is reacquired. |
 
 If existing settings are retained, the saved **+16 dB** gain migrates for the
@@ -59,7 +59,7 @@ its meter. A new device starts at 0 dB. Aim for normal speech peaks near
 before encoding, not modem/RF drive or automatic gain control. Speaking with
 PTT released previews the meter without sending speech to RF.
 
-Mic Gain changes in **1 dB** steps and timeout in **30-second** steps. Values remain drafts until confirmed; changing popups or leaving the mode cancels a draft. The microphone meter continues showing the currently applied gain while editing. If TX prevents a timeout change, release PTT and apply it. The Power button closes a popup and follows the usual radio power-control path.
+Mic Gain changes in **1 dB** steps and applies immediately while editing: the speech meter reflects every dial adjustment. Click MFK to save the chosen gain. **Cancel edit/F5**, changing popups or leaving without saving restores the previous gain. Timeout changes in **30-second** steps and applies only when confirmed. If TX prevents a timeout change, release PTT and apply it. The Power button closes a popup and follows the usual radio power-control path.
 
 FreeDV uses the selected application theme, including custom colors, fonts and shapes. Theme changes follow the normal coordinated exit and screen rebuild. The dedicated status/meter row reserves its own space and does not cover frequency labels.
 
@@ -106,8 +106,8 @@ drain limit, TX clears, fresh RX is checked, and radio settings are restored.
 If panel PTT remains held, release it so the requested destination can open.
 A navigation close is recorded separately from an actual physical PTT release.
 
-If an immediate stop is needed, use a **second distinct Exit/Stop now press**.
-Protection faults, lost USB/server and shutdown use immediate abort behavior.
+Exit presents no additional stop action; cleanup finishes automatically.
+Protection faults, lost USB/server and shutdown retain their internal abort handling.
 Hard faults do not automatically reconnect, change devices or resume TX. Review
 the displayed fault and use the contextual Audio recovery action when offered. Shutdown is bounded even if PTT
 remains held. A software RX confirmation is telemetry evidence; antenna-level
@@ -117,10 +117,10 @@ RF-off timing has not been independently measured.
 
 Use one normal operating session:
 
-1. Open Mic Gain. Confirm click/dial/apply and cancel work without plus/minus buttons. Speak with PTT released and check the live warning responds to loud speech.
+1. Open Mic Gain. Speak with PTT released while editing and verify each dial adjustment changes the meter immediately. Center-click saves; Cancel restores the previous gain. Check the live warning responds to loud speech.
 2. Select Volume using each knob's usual workflow, then select Power or another control and verify it retains its normal function. Check the plain headphone number, slower adjustments, fast turns and reversals through the lower range, including zero and back upward. At a comfortable level, pause after a change and listen for a useful half-second preview. The headset's own end-stop sound is separate.
 3. Open Audio and Mode. Check there are no missing-glyph rectangles or diagnostic rows; confirming a different connected device applies without Use device. Close returns normally.
-4. Allow screen timeout, leave the panel dark for the interval that previously caused trouble, then wake it and check the mic meter, volume control and a fresh PTT press. Exit through GEN or APP and confirm normal speaker volume and knob selection remain intact.
+4. Allow screen timeout, leave the panel dark for the interval that previously caused trouble, then wake it and check the mic meter, volume control and a fresh PTT press. Exit through GEN or APP and confirm cleanup completes, with normal speaker volume and knob selection intact.
 5. When a known working RADE V1 peer is available, check received first/last words and make alternating replies. This remains the outstanding live receive milestone.
 
 The earlier recording, codec and RF-transmit milestones need not be repeated. Software checks simulate endpoint interruptions; actual headset idle behavior remains a field observation. If a failure recurs, preserve its incident before repeatedly exiting/reopening the mode.
@@ -147,4 +147,4 @@ For startup contract 4 with refinement contract 2, expect **startup: PASS**, **q
 A fault, missing readiness, incomplete terminal receipt or mismatched build is
 BLOCKED. A decoded file still needs listening review. Detailed test evidence
 and the distinction between software gates and radio observations are in
-[the test strategy](https://github.com/bho18/OpenX6X00/blob/freedv-operational-beta-20261107.2/docs/freedv/usb-test-strategy.md).
+[the test strategy](https://github.com/bho18/OpenX6X00/blob/freedv-operational-beta-20261107.3/docs/freedv/usb-test-strategy.md).
