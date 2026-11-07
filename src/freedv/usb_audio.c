@@ -1056,6 +1056,15 @@ static void publish(fd_usb_audio *a,fd_usb_inputs in){
         fflush(a->trace);
     }
 }
+/* A tuning request may win after the panel-up check on the GUI thread but
+ * before this turn's key completes. Its revision identifies cancellation;
+ * an unexplained same-revision key failure remains a real control fault. */
+static bool operational_key_cancel(fd_usb_audio *a,fd_usb_inputs in){
+    if(!a->c.operational||in.tuning_revision==a->applied_tuning_revision)return false;
+    atomic_store(&a->armed,false);a->c.control.permit(a->c.control.context,false);a->permit_press=false;
+    event(a,"key-admission-cancelled","tuning-revision",STREAM_COUNT,0,0,0);
+    a->pending_clear=request_clear(a,false);a->rx_sequence=in.sequence;state(a,FD_USB_UNKEY);return true;
+}
 /* Radio configuration runs elsewhere. This gate never writes radio state or
  * recreates a codec: it drops old queues, resets acquisition after the applied
  * tuning revision, then requires a newer known-RX packet with PTT released. */
@@ -1143,7 +1152,8 @@ static void *run(void *p){
                 if(!actual_inputs(a,&actual))break;
                 if(actual.rf_tx){FAIL(a,U_STATUS,"unexpected-tx-during-preparation");break;}
                 in=effective_inputs(a,actual);
-                if(!in.pressed||in.release!=a->release){a->pending_clear=request_clear(a,false);a->rx_sequence=actual.sequence;state(a,FD_USB_UNKEY);}
+                if(operational_key_cancel(a,actual)){} /* Retune wins before any key request. */
+                else if(!in.pressed||in.release!=a->release){a->pending_clear=request_clear(a,false);a->rx_sequence=actual.sequence;state(a,FD_USB_UNKEY);}
                 else{
                     if(atomic_load(&a->metrics[MIC].state)!=PA_STREAM_READY||age(now_ms(),atomic_load(&a->metrics[MIC].last))>CAPTURE_TIMEOUT_MS){fail_at(a,U_CAPTURE_STALE,"microphone-not-ready-before-key",MIC,0,0);break;}
                     atomic_store(&a->tx_at,now_ms());state(a,FD_USB_KEY_PENDING);a->pending_key=request_key(a,a->release);
@@ -1151,7 +1161,11 @@ static void *run(void *p){
             }
         }else if(st==FD_USB_KEY_PENDING){
             bool ok=false,done_key=key_complete(a,&ok);
-            if(!in.pressed||in.release!=a->release){a->pending_clear=request_clear(a,false);a->rx_sequence=actual.sequence;state(a,FD_USB_UNKEY);}
+            /* The denial may have completed after this loop sampled its old
+             * revision. Observe after completion before classifying it. */
+            if(a->c.operational&&done_key&&!ok){if(!actual_inputs(a,&actual))break;in=effective_inputs(a,actual);}
+            if(operational_key_cancel(a,actual)){} /* Also fence a key already in flight. */
+            else if(!in.pressed||in.release!=a->release){a->pending_clear=request_clear(a,false);a->rx_sequence=actual.sequence;state(a,FD_USB_UNKEY);}
             else if(done_key&&!ok){if(atomic_load(&a->leaving)){atomic_store(&a->stop,true);break;}FAIL(a,U_CONTROL,"key-request-failed");break;}
             else if(done_key&&in.rf_tx){
                 if(!mic_begin(a)||!actual_inputs(a,&actual))break;

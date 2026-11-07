@@ -527,12 +527,13 @@ def capture_case_fixture(case,root,identity=None):
         count=int(case in WAVEFORM_CASES)
         result={'harness':{'turns':count,'total_turns':count,'eoo':count,'fault':1},'capture_close':capture_close_fixture(count)}
     if case.startswith('operational-'):
-        count=int(case=='operational-leave-tx');fault=10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
+        count=int(case in ('operational-leave-tx','operational-key-retune'));fault=10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
         result['harness'].update(turns=count,total_turns=count,eoo=count,fault=fault,operational=True,
             startup_ready=True,qualification_complete=False,qualification_turns=0,tx_timeout_seconds=30 if case=='operational-timeout' else 180,
-            physical_tx=False,rf_clear_confirmed=True,configuration_ready=True,tuning_revision=2 if case in ('operational-retune','operational-receive-only') else 1,
+            physical_tx=False,rf_clear_confirmed=True,configuration_ready=True,tuning_revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune') else 1,
             physical_ptt_pressed=case in ('operational-leave-tx','operational-abort','operational-device-loss','operational-timeout'),
-            physical_release_sequence=1 if case in ('operational-held-ptt','operational-retune','operational-receive-only') else 0,
+            physical_release_sequence=2 if case=='operational-key-retune' else 1 if case in ('operational-held-ptt','operational-retune','operational-receive-only') else 0,
+            keys=count,key_attempts=2 if case=='operational-key-retune' else count,key_denials=int(case=='operational-key-retune'),
             rade_creations=1,encoder_creations=1,decoder_creations=1,rx_synthesis_blocks=4 if case=='operational-retune' else 0)
         result['capture_close']=capture_close_fixture(count)
         if count:sink_turn_fixture(result['capture_close'],False,root) # Produce raw finite-close fixture records.
@@ -568,6 +569,8 @@ def operational_case_fixture(case,root,result):
     rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     header=next(row for row in rows if row.get('kind')=='session');key={name:header[name] for name in ('session_id','source_commit','build_id')}
     header.update(schema='x6200.usb-audio.v4',usb_startup_contract_version=4,operational=True,qualification_target=0)
+    if case=='operational-key-retune':
+        rows.insert(1,dict(kind='event',event='key-admission-cancelled',operation='tuning-revision',state=7,ms=500))
     if case=='operational-timeout':
         rows.extend([dict(kind='event',event='state',state=3,ms=1000),dict(kind='event',event='first-fault',state=3,ms=31000,status=10,operation='turn-deadline')])
         h=result['harness'];h['first_fault_origin']='turn-deadline';h['rf_intervals']=[dict(on_before_ns=1000000000,off_after_ns=31000000000)]
@@ -582,8 +585,8 @@ def operational_case_fixture(case,root,result):
                 qualification_complete=False,qualification_turns=0)
     samples=[row for row in rows if row.get('kind')=='sample'];samples[-1].update(fields)
     for row in rows:
-        if row.get('kind')=='capture-close':row.update(close_trigger='navigation',physical_release_sequence=0)
-        if row.get('event')=='capture-release-observed':row['event']='capture-navigation-observed'
+        if row.get('kind')=='capture-close':row.update(close_trigger='ptt-release' if case=='operational-key-retune' else 'navigation',physical_release_sequence=1 if case=='operational-key-retune' else 0)
+        if row.get('event')=='capture-release-observed' and case!='operational-key-retune':row['event']='capture-navigation-observed'
     if case=='operational-timeout':
         samples[-1]['ms']=31100;completion['last_sample_ms']=31100
     completion.update(fields,completion_reason='fault' if h['fault']>1 else 'stop' if h['fault'] else 'navigation',
@@ -2024,6 +2027,18 @@ class OperationalEvidenceTests(unittest.TestCase):
                 validate_output_contract_run(run,verify_files=True)
                 validate_backend_profile_run(run,case,verify_files=True)
                 validate_capture_close_run(run,verify_files=True)
+
+    def test_retune_key_denial_requires_cancel_receipt_and_new_press(self):
+        for mutation in ('missing-cancel','extra-release','no-denial'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture('operational-key-retune',directory)
+                if mutation=='extra-release':run['harness']['physical_release_sequence']=3
+                elif mutation=='no-denial':run['harness']['key_denials']=0
+                else:
+                    path=Path(directory)/'result/freedv-usb-session-unit.jsonl'
+                    rows=[json.loads(line) for line in path.read_text().splitlines() if 'key-admission-cancelled' not in line]
+                    path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                with self.assertRaises(ValueError):validate_operational_run(run,'operational-key-retune',verify_files=True)
 
     def test_operational_retune_requires_unchanged_actual_headset_pcm(self):
         for mutation in ('missing','silent-monitor','changed-tap'):

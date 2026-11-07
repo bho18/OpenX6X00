@@ -375,12 +375,12 @@ def operational_proof(rows, completion, harness, case):
             any(row.get('event') in ('qualification-start','qualification_complete') for row in rows)):
         raise ValueError('Operational exercise lost automatic readiness, warm codec, RX clearance, or truthful qualification')
     fault=10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
-    expected_turns=int(case=='operational-leave-tx')
+    expected_turns=int(case in ('operational-leave-tx','operational-key-retune'))
     if (harness.get('fault')!=fault or harness.get('turns')!=expected_turns or
             harness.get('eoo')!=expected_turns or
             completion.get('completion_reason')!=('fault' if fault>1 else 'stop' if fault else 'navigation')):
         raise ValueError('Operational exit did not preserve graceful completion versus abort/fault semantics')
-    revision=2 if case in ('operational-retune','operational-receive-only') else 1
+    revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune') else 1
     if harness.get('tuning_revision')!=revision or harness.get('configuration_ready') is not True:
         raise ValueError('Operational configuration revision was not restored before exit')
     if case=='operational-retune' and harness.get('rx_synthesis_blocks',0)<4:
@@ -394,6 +394,17 @@ def operational_proof(rows, completion, harness, case):
     if case=='operational-leave-tx' and (len(closes)!=1 or closes[0].get('close_trigger')!='navigation' or
             closes[0].get('physical_release_sequence')!=0):
         raise ValueError('Graceful navigation omitted its independent finite capture boundary')
+    if case=='operational-key-retune':
+        cancellations=[row for row in rows if row.get('event')=='key-admission-cancelled' and row.get('operation')=='tuning-revision' and row.get('state') in (2,7)]
+        tx=[row for row in rows if row.get('kind')=='event' and row.get('event')=='state' and row.get('state')==3]
+        if (len(cancellations)!=1 or len(tx)!=1 or rows.index(cancellations[0])>=rows.index(tx[0]) or
+                cancellations[0]['ms']>=tx[0]['ms'] or harness.get('key_attempts')!=2 or harness.get('key_denials')!=1 or
+                harness.get('keys')!=1 or harness.get('physical_release_sequence')!=2 or
+                harness.get('physical_ptt_pressed') is not False or len(closes)!=1 or closes[0].get('close_trigger')!='ptt-release'):
+            raise ValueError('Retune key rejection did not cancel without RF then require a real release/new TX press')
+        early=[row for row in rows[:rows.index(tx[0])] if row.get('kind')=='sample']
+        if any(row.get('submitted_mic',0) or row.get('turns',0) or row.get('rf_tx',False) for row in early):
+            raise ValueError('Retune cancellation admitted RF or microphone speech before the next press')
     if case=='operational-timeout':
         on=[row for row in rows if row.get('kind')=='event' and row.get('event')=='state' and row.get('state')==3]
         fault_row=next((row for row in rows if row.get('event')=='first-fault' and row.get('status')==10 and row.get('operation')=='turn-deadline'),{})

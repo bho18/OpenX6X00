@@ -42,7 +42,7 @@ static atomic_uint swr_count,modem_on_writes,ptt_on_writes,pin_on_writes,all_wri
 static atomic_int stop_during_write=-1;
 static atomic_bool stop_during_modem_on;
 static atomic_bool release_during_modem_on;
-static atomic_bool resend_fail_once;
+static atomic_bool resend_fail_once,press_during_resolve,press_during_voice_begin;
 static atomic_uint resends;
 static int32_t cfg[CFG_COUNT];
 static pthread_t gui;
@@ -63,7 +63,7 @@ static bool freedv_busy(void){return false;}
 bool hw_tx_keyed_by_gui(void){return cached.route.modem || cached.route.ptt;}
 static bool ctl_freedv_acquire(void){return true;}
 static bool ctl_freedv_release(bool restored){return restored;}
-static bool fd_writer_voice_begin(void){if(!writer_allowed)return false;++voice_scope;return true;}
+static bool fd_writer_voice_begin(void){if(!writer_allowed)return false;++voice_scope;if(scheduler_on_gui_thread()&&atomic_exchange(&press_during_voice_begin,false))panel_pressed=true;return true;}
 static void fd_writer_voice_end(void){assert(voice_scope);--voice_scope;}
 void hw_poweroff(void){assert(voice_scope);++terminal_poweroffs;}
 void hw_bb_reset(void){assert(voice_scope);++terminal_resets;}
@@ -79,6 +79,7 @@ static void cfg_pwr_set(float watts){assert(scheduler_on_gui_thread());cfg[cfg_p
 static int cfg_mode_change_freq_step(bool up){return up?100:10;}
 bool cfg_voice_resolve(fd_local_operation op,int32_t value,fd_voice_tuning *out){
     *out=(fd_voice_tuning){cparam_i_get(cfg_fg_freq),(unsigned)cfg[cfg_band_current_vfo],op,value};
+    if(atomic_exchange(&press_during_resolve,false))panel_pressed=true;
     if(op==FD_LOCAL_FREQUENCY){out->frequency=value;return cfg_is_valid_hw_freq(value);}
     if(op==FD_LOCAL_VFO && value>=0 && value<=1){out->vfo=(unsigned)value;out->frequency=cfg[value?cfg_band_vfob_freq:cfg_band_vfoa_freq];return true;}
     return false;
@@ -130,6 +131,7 @@ static void ready(void){
 }
 static void claim(void){
     panel_pressed=false;panel_valid=true;writer_allowed=true;legal_frequency=true;
+    press_during_resolve=false;press_during_voice_begin=false;
     memset(cfg,0,sizeof(cfg));cfg[cfg_band_vfoa_freq]=cfg[cfg_band_vfob_freq]=7074000;cfg[cfg_pwr]=50;
     cfg[cfg_cur_filter_low]=300;cfg[cfg_cur_filter_high]=2700;cfg[cfg_volume]=10;
     cfg[cfg_band_vfoa_mode]=cfg[cfg_band_vfob_mode]=radio_mode_lsb;cfg[cfg_band_if_shift]=250;
@@ -155,6 +157,18 @@ static void release(bool terminal){
 int main(void){
     gui=pthread_self();radio_lock();assert(!radio_usb_claim());radio_unlock();
     claim();unsigned initial=modem_on_writes;
+    /* A PTT press during resolution or scope admission must leave the current
+     * profile, revision and hardware untouched; a later press is not a retune. */
+    for(unsigned phase=0;phase<2;++phase){
+        uint64_t before_revision=atomic_load(&usb_radio.requested_revision);unsigned before_writes=all_writes;
+        int32_t before_frequency=cparam_i_get(cfg_fg_freq);
+        if(!phase)press_during_resolve=true;else press_during_voice_begin=true;
+        assert(!radio_usb_request(FD_LOCAL_FREQUENCY,7120000));
+        assert(panel_pressed && !voice_scope && atomic_load(&usb_radio.requested_revision)==before_revision);
+        assert(all_writes==before_writes && cparam_i_get(cfg_fg_freq)==before_frequency);
+        pthread_mutex_lock(&usb_radio.queue_mutex);assert(!usb_radio.profile_pending);pthread_mutex_unlock(&usb_radio.queue_mutex);
+        panel_pressed=false;observed(false);
+    }
     panel_pressed=true;assert(!radio_usb_key(NULL,0));assert(modem_on_writes==initial);
     panel_pressed=false;clock_ms+=251;assert(!radio_usb_allow_tx(true));
     observed(true);assert(!radio_usb_allow_tx(true));observed(false);

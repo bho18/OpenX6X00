@@ -38,7 +38,7 @@ def observed_transport_library():
 
 COVERAGE = {
     'operational_startup':{'operational-ready','operational-held-ptt'},
-    'operational_retuning':{'operational-retune','operational-receive-only'},
+    'operational_retuning':{'operational-retune','operational-receive-only','operational-key-retune'},
     'operational_exit':{'operational-leave-tx','operational-abort','operational-device-loss','operational-timeout'},
     'audio_controls':{'audio-controls','audio-gain-turn'},
     'backend_profiles':{'backend-fixed-pipe','io-pause150','rx-pause150'},

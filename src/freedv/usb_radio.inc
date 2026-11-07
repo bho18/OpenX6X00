@@ -302,6 +302,11 @@ bool radio_usb_claim(void){
     if(!ok){atomic_store(&usb_radio.owned,false);ctl_freedv_release(true);close(keypad);usb_radio.keypad=-1;}
     return ok;
 }
+static bool usb_radio_request_rx(fd_usb_inputs *in){
+    return radio_usb_owned() && !atomic_load(&usb_radio.halted) && !atomic_load(&usb_radio.restoring) &&
+        radio_usb_observe(NULL,in) && in->valid && in->rf_valid && !in->rf_tx && !in->protection &&
+        !in->pressed && !atomic_load(&modem_on);
+}
 bool radio_usb_request(fd_local_operation op,int32_t value){
     if(!scheduler_on_gui_thread() || !radio_usb_owned() || atomic_load(&usb_radio.halted) || atomic_load(&usb_radio.restoring))return false;
     fd_usb_inputs in;if(!radio_usb_observe(NULL,&in) || !in.valid || !in.rf_valid || in.protection)return false;
@@ -310,11 +315,17 @@ bool radio_usb_request(fd_local_operation op,int32_t value){
     if(power && (value<1 || value>100))return false;
     fd_voice_tuning tuning;
     if(!power && !step && (!cfg_voice_resolve(op,value,&tuning) || cfg_transverter_shift_for(tuning.frequency)))return false;
+    if(!power && !step && !usb_radio_request_rx(&in))return false;
     if(!fd_writer_voice_begin())return false;
     uint64_t revision=atomic_load(&usb_radio.requested_revision);
     if(!power && !step){
-        atomic_store(&usb_radio.rf_allowed,false);
+        /* Resolution and scope admission may yield. Reject a newly busy radio
+         * before publishing a revision or mutating desired tuning. */
+        if(!usb_radio_request_rx(&in)){fd_writer_voice_end();return false;}
+        /* Publish cancellation identity before denying keys, so the audio
+         * coordinator can distinguish this retune from a control failure. */
         revision=atomic_fetch_add(&usb_radio.requested_revision,1)+1;
+        atomic_store(&usb_radio.rf_allowed,false);
     }
     bool ok=true;
     if(power){cfg_pwr_set(value/10.0f);atomic_store(&usb_radio.power,value);}

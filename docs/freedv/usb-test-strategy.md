@@ -24,10 +24,12 @@ The initial receipt is retained verbatim in the trace and immutable readiness
 sidecar, bound to the same session/build/source as terminal completion.
 
 The original **61 diagnostic controller cases** retain startup contract 3;
-eight operational cases add automatic readiness, held startup PTT, RX retuning,
+nine operational cases add automatic readiness, held startup PTT, RX retuning,
 receive-only admission, graceful navigation during TX, explicit abort, USB
 loss and a held 30-second TX timeout (including continued TX beyond the old
-20-second diagnostic timeout). They use the production controller, four actual Pulse streams and codec,
+20-second diagnostic timeout), plus a configuration revision changing at the
+queued key callback. The latter must cancel without RF or accepted speech,
+reacquire RX, consume a real release and require a fresh press for the next turn. They use the production controller, four actual Pulse streams and codec,
 with simulated radio control. Navigation closes a finite speech frontier while
 the actual PTT can remain held; it must not fabricate a release counter.
 Graceful navigation has done/fault0 and completion reason `navigation`;

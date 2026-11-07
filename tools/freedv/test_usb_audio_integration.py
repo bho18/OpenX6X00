@@ -53,7 +53,7 @@ CASES = (
     'backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait',
     'audio-controls','audio-gain-turn',
     'operational-ready','operational-held-ptt','operational-retune','operational-receive-only',
-    'operational-leave-tx','operational-abort','operational-device-loss','operational-timeout',
+    'operational-leave-tx','operational-abort','operational-device-loss','operational-timeout','operational-key-retune',
 )
 OPERATIONAL_CASES = frozenset(name for name in CASES if name.startswith('operational-'))
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
