@@ -7,9 +7,60 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+import subprocess
+import sys
 from unittest import mock
 
 import usb_host_resources as subject
+
+
+class CpuSchedulingTests(unittest.TestCase):
+    def test_quota_and_affinity_choose_a_deterministic_bounded_reserve(self):
+        for affinity,quota,expected in (([0,1,2,3,4],400000,[0,1,2]),
+                ([2,4],200000,[2]),([3],100000,[3]),([0,1,2,3,4],290000,[0,1]),
+                ([1,3],400000,[1]),([0,2,4,6],None,[0,2,4])):
+            with self.subTest(affinity=affinity,quota=quota):
+                policy=subject.cpu_scheduling_policy(affinity,quota,100000)
+                self.assertEqual(policy['selected_affinity'],expected)
+                self.assertEqual(set(policy['thread_environment'].values()),{'1'})
+                subject.validate_cpu_scheduling_configuration(policy)
+
+    def test_unknown_or_malformed_policy_is_not_an_unrestricted_fallback(self):
+        for affinity,quota,period in (([],400000,100000),([1,0],400000,100000),
+                ([0,0],400000,100000),([False],400000,100000),([0],0,100000),([0],400000,0)):
+            with self.subTest(affinity=affinity,quota=quota,period=period),self.assertRaises(ValueError):
+                subject.cpu_scheduling_policy(affinity,quota,period)
+        policy=subject.cpu_scheduling_policy([0,1,2,3,4],400000,100000)
+        policy['selected_affinity']=[0,1,2,3,4]
+        with self.assertRaises(ValueError):subject.validate_cpu_scheduling_configuration(policy)
+
+    def test_changed_inherited_affinity_blocks_before_applying(self):
+        policy=subject.cpu_scheduling_policy([0,1,2,3,4],400000,100000)
+        with mock.patch.object(subject.os,'sched_getaffinity',return_value={0,1}), \
+                mock.patch.object(subject.os,'sched_setaffinity') as apply:
+            with self.assertRaises(ValueError):subject.apply_cpu_scheduling(policy)
+            apply.assert_not_called()
+
+    def test_failed_affinity_readback_is_not_a_successful_application(self):
+        policy=subject.cpu_scheduling_policy([0,1,2,3,4],400000,100000)
+        with mock.patch.dict(os.environ), \
+                mock.patch.object(subject.os,'sched_getaffinity',return_value={0,1,2,3,4}), \
+                mock.patch.object(subject.os,'sched_setaffinity'):
+            with self.assertRaises(ValueError):subject.apply_cpu_scheduling(policy)
+
+    def test_actual_child_tree_inherits_limits_without_changing_test_parent(self):
+        before=sorted(os.sched_getaffinity(0))
+        code=('import json,os,sys,subprocess;sys.path.insert(0,'+repr(str(Path(subject.__file__).parent))+');'
+              'import usb_host_resources as r;p=r.cpu_scheduling_configuration();a=r.apply_cpu_scheduling(p);'
+              'c=json.loads(subprocess.check_output([sys.executable,"-c",'
+              '"import os,json;print(json.dumps(dict(affinity=sorted(os.sched_getaffinity(0)),OMP=os.environ.get(\\\"OMP_NUM_THREADS\\\"))))"],text=True));'
+              'print(json.dumps(dict(policy=p,receipt=a,child=c)))')
+        environment=dict(os.environ,OMP_NUM_THREADS='12',OPENBLAS_NUM_THREADS='12')
+        report=json.loads(subprocess.check_output([sys.executable,'-c',code],text=True,env=environment,timeout=10))
+        self.assertEqual(report['receipt']['status'],'PASS')
+        self.assertEqual(report['child']['affinity'],report['policy']['selected_affinity'])
+        self.assertEqual(report['child']['OMP'],'1')
+        self.assertEqual(sorted(os.sched_getaffinity(0)),before)
 
 
 class ResourceContractTests(unittest.TestCase):
@@ -98,6 +149,20 @@ class ResourceContractTests(unittest.TestCase):
         end=subject.observe_resource_end(start,cgroup_root=self.group)
         self.assertEqual(end['status'],'BLOCKED')
         self.assertTrue(any('limits changed' in reason for reason in end['reasons']))
+
+    def test_applied_cpu_policy_is_observed_at_start_and_end(self):
+        policy=subject.cpu_scheduling_policy([0,1,2,3,4],400000,100000)
+        with mock.patch.object(subject.os,'sched_getaffinity',return_value={0,1,2}), \
+                mock.patch.dict(os.environ,policy['thread_environment']):
+            start=self.preflight(cpu_scheduling=policy)
+            self.assertEqual(start['status'],'PASS')
+            self.assertEqual(start['configuration']['cpu_scheduling'],policy)
+            self.assertEqual(start['cpu_scheduling']['status'],'PASS')
+            self.assertEqual(subject.observe_resource_end(start,cgroup_root=self.group)['status'],'PASS')
+            os.environ['OMP_NUM_THREADS']='12'
+            end=subject.observe_resource_end(start,cgroup_root=self.group)
+            self.assertEqual(end['status'],'BLOCKED')
+            self.assertEqual(end['cpu_scheduling']['status'],'BLOCKED')
 
 
 class ScopedCacheHintTests(unittest.TestCase):

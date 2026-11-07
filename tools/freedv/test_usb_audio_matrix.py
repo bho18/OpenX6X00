@@ -22,7 +22,8 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEAT
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
                                host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run, USB_OUTPUT_CONTRACT_VERSION, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run, validate_operational_run, validate_capture_open_contract_run)
 from usb_test_support import run_bounded
-from usb_host_resources import run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES
+from usb_host_resources import (run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES,
+                                MIN_END_HEADROOM_BYTES, apply_cpu_scheduling)
 
 
 def observed_transport_library():
@@ -157,6 +158,9 @@ def main():
     result_code = 1
     old_handler = signal.signal(signal.SIGTERM, _interrupted)
     try:
+        # Apply before loading any codec/analysis libraries or starting private
+        # Pulse/fixture/controller children; affinity and thread limits inherit.
+        record['cpu_scheduling_application']=apply_cpu_scheduling(resource_config['cpu_scheduling'])
         revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repository, text=True, timeout=10).strip()
         _, tree = source_snapshot()
         if (args.source_commit and args.source_commit != revision) or (args.source_tree_sha256 and args.source_tree_sha256 != tree):
@@ -197,6 +201,7 @@ def main():
         resource_preflight=run_resource_preflight(profile=resource_config['profile'],
             reclaim_roots=resource_config['reclaim_roots'],min_headroom_bytes=resource_config['min_headroom_bytes'],
             min_end_headroom_bytes=resource_config['min_end_headroom_bytes'],output=resource_path,
+            cpu_scheduling=resource_config['cpu_scheduling'],
             **{key:resource_config[key] for key in ('max_seconds','max_files','max_advised_bytes','min_file_bytes','min_file_age_seconds')})
         record['host_resources']={'schema':'x6200.usb.host-resource-contract.v1','status':'RUNNING',
             'configuration':resource_config,'preflight':resource_preflight,'preflight_report_path':str(resource_path),

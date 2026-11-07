@@ -377,6 +377,28 @@ pressured environments cannot qualify the image. This is a host test profile,
 not an X6200 RAM requirement or a real-time scheduling guarantee. It cannot
 override an actual controller failure. CI regression remains nonpromotable.
 
+Before loading analysis libraries or spawning private PulseAudio and codec
+processes, the matrix limits its process tree to the lowest numbered CPUs in
+three quarters of the smaller of its inherited affinity and cgroup CPU quota,
+rounded down with a minimum of one CPU. A four-CPU quota with five allowed CPUs
+therefore selects three; a two-CPU quota selects one. Numerical library thread
+limits are set to one. The original quota, period, inherited and selected CPU
+IDs and thread environment are bound into build and campaign identities;
+preflight and completion verify the applied policy. Builders are not capped,
+and children inherit the single application rather than repeatedly shrinking
+their affinity. CPU throttling counters remain diagnostic.
+
+This host-only mitigation follows the retained source-64cc `rx-pause150@2`
+failure: an uninjected roughly 400 ms outage paused the controller, Pulse I/O
+and independent monitor together, followed by 98 ms of inserted headset
+silence. Its intended 151 ms injection had already completed without gaps.
+The same campaign recorded 367 ms of cgroup throttling, which is corroborating
+evidence rather than proof of the scheduler's exact cause. Affinity cannot
+control other cgroup workloads or guarantee latency; a quota of one CPU or
+less cannot retain the quarter reserve. The failed attempt remains failed.
+Only a new source-bound complete campaign can qualify this mitigation, with
+the same 150 ms service budget and waveform checks.
+
 Declare profiles, cases, repetitions, fixtures and identities before a campaign
 starts. Store each attempt and its evidence immutably. The matrix records
 `PASS`, `FAIL`, `TIMEOUT` or `INTERRUPTED`; a debug subset never qualifies a

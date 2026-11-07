@@ -144,10 +144,17 @@ def continuous_fixture(path, pcm, rate, channels, width, seconds):
     require(pcm and len(pcm) % (channels * width) == 0, 'Fixture PCM is empty or misaligned')
     target = math.ceil(seconds * rate) * channels * width
     with path.open('wb') as output:
-        while target:
-            chunk = pcm[:target]
-            output.write(chunk)
-            target -= len(chunk)
+        if target >= 0 and not any(pcm):
+            # Repeating all-zero PCM is exactly a sparse zero extension. Keep
+            # finite input bytes and EOF unchanged without allocating every
+            # long RX-noise fixture. Nonzero PCM must still repeat normally.
+            output.write(pcm[:target])
+            output.truncate(target)
+        else:
+            while target:
+                chunk = pcm[:target]
+                output.write(chunk)
+                target -= len(chunk)
     return ['--raw', '--rate=' + str(rate), '--format=' + {1: 'u8', 2: 's16le', 3: 's24le', 4: 's32le'}[width],
             '--channels=' + str(channels), str(path)]
 

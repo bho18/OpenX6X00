@@ -18,6 +18,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
                                host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol, validate_capture_pipeline_tail_run, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run)
 from usb_test_campaign import validate_headset_volume_flags, operational_proof, validate_operational_run, validate_capture_open_contract_run
+from usb_host_resources import CPU_SCHEDULING_SCHEMA
 
 
 SYNTHETIC_TRANSPORT_LIBRARY=b'synthetic-libsamplerate-gate-fixture'
@@ -27,6 +28,9 @@ SYNTHETIC_TRANSPORT_SHA=hashlib.sha256(SYNTHETIC_TRANSPORT_LIBRARY).hexdigest()
 def resource_fixture(root,identity,configuration=None):
     root=Path(root);root.mkdir(parents=True,exist_ok=True)
     config=configuration or identity.get('host_resource_configuration') or host_resource_configuration()
+    cpu_policy=config['cpu_scheduling']
+    scheduling={'schema':CPU_SCHEDULING_SCHEMA,'status':'PASS','effective_affinity':cpu_policy['selected_affinity'],
+                'thread_environment':cpu_policy['thread_environment'],'reasons':[]}
     def snapshot(current):
         limit=16*1024**3;head=limit-current
         return {'status':'KNOWN_BOUNDED','errors':[],'cgroup_path':'/sys/fs/cgroup/unit-fixture',
@@ -34,7 +38,9 @@ def resource_fixture(root,identity,configuration=None):
                 'effective_limit_bytes':limit,'headroom_bytes':head,
                 'events':{'high':3,'max':7,'oom':0,'oom_kill':0},
                 'stat':{'anon':50*1024**2,'file':5*1024**3,'shmem':0,'pgscan_direct':11,'pgsteal_direct':9}},
-            'cpu':{'quota_us':400000,'period_us':100000,'quota_cores':4.,'affinity_cores':4,
+            'cpu':{'quota_us':cpu_policy['quota_us'],'period_us':cpu_policy['period_us'],
+                   'quota_cores':cpu_policy['quota_us']/cpu_policy['period_us'] if cpu_policy['quota_us'] else None,
+                   'affinity_cores':len(cpu_policy['selected_affinity']),'affinity_cpus':cpu_policy['selected_affinity'],
                    'stat':{'usage_usec':100,'nr_throttled':2,'throttled_usec':10}}}
     qualified=config['profile']=='qualification'
     pre={'schema':'x6200.usb.host-resources.v1','phase':'preflight','profile':config['profile'],
@@ -42,6 +48,7 @@ def resource_fixture(root,identity,configuration=None):
          'promotion_eligible':qualified,'min_headroom_bytes':config['min_headroom_bytes'],
          'min_end_headroom_bytes':config['min_end_headroom_bytes'],'pressure_counter_policy':list(PRESSURE_COUNTERS),
          'before':snapshot(10*1024**3),'after':snapshot(6*1024**3),'headroom_bytes':10*1024**3,
+         'cpu_scheduling':scheduling,
          'reclaim':{'status':'COMPLETE' if config['reclaim_roots'] else 'NOT_REQUESTED',
                     'roots':config['reclaim_roots'],'rejected_roots':[],'timed_out':False,'contents_modified':False,
                     'worker_still_running':False},'reasons':[]}
@@ -49,7 +56,7 @@ def resource_fixture(root,identity,configuration=None):
          'status':'PASS' if qualified else 'RECORDED_NONPROMOTABLE','assessment':'PASS','promotion_eligible':qualified,
          'min_headroom_bytes':config['min_end_headroom_bytes'],'before':pre['after'],'after':snapshot(7*1024**3),
          'headroom_bytes':9*1024**3,'counter_deltas':{key:0 for key in PRESSURE_COUNTERS},
-         'new_memory_pressure':{},'reasons':[],'cpu_throttling_is_diagnostic_only':True}
+         'new_memory_pressure':{},'reasons':[],'cpu_throttling_is_diagnostic_only':True,'cpu_scheduling':scheduling}
     pp=root/'host-resource-preflight.json';ep=root/'host-resource-end.json';atomic_json(pp,pre);atomic_json(ep,end)
     return {'schema':'x6200.usb.host-resource-contract.v1','status':'PASS' if qualified else 'RECORDED_NONPROMOTABLE',
             'configuration':config,'preflight':pre,'end':end,'preflight_report_path':str(pp),'preflight_report_sha256':sha(pp),
@@ -1170,6 +1177,7 @@ class MatrixSupervisionTests(unittest.TestCase):
         def stable_sha(path):
             return '2' * 64 if repository in Path(path).resolve().parents else real_sha(path)
         with mock.patch.object(sys, 'argv', argv), \
+                mock.patch.object(matrix,'apply_cpu_scheduling',return_value={'status':'PASS'}), \
                 mock.patch.object(matrix, 'CASES', ('normal', 'other') if subset else ('normal',)), \
                 mock.patch.object(matrix, 'SPEECH_CASES', {'normal'} if self.aggregate_only else set()), \
                 mock.patch.object(matrix, 'run_bounded', self.supervised), \
@@ -1769,6 +1777,26 @@ class HostResourceGateTests(unittest.TestCase):
         evidence=self.fixture();cpu=evidence['host_resources']['end']['after']['cpu']['stat']
         cpu.update(nr_throttled=200,throttled_usec=999999)
         validate_host_resources(evidence,verify_files=False)
+
+    def test_missing_or_altered_cpu_policy_cannot_promote(self):
+        for phase in ('preflight','end'):
+            for mutation in ('missing','affinity','environment','quota'):
+                evidence=self.fixture();report=evidence['host_resources'][phase]
+                if mutation=='missing':report.pop('cpu_scheduling')
+                elif mutation=='affinity':report['after']['cpu']['affinity_cpus']=[99]
+                elif mutation=='quota':report['after']['cpu']['period_us']+=1
+                else:
+                    report['cpu_scheduling']=copy.deepcopy(report['cpu_scheduling'])
+                    report['cpu_scheduling']['thread_environment']['OMP_NUM_THREADS']='8'
+                with self.subTest(phase=phase,mutation=mutation),self.assertRaises(ValueError):
+                    validate_host_resources(evidence,verify_files=False)
+
+    def test_cpu_selection_formula_cannot_be_weakened_in_all_matching_records(self):
+        evidence=self.fixture()
+        # Shared config mutation models resealed, mutually matching metadata;
+        # the fixed policy still rejects selecting the complete inherited set.
+        evidence['plan']['host_resource_configuration']['cpu_scheduling']['selected_affinity']=[99]
+        with self.assertRaises(ValueError):validate_host_resources(evidence,verify_files=False)
 
     def test_preflight_alone_cannot_promote(self):
         evidence=self.fixture();del evidence['host_resources']['end']

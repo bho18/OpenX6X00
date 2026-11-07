@@ -1,8 +1,13 @@
 # Native FreeDV / RADE V1: current operating and qualification guide
 
-**Native release is blocked. No qualified production profile is registered and
-FreeDV is not exposed as a finished APP → Modes entry.** Do not turn on native
-voice through an unreviewed profile or interpret a host test as radio acceptance.
+For the current **USB headset FreeDV Beta**, use the
+[USB operating guide](usb-rf-end-to-end.md). This document covers the separate
+native radio-microphone/speaker path and its remaining qualification work.
+
+**Native release is blocked. No qualified native production profile is
+registered and the radio-microphone/speaker workflow is not exposed as a
+finished APP → Modes entry.** Do not turn on native voice through an unreviewed
+profile or interpret a host test as radio acceptance.
 
 The current spare-card round is receive-only endpoint/PTT availability mapping
 under [the candidate instructions](candidate-test.md). Legacy recorder/gain/MODEM

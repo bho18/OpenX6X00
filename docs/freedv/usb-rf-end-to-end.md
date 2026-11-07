@@ -22,8 +22,8 @@ does not ask you to repeat those component tests.
    Power and pair it, then start at a comfortable low volume. Built-in mic,
    hand mic and radio speaker are unsupported for FreeDV audio in this build.
    Hand-mic PTT and headset call buttons do not start a FreeDV transmission.
-3. Open **Apps → Digital modes → FreeDV**. Read the information box and choose
-   **Continue**. **Cancel** leaves normal operation in place. Select **Don't
+3. Open **APP → Modes → FreeDV**. Read the information box and choose
+   **Continue** (**F5**). **Cancel** (**F4**) leaves normal operation in place. Select **Don't
    show this again** only if desired; Continue saves that preference, including
    across restarts. The Mode menu's Help button can show the instructions again.
 4. The normal waterfall and tuning controls remain visible. The radio applies
@@ -44,11 +44,12 @@ mic/speaker operation are outside this Beta.
 | Control | Operation |
 | --- | --- |
 | **Mode** | RADE V1, TX timeout and Help. Other modes appear when supported. |
-| **Mic** | Saved speech gain from −12 to +24 dB and live input/encoder level meters. |
+| **Mic Gain** | Saved speech gain from −12 to +24 dB and live input/encoder level meters. |
 | **Audio** | Select the USB device that provides both capture and playback. |
 | **Power** | The radio's usual power setting and knob-binding behavior, using the shared 0.1–10 W control. |
-| **Exit** | Gracefully close FreeDV and restore normal operation. A second distinct press while leaving is **Stop now**. |
-| **VOL** | Adjust selected USB headphone/speaker volume when its normal Volume function is selected, including in popups. Selecting Power gives the normal power-knob behavior. |
+| **F5** | **Close** returns from a settings popup. On the normal screen, **Exit** gracefully closes FreeDV and restores normal operation; a second distinct press while leaving is **Stop now**. |
+| **VOL** | On the normal screen, Volume adjusts the USB headset and Power retains the usual power-knob behavior. In settings popups, VOL always adjusts USB listening volume. |
+| **MFK** | In a popup, focus a control, press to edit or select it, then turn to change its value. Use **Close/F5** to return to the normal screen. |
 | **Tuning** | Tune normally in RX. TX admission pauses while the latest frequency/profile is applied and fresh RX is reacquired. |
 
 If existing settings are retained, the saved **+16 dB** gain migrates for the
@@ -118,4 +119,4 @@ For contract 4, expect **startup: PASS**, **qualification: NOT_REQUESTED**,
 A fault, missing readiness, incomplete terminal receipt or mismatched build is
 BLOCKED. A decoded file still needs listening review. Detailed test evidence
 and the distinction between software gates and radio observations are in
-[the test strategy](usb-test-strategy.md).
+[the test strategy](https://github.com/bho18/OpenX6X00/blob/freedv-operational-beta-20261106.1/docs/freedv/usb-test-strategy.md).

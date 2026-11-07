@@ -13,7 +13,9 @@ import re
 from pathlib import Path
 import time
 import uuid
-from usb_host_resources import PRESSURE_COUNTERS, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES
+from usb_host_resources import (PRESSURE_COUNTERS, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES,
+                                cpu_scheduling_configuration, validate_cpu_scheduling_configuration,
+                                CPU_SCHEDULING_SCHEMA)
 
 MATRIX_SCHEMA = 'x6200.usb.integration.matrix.v3'
 CAMPAIGN_SCHEMA = 'x6200.usb.campaign.v1'
@@ -29,6 +31,7 @@ def host_resource_configuration(profile='qualification', reclaim_roots=(), min_s
             'min_headroom_bytes':min_start,'min_end_headroom_bytes':min_end,'max_seconds':20,
             'max_files':200000,'max_advised_bytes':64*1024**3,'min_file_bytes':1024**2,
             'min_file_age_seconds':60,'pressure_counter_policy':list(PRESSURE_COUNTERS),
+            'cpu_scheduling':cpu_scheduling_configuration(),
             'method':'explicit_readonly_regular_file_DONTNEED'}
 
 
@@ -1491,6 +1494,15 @@ def validate_host_resources(matrix, verify_files=True, require_end=True):
             config.get('pressure_counter_policy')!=list(PRESSURE_COUNTERS) or
             any(host.get(key)!=identity.get(key) for key in ('source_commit','source_tree_sha256','build_id','test_binary_sha256'))):
         raise ValueError('Source-bound host resource configuration or fixed qualification thresholds are missing')
+    cpu_policy=validate_cpu_scheduling_configuration(config.get('cpu_scheduling'))
+    def scheduling(receipt,snapshot):
+        cpu=snapshot.get('cpu',{})
+        expected={'schema':CPU_SCHEDULING_SCHEMA,'status':'PASS','effective_affinity':cpu_policy['selected_affinity'],
+                  'thread_environment':cpu_policy['thread_environment'],'reasons':[]}
+        if (receipt!=expected or cpu.get('affinity_cpus')!=cpu_policy['selected_affinity'] or
+                cpu.get('affinity_cores')!=len(cpu_policy['selected_affinity']) or
+                any(cpu.get(key)!=cpu_policy[key] for key in ('quota_us','period_us'))):
+            raise ValueError('Observed host CPU scheduling does not match the source-bound process-tree policy')
     pre=host.get('preflight',{})
     if (pre.get('schema')!='x6200.usb.host-resources.v1' or pre.get('phase')!='preflight' or
             pre.get('profile')!='qualification' or pre.get('status')!='PASS' or pre.get('assessment')!='PASS' or
@@ -1499,6 +1511,8 @@ def validate_host_resources(matrix, verify_files=True, require_end=True):
         raise ValueError('Host resource preflight did not admit the qualification campaign')
     _known_host_snapshot(pre.get('before',{}),0)
     baseline=_known_host_snapshot(pre.get('after',{}),config['min_headroom_bytes'])
+    scheduling(pre.get('cpu_scheduling'),pre['before'])
+    scheduling(pre.get('cpu_scheduling'),baseline)
     reclaim=pre.get('reclaim',{})
     if (reclaim.get('status') in ('BLOCKED','ERROR') or reclaim.get('timed_out') is not False or
             reclaim.get('contents_modified') is not False or reclaim.get('worker_still_running',False) is not False or
@@ -1517,6 +1531,7 @@ def validate_host_resources(matrix, verify_files=True, require_end=True):
             end.get('new_memory_pressure') or end.get('cpu_throttling_is_diagnostic_only') is not True):
         raise ValueError('Host resource end observation is missing or records pressure during qualification')
     after=_known_host_snapshot(end.get('after',{}),config['min_end_headroom_bytes'])
+    scheduling(end.get('cpu_scheduling'),after)
     if (after.get('cgroup_path')!=baseline.get('cgroup_path') or end.get('headroom_bytes')!=after['headroom_bytes'] or
             any(baseline[component].get(key)!=after[component].get(key) for component,keys in
                 (('memory',('max_bytes','high_bytes','effective_limit_bytes')),('cpu',('quota_us','period_us'))) for key in keys)):

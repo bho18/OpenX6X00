@@ -23,6 +23,72 @@ MIN_END_HEADROOM_BYTES = GIB
 PRESSURE_COUNTERS = ('memory.events.high', 'memory.events.max', 'memory.events.oom',
                      'memory.events.oom_kill', 'memory.stat.pgscan_direct', 'memory.stat.pgsteal_direct')
 FORBIDDEN_ROOTS = {Path(p) for p in ('/', '/workspace', '/tmp', '/home', '/var', '/usr', '/etc', '/proc', '/sys', '/dev')}
+CPU_SCHEDULING_SCHEMA = 'x6200.usb.host-cpu-scheduling.v1'
+NUMERICAL_THREAD_ENVIRONMENT = {name: '1' for name in (
+    'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+    'NUMEXPR_NUM_THREADS', 'BLIS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS')}
+
+
+def cpu_scheduling_policy(affinity, quota_us, period_us):
+    """Cap this test tree at three quarters of observed CPU capacity, min one.
+
+    This limits this private test process tree, not the radio or the cgroup.
+    It cannot prevent unrelated workloads or promise a scheduler deadline.
+    """
+    if not isinstance(affinity, (list, tuple)):
+        raise ValueError('CPU scheduling affinity is not a list')
+    affinity = list(affinity)
+    if (not affinity or any(type(cpu) is not int or cpu < 0 for cpu in affinity) or
+            affinity != sorted(set(affinity)) or type(period_us) is not int or period_us <= 0 or
+            (quota_us is not None and (type(quota_us) is not int or quota_us <= 0))):
+        raise ValueError('CPU scheduling requires a known quota/period and nonempty sorted affinity')
+    count = max(1, min(3 * len(affinity) // 4,
+                       3 * quota_us // (4 * period_us) if quota_us is not None else len(affinity)))
+    return {'schema': CPU_SCHEDULING_SCHEMA, 'method': 'inherited_affinity_three_quarters_cpu_quota',
+            'quota_us': quota_us, 'period_us': period_us, 'inherited_affinity': affinity,
+            'selected_affinity': affinity[:count], 'thread_environment': dict(NUMERICAL_THREAD_ENVIRONMENT)}
+
+
+def cpu_scheduling_configuration(cgroup_root=None):
+    if not hasattr(os, 'sched_getaffinity') or not hasattr(os, 'sched_setaffinity'):
+        raise ValueError('Linux CPU affinity control is required for the private audio campaign')
+    quota, period = (_cgroup_directory(cgroup_root) / 'cpu.max').read_text().split()
+    return cpu_scheduling_policy(sorted(os.sched_getaffinity(0)),
+                                 None if quota == 'max' else _integer(quota), _integer(period))
+
+
+def validate_cpu_scheduling_configuration(configuration):
+    if (not isinstance(configuration, dict) or type(configuration.get('selected_affinity')) is not list or
+            any(type(cpu) is not int for cpu in configuration['selected_affinity']) or configuration != cpu_scheduling_policy(
+            configuration.get('inherited_affinity', []), configuration.get('quota_us'), configuration.get('period_us'))):
+        raise ValueError('Host CPU scheduling policy differs from the fixed qualification policy')
+    return configuration
+
+
+def observe_cpu_scheduling(configuration):
+    validate_cpu_scheduling_configuration(configuration)
+    effective = sorted(os.sched_getaffinity(0))
+    environment = {name: os.environ.get(name) for name in NUMERICAL_THREAD_ENVIRONMENT}
+    reasons = []
+    if effective != configuration['selected_affinity']:
+        reasons.append('Effective CPU affinity differs from the declared test process-tree limit')
+    if environment != configuration['thread_environment']:
+        reasons.append('Numerical library thread environment differs from the declared single-thread limits')
+    return {'schema': CPU_SCHEDULING_SCHEMA, 'status': 'BLOCKED' if reasons else 'PASS',
+            'effective_affinity': effective, 'thread_environment': environment, 'reasons': reasons}
+
+
+def apply_cpu_scheduling(configuration):
+    """Apply once before loading codec/analysis libraries or starting children."""
+    validate_cpu_scheduling_configuration(configuration)
+    if sorted(os.sched_getaffinity(0)) != configuration['inherited_affinity']:
+        raise ValueError('Inherited CPU affinity changed before the campaign scheduling policy was applied')
+    os.environ.update(configuration['thread_environment'])
+    os.sched_setaffinity(0, configuration['selected_affinity'])
+    receipt = observe_cpu_scheduling(configuration)
+    if receipt['status'] != 'PASS':
+        raise ValueError('; '.join(receipt['reasons']))
+    return receipt
 
 
 def _save(path, value):
@@ -107,6 +173,7 @@ def resource_snapshot(cgroup_root=None):
         result['cpu'] = {'quota_us': quota, 'period_us': period,
                          'quota_cores': quota / period if quota is not None else None,
                          'affinity_cores': len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else None,
+                         'affinity_cpus': sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else None,
                          'stat': cpu_stat}
         result['headroom_bytes'] = headroom
         if limits['max'] is None:
@@ -331,7 +398,7 @@ def _assessment(snapshot, threshold):
 def run_resource_preflight(profile='qualification', reclaim_roots=(), min_headroom_bytes=MIN_START_HEADROOM_BYTES,
                            min_end_headroom_bytes=MIN_END_HEADROOM_BYTES, output=None, max_seconds=20,
                            max_files=200000, max_advised_bytes=64 * GIB, min_file_bytes=1024 ** 2,
-                           min_file_age_seconds=60, cgroup_root=None):
+                           min_file_age_seconds=60, cgroup_root=None, cpu_scheduling=None):
     before = resource_snapshot(cgroup_root)
     reclamation = reclaim_task_cache(reclaim_roots, max_seconds, max_files, max_advised_bytes,
                                      min_file_bytes, min_file_age_seconds)
@@ -351,6 +418,14 @@ def run_resource_preflight(profile='qualification', reclaim_roots=(), min_headro
                      'min_file_bytes':min_file_bytes, 'min_file_age_seconds':min_file_age_seconds,
                      'pressure_counter_policy':list(PRESSURE_COUNTERS),
                      'method':'explicit_readonly_regular_file_DONTNEED'}
+    scheduling = None
+    if cpu_scheduling is not None:
+        configuration['cpu_scheduling'] = cpu_scheduling
+        scheduling = observe_cpu_scheduling(cpu_scheduling)
+        reasons.extend(scheduling['reasons'])
+        if any(after.get('cpu', {}).get(key) != cpu_scheduling[key] for key in ('quota_us', 'period_us')):
+            reasons.append('CPU quota changed after the campaign scheduling policy was selected')
+        assessment = 'BLOCKED' if reasons else 'PASS'
     report = {'schema': SCHEMA, 'phase': 'preflight', 'profile': profile, 'configuration':configuration,
               'status': assessment if profile == 'qualification' else 'RECORDED_NONPROMOTABLE',
               'assessment': assessment, 'promotion_eligible': profile == 'qualification' and assessment == 'PASS',
@@ -361,6 +436,8 @@ def run_resource_preflight(profile='qualification', reclaim_roots=(), min_headro
               'preparation_counter_deltas': deltas, 'preparation_counter_errors': counter_errors,
               'observed_memory_reduction_bytes': max(0, before.get('memory', {}).get('current_bytes', 0) - after.get('memory', {}).get('current_bytes', 0)),
               'observed_clean_file_cache_reduction_bytes': max(0, before.get('memory', {}).get('clean_file_cache_estimate_bytes', 0) - after.get('memory', {}).get('clean_file_cache_estimate_bytes', 0))}
+    if scheduling is not None:
+        report['cpu_scheduling'] = scheduling
     _save(output, report)
     return report
 
@@ -389,6 +466,11 @@ def observe_resource_end(preflight, profile=None, output=None, cgroup_root=None)
     pressure = {name: deltas.get(name) for name in PRESSURE_COUNTERS if deltas.get(name, 0) > 0}
     if pressure:
         reasons.append('New cgroup memory pressure occurred during the campaign')
+    scheduling = None
+    cpu_policy = preflight.get('configuration', {}).get('cpu_scheduling')
+    if cpu_policy is not None:
+        scheduling = observe_cpu_scheduling(cpu_policy)
+        reasons.extend(scheduling['reasons'])
     assessment = 'BLOCKED' if reasons else 'PASS'
     report = {'schema': SCHEMA, 'phase': 'end', 'profile': profile, 'configuration':preflight.get('configuration',{}),
               'status': assessment if profile == 'qualification' else 'RECORDED_NONPROMOTABLE',
@@ -398,6 +480,8 @@ def observe_resource_end(preflight, profile=None, output=None, cgroup_root=None)
               'headroom_bytes': after.get('headroom_bytes'), 'counter_deltas': deltas,
               'new_memory_pressure': pressure, 'reasons': reasons,
               'cpu_throttling_is_diagnostic_only': True}
+    if scheduling is not None:
+        report['cpu_scheduling'] = scheduling
     _save(output, report)
     return report
 

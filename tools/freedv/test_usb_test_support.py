@@ -26,6 +26,63 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require, run_b
 from usb_transport_oracle import production_transport_reference,matched_decoder_control,transport_chunks_for_turn
 
 
+class ContinuousFixtureStorageTests(unittest.TestCase):
+    """Sparse zero fixtures must preserve every byte and the original EOF."""
+    def fixture(self,root,pcm,channels,width,frames):
+        from test_usb_audio_integration import continuous_fixture
+        path=Path(root)/'continuous.raw'
+        arguments=continuous_fixture(path,pcm,8000,channels,width,frames/8000)
+        self.assertEqual(arguments,['--raw','--rate=8000','--format='+{1:'u8',2:'s16le',3:'s24le',4:'s32le'}[width],
+                                    '--channels='+str(channels),str(path)])
+        return path
+
+    def test_zero_extension_and_cropping_all_supported_frame_formats(self):
+        for channels in (1,2):
+            for width in (1,2,3,4):
+                for frames in (0,3,19):
+                    with self.subTest(channels=channels,width=width,frames=frames),tempfile.TemporaryDirectory() as root:
+                        # Replace stale nonzero data too: no old tail may leak.
+                        (Path(root)/'continuous.raw').write_bytes(b'old data'*100)
+                        path=self.fixture(root,b'\0'*(7*channels*width),channels,width,frames)
+                        expected=b'\0'*(frames*channels*width)
+                        self.assertEqual(path.stat().st_size,len(expected))
+                        with path.open('rb') as stream:
+                            self.assertEqual(stream.read(len(expected)+1),expected)
+                            self.assertEqual(stream.read(1),b'')
+
+    def test_nonzero_payload_still_repeats_and_crops_exactly(self):
+        for channels in (1,2):
+            for width in (1,2,3,4):
+                for frames in (0,3,19):
+                    with self.subTest(channels=channels,width=width,frames=frames),tempfile.TemporaryDirectory() as root:
+                        pcm=bytes(range(1,7*channels*width+1))
+                        path=self.fixture(root,pcm,channels,width,frames)
+                        size=frames*channels*width
+                        expected=(pcm*(size//len(pcm)+1))[:size]
+                        self.assertEqual(path.read_bytes(),expected)
+                        self.assertEqual(path.stat().st_size,size)
+
+    def test_long_zero_fixture_does_not_allocate_the_horizon(self):
+        with tempfile.TemporaryDirectory() as root:
+            frames=2*1024*1024
+            path=self.fixture(root,b'\0'*64,2,2,frames)
+            self.assertEqual(path.stat().st_size,frames*4)
+            self.assertLess(path.stat().st_blocks*512,128*1024)
+            with path.open('rb') as stream:
+                for offset in (0,4096,frames*4-4096):
+                    stream.seek(offset);self.assertEqual(stream.read(4096),b'\0'*4096)
+                self.assertEqual(stream.read(1),b'')
+
+    def test_empty_and_misaligned_input_rejection_is_unchanged(self):
+        from test_usb_audio_integration import continuous_fixture
+        for pcm in (b'',b'\0'*5,b'\x01'*5):
+            with self.subTest(pcm=pcm),tempfile.TemporaryDirectory() as root:
+                path=Path(root)/'invalid.raw'
+                with self.assertRaisesRegex(ValueError,'empty or misaligned'):
+                    continuous_fixture(path,pcm,8000,2,3,1)
+                self.assertFalse(path.exists())
+
+
 class SupervisorTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
