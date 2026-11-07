@@ -228,8 +228,9 @@ static void close_timing_done(pa_stream *stream,int success,void *unused){
     fprintf(stderr,"INJECT MIC close-timing mode=%s real_ack_ms=%llu success=%d withheld=%u phase=drain\n",mode,now_ms(),success,!strcmp(mode,"missing"));
     if(!strcmp(mode,"missing"))return;
     if(!strcmp(mode,"stop")){
+        unsigned long long stop_ms=now_ms();
         if(mic_close_stop_callback)mic_close_stop_callback(mic_close_stop_userdata);
-        fprintf(stderr,"INJECT MIC close-timing stop-before-forward stop_ms=%llu callback_invoked=%u phase=drain\n",now_ms(),mic_close_stop_callback!=NULL);
+        fprintf(stderr,"INJECT MIC close-timing stop-before-forward stop_ms=%llu callback_invoked=%u phase=drain\n",stop_ms,mic_close_stop_callback!=NULL);
     }else if(!strcmp(mode,"tail120"))atomic_store(&mic_close_tail,1);
     else atomic_store(&mic_close_invalid,1);
     if(mic_close_callback)mic_close_callback(stream,success,mic_close_userdata);
@@ -242,8 +243,9 @@ static void backend_timing_done(pa_stream *stream,int success,void *unused){
     if(!strcmp(mode,"missing"))return;
     if(!strcmp(mode,"invalid"))atomic_store(&backend_timing_invalid,1);
     if(!strcmp(mode,"stop-before-timing")){
+        unsigned long long stop_ms=now_ms();
         if(mic_close_stop_callback)mic_close_stop_callback(mic_close_stop_userdata);
-        fprintf(stderr,"INJECT backend timing stop-before-forward stop_ms=%llu action_invoked=%u phase=drain\n",now_ms(),mic_close_stop_callback!=NULL);
+        fprintf(stderr,"INJECT backend timing stop-before-forward stop_ms=%llu action_invoked=%u phase=drain\n",stop_ms,mic_close_stop_callback!=NULL);
     }
     if(backend_callback)backend_callback(stream,success,backend_userdata);
     atomic_store(&backend_timing_invalid,0);
