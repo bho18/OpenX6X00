@@ -12,6 +12,52 @@ controller change. They establish the tested hardware/codec milestones, not the
 new GUI's RF routing, release behavior or durability. Stock baseband limitations
 and the blocked native hand-mic contract remain separate.
 
+## Operational startup and normal UI
+
+The operational Beta uses startup contract **4** and output contract **1**.
+Its initial readiness receipt describes actual prepared streams, negotiated
+buffers, fresh capture/RX, configuration revision and a released panel PTT.
+Readiness is separate from TX eligibility: out-of-band RX is supported with
+TX disarmed. It does not run the legacy fixed idle and three synthetic turns.
+Diagnostic qualification remains `NOT_REQUESTED`, target 0 and complete false.
+The initial receipt is retained verbatim in the trace and immutable readiness
+sidecar, bound to the same session/build/source as terminal completion.
+
+The original **61 diagnostic controller cases** retain startup contract 3;
+eight operational cases add automatic readiness, held startup PTT, RX retuning,
+receive-only admission, graceful navigation during TX, explicit abort, USB
+loss and a held 30-second TX timeout (including continued TX beyond the old
+20-second diagnostic timeout). They use the production controller, four actual Pulse streams and codec,
+with simulated radio control. Navigation closes a finite speech frontier while
+the actual PTT can remain held; it must not fabricate a release counter.
+Graceful navigation has done/fault0 and completion reason `navigation`;
+physical release, explicit Stop and faults retain distinct evidence. Existing
+capture and playback-tail timing bounds remain unchanged.
+
+The operational retune case starts a known public modem signal only after the
+new RX configuration has been admitted. It requires actual synthesis, complete
+decoded speech at the private-Pulse USB headset monitor, and unchanged waveform
+thresholds against the retained decoded tap. The artifacts are regraded at
+promotion. This checks the new route/reset boundary in software; it does not
+claim a live over-the-air reception on the radio.
+
+UI regressions cover the acknowledgement notice and durable dismissal, normal
+waterfall and tuning, lower Mode/Mic/Audio/standard Power/Exit buttons, automatic
+PTT admission, and navigation from GEN/Apps/other page/mode paths. Codec creation
+counts remain unchanged across tuning/popups/direction changes, and reopening
+engines checks that successful process warm-up is reused. Device pairing is
+catalogued as one physical USB device with both input/output; reconnect cannot
+silently select another device.
+
+Before freezing a full campaign, run the collector/kit, campaign gate and all
+synthetic image tests. Their fixtures use the current complete case registry,
+including operational records. A narrow debug run is useful for a new case,
+but release still requires **every case twice**, unchanged source/fixture/build
+identities, complete immutable history and all application builds. The
+operator's next task is a known RADE peer receive and alternating replies,
+including normal exits; accepted recording/codec/SDR TX component work is not
+repeated as a startup ritual.
+
 ## What the returned failures changed
 
 | Observation | Required test-process response |
@@ -46,8 +92,9 @@ The test oracle checks the following throughout startup, preparation, key
 admission, active TX, drain, unkey, RX recovery, Stop and Exit:
 
 * RF-disabled evaluation makes no real key request. Unexpected actual TX blocks
-  the session. Enable requires completed qualification, fresh actual RX and a
-  released panel PTT.
+  the diagnostic session. Legacy diagnostic Enable requires completed
+  qualification, fresh actual RX and released panel PTT. Operational contract 4
+  uses actual startup/configuration readiness and TX eligibility instead.
 * A key request requires the current valid capture generation, new valid MIC
   and radio RX delivery after preparation, unchanged endpoints, fresh status,
   no protection fault and the same retained panel-release sequence. A release
@@ -333,7 +380,8 @@ source tree, helper kit and fixtures. Verify the GitHub downloads before asking
 for the next radio trial.
 
 The replacement image and matching kit require
-`usb_output_contract_version: 1` in addition to startup contract version 3.
+`usb_output_contract_version: 1` in addition to startup contract version 4
+for operational mode (version 3 remains supported for diagnostic mode).
 Session identity, raw trace/completion hashes and backend-tail receipts must
 agree before promotion. Older version-3 sessions without this output marker
 remain diagnostic evidence; they do not qualify the corrected output contract.

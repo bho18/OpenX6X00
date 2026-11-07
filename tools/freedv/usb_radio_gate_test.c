@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: BSD-2-Clause
-/* Include the production USB adapter. Only the radio/parameter/physical I/O
- * endpoints are substituted; the admission, cancellation and restoration
- * checks below are the actual application code. No radio is accessed. */
+/* Production adapter, synthetic cfg/evdev and hardware. No radio accessed. */
 #define _GNU_SOURCE
 #define ENABLE_FREEDV_DIAGNOSTICS 1
 #undef NDEBUG
@@ -9,32 +7,54 @@
 #include "src/freedv/usb_radio.h"
 #include "src/freedv/usb_ptt.h"
 #include "src/freedv/packet_tx.h"
+#include "src/cfg/voice_settings.h"
 #include <assert.h>
+#include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
-
+#include <time.h>
+#include <unistd.h>
 #define BOARD_DEV_KEYPAD "/dev/null"
-enum {RADIO_RX, RADIO_TX};
-enum {cfg_band_split=1,cfg_band_tx_shift,cfg_rit,cfg_xit,cfg_fg_freq,cfg_band_current_vfo};
+#define FILTER_2_OFFSET_OUT 40
+#define LV_MAX(a,b) ((a)>(b)?(a):(b))
+enum {RADIO_RX,RADIO_TX};
+enum {cfg_band_split=1,cfg_band_tx_shift,cfg_rit,cfg_xit,cfg_fg_freq,cfg_band_current_vfo,
+ cfg_band_vfoa_freq,cfg_band_vfob_freq,cfg_pwr,cfg_band_tx_i_offset,cfg_band_tx_q_offset,
+ cfg_band_dac_offset,cfg_atu_enabled,cfg_band_vfoa_mode,cfg_band_vfob_mode,
+ cfg_band_vfoa_agc,cfg_band_vfob_agc,cfg_band_vfoa_pre,cfg_band_vfob_pre,
+ cfg_band_vfoa_att,cfg_band_vfob_att,cfg_rfgain,cfg_squelch,cfg_cur_filter_low,
+ cfg_cur_filter_high,cfg_key_train,cfg_nr,cfg_nb,cfg_dnf,cfg_dnf_auto,cfg_comp,
+ cfg_speaker_off,cfg_volume,cfg_moni,cfg_band_if_shift,cfg_cw_decoder,cfg_mode_zoom,CFG_COUNT};
 typedef struct {bool known,fresh,tx;} fd_observation;
-static int state=RADIO_RX;
+static atomic_int state=RADIO_RX;
 static void *freedv_owner;
 static atomic_uint freedv_base_errors;
 static atomic_bool modem_on;
-static bool morse_on;
-static struct {hw_freedv_cached_snapshot_t saved;} voice_radio;
+static bool morse_on,mute,tci_mute;
 static pthread_mutex_t radio_mutex=PTHREAD_MUTEX_INITIALIZER;
 static freedv_packet_tx_tracker packet_tx_tracker=FREEDV_PACKET_TX_TRACKER_INIT;
-static uint64_t clock_ms=10000;
+static atomic_uint_fast64_t clock_ms=10000;
 static hw_freedv_cached_snapshot_t cached;
-static bool panel_pressed,panel_valid=true,writer_allowed=true,legal_frequency=true;
-static unsigned swr_count,modem_on_writes,ptt_on_writes,pin_on_writes,all_writes;
-static hw_param_t stop_during_write=(hw_param_t)-1;
-static bool stop_during_modem_on;
+static atomic_bool panel_pressed,panel_valid=true,writer_allowed=true,legal_frequency=true;
+static atomic_uint swr_count,modem_on_writes,ptt_on_writes,pin_on_writes,all_writes,gui_writes;
+static atomic_int stop_during_write=-1;
+static atomic_bool stop_during_modem_on;
+static atomic_bool release_during_modem_on;
+static atomic_bool resend_fail_once;
+static atomic_uint resends;
+static int32_t cfg[CFG_COUNT];
+static pthread_t gui;
+static bool terminal_replaying;
+static _Thread_local unsigned voice_scope;
+static unsigned terminal_poweroffs,terminal_resets;
+static bool scheduler_on_gui_thread(void){return pthread_equal(gui,pthread_self());}
+static bool freedv_navigation_replaying(void){return terminal_replaying;}
 static bool test_panel_poll(int fd,atomic_uint_fast64_t *releases,bool *pressed){(void)fd;(void)releases;*pressed=panel_pressed;return panel_valid;}
 #define fd_usb_panel_poll test_panel_poll
 static void radio_lock(void){assert(!pthread_mutex_lock(&radio_mutex));}
+static bool radio_try_lock(void){return pthread_mutex_trylock(&radio_mutex)==0;}
 static void radio_unlock(void){assert(!pthread_mutex_unlock(&radio_mutex));}
 static uint64_t get_time(void){return clock_ms;}
 static unsigned radio_swr_trips(void){return swr_count;}
@@ -43,23 +63,41 @@ static bool freedv_busy(void){return false;}
 bool hw_tx_keyed_by_gui(void){return cached.route.modem || cached.route.ptt;}
 static bool ctl_freedv_acquire(void){return true;}
 static bool ctl_freedv_release(bool restored){return restored;}
-static bool fd_writer_voice_begin(void){return writer_allowed;}
-static void fd_writer_voice_end(void){}
-static int32_t param_i_get(int key){(void)key;return 0;}
-static int32_t cparam_i_get(int key){assert(key==cfg_fg_freq);return 7074000;}
+static bool fd_writer_voice_begin(void){if(!writer_allowed)return false;++voice_scope;return true;}
+static void fd_writer_voice_end(void){assert(voice_scope);--voice_scope;}
+void hw_poweroff(void){assert(voice_scope);++terminal_poweroffs;}
+void hw_bb_reset(void){assert(voice_scope);++terminal_resets;}
+static int32_t param_i_get(int key){return cfg[key];}
+static int32_t cparam_i_get(int key){return key==cfg_fg_freq?cfg[cfg_band_current_vfo]?cfg[cfg_band_vfob_freq]:cfg[cfg_band_vfoa_freq]:cfg[key];}
+static float param_f_get(int key){return key==cfg_pwr?cfg[key]/10.0f:0.0f;}
 static int cfg_transverter_shift_for(int32_t hz){(void)hz;return 0;}
-static bool cfg_is_tx_freq(int32_t hz){return legal_frequency && hz==7074000;}
-static int32_t radio_tx_freq(void){return 7074000;}
+static bool cfg_is_valid_hw_freq(int32_t hz){return hz>=100000 && hz<=55000000;}
+static bool cfg_is_tx_freq(int32_t hz){return legal_frequency && hz>=7000000 && hz<=7300000;}
+static bool btaudio_speaker_muted(void){return false;}
+static uint32_t cfg_atu_get_network(void){return 123;}
+static void cfg_pwr_set(float watts){assert(scheduler_on_gui_thread());cfg[cfg_pwr]=(int)lroundf(watts*10);}
+static int cfg_mode_change_freq_step(bool up){return up?100:10;}
+bool cfg_voice_resolve(fd_local_operation op,int32_t value,fd_voice_tuning *out){
+    *out=(fd_voice_tuning){cparam_i_get(cfg_fg_freq),(unsigned)cfg[cfg_band_current_vfo],op,value};
+    if(op==FD_LOCAL_FREQUENCY){out->frequency=value;return cfg_is_valid_hw_freq(value);}
+    if(op==FD_LOCAL_VFO && value>=0 && value<=1){out->vfo=(unsigned)value;out->frequency=cfg[value?cfg_band_vfob_freq:cfg_band_vfoa_freq];return true;}
+    return false;
+}
+bool cfg_voice_apply(fd_voice_tuning *t){
+    assert(scheduler_on_gui_thread());cfg[cfg_band_current_vfo]=(int)t->vfo;
+    cfg[t->vfo?cfg_band_vfob_freq:cfg_band_vfoa_freq]=t->frequency;return true;
+}
 static bool freedv_observe_locked(fd_observation *out){
     freedv_packet_tx_observation p=freedv_packet_tx_read(&packet_tx_tracker,clock_ms);
     *out=(fd_observation){p.known,p.known && p.age_ms<=250,p.tx};return out->known;
 }
 static bool freedv_rx(const fd_observation *o){return o->known && o->fresh && !o->tx;}
-static void voice_restore_on_gui(void *arg){cached=voice_radio.saved;*(bool *)arg=true;}
 bool hw_get_freedv_cached_snapshot(hw_freedv_cached_snapshot_t *out){*out=cached;return true;}
-bool hw_resend_all(void){return true;}
+bool hw_resend_all(void){++resends;return !atomic_exchange(&resend_fail_once,false);}
+int32_t hw_get_i(hw_param_t p){(void)p;return 0;}
+static void wrote(void){++all_writes;if(scheduler_on_gui_thread())++gui_writes;}
 bool hw_set_i(hw_param_t p,int32_t value){
-    ++all_writes;
+    wrote();
     if(p==HW_MODEM){cached.route.modem=value!=0;if(value)++modem_on_writes;}
     if(p==HW_PTT){cached.route.ptt=value!=0;if(value)++ptt_on_writes;}
     if(p==HW_RECORD)cached.route.record=value!=0;
@@ -68,30 +106,54 @@ bool hw_set_i(hw_param_t p,int32_t value){
     if(p==HW_VOX)cached.vox_enabled=value!=0;
     if(p==HW_FILTER1_LOW)cached.rx_filter_low_hz=(int16_t)value;
     if(p==HW_FILTER1_HIGH)cached.rx_filter_high_hz=(int16_t)value;
-    if((p==stop_during_write && !value) || (p==HW_MODEM && value && stop_during_modem_on))radio_usb_inhibit(NULL);
+    if(p==HW_VFO_CUR)cached.active_vfo=(uint8_t)value;
+    if(((int)p==stop_during_write && !value) || (p==HW_MODEM && value && stop_during_modem_on))radio_usb_inhibit(NULL);
+    if(p==HW_MODEM && value && release_during_modem_on)panel_pressed=false;
     return true;
 }
-bool hw_set_f(hw_param_t p,float value){assert(p==HW_TXPWR_F);cached.requested_power_tenths_watt=(uint8_t)(value*10);return true;}
-bool hw_vfo_set_mode(radio_vfo_t vfo,radio_mode_t mode){if(vfo==RADIO_VFO_A)cached.backend_mode_a=mode;else cached.backend_mode_b=mode;return true;}
-void hw_vfo_set_agc(radio_vfo_t vfo,radio_agc_t agc){(void)vfo;(void)agc;}
-void hw_vfo_set_pre(radio_vfo_t vfo,bool on){(void)vfo;(void)on;}
-void hw_vfo_set_att(radio_vfo_t vfo,bool on){(void)vfo;(void)on;}
+bool hw_set_f(hw_param_t p,float value){wrote();if(p==HW_TXPWR_F)cached.requested_power_tenths_watt=(uint8_t)lroundf(value*10);return true;}
+bool hw_vfo_set_freq(radio_vfo_t vfo,int32_t freq){wrote();if(vfo==RADIO_VFO_A)cached.vfo_a_hz=(uint32_t)freq;else cached.vfo_b_hz=(uint32_t)freq;return true;}
+bool hw_vfo_set_mode(radio_vfo_t vfo,radio_mode_t mode){wrote();if(vfo==RADIO_VFO_A)cached.backend_mode_a=mode;else cached.backend_mode_b=mode;return true;}
+void hw_vfo_set_agc(radio_vfo_t vfo,radio_agc_t agc){wrote();(void)vfo;(void)agc;}
+void hw_vfo_set_pre(radio_vfo_t vfo,bool on){wrote();(void)vfo;(void)on;}
+void hw_vfo_set_att(radio_vfo_t vfo,bool on){wrote();(void)vfo;(void)on;}
 void hw_pin_set(hw_pin_t pin,bool on){assert(pin==HW_PIN_MORSE_KEY);if(on)++pin_on_writes;}
 #include "src/freedv/usb_radio.inc"
 #undef fd_usb_panel_poll
-
-static void observed(bool tx){++clock_ms;freedv_packet_tx_note(&packet_tx_tracker,tx,clock_ms);state=tx?RADIO_TX:RADIO_RX;}
+static void observed(bool tx){uint64_t now=atomic_fetch_add(&clock_ms,1)+1;freedv_packet_tx_note(&packet_tx_tracker,tx,now);state=tx?RADIO_TX:RADIO_RX;}
+static void ready(void){
+    for(unsigned i=0;i<1000;i++){
+        observed(false);fd_usb_inputs in;
+        if(radio_usb_observe(NULL,&in) && in.configuration_ready)return;
+        usleep(1000);
+    }assert(!"radio profile did not become ready");
+}
 static void claim(void){
     panel_pressed=false;panel_valid=true;writer_allowed=true;legal_frequency=true;
-    cached=(hw_freedv_cached_snapshot_t){.vfo_a_hz=7074000,.vfo_b_hz=7074000,.requested_power_tenths_watt=50};
-    stop_during_write=(hw_param_t)-1;stop_during_modem_on=false;
-    observed(false);assert(radio_usb_claim());assert(radio_usb_owned());assert(!atomic_load(&usb_radio.rf_allowed));
+    memset(cfg,0,sizeof(cfg));cfg[cfg_band_vfoa_freq]=cfg[cfg_band_vfob_freq]=7074000;cfg[cfg_pwr]=50;
+    cfg[cfg_cur_filter_low]=300;cfg[cfg_cur_filter_high]=2700;cfg[cfg_volume]=10;
+    cfg[cfg_band_vfoa_mode]=cfg[cfg_band_vfob_mode]=radio_mode_lsb;cfg[cfg_band_if_shift]=250;
+    cached=(hw_freedv_cached_snapshot_t){.vfo_a_hz=7073750,.vfo_b_hz=7073750,.requested_power_tenths_watt=50};
+    stop_during_write=-1;stop_during_modem_on=false;release_during_modem_on=false;observed(false);
+    /* Claim itself reserves/copies only; worker I/O cannot run under GUI lock. */
+    unsigned calls=gui_writes;
+    assert(radio_usb_claim());assert(radio_usb_owned());ready();assert(gui_writes==calls);
+    assert(cached.vfo_a_hz==7074000 && cached.requested_power_tenths_watt==50);
+    assert(cached.rx_filter_low_hz==100 && cached.rx_filter_high_hz==3100);
+    assert(!atomic_load(&usb_radio.rf_allowed));
 }
-static void release(void){
-    radio_usb_clear(NULL,true);panel_pressed=false;observed(false);
-    assert(!radio_usb_restore());observed(false);assert(radio_usb_restore());assert(radio_usb_release());assert(!radio_usb_owned());
+static void release(bool terminal){
+    radio_usb_clear(NULL,true);panel_pressed=terminal;observed(false);
+    unsigned calls=gui_writes;
+    assert(!(terminal?radio_usb_terminal_restore():radio_usb_restore()));
+    assert(gui_writes==calls);
+    for(unsigned i=0;i<1000;i++){
+        observed(false);if(radio_usb_release()){assert(!radio_usb_owned());panel_pressed=false;return;}
+        usleep(1000);
+    }assert(!"radio restoration did not complete");
 }
 int main(void){
+    gui=pthread_self();radio_lock();assert(!radio_usb_claim());radio_unlock();
     claim();unsigned initial=modem_on_writes;
     panel_pressed=true;assert(!radio_usb_key(NULL,0));assert(modem_on_writes==initial);
     panel_pressed=false;clock_ms+=251;assert(!radio_usb_allow_tx(true));
@@ -100,26 +162,53 @@ int main(void){
     panel_valid=false;assert(!radio_usb_allow_tx(true));panel_valid=true;
     ++swr_count;assert(!radio_usb_allow_tx(true));--swr_count;
     assert(radio_usb_allow_tx(true));panel_pressed=true;
-    assert(!radio_usb_key(NULL,1));assert(modem_on_writes==initial); /* retained-release mismatch */
+    assert(!radio_usb_key(NULL,1));assert(modem_on_writes==initial);
     writer_allowed=false;assert(!radio_usb_key(NULL,0));writer_allowed=true;
-    legal_frequency=false;assert(!radio_usb_key(NULL,0));legal_frequency=true;
     assert(radio_usb_key(NULL,0));assert(cached.route.modem && modem_on_writes==initial+1);
-    radio_usb_clear(NULL,false);assert(!cached.route.modem && !cached.route.ptt);
-    radio_usb_allow_tx(false);assert(!radio_usb_key(NULL,0));assert(modem_on_writes==initial+1);
-    release();
+    observed(true);assert(radio_usb_request(FD_LOCAL_POWER,34));
+    assert(cfg[cfg_pwr]==34);assert(radio_usb_power_tenths()==34);
+    for(unsigned i=0;i<1000;i++){
+        radio_lock();bool applied=cached.requested_power_tenths_watt==34;radio_unlock();
+        if(applied)break;
+        usleep(1000);assert(i<999);
+    }
+    assert(cached.route.modem); /* live power never clears an active turn */
+    assert(!radio_usb_request(FD_LOCAL_FREQUENCY,7100000));
+    radio_usb_clear(NULL,false);panel_pressed=false;observed(false);
+    uint64_t revision=atomic_load(&usb_radio.requested_revision);
+    assert(radio_usb_request(FD_LOCAL_STEP,1));assert(atomic_load(&usb_radio.requested_revision)==revision);
+    unsigned calls=gui_writes;
+    for(int i=0;i<20;i++)assert(radio_usb_request(FD_LOCAL_FREQUENCY,7100000+i*100));
+    assert(gui_writes==calls);
+    assert(cparam_i_get(cfg_fg_freq)==7101900);assert(!atomic_load(&usb_radio.rf_allowed));
+    ready();assert(cached.vfo_a_hz==7101900);assert(cfg[cfg_band_if_shift]==250);
+    assert(radio_usb_request(FD_LOCAL_FREQUENCY,1000000));ready();assert(!radio_usb_allow_tx(true));
+    assert(radio_usb_request(FD_LOCAL_FREQUENCY,7101900));ready();assert(radio_usb_allow_tx(true));
+    release(false);
+    assert(cached.vfo_a_hz==7101650 && cached.requested_power_tenths_watt==34);
+    assert(cached.backend_mode_a==radio_mode_lsb && cached.rx_filter_low_hz==300);
 
     claim();initial=modem_on_writes;assert(radio_usb_allow_tx(true));panel_pressed=true;
     stop_during_write=HW_PTT;assert(!radio_usb_key(NULL,0));
-    assert(atomic_load(&usb_radio.halted));assert(!atomic_load(&usb_radio.rf_allowed));assert(!atomic_load(&modem_on));
-    assert(modem_on_writes==initial && !cached.route.modem);release();
-
+    assert(usb_radio.halted && !usb_radio.rf_allowed && !modem_on && modem_on_writes==initial);release(false);
     claim();initial=modem_on_writes;assert(radio_usb_allow_tx(true));panel_pressed=true;
     stop_during_modem_on=true;assert(!radio_usb_key(NULL,0));
-    assert(modem_on_writes==initial+1); /* already in flight when Stop arrives */
-    assert(atomic_load(&usb_radio.halted) && !atomic_load(&modem_on));
-    assert(!cached.route.modem && !cached.route.ptt); /* compensating OFF before return */
-    assert(!radio_usb_key(NULL,0));assert(modem_on_writes==initial+1);release();
+    assert(modem_on_writes==initial+1 && usb_radio.halted && !modem_on && !cached.route.modem && !cached.route.ptt);
+    release(true); /* terminal exit does not require a held panel PTT to release */
+    claim();assert(radio_usb_allow_tx(true));panel_pressed=true;release_during_modem_on=true;
+    assert(!radio_usb_key(NULL,0));assert(!cached.route.modem && !cached.route.ptt);release(false);
+    claim();stop_during_write=HW_PTT;
+    unsigned before=all_writes;assert(radio_usb_request(FD_LOCAL_FREQUENCY,7120000));
+    for(unsigned i=0;i<1000 && !usb_radio.halted;i++)usleep(1000);
+    assert(usb_radio.halted && !usb_radio.rf_allowed);
+    radio_lock();assert(all_writes==before+2);radio_unlock(); /* no writes after inhibited PTT-off */
+    stop_during_write=-1;resend_fail_once=true;unsigned previous_resends=resends;
+    release(false);assert(resends>=previous_resends+2); /* restore retries a failed submission */
+    claim();assert(!radio_usb_terminal_authorize());assert(!radio_usb_terminal_hardware(false));
+    terminal_replaying=true;assert(radio_usb_terminal_authorize());terminal_replaying=false;
+    assert(radio_usb_terminal_hardware(false));assert(radio_usb_terminal_hardware(true));
+    assert(terminal_poweroffs==1 && terminal_resets==1);release(true);
     assert(!ptt_on_writes && !pin_on_writes && all_writes);
-    puts("PASS production USB radio gate: RF-disabled default, fresh/released local enable, cancellation before/in-flight MODEM-on and compensating OFF; stub hardware only");
+    puts("PASS USB radio transactions: async full profile, unshifted tuning/coalescing, RX-only admission, live normal power, Stop races, current-band restore and terminal held-PTT release; stub hardware only");
     return 0;
 }

@@ -11,6 +11,10 @@
 
 #include "screen_main.h"
 #include "freedv/mode.h"
+#include "freedv/usb_voice.h"
+#include "freedv/usb_ui.h"
+#include "freedv/usb_navigation.h"
+#include "control_owner.h"
 #include "freedv/writer_gate.h"
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
 #include "freedv/diagnostics.h"
@@ -39,6 +43,7 @@
 #include "screen_shot.h"
 #include "screen_rec.h"
 #include "key_input.h"
+#include "front_keys.h"
 #include "app_window.h"
 #include "settings_window.h"
 #include "freq_entry.h"
@@ -79,6 +84,7 @@
 #include "button_bar.h"
 #include "recorder.h"
 #include "cfg/cfg_api.h"
+#include "cfg/db.h"
 #include "walkie.h"
 #include "cfg/memory.h"
 #include "knob_info.h"
@@ -90,6 +96,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 
 static lv_obj_t     *obj;                   /* the screen */
 static lv_obj_t     *spectrum;              /* also the target of the keys and the MFK press */
@@ -374,6 +381,11 @@ static bool toggle_atu(void) {
 }
 
 static void step_freq_step(bool up) {
+    if (freedv_usb_active()) {
+        if (freedv_mode_request(FD_LOCAL_STEP, up ? 1 : -1))
+            msg_update_text_fmt("Freq step: %i Hz", param_i_get(cfg_mode_freq_step));
+        return;
+    }
     msg_update_text_fmt("Freq step: %i Hz", cfg_mode_change_freq_step(up));
 }
 
@@ -432,7 +444,10 @@ static const char *app_name(press_action_t a) {
 
 /* Whatever app is open goes: its window, RTTY (the radio back as it was before it), the
  * digital audio path, the panel */
-static void close_apps(void) {
+static bool close_apps(void) {
+    /* All callers stop here if closing the window starts an asynchronous
+     * FreeDV transaction. No following page/route mutation may run early. */
+    if (freedv_mode_defer_app(0)) return false;
     dialog_destruct();
     freq_strip_set_app(NULL);
     if (rtty_get_state() != RTTY_OFF) {
@@ -442,12 +457,13 @@ static void close_apps(void) {
     rtty_set_state(RTTY_OFF);
     radio_set_digi_cap(false);
     panel_update_visibility(false);
+    return true;
 }
 
 /* As the GEN key: the app closes, the GEN buttons come back */
 void main_screen_close_app(void) {
     if(freedv_mode_defer_app(0))return;
-    close_apps();
+    if (!close_apps()) return;
     buttons_load_page_group(buttons_group_gen);
 }
 
@@ -455,23 +471,23 @@ void main_screen_start_app(press_action_t app_action) {
     if(freedv_mode_defer_app(app_action))return;
     if(app_action==ACTION_APP_FREEDV && !freedv_mode_available() && freedv_mode_validation_available()){
         FD_WRITE_GUARD(return);
-        close_apps();freedv_mode_validation_open();return;
+        if (close_apps()) freedv_mode_validation_open();return;
     }
     if(app_action==ACTION_APP_FREEDV && !freedv_mode_available()){
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
         FD_WRITE_GUARD(return);
-        close_apps();freedv_diagnostics_open();
+        if (close_apps()) freedv_diagnostics_open();
 #endif
         return;
     }
-    if(app_action==ACTION_APP_FREEDV){close_apps();freedv_mode_open();return;}
+    if(app_action==ACTION_APP_FREEDV){if(close_apps())freedv_mode_open();return;}
     FD_WRITE_GUARD(return);
     /* Modes again closes its menu. */
     if (app_action == ACTION_APP_MODES && dialog_type_is_run(dialog_modes)) {
         dialog_destruct();
         return;
     }
-    close_apps();
+    if (!close_apps()) return;
 
 
     /* The digital apps open where they were last used */
@@ -553,6 +569,19 @@ void main_screen_start_app(press_action_t app_action) {
 
 /* What a long press (or a hand mic F key) was given in Settings */
 void main_screen_action(press_action_t action) {
+    /* These actions do not change the RF profile or leave the waterfall. */
+    bool stays = action == ACTION_SCREENSHOT || action == ACTION_SCREEN_REC ||
+        action == ACTION_STEP_UP || action == ACTION_STEP_DOWN || action == ACTION_WF_MODE;
+    if (!stays && freedv_navigation_request(FD_NAV_ACTION, action, 0, NULL)) return;
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+    if (action == ACTION_WF_MODE && freedv_usb_active()) {
+        if (freedv_usb_finishing() || !front_keys_voice_local_event() || !fd_writer_voice_begin()) return;
+        bool fixed = toggle_param(cfg_wf_mode);
+        fd_writer_voice_end();
+        say_state("Waterfall", fixed ? "Fixed" : "Centered");
+        return;
+    }
+#endif
     switch (action) {
         case ACTION_SCREENSHOT:     screenshot_take(); break;
         case ACTION_RECORDER:       recorder_set_on(!recorder_is_on()); break;
@@ -587,6 +616,7 @@ void main_screen_action(press_action_t action) {
 
 /* MSG opens the message dialog; pressed again it turns the page, like the other keys */
 static void msg_dialog_open(dialog_t *dialog) {
+    if (freedv_navigation_defer_dialog(dialog)) return;
     if (dialog_type_is_run(dialog)) {
         buttons_page_t *page = buttons_get_cur_page();
 
@@ -595,7 +625,7 @@ static void msg_dialog_open(dialog_t *dialog) {
         }
         return;
     }
-    close_apps();
+    if (!close_apps()) return;
     panel_hide();
     dialog_construct(dialog, obj);
 }
@@ -648,6 +678,7 @@ static radio_mode_t am_key_mode(radio_mode_t mode) {
 
 /* The three mode keys, pressed or held: AM/(SAM)/NFM/(WFM), CW/CW-R, SSB as above */
 static void mode_key(keypad_key_t key, bool hold) {
+    if (freedv_navigation_request(FD_NAV_MODE_KEY, key, hold, NULL)) return;
     radio_mode_t mode = cparam_i_get(cfg_cur_mode);
 
     if (key == KEYPAD_MODE_AM) {
@@ -679,17 +710,18 @@ static bool page_key(keypad_key_t key, bool tap, bool hold) {
         if (page_keys[i].key != key) {
             continue;
         }
+        if ((tap || hold) && freedv_navigation_request(FD_NAV_PAGE, (int32_t)i, hold, NULL)) return true;
         if (tap && key == KEYPAD_APP && params.icon_menus.x) {
             /* The APP grid: APP again closes it, the button pages stay as they are */
             if (dialog_type_is_run(dialog_apps)) {
                 dialog_destruct();
             } else {
-                close_apps();
+                if (!close_apps()) return true;
                 buttons_load_page_group(page_keys[i].pages);
                 dialog_construct(dialog_apps, obj);
             }
         } else if (tap) {
-            close_apps();
+            if (!close_apps()) return true;
             buttons_load_page_group(page_keys[i].pages);
         } else if (hold) {
             main_screen_action(*page_keys[i].hold_action);
@@ -720,6 +752,18 @@ static void front_key_cb(lv_event_t *e) {
     event_keypad_t *ev   = lv_event_get_param(e);
     bool            tap  = ev->state == KEYPAD_RELEASE;
     bool            hold = ev->state == KEYPAD_LONG;
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+    static fd_nav_exit_latch f5_latch;
+    if (ev->key == KEYPAD_F5) {
+        fd_nav_exit_result action = fd_nav_exit_key(&f5_latch, ev->state == KEYPAD_PRESS,
+            ev->state == KEYPAD_RELEASE || ev->state == KEYPAD_LONG_RELEASE,
+            freedv_usb_active() && !freedv_usb_entry_pending() && !freedv_usb_popup_active(),
+            freedv_usb_finishing(), front_keys_voice_local_event(), ctl_remote_input_generation());
+        if (action == FD_NAV_EXIT_LEAVE) freedv_navigation_request(FD_NAV_HOME, 0, 0, NULL);
+        if (action == FD_NAV_EXIT_STOP) freedv_usb_abort();
+        if (action != FD_NAV_EXIT_PASS) return;
+    }
+#endif
 
     if (page_key(ev->key, tap, hold)) {
         return;
@@ -727,6 +771,9 @@ static void front_key_cb(lv_event_t *e) {
     switch (ev->key) {
         case KEYPAD_F1: case KEYPAD_F2: case KEYPAD_F3: case KEYPAD_F4: case KEYPAD_F5:
             if (tap || hold) {
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+                if (freedv_usb_active() && freedv_usb_softkey(ev->key - KEYPAD_F1, hold)) break;
+#endif
                 buttons_press(ev->key - KEYPAD_F1, hold);
             }
             break;
@@ -803,6 +850,7 @@ static void front_key_cb(lv_event_t *e) {
             if (tap) {
                 backlight_switch();
             } else if (hold) {
+                if (freedv_navigation_terminal(FD_NAV_POWEROFF)) break;
                 msg_update_text_fmt("Power off");
                 cluster_client_stop();      /* the cluster link closed, not left to time out at the node */
                 radio_poweroff();
@@ -813,6 +861,7 @@ static void front_key_cb(lv_event_t *e) {
             if (tap) {
                 toggle_freq_lock();
             } else if (hold) {
+                if (freedv_navigation_terminal(FD_NAV_RESET)) break;
                 radio_bb_reset();
                 exit(1);
             }
@@ -824,6 +873,7 @@ static void front_key_cb(lv_event_t *e) {
 
         case KEYPAD_VM:
             if (tap && !dialog_is_run()) {
+                if (freedv_navigation_request(FD_NAV_PAGE, 5, 0, NULL)) break;
                 buttons_load_page_group(buttons_group_vm);
             }
             break;
@@ -832,6 +882,18 @@ static void front_key_cb(lv_event_t *e) {
             LV_LOG_WARN("Unsuported key: %u", ev->key);
             break;
     }
+}
+
+static void mic_mode_next(void) {
+    if (freedv_navigation_request(FD_NAV_MODE_KEY, -1, 0, NULL)) return;
+    static const radio_mode_t order[] = {radio_mode_lsb, radio_mode_usb, radio_mode_cw,
+        radio_mode_cwr, radio_mode_am, radio_mode_nfm, radio_mode_sam, radio_mode_wfm};
+    size_t count = radio_caps() & HW_CAP_SAM_WFM ? 8 : 6, i = 0;
+    radio_mode_t mode = cparam_i_get(cfg_cur_mode);
+    if (mode == radio_mode_lsb_dig || mode == radio_mode_usb_dig)
+        mode = mode == radio_mode_lsb_dig ? radio_mode_lsb : radio_mode_usb;
+    while (i < count && order[i] != mode) ++i;
+    cparam_i_set(cfg_cur_mode, order[(i + 1) % count]);
 }
 
 /* Hand mic keys */
@@ -907,20 +969,7 @@ static void mic_key_cb(lv_event_t *e) {
          * them); long press is the SSB key's long press (DIG on/off) */
         case HKEY_MODE:
             if (!mode_lock && tap) {
-                static const radio_mode_t order[] = {radio_mode_lsb, radio_mode_usb, radio_mode_cw,
-                                                     radio_mode_cwr, radio_mode_am,  radio_mode_nfm,
-                                                     radio_mode_sam, radio_mode_wfm};
-                size_t n_order = radio_caps() & HW_CAP_SAM_WFM ? 8 : 6;
-                radio_mode_t mode = cparam_i_get(cfg_cur_mode);
-                size_t       i    = 0;
-
-                if (mode == radio_mode_lsb_dig || mode == radio_mode_usb_dig) {
-                    mode = mode == radio_mode_lsb_dig ? radio_mode_lsb : radio_mode_usb;
-                }
-                while (i < n_order && order[i] != mode) {
-                    i++;
-                }
-                cparam_i_set(cfg_cur_mode, order[(i + 1) % n_order]);
+                mic_mode_next();
             } else if (!mode_lock && hold) {
                 mode_key(KEYPAD_MODE_SSB, true);
             }
@@ -1090,6 +1139,9 @@ void main_screen_mfk(int dir) {
  * keyboard with - = to tune, _ + for the step, [ ] { } for VOL, the arrows for the MFK */
 static void spectrum_key_cb(lv_event_t *e) {
     uint32_t key = *(uint32_t *)lv_event_get_param(e);
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+    if (freedv_usb_active() && freedv_usb_popup_active() && freedv_usb_popup_key(key)) return;
+#endif
 
     if (key == KEY_VOL_PRESS) {
         key = LV_KEY_ESC;   /* on the main screen VOL press does what ESC does */
@@ -1255,7 +1307,7 @@ static void on_span_change(Subject *subj, void *user_data) {
 
     /* The waterfall is centred on the VFO minus the IF shift */
     /* Fixed waterfall mode: the centre stays put while the VFO moves */
-    int32_t center = shown_freq() - param_i_get(cfg_band_if_shift) - waterfall_view_shift();
+    int32_t center = shown_freq() - waterfall_effective_if_shift() - waterfall_view_shift();
 
     freq_scale_update(center, half, color);
     spot_marks_update(center, half);
@@ -1265,7 +1317,7 @@ static void on_span_change(Subject *subj, void *user_data) {
 /* A big IF shift would put the VFO off a zoomed waterfall: zoom out until it is within
  * 40 kHz of the zoomed span */
 static void on_if_shift_zoom(Subject *subj, void *user_data) {
-    uint32_t shift = abs(param_i_get(cfg_band_if_shift));
+    uint32_t shift = abs(waterfall_effective_if_shift());
     uint32_t zoom  = param_i_get(cfg_mode_zoom);
     uint32_t fit   = zoom;
 
@@ -1275,6 +1327,12 @@ static void on_if_shift_zoom(Subject *subj, void *user_data) {
     if (fit != zoom) {
         param_i_set(cfg_mode_zoom, fit);
     }
+}
+
+void main_screen_refresh_effective(void) {
+    if (!obj || !spectrum) return;
+    on_span_change(NULL, NULL);
+    on_if_shift_zoom(NULL, NULL);
 }
 
 /* With or without the spectrum, the band plan is a strip at the top of the
@@ -1492,7 +1550,8 @@ static void build(void) {
  * timers and threads (subject_no_duplicates()): they find the new widgets through the same
  * pointers. Not in walkie mode (the buttons are on its screen) */
 void main_screen_set_theme(const char *name) {
-    close_apps();
+    if (freedv_navigation_request(FD_NAV_THEME, 0, 0, name)) return;
+    if (!close_apps()) return;
     buttons_page_t *page = buttons_get_cur_page();
     buttons_unload_page();
     /* The overlays go with the widgets: closed as their timers would */
@@ -1516,6 +1575,39 @@ void main_screen_set_theme(const char *name) {
     lv_obj_report_style_change(NULL);   /* what is left: the messages, the top layer */
     event_obj_drop_deleted();           /* what the threads queued for the old widgets */
 }
+
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+/* Replayed only after complete radio/audio/input restoration. A terminal
+ * deadline may end this process without handing the radio to another app. */
+void freedv_navigation_dispatch(const fd_nav_action *action) {
+    switch (action->kind) {
+        case FD_NAV_HOME: main_screen_close_app(); break;
+        case FD_NAV_APP: main_screen_start_app((press_action_t)action->value); break;
+        case FD_NAV_ACTION: main_screen_action((press_action_t)action->value); break;
+        case FD_NAV_PAGE:
+            if (action->value >= 0 && action->value < (int32_t)(sizeof(page_keys)/sizeof(page_keys[0])))
+                page_key(page_keys[action->value].key, !action->detail, !!action->detail);
+            else if (action->value == 5) buttons_load_page_group(buttons_group_vm);
+            break;
+        case FD_NAV_MODE_KEY:
+            if (action->value == -1) mic_mode_next();
+            else mode_key((keypad_key_t)action->value, !!action->detail);
+            break;
+        case FD_NAV_DIALOG: {
+            dialog_t *dialog = freedv_navigation_dialog_descriptor(action->value);
+            if (dialog && close_apps()) dialog_construct(dialog, obj);
+            break;
+        }
+        case FD_NAV_THEME: main_screen_set_theme(action->text); break;
+        case FD_NAV_WALKIE: walkie_resume_entry(); break;
+        case FD_NAV_POWEROFF: radio_poweroff(); break;
+        case FD_NAV_RESET: radio_bb_reset(); exit(1); break;
+        case FD_NAV_TERMINATE:
+            screen_rec_shutdown(); cfg_api_flush_all(); cfg_db_shutdown(); sync(); exit(0); break;
+        default: break;
+    }
+}
+#endif
 
 void main_screen_notify_rx_tx(bool tx) {
     event_send(obj, tx ? EVENT_RADIO_TX : EVENT_RADIO_RX, NULL);

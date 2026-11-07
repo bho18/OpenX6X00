@@ -2,6 +2,11 @@
 #define _POSIX_C_SOURCE 200809L
 #include "mode.h"
 #include "usb_voice.h"
+#include "usb_ui.h"
+#include "usb_navigation.h"
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+#include "usb_radio.h"
+#endif
 #include "voice_radio.h"
 #include "writer_gate.h"
 #include "voice_audio.h"
@@ -127,19 +132,26 @@ static void leave(void) {
     notice("Waiting for fresh RX and both PTT controls to release");
 }
 bool freedv_mode_defer_app(int action) {
-    if(freedv_usb_active())return freedv_usb_leave();
+    if(freedv_navigation_request(action?FD_NAV_APP:FD_NAV_HOME,action,0,NULL))return true;
     if(!freedv_mode_active() || completing)return false;
     if(local()){destination=action;next_dialog=NULL;next_parent=NULL;leave();}
     return true;
 }
 bool freedv_mode_defer_dialog(void *dialog,void *parent) {
-    if(freedv_usb_active())return freedv_usb_leave();
+    if(freedv_navigation_defer_dialog(dialog))return true;
     if(!freedv_mode_active() || completing || dialog==&view)return false;
     if(local()){next_dialog=dialog;next_parent=parent;destination=0;leave();}
     return true;
 }
 bool freedv_mode_request(fd_local_operation op,int32_t value) {
-    if(freedv_usb_active())return false;
+    if(freedv_usb_active()){
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+        if(!local() || freedv_usb_finishing())return false;
+        return op==FD_LOCAL_VOLUME?freedv_usb_volume(value):radio_usb_request(op,value);
+#else
+        return false;
+#endif
+    }
     if(!freedv_mode_active() || !local() || !session)return false;
     fd_voice_status s=fd_session_observe(session);
     if(s.state!=FD_VS_RX || s.exit_requested){notice("Control available while receiving");return false;}

@@ -48,6 +48,9 @@ struct fd_voice_engine {
     fd_voice_stats stats;
 };
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t warm_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool warmed;
+static unsigned successful_warmups;
 static void initialize(void) { rade_initialize(); }
 static uint64_t ns(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
@@ -289,10 +292,23 @@ static bool warm(void) {
     if (r) rade_close(r);
     return ok;
 }
+/* Only cache successful preparation of the immutable code/model paths. Live
+ * encoder/decoder histories are always separate and are never shared. A failed
+ * preparation remains retryable rather than poisoning pthread_once forever. */
+static bool ensure_warm(bool *reused,unsigned *runs) {
+    pthread_mutex_lock(&warm_lock);
+    *reused=warmed;
+    if(!warmed && warm()){warmed=true;++successful_warmups;}
+    *runs=successful_warmups;
+    bool ok=warmed;
+    pthread_mutex_unlock(&warm_lock);
+    return ok;
+}
 fd_voice_engine *fd_voice_create(unsigned rate) {
     if (rate != 8000 && rate != 44100 && rate != 48000) return NULL;
     pthread_once(&init_once, initialize);
-    if (!warm()) return NULL;
+    bool warmup_reused;unsigned warmup_runs;
+    if (!ensure_warm(&warmup_reused,&warmup_runs)) return NULL;
     fd_voice_engine *e = calloc(1, sizeof(*e)); if (!e) return NULL;
     if (pthread_mutex_init(&e->lock, NULL)) { free(e); return NULL; }
     pthread_condattr_t attr; pthread_condattr_init(&attr); pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
@@ -311,6 +327,7 @@ fd_voice_engine *fd_voice_create(unsigned rate) {
     e->output_limit = 3*((maximum*rate+7999)/8000);
     if (e->output_limit > PCM || e->output_limit < rate/5) { fd_voice_destroy(e); return NULL; }
     e->stats.rade_creations = e->stats.encoder_creations = e->stats.decoder_creations = 1; e->stats.resampler_creations = 4;
+    e->stats.warmup_runs=warmup_runs;e->stats.warmup_reused=warmup_reused;
     if (pthread_create(&e->processor, NULL, process, e)) { fd_voice_destroy(e); return NULL; }
     e->processor_started = true;
     if (pthread_create(&e->synthesizer, NULL, synthesize, e)) { fd_voice_destroy(e); return NULL; }

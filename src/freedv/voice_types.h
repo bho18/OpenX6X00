@@ -18,7 +18,10 @@ typedef struct {
     uint64_t sequence, monotonic_ms;
     fd_ptt_observation ptt[FD_PTT_SOURCES];
 } fd_voice_observation;
-typedef enum { FD_LOCAL_FREQUENCY, FD_LOCAL_BAND, FD_LOCAL_VFO, FD_LOCAL_VOLUME, FD_LOCAL_MEMORY } fd_local_operation;
+typedef enum { FD_LOCAL_FREQUENCY, FD_LOCAL_BAND, FD_LOCAL_VFO, FD_LOCAL_VOLUME, FD_LOCAL_MEMORY,
+    FD_LOCAL_POWER, /* tenths of a watt, 1..100 */
+    FD_LOCAL_STEP   /* positive: next step; zero/negative: previous step */
+} fd_local_operation;
 typedef struct {
     int32_t frequency;
     unsigned vfo;

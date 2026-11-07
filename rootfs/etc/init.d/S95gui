@@ -33,6 +33,11 @@ start() {
 		exec 8>&-
 		return 0
 	fi
+	if pidof x6100_gui > /dev/null; then
+		echo "GUI is still shutting down; start refused"
+		exec 8>&-
+		return 1
+	fi
 	start-stop-daemon -S -b -q -m -p "$PIDFILE" -x "/usr/sbin/$DAEMON" 8>&-
 	status=$?
 	# Under its own name before the lock goes, or the next start would not see it yet
@@ -50,17 +55,20 @@ stop() {
 	start-stop-daemon -K -q -p "$PIDFILE"
 	status=$?
 	[ "$status" -eq 0 ] && rm -f "$PIDFILE"
-	result "$status"
 	# any loop the pid file does not name, then the GUI itself
 	killall -q "$DAEMON"
-	killall x6100_gui
+	killall -q -TERM x6100_gui
 	# Gone before a start that follows, which would take a dying loop for a running one: a loop ends
 	# once its GUI has
-	for _ in 1 2 3 4 5 6 7 8 9 10; do
-		pidof "$DAEMON" > /dev/null || break
+	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+		if ! pidof "$DAEMON" > /dev/null && ! pidof x6100_gui > /dev/null; then
+			result 0
+			return 0
+		fi
 		sleep 0.5
 	done
-	return "$status"
+	echo "FAIL: GUI did not complete bounded shutdown; restart refused"
+	return 1
 }
 
 case "$1" in
@@ -68,7 +76,7 @@ case "$1" in
 		"$1";;
 	restart|reload)
 		# no real reload: restart
-		stop; sleep 1; start;;
+		stop && start;;
 	*)
 		echo "Usage: $0 {start|stop|restart|reload}"
 		exit 1;;

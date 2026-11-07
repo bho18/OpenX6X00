@@ -20,6 +20,7 @@ from build_native_development import validate_build_record
 ROOT=Path(__file__).resolve().parents[2]
 BASELINE_SHA='a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab'
 USB_REQUIRED_COVERAGE = {
+    'operational_startup', 'operational_retuning', 'operational_exit',
     'prekey_audio', 'blocking_control', 'slow_pa_ack', 'direction_health',
     'rf_disabled', 'retained_release', 'stop_priority', 'device_loss',
     'sink_decode', 'hardware_rates', 'unsynchronized_rx',
@@ -35,18 +36,19 @@ USB_REQUIRED_COVERAGE = {
 }
 
 
-def verify_usb_integration(verification):
+def verify_usb_integration(verification, startup_version=None):
     """Only the complete, source-bound repeated campaign can promote an image."""
     evidence = verification.get('usb_integration', {})
     matrix = evidence.get('matrix', {})
-    if (evidence.get('status') != 'PASS' or evidence.get('contract_version') != 3 or
+    if (evidence.get('status') != 'PASS' or type(evidence.get('contract_version')) is not int or evidence['contract_version'] not in (3,4) or
+            (startup_version is not None and evidence['contract_version'] != startup_version) or
             type(evidence.get('usb_output_contract_version')) is not int or evidence['usb_output_contract_version']!=1 or
             type(matrix.get('usb_output_contract_version')) is not int or matrix['usb_output_contract_version']!=1 or
             evidence.get('evidence_cli', {}).get('status') != 'PASS' or
             matrix.get('status') != 'PASS' or
             matrix.get('complete_matrix') is not True or matrix.get('skipped') != [] or
             not USB_REQUIRED_COVERAGE <= set(matrix.get('coverage', []))):
-        raise ValueError('USB RF image requires session-contract v3 qualification and actual CLI checks')
+        raise ValueError('USB RF image requires a matching session contract, complete repeated campaign and actual CLI checks')
     cases = matrix.get('cases', {})
     if not cases or any(case.get('status') != 'PASS' for case in cases.values()):
         raise ValueError('USB integration cases must all execute and pass')
@@ -56,7 +58,7 @@ def verify_usb_integration(verification):
             raise ValueError('USB campaign does not match candidate ' + field)
 
 
-def verify_usb_builds(verification):
+def verify_usb_builds(verification, operational=False):
     """A latest PASS cannot hide a failed prerequisite build or changed inputs."""
     expected = {'host':'host', 'host-native':'host-native-validation',
                 'arm':'x6200-diagnostic', 'normal':'x6200-normal', 'x6100':'x6100'}
@@ -67,6 +69,8 @@ def verify_usb_builds(verification):
         record = validate_build_record(records[name])
         if record.get('variant') != variant:
             raise ValueError('Wrong prerequisite build variant: ' + name)
+        if operational and name in ('host-native','arm') and record.get('usb_voice_enabled') is not True:
+            raise ValueError('Operational candidate requires the USB voice build feature: '+name)
         for field in ('source_commit', 'source_tree_sha256', 'build_id'):
             if record.get(field) != verification.get(field):
                 raise ValueError('Prerequisite build does not match candidate ' + field + ': ' + name)
@@ -132,14 +136,17 @@ def main():
     p.add_argument('--debugfs',default='debugfs');p.add_argument('--e2fsck',default='e2fsck');p.add_argument('--qemu',default='qemu-arm')
     p.add_argument('--pulse-probe',type=Path)
     p.add_argument('--usb-rf',action='store_true',help='Separate USB headset RF development candidate; native guard stays blocked')
+    p.add_argument('--usb-voice',action='store_true',help='Operational USB FreeDV Beta with automatic startup readiness')
     a=p.parse_args()
+    if a.usb_rf and a.usb_voice:
+        p.error('Choose --usb-voice operational or --usb-rf diagnostic candidate')
     revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     if subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=ROOT,text=True).strip():
         raise ValueError('candidate source must be committed before image assembly')
     verification=json.loads(a.verification.read_text())
-    if a.usb_rf:
-        verify_usb_integration(verification)
-        verify_usb_builds(verification)
+    if a.usb_rf or a.usb_voice:
+        verify_usb_integration(verification,4 if a.usb_voice else 3)
+        verify_usb_builds(verification,operational=a.usb_voice)
     if verification.get('status')!='PASS' or verification.get('source_commit')!=revision:
         raise ValueError('passing verification for this exact source revision is required')
     # Route and collection corrections need relevant regression/build checks.
@@ -188,7 +195,7 @@ def main():
             'modem_fixture_sha256':sha(package/'fixtures/rade-continuous.raw'),
             'web_wheel_sha256':sha(a.web_wheel),'model_sha256':model,
             'physical_hand_ptt_release':'UNSUPPORTED by pinned documented API; never inferred from aggregate TX'}
-    if a.usb_rf:
+    if a.usb_rf or a.usb_voice:
         record.update(candidate_kind='USB headset / panel PTT RF development image',
                       hardware_status='RF_DISABLED_EVALUATION_REQUIRED',ready_for_guided_hardware_tests=True,
                       usb_rf_test_ready=True,native_mode_status='BLOCKED: unchanged native MCU contract guard',
@@ -196,6 +203,14 @@ def main():
                       usb_startup_contract_version=3,usb_output_contract_version=1,on_device_readiness_required=True,
                       rf_arm_policy='Local only, after the shared-core RF-disabled audio evaluation passes; panel PTT only; requested 1 W',
                       stock_baseband_lease_available=False,physical_rf_off_timing='UNMEASURED')
+    if a.usb_voice:
+        record.update(candidate_kind='USB headset / panel PTT FreeDV operational Beta',
+                      hardware_status='BETA_FIELD_VALIDATION_PENDING',
+                      validation_scope='Complete source-bound repeated diagnostic and operational software campaign passed; RF receive needs a known RADE V1 peer',
+                      usb_startup_contract_version=4,
+                      rf_arm_policy='Automatic after actual prepared-stream readiness and released panel PTT; panel PTT only; shared standard radio power control',
+                      startup_policy='No synthetic qualification turns or fixed idle; qualification not requested',
+                      operational_mode=True)
     if a.pulse_probe:record['pulse_probe_sha256']=sha(a.pulse_probe)
     metadata={**record,'target':'x6200-buildroot','sources':json.loads((ROOT/'tools/freedv/sources.json').read_text())}
     (package/'package-manifest.json').write_text(json.dumps(metadata,indent=2)+'\n')
@@ -211,13 +226,13 @@ def main():
     (out/'candidate-manifest.json').write_text(json.dumps({**record,'image_sha256':result['image_sha256'],
         'signature_key_preserved':result['signature_key_preserved'],'actual_image_abi':result['abi']['status']},indent=2)+'\n')
     guide=out/'guide/docs/freedv';shutil.copytree(ROOT/'docs/freedv',guide)
-    start=(ROOT/('docs/freedv/usb-rf-end-to-end.md' if a.usb_rf else 'docs/freedv/native-development-build.md')).read_text()
+    start=(ROOT/('docs/freedv/usb-rf-end-to-end.md' if a.usb_rf or a.usb_voice else 'docs/freedv/native-development-build.md')).read_text()
     start=start.replace('(native-half-duplex-qualification.md)',
                         '(guide/docs/freedv/native-half-duplex-qualification.md)')
     start=start.replace('(baseband-research/README.md)',
                         '(guide/docs/freedv/baseband-research/README.md)')
     (out/'START-HERE.md').write_text(start)
-    if a.usb_rf:
+    if a.usb_rf or a.usb_voice:
         subprocess.run([sys.executable,str(ROOT/'tools/freedv/build_usb_rf_kit.py'),
             '--image-manifest',str(out/'candidate-manifest.json'),
             '--output',str(out/'usb-rf-test-kit.zip')],check=True)

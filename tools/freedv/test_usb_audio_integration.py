@@ -30,7 +30,7 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require,
 from usb_transport_oracle import transport_chunks_for_turn,matched_decoder_control
 from usb_collector_contract import validate_collector_contract
 from usb_output_contract import validate_output_contract
-from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags
+from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags,operational_proof
 
 CASES = (
     'normal', 'rx-signal', 'block-key', 'stop-during-key', 'release-during-key',
@@ -52,7 +52,10 @@ CASES = (
     'backend-fixed-pipe',
     'backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait',
     'audio-controls','audio-gain-turn',
+    'operational-ready','operational-held-ptt','operational-retune','operational-receive-only',
+    'operational-leave-tx','operational-abort','operational-device-loss','operational-timeout',
 )
+OPERATIONAL_CASES = frozenset(name for name in CASES if name.startswith('operational-'))
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
 SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole', 'inactive-stale',
                 'inactive-radio-hole', 'inactive-radio-stale', 'rf-disabled', 'cold-resume',
@@ -60,6 +63,7 @@ SPEECH_CASES = {'normal', 'rx-signal', 'block-key', 'pa-delay', 'inactive-hole',
                 'capture-release-split','capture-release-held150','capture-close-tail120',
                 'backend-fixed-pipe','audio-gain-turn'}
 WAVEFORM_CASES = SPEECH_CASES | {'short-turn200'}
+RECEIVE_OUTPUT_CASES = {'rx-pause150','operational-retune'}
 COLD_CASES = {'cold-resume', 'cold-recovery-fails', 'cold-stop', 'cold-release', 'cold-qualification', 'cold-prekey-unexpected-tx', 'cold-rx-resume'}
 PA_CASES = {prefix+'pa-'+mode: {'phase':phase, 'mode':mode}
             for prefix, phase in [('', 'tx'), ('initial-', 'initial-rx'), ('return-', 'rx-return')]
@@ -340,7 +344,10 @@ def headset_oracle(root, trace_path, recording_started):
         samples[-1]['rx_captured']-samples[0]['rx_captured'],descriptor['fragsize']//2,rate=44100,stream='radio-rx')
     require(samples[-1]['rx_holes']==0,'RX capture contained a hole')
     return {'status':'PASS','scope':'Actual private-Pulse headphone monitor vs complete decoded tap; no RF',
-            'waveform':matched,'capture_frame_budget':progression,'rendered_frames':len(reference)//2,
+            'waveform':matched,'capture_frame_budget':progression,'rendered_frames':len(reference)//2,'observed_frames':len(observed)//2,
+            'artifacts':{name:{'path':str(path),'sha256':sha(path)} for name,path in
+                (('decoded',trace_path.with_name(trace_path.stem+'-decoded.raw')),('monitor',root/'headset-output.raw'),
+                 ('ledger',root/'headset-output.jsonl'),('trace',trace_path))},
             'leading_monitor_context_ms':200,'monitor_frame_start':begin,'alignment_budget':budget,'intelligibility':'UNASSESSED'}
 
 
@@ -485,8 +492,8 @@ def run_case(args):
         supervisor.start('speech-source', ['paplay', '--device=mic_fixture', *speech_args])
         radio_source=supervisor.start('radio-source', ['paplay', '--device=rf_fixture', *radio_args])
         rx_modem_args=(['--raw','--rate=48000','--format=s16le','--channels=1',str(args.modem)]
-                       if args.case=='rx-pause150' else None)
-        rx_fixture_seconds=args.modem.stat().st_size/96000 if args.case=='rx-pause150' else None
+                       if args.case in RECEIVE_OUTPUT_CASES else None)
+        rx_fixture_seconds=args.modem.stat().st_size/96000 if args.case in RECEIVE_OUTPUT_CASES else None
         time.sleep(.15)
         supervisor.require_running()
 
@@ -518,11 +525,11 @@ def run_case(args):
             nonlocal recorder,recording_started,headset_recorder,headset_recording_started
             # Admission is held at initial RX until these clients are ready.
             # They cannot mask the production controller's startup grants.
-            if args.case not in {'cold-idle','rx-pause150'}:
+            if args.case not in {'cold-idle',*RECEIVE_OUTPUT_CASES}:
                 recording_started=time.monotonic()
                 recorder=supervisor.start('modem-monitor',[monitor_binary,'--device','radio_sink_fixture.monitor','--rate','44100',
                     '--output',root/'radio-output.raw','--timing',root/'radio-output.jsonl'])
-            if args.case=='rx-pause150':
+            if args.case in RECEIVE_OUTPUT_CASES:
                 headset_recording_started=time.monotonic()
                 headset_recorder=supervisor.start('headset-monitor',[monitor_binary,'--device','alsa_output.usb-fixture.monitor',
                     '--rate','48000','--output',root/'headset-output.raw','--timing',root/'headset-output.jsonl'])
@@ -546,7 +553,7 @@ def run_case(args):
                 'cold_idle_unobserved':args.case=='cold-idle'}
             (root/'result/output-observer-ready').write_text(str(record['observer_admission']['ready_ns'])+'\n')
         child_env = dict(env, **injection_environment(args.case, root, args.fault_inject_so))
-        if args.case=='rx-pause150':
+        if args.case in RECEIVE_OUTPUT_CASES:
             require(0<rx_fixture_seconds<=30,'RX fixture exceeds its bounded orchestration horizon')
             child_env['USB_TEST_RX_FIXTURE_MS']=str(math.ceil(rx_fixture_seconds*1000))
         child_env['USB_TEST_OUTPUT_OBSERVER_BARRIER']='1'
@@ -580,14 +587,14 @@ def run_case(args):
                             'pulse_path':str(pulse_path),'pulse_sha256':sha(pulse_path)})
                         save_json(root/'audio-controls-partial.json',{'initial_sinks':controls_initial,'phases':controls_phases})
                         (root/'result'/('audio-controls-'+phase+'-ack')).write_text('Actual Pulse master readback retained\n')
-            if args.case=='rx-pause150' and not rx_source_started and 'RX_FIXTURE_READY' in text:
+            if args.case in RECEIVE_OUTPUT_CASES and not rx_source_started and 'RX_FIXTURE_READY' in text:
                 supervisor.stop(radio_source)
                 radio_source=supervisor.start('radio-modem-source',['paplay','--device=rf_fixture',*rx_modem_args])
                 supervisor.expect_exit(radio_source,exit_code=0)
                 rx_source_started=True
                 rx_fixture_started=time.monotonic()
                 record['rx_fixture_started_ms']=round(time.monotonic()*1000)
-            if (args.case=='rx-pause150' and rx_source_started and not rx_source_silenced and
+            if (args.case in RECEIVE_OUTPUT_CASES and rx_source_started and not rx_source_silenced and
                     radio_source.poll() is not None and 'RX_SOURCE_TO_SILENCE' in text):
                 require(rx_source_started,'RX requested source stop before its modem fixture began')
                 elapsed=time.monotonic()-rx_fixture_started
@@ -601,7 +608,7 @@ def run_case(args):
             if not changed and 'TX_ACTIVE' in text:
                 endpoints('endpoints-active.txt')
                 changed = True
-                if args.case == 'disconnect':
+                if args.case in ('disconnect','operational-device-loss'):
                     check_command(['pactl', 'unload-module', 'module-remap-source'], root, 'disconnect', commands, env)
             time.sleep(.02)
         supervisor.require_running(except_process=test)
@@ -637,6 +644,8 @@ def run_case(args):
                         turn['completion_interruption'].update(trace_file=path.name,trace_sha256=sha(path))
                     capture_closes.append(dict(turn,trace_file=path.name))
             rows.extend(trace_rows)
+        if args.case in OPERATIONAL_CASES:
+            record['operational']=operational_proof(rows,json.loads(completion_path.read_text()),harness,args.case)
         validate_headset_volume_flags(rows,required=args.case in {'audio-controls','audio-gain-turn'})
         require(sum(turn['rf_completed'] for turn in capture_closes)==harness.get('total_turns',harness['turns']),
                 'Finite capture closure did not cover every completed controller turn')
@@ -802,7 +811,7 @@ def run_case(args):
             record['actual_sink_decode'] = {'failures':0,
                 'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in record['actual_sink_turns']),
                 'synchronized_blocks':sum(turn['observed']['synchronized_blocks'] for turn in record['actual_sink_turns'])}
-        if args.case=='rx-pause150':
+        if args.case in RECEIVE_OUTPUT_CASES:
             require(harness['keys']==0 and harness['turns']==0,'RX resilience test attempted RF admission')
             record['actual_headset_output']=headset_oracle(root,trace_paths[0],headset_recording_started)
         record['status'] = 'PASS'

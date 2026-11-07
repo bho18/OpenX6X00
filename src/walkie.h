@@ -16,3 +16,5 @@ void walkie_init(lv_obj_t *main_screen_obj);
 bool walkie_on(void);
 /* A theme change: the screen, built once, is built again when next shown */
 void walkie_drop(void);
+/* Semantic navigation replay, after the previous radio mode has released. */
+void walkie_resume_entry(void);

@@ -15,6 +15,10 @@
 #include "lvgl/lvgl.h"
 
 lv_obj_t *waterfall_init(lv_obj_t *parent);
+/* GUI: recompute applied profile alignment/markers without saving preferences. */
+void waterfall_refresh_effective(void);
+/* Applied IF offset for the waterfall and its frequency scale; saved setting outside a profile. */
+int32_t waterfall_effective_if_shift(void);
 /* The height left under the spectrum: at start, and again when the spectrum changes */
 void waterfall_set_height(lv_coord_t h);
 

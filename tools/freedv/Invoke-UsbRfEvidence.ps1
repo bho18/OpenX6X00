@@ -52,9 +52,9 @@ try {
   if($stage.Value.status -eq 'BLOCKED'){throw "Report status conflicts with blocked stage $($stage.Name); return the ZIP for diagnosis"}
  }}
  if($testExit){throw "Helper exited $testExit despite a non-blocked report; return the ZIP for diagnosis"}
- if($manifest.usb_startup_contract_version -eq 3){
-  if($report.usb_startup_contract_version -ne 3 -or $report.stages.session.status -ne 'COMPLETE'){
-   throw 'Current kit requires a completed v3 runtime session; legacy or partial evidence cannot be accepted.'
+ if($manifest.usb_startup_contract_version -in @(3,4)){
+  if($report.usb_startup_contract_version -ne $manifest.usb_startup_contract_version -or $report.stages.session.status -ne 'COMPLETE'){
+   throw 'Current kit requires a completed runtime session matching its startup version; legacy or partial evidence cannot be accepted.'
   }
   $identity=$report.session_identity;$completion=$report.runtime_completion
   if(!$identity -or !$completion -or $identity.session_id -notmatch '^freedv-usb-[a-zA-Z0-9_-]{1,160}$' -or
@@ -67,6 +67,16 @@ try {
      ($completion.storage_errno -isnot [int] -and $completion.storage_errno -isnot [long]) -or
      $completion.storage_errno -ne 0){
    throw 'Runtime session/completion identity or durability evidence conflicts with this image/kit.'
+  }
+ }
+ if($manifest.usb_startup_contract_version -eq 4){
+  $ready=$report.runtime_startup_readiness
+  if($report.stages.startup.status -ne 'PASS' -or $report.stages.qualification.status -ne 'NOT_REQUESTED' -or
+     !$ready -or $ready.session_id -ne $identity.session_id -or $ready.build_id -ne $identity.build_id -or
+     $ready.source_commit -ne $identity.source_commit -or $ready.status -ne 'PASS' -or
+     $completion.operational -ne $true -or $completion.qualification_target -ne 0 -or
+     $completion.qualification_complete -ne $false){
+   throw 'Operational startup readiness or diagnostic qualification state conflicts with this image/kit.'
   }
  }
  if($report.status -eq 'READY_FOR_RF_TEST'){

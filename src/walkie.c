@@ -9,6 +9,7 @@
  */
 
 #include "walkie.h"
+#include "freedv/usb_navigation.h"
 #include "board.h"
 
 #include "styles.h"
@@ -621,6 +622,7 @@ static void no_dig_mode(Subject *subj, void *user_data) {
 }
 
 static void enter(void) {
+    if (freedv_navigation_request(FD_NAV_WALKIE, 0, 0, NULL)) return;
     if (!main_display_portrait(true)) {
         return;                                     /* fbdev: no portrait */
     }
@@ -661,6 +663,10 @@ static void on_walkie_change(Subject *subj, void *user_data) {
     } else if (!on && walkie_on()) {
         leave();
     }
+}
+
+void walkie_resume_entry(void) {
+    if (param_i_get(cfg_walkie) && !walkie_on()) enter();
 }
 
 /* A theme change (main_screen_set_theme()): made again with the new theme at the next enter() */

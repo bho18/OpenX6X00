@@ -81,6 +81,11 @@ class UsbReleaseGateTests(unittest.TestCase):
         evidence = self.evidence()
         verify_usb_integration(evidence)
         self.assertNotIn('hardware_qualified', evidence)
+        evidence['usb_integration']['contract_version']=4
+        verify_usb_integration(evidence,startup_version=4)
+        with self.assertRaises(ValueError):verify_usb_integration(evidence,startup_version=3)
+        evidence['usb_integration']['contract_version']=3
+        with self.assertRaises(ValueError):verify_usb_integration(evidence,startup_version=4)
 
 
     def test_single_run_or_debug_campaign_cannot_promote(self):

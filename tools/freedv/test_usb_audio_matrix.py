@@ -20,7 +20,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEAT
                                atomic_json, digest, sha, validate_campaign,
                                INFRASTRUCTURE_PREREQUISITES, validate_infrastructure_prerequisites, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
-                               host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run, USB_OUTPUT_CONTRACT_VERSION, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run)
+                               host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run, USB_OUTPUT_CONTRACT_VERSION, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run, validate_operational_run)
 from usb_test_support import run_bounded
 from usb_host_resources import run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES, MIN_END_HEADROOM_BYTES
 
@@ -37,6 +37,9 @@ def observed_transport_library():
 
 
 COVERAGE = {
+    'operational_startup':{'operational-ready','operational-held-ptt'},
+    'operational_retuning':{'operational-retune','operational-receive-only'},
+    'operational_exit':{'operational-leave-tx','operational-abort','operational-device-loss','operational-timeout'},
     'audio_controls':{'audio-controls','audio-gain-turn'},
     'backend_profiles':{'backend-fixed-pipe','io-pause150','rx-pause150'},
     'backend_timing_faults':{'backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'},
@@ -261,6 +264,7 @@ def main():
                        'actual_headset_output':details.get('actual_headset_output'),
                        'audio_controls':details.get('audio_controls'),
                        'audio_gain_turn':details.get('audio_gain_turn'),
+                       'operational':details.get('operational'),
                        'tail_backpressure':details.get('tail_backpressure'),
                        'capture_close':details.get('capture_close'),
                        'capture_source_boundary':details.get('capture_source_boundary'),
@@ -285,6 +289,7 @@ def main():
                         validate_output_contract_run(run,verify_files=True,expected_identity=identity)
                         validate_backend_profile_run(run,name,verify_files=True)
                         validate_observer_admission_run(run,name,verify_files=True)
+                        if name.startswith('operational-'):validate_operational_run(run,name,verify_files=True)
                         if name=='audio-controls':validate_audio_controls_run(run,verify_files=True)
                         if name=='audio-gain-turn':validate_audio_gain_turn_run(run,verify_files=True)
                     except ValueError as error:

@@ -14,6 +14,7 @@
 
 #include "band_names.h"
 #include "cfg/cfg_api.h"
+#include "freedv/mode.h"
 #include "dsp.h"
 #include "smeter.h"
 #include "params/params.h"
@@ -510,7 +511,8 @@ static void image_redraw(void) {
 }
 
 static void refresh_waterfall(void *arg) {
-    if (!ready || ++refresh_count < refresh_period) {
+    if (!ready || !obj || !lv_obj_is_valid(obj) ||
+            (!direct && (!img || !lv_obj_is_valid(img))) || ++refresh_count < refresh_period) {
         return;
     }
     refresh_count = 0;
@@ -533,12 +535,16 @@ void waterfall_refresh_period_set(uint8_t k) {
 
 /* ---- Where the picture is centred ---- */
 
+int32_t waterfall_effective_if_shift(void) {
+    return freedv_mode_profile() ? 0 : param_i_get(cfg_band_if_shift);
+}
+
 int32_t waterfall_view_shift(void) {
     if (!param_i_get(cfg_wf_mode)) {
         view_fixed = false;
         return 0;
     }
-    int32_t rc = cparam_i_get(cfg_fg_freq) - param_i_get(cfg_band_if_shift);
+    int32_t rc = cparam_i_get(cfg_fg_freq) - waterfall_effective_if_shift();
     int32_t vfo = cparam_i_get(cfg_fg_freq);
     int32_t half = SPAN_HZ / 2 / param_i_get(cfg_mode_zoom);
 
@@ -596,6 +602,9 @@ static void image_drawn_cb(lv_event_t *e) {
 /* ---- The VFO line and the passband ---- */
 
 static void update_middle_line(void) {
+    if (!vfo_line || !lv_obj_is_valid(vfo_line) || !filter_band || !lv_obj_is_valid(filter_band)) {
+        return;
+    }
     lv_coord_t width = theme_shape.mono ? 3 : zoom / 2 + 3;     /* 1bit: the paper halo of vfo_core_cb() */
     lv_coord_t vfo_x = (if_shift + waterfall_view_shift()) * zoom * WIDTH / SPAN_HZ;
 
@@ -604,11 +613,12 @@ static void update_middle_line(void) {
 
     /* The passband, same scale as the line: from the VFO up (USB), down
      * (LSB, CWR) or both ways (AM, FM), as on the spectrum */
-    int32_t low = subject_i_get((SubjectInt*)cfg_cur_filter_low);
-    int32_t high = subject_i_get((SubjectInt*)cfg_cur_filter_high);
+    const fd_qualified_profile *profile = freedv_mode_profile();
+    int32_t low = profile ? profile->rx_low_hz : subject_i_get((SubjectInt*)cfg_cur_filter_low);
+    int32_t high = profile ? profile->rx_high_hz : subject_i_get((SubjectInt*)cfg_cur_filter_high);
     int32_t from, to;
 
-    switch ((radio_mode_t) subject_i_get((SubjectInt*)cfg_cur_mode)) {
+    switch (profile ? radio_mode_usb_dig : (radio_mode_t) subject_i_get((SubjectInt*)cfg_cur_mode)) {
         case radio_mode_lsb:
         case radio_mode_lsb_dig:
         case radio_mode_cwr:
@@ -680,7 +690,7 @@ static void on_view_changed(Subject *subj, void *user_data) {
 static void on_if_shift_changed(Subject *subj, void *user_data) {
     skip_rows = 2;
     retuned = true;
-    if_shift = subject_i_get((SubjectInt *)subj);
+    if_shift = waterfall_effective_if_shift();
     radio_center_freq = cparam_i_get(cfg_fg_freq) - if_shift;
     update_middle_line();
 }
@@ -692,7 +702,20 @@ static void on_fg_freq_change(Subject *subj, void *user_data) {
 }
 
 static void on_mode_lo_offset_change(Subject *subj, void *user_data) {
-    mode_lo_offset = subject_i_get((SubjectInt *)subj);
+    mode_lo_offset = freedv_mode_profile() ? 0 : subject_i_get((SubjectInt *)cfg_mode_lo_offset);
+}
+
+void waterfall_refresh_effective(void) {
+    if (!obj || !lv_obj_is_valid(obj)) {
+        return;
+    }
+    /* Rows retain their RF coordinates. Re-anchor a Fixed view when ownership
+     * changes the effective IF/LO offsets, and discard in-flight old rows. */
+    view_fixed = false;
+    on_mode_lo_offset_change(NULL, NULL);
+    on_if_shift_changed(NULL, NULL);
+    wfp_full = true;
+    scheduler_put_coalesced(refresh_waterfall);
 }
 
 static void on_filter_change(Subject *subj, void *user_data) {

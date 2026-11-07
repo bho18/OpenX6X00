@@ -26,7 +26,8 @@ bool cfg_voice_resolve(fd_local_operation op,int32_t value,fd_voice_tuning *out)
         break;
     case FD_LOCAL_BAND: {
         auto band=BandsTable::get_by_id(value);
-        if(band.rc!=SUCCESS || cfg_sm.band_use(band.value.start_freq,band.value.stop_freq)==BAND_USE_NONE)return false;
+        if(band.rc!=SUCCESS || cfg_sm.band_use(band.value.start_freq,band.value.stop_freq)==BAND_USE_NONE ||
+            cfg_transverter_shift_for(band.value.start_freq) || cfg_transverter_shift_for(band.value.stop_freq))return false;
         break;
     }
     case FD_LOCAL_MEMORY:

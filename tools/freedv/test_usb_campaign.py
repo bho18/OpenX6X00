@@ -17,7 +17,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
                                immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
                                host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol, validate_capture_pipeline_tail_run, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run)
-from usb_test_campaign import validate_headset_volume_flags
+from usb_test_campaign import validate_headset_volume_flags, operational_proof, validate_operational_run
 
 
 SYNTHETIC_TRANSPORT_LIBRARY=b'synthetic-libsamplerate-gate-fixture'
@@ -526,6 +526,16 @@ def capture_case_fixture(case,root,identity=None):
     else:
         count=int(case in WAVEFORM_CASES)
         result={'harness':{'turns':count,'total_turns':count,'eoo':count,'fault':1},'capture_close':capture_close_fixture(count)}
+    if case.startswith('operational-'):
+        count=int(case=='operational-leave-tx');fault=10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
+        result['harness'].update(turns=count,total_turns=count,eoo=count,fault=fault,operational=True,
+            startup_ready=True,qualification_complete=False,qualification_turns=0,tx_timeout_seconds=30 if case=='operational-timeout' else 180,
+            physical_tx=False,rf_clear_confirmed=True,configuration_ready=True,tuning_revision=2 if case in ('operational-retune','operational-receive-only') else 1,
+            physical_ptt_pressed=case in ('operational-leave-tx','operational-abort','operational-device-loss','operational-timeout'),
+            physical_release_sequence=1 if case in ('operational-held-ptt','operational-retune','operational-receive-only') else 0,
+            rade_creations=1,encoder_creations=1,decoder_creations=1,rx_synthesis_blocks=4 if case=='operational-retune' else 0)
+        result['capture_close']=capture_close_fixture(count)
+        if count:sink_turn_fixture(result['capture_close'],False,root) # Produce raw finite-close fixture records.
     if case in WAVEFORM_CASES:
         result['actual_sink_turns']=sink_turn_fixture(result['capture_close'],case in SPEECH_CASES,root)
     else:result['actual_sink_turns']=[]  # Match the matrix summary's explicit default.
@@ -535,8 +545,9 @@ def capture_case_fixture(case,root,identity=None):
         'competing_monitor':profile_name=='monitor-competition','modem_sink_module':module,'null_norewinds':profile_name=='legacy-low-latency'}
     Path(root).mkdir(parents=True,exist_ok=True)
     (Path(root)/'default.pa').write_text('load-module '+module+' sink_name=radio_sink_fixture'+(' norewinds=1' if profile_name=='legacy-low-latency' else '')+'\n')
-    result.update(output_contract_fixture(root,result['harness'],identity))
+    result.update(output_contract_fixture(root,{**result['harness'],'fault':1} if case.startswith('operational-') else result['harness'],identity))
     attach_rf_windows_fixture(result,root)
+    if case.startswith('operational-'):operational_case_fixture(case,root,result)
     starts=[turn['start_ms'] for turn in result.get('actual_sink_turns',[])]
     ready=(min(starts+[1000])-10)*1000000;fixed=profile_name=='fixed-pipe'
     result['observer_admission']={'schema':'x6200.usb.observer-admission.v1','phase':'after-initial-RX-before-PTT',
@@ -549,6 +560,58 @@ def capture_case_fixture(case,root,identity=None):
             {'kind':'block','received_ns':ready-1,'frame_start':0,'frames':1}]
     (Path(root)/('headset-output.jsonl' if case=='rx-pause150' else 'radio-output.jsonl')).write_text(''.join(json.dumps(row)+'\n' for row in ledger))
     return result
+
+
+def operational_case_fixture(case,root,result):
+    """Synthetic v4 records for metadata gate tests; never hardware evidence."""
+    path=Path(root)/'result/freedv-usb-session-unit.jsonl';cp=path.with_name(path.stem+'-completion.json')
+    rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    header=next(row for row in rows if row.get('kind')=='session');key={name:header[name] for name in ('session_id','source_commit','build_id')}
+    header.update(schema='x6200.usb-audio.v4',usb_startup_contract_version=4,operational=True,qualification_target=0)
+    if case=='operational-timeout':
+        rows.extend([dict(kind='event',event='state',state=3,ms=1000),dict(kind='event',event='first-fault',state=3,ms=31000,status=10,operation='turn-deadline')])
+        h=result['harness'];h['first_fault_origin']='turn-deadline';h['rf_intervals']=[dict(on_before_ns=1000000000,off_after_ns=31000000000)]
+    ready=dict(kind='startup-readiness',schema='x6200.usb.operational-readiness.v1',status='PASS',ready_ms=100,
+               generation=1,tuning_revision=1,radio_sequence=20,tx_eligible=case!='operational-receive-only',ptt_release_sequence=int(case=='operational-held-ptt'),
+               ptt=False,rf_valid=True,rf_tx=False,configuration_ready=True,captures_fresh=True,buffers_ready=True,
+               headset_id='usb-fixture',headset_name='USB fixture',source='usb-source',sink='usb-sink',**key)
+    rows.insert(1,ready);h=result['harness'];completion=json.loads(cp.read_text())
+    fields=dict(usb_startup_contract_version=4,state=5 if h['fault']>1 else 6,fault=h['fault'],rf_disabled=False,rf_valid=True,rf_tx=False,
+                rf_clear_confirmed=True,operational=True,startup_ready=True,leaving=True,configuration_ready=True,tx_eligible=True,
+                tuning_revision=h['tuning_revision'],tx_timeout_seconds=h['tx_timeout_seconds'],qualification_target=0,
+                qualification_complete=False,qualification_turns=0)
+    samples=[row for row in rows if row.get('kind')=='sample'];samples[-1].update(fields)
+    for row in rows:
+        if row.get('kind')=='capture-close':row.update(close_trigger='navigation',physical_release_sequence=0)
+        if row.get('event')=='capture-release-observed':row['event']='capture-navigation-observed'
+    if case=='operational-timeout':
+        samples[-1]['ms']=31100;completion['last_sample_ms']=31100
+    completion.update(fields,completion_reason='fault' if h['fault']>1 else 'stop' if h['fault'] else 'navigation',
+                      finalized_ms=completion['last_sample_ms']+1,trace_rows=sum(row.get('kind') in ('event','sample') for row in rows),
+                      events_dropped=0,trace_history_truncated=False,storage_errno=0)
+    path.write_text(''.join(json.dumps(row)+'\n' for row in rows));atomic_json(cp,completion)
+    atomic_json(path.with_name(path.stem+'-readiness.json'),ready)
+    from usb_output_contract import validate_output_contract
+    summary=validate_output_contract(rows,completion)
+    result['output_contract']['sessions']=[dict(summary,trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp))]
+    result['operational']=operational_proof(rows,completion,h,case)
+    if case=='operational-retune':result['actual_headset_output']=operational_headset_fixture(root,path)
+
+
+def operational_headset_fixture(root,trace):
+    """Numerical artifact fixture only; real RX is executed by the C harness."""
+    from usb_test_support import modem_waveform_match
+    root=Path(root);decoded=trace.with_name(trace.stem+'-decoded.raw');monitor=root/'headset-output.raw';ledger=root/'headset-output.jsonl'
+    samples=array('h',((index*1237+index*index*31)%16001-8000 for index in range(48000)))
+    if sys.byteorder!='little':samples.byteswap()
+    raw=samples.tobytes();decoded.write_bytes(raw);observed=b'\0\0'*9600+raw+b'\0\0'*9600;monitor.write_bytes(observed)
+    ledger.write_text(json.dumps(dict(kind='completion',error=0))+'\n')
+    matched=modem_waveform_match(raw,48000,observed,48000,expected_gain=1.0,maximum_lag_ms=1000)
+    return dict(status='PASS',scope='Synthetic numerical RX gate fixture; no controller executed',waveform=matched,
+        capture_frame_budget=dict(status='PASS'),rendered_frames=len(raw)//2,observed_frames=len(observed)//2,
+        monitor_frame_start=0,alignment_budget=dict(maximum_lag_ms=1000),
+        artifacts={name:dict(path=str(path),sha256=sha(path)) for name,path in
+            (('decoded',decoded),('monitor',monitor),('ledger',ledger),('trace',trace))})
 
 
 def tail_backpressure_fixture():
@@ -1944,6 +2007,62 @@ class BuildPrerequisiteHistoryTests(unittest.TestCase):
         log.write_text('accidentally overwritten')
         with self.assertRaises(ValueError):
             builder.validate_build_record(record)
+
+
+class OperationalEvidenceTests(unittest.TestCase):
+    def fixture(self,case,root):
+        run=capture_case_fixture(case,root)
+        run['case_record_path']=str(Path(root)/'case-result.json')
+        return run
+
+    def test_new_operational_cases_have_complete_bound_evidence(self):
+        from test_usb_audio_integration import OPERATIONAL_CASES
+        for case in sorted(OPERATIONAL_CASES):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture(case,directory)
+                validate_operational_run(run,case,verify_files=True)
+                validate_output_contract_run(run,verify_files=True)
+                validate_backend_profile_run(run,case,verify_files=True)
+                validate_capture_close_run(run,verify_files=True)
+
+    def test_operational_retune_requires_unchanged_actual_headset_pcm(self):
+        for mutation in ('missing','silent-monitor','changed-tap'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture('operational-retune',directory)
+                if mutation=='missing':run.pop('actual_headset_output')
+                else:
+                    name='monitor' if mutation=='silent-monitor' else 'decoded'
+                    artifact=run['actual_headset_output']['artifacts'][name];path=Path(artifact['path'])
+                    path.write_bytes(b'\0'*path.stat().st_size)
+                    if mutation=='silent-monitor':artifact['sha256']=sha(path) # Updated metadata cannot hide lost speech.
+                with self.assertRaises(ValueError):validate_operational_run(run,'operational-retune',verify_files=True)
+
+    def test_timeout_requires_actual_30_second_rf_window(self):
+        for mutation in ('old20','late','setting'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture('operational-timeout',directory)
+                if mutation=='setting':run['harness']['tx_timeout_seconds']=20
+                else:run['harness']['rf_intervals'][0]['off_after_ns']=21000000000 if mutation=='old20' else 34000000000
+                with self.assertRaises(ValueError):
+                    validate_operational_run(run,'operational-timeout',verify_files=True)
+
+    def test_graceful_exit_cannot_be_relabelled_as_a_physical_release_or_abort(self):
+        for mutation in ('missing','counter','reason','codec','receipt','readiness'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as directory:
+                run=self.fixture('operational-leave-tx',directory)
+                if mutation=='missing':run.pop('operational')
+                elif mutation=='counter':run['harness']['physical_release_sequence']=1
+                elif mutation=='reason':run['operational']['completion_reason']='stop'
+                elif mutation=='codec':run['harness']['rade_creations']=2
+                elif mutation=='receipt':
+                    path=Path(directory)/'result/freedv-usb-session-unit.jsonl'
+                    rows=[json.loads(line) for line in path.read_text().splitlines()]
+                    for row in rows:
+                        if row.get('kind')=='capture-close':row['close_trigger']='ptt-release'
+                    path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                else:(Path(directory)/'result/freedv-usb-session-unit-readiness.json').unlink()
+                with self.assertRaises((ValueError,OSError)):
+                    validate_operational_run(run,'operational-leave-tx',verify_files=True)
 
 
 class AudioControlEvidenceTests(unittest.TestCase):

@@ -195,7 +195,7 @@ def main():
         controller = work / 'freedv_usb_audio_test'
         runner = work / 'freedv_voice_runner'
         run([*common, ROOT / 'tools/freedv/usb_audio_integration_test.c', ROOT / 'src/freedv/usb_audio.c',
-             ROOT / 'src/freedv/usb_evidence_store.c', *engine, *links, '-o', controller], 'controller-build.log', timeout=180)
+             ROOT / 'src/freedv/usb_evidence_store.c', ROOT / 'src/freedv/usb_headsets.c', *engine, *links, '-o', controller], 'controller-build.log', timeout=180)
         run([*common, ROOT / 'tools/freedv/voice_runner.c', *engine, *links, '-o', runner], 'runner-build.log', timeout=180)
         fixture_pin = PINS['rade_c']['modem_fixture']
         frozen = ROOT / fixture_pin['path']

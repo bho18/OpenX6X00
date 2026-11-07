@@ -55,9 +55,12 @@ def main():
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--usb-resource-reclaim-root',type=Path,action='append',default=[],help='Task-owned cache roots passed explicitly to the USB qualification resource prerequisite')
     parser.add_argument('--usb-test', action='store_true', help='Separate GUI USB headset RF development mode')
+    parser.add_argument('--usb-voice', action='store_true', help='Operational FreeDV USB headset mode in the normal waterfall UI')
     args = parser.parse_args()
     if args.usb_test and args.variant not in ('host-native-validation','x6200-diagnostic'):
         parser.error('--usb-test is restricted to X6200 diagnostic or host-native validation builds')
+    if args.usb_voice and args.variant not in ('host-native-validation', 'x6200-diagnostic'):
+        parser.error('--usb-voice is restricted to X6200 diagnostic or host-native validation builds')
     work = args.work.resolve()
     if work == ROOT or ROOT in work.parents:
         parser.error('--work must be outside the source checkout')
@@ -79,7 +82,7 @@ def main():
     before, tree = source_snapshot()
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True, timeout=10).strip()
     record = {'schema_version': 2, 'status': 'RUNNING', 'variant': args.variant,
-              'usb_test_enabled':args.usb_test,
+              'usb_test_enabled':args.usb_test, 'usb_voice_enabled':args.usb_voice or args.usb_test,
               'source_commit': revision, 'source_tree_sha256': tree,
               'source_files': before, 'build_id': args.build_id, 'commands': [],
               'hardware_qualified': False, 'hardware_status': 'BLOCKED',
@@ -100,7 +103,7 @@ def main():
     history = None
     try:
         identity = _build_identity(args, revision, tree)
-        plan = {'profile': 'build', 'variant': args.variant, 'usb_test_enabled': args.usb_test}
+        plan = {'profile': 'build', 'variant': args.variant, 'usb_test_enabled': args.usb_test, 'usb_voice_enabled':args.usb_voice or args.usb_test}
         record.update(build_identity=identity, build_plan=plan)
         history = Campaign(work/'build-campaigns', identity, plan, attempt, args.build_id)
         _perform_build(args, parser, work, attempt, record, before, tree, revision, host, host_native)
@@ -160,7 +163,7 @@ def _build_identity(args, revision, tree):
                 add(label+'/'+str(path.relative_to(directory)), path)
     return {'source_commit': revision, 'source_tree_sha256': tree,
             'variant': args.variant, 'build_id': args.build_id,
-            'usb_test_enabled': args.usb_test, 'jobs': args.jobs,
+            'usb_test_enabled': args.usb_test, 'usb_voice_enabled':args.usb_voice or args.usb_test, 'jobs': args.jobs,
             'control_pin': CONTROL_PIN, 'dependency_inputs_sha256': inputs,
             'usb_host_resource_configuration':host_resource_configuration('qualification',
                 args.usb_resource_reclaim_root or (ROOT,args.work.resolve())) if args.usb_test and args.variant=='host-native-validation' else None}
@@ -179,7 +182,7 @@ def _validate_build_record(record, verify_files=True):
             not record.get('build_promotion_eligible') or record.get('source_changed_during_build')):
         raise ValueError('Build is failed, incomplete, source-changed or blocked by prerequisite history')
     identity = record.get('build_identity', {})
-    if any(identity.get(key) != record.get(key) for key in ('source_commit','source_tree_sha256','variant','build_id','usb_test_enabled')):
+    if any(identity.get(key) != record.get(key) for key in ('source_commit','source_tree_sha256','variant','build_id','usb_test_enabled','usb_voice_enabled')):
         raise ValueError('Build history identity differs from the recorded source/configuration')
     if record.get('build_history', {}).get('plan') != record.get('build_plan') or record.get('build_plan', {}).get('profile') != 'build':
         raise ValueError('Build prerequisite plan is missing or inconsistent')
@@ -201,7 +204,8 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
     env = os.environ.copy()
     options = ['-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DFREEDV_SOURCE_COMMIT=' + revision,
                '-DFREEDV_BUILD_ID=' + args.build_id]
-    options += ['-DENABLE_FREEDV_USB_TEST=' + ('ON' if args.usb_test else 'OFF')]
+    options += ['-DENABLE_FREEDV_USB_TEST=' + ('ON' if args.usb_test else 'OFF'),
+                '-DENABLE_FREEDV_USB_VOICE=' + ('ON' if args.usb_voice or args.usb_test else 'OFF')]
     if host:
         options += ['-DHOST_BUILD=ON', '-DENABLE_FREEDV_DIAGNOSTICS=ON',
                     '-DFREEDV_HOST_TEST_PROFILE=' + ('ON' if host_native else 'OFF')]
@@ -327,7 +331,7 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
             raise ValueError('CTest executed no FreeDV tests')
     if host_native:
         checks = {
-            'voice-engine': [work / 'build/freedv_voice_engine_test', '--turns', '3'],
+            'voice-engine': [work / 'build/freedv_voice_engine_test', '--turns', '3', '--cycles', '2'],
             'native-stream': [work / 'build/freedv_native_stream_test', '--unpaced'],
             'stream-fixture': [work / 'build/freedv_native_stream_fixture_test', args.codec_fixture.resolve()],
             'codec-adapter': [work / 'build/freedv_native_audio_codec_adapter_test', args.codec_fixture.resolve()],

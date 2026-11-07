@@ -78,7 +78,7 @@ class CollectionTests(unittest.TestCase):
     def collect_fixture(self, root, fault=1, rate=None, decoder_failure=False, rows=None, manifest_fields=None,
                         active_worker=False, immutable_fault=None, decoded_success=False,
                         completion=None, pointer=None, inventory_status='USB_DUPLEX_CANDIDATE',
-                        extra_trace=None, journal=None, mic_frames=480):
+                        extra_trace=None, journal=None, mic_frames=480, readiness=None):
         traces=root/'traces';traces.mkdir()
         (root/'proc').mkdir()
         if rows is None:
@@ -90,6 +90,8 @@ class CollectionTests(unittest.TestCase):
         if completion is not None:
             (traces/'freedv-usb-fixture-completion.json').write_text(
                 completion if isinstance(completion, str) else json.dumps(completion))
+        if readiness is not None:
+            (traces/'freedv-usb-fixture-readiness.json').write_text(json.dumps(readiness))
         if extra_trace is not None:
             (traces/'freedv-usb-newer.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in extra_trace))
         if immutable_fault:
@@ -367,6 +369,81 @@ class CurrentSessionTests(unittest.TestCase):
     def fault(self, origin='capture-not-resumed-after-preparation', **fields):
         return dict(kind='first-fault', first_fault=dict(code=17,origin=origin,stream='mic'), **self.identity, **fields)
 
+    def operational_fixture(self, root, *, ready=True, completion_fields=None, readiness_fields=None,
+                            manifest_version=4, schema_version=4, fault=0, receive_only=False):
+        receipt = dict(kind='startup-readiness', schema='x6200.usb.operational-readiness.v1',
+                       status='PASS', ready_ms=200, generation=1, tuning_revision=7,
+                       radio_sequence=30, ptt_release_sequence=4, ptt=False, rf_valid=True,
+                       rf_tx=False, configuration_ready=True, captures_fresh=True, buffers_ready=True,
+                       tx_eligible=not receive_only, headset_id='usb-fixture', headset_name='USB fixture', source='usb_mic', sink='usb_headphones',
+                       **self.identity)
+        receipt.update(readiness_fields or {})
+        final = dict(kind='sample', usb_startup_contract_version=4, ms=1000, state=5 if fault > 1 else 6, fault=fault,
+                     generation=9, rf_disabled=receive_only, rf_valid=True, rf_tx=False, rf_clear_confirmed=True,
+                     qualification_complete=False, qualification_target=0, qualification_turns=0, turns=0,
+                     operational=True, startup_ready=ready, leaving=True, configuration_ready=True, tx_eligible=not receive_only,
+                     tuning_revision=7, tx_timeout_seconds=180)
+        header = dict(kind='session', schema=f'x6200.usb-audio.v{schema_version}',
+                      usb_startup_contract_version=schema_version, usb_output_contract_version=1,
+                      operational=True, qualification_target=0, **self.identity)
+        completion = {key:value for key,value in final.items() if key not in ('kind', 'ms', 'generation')}
+        completion.update(completion_reason='fault' if fault > 1 else 'navigation')
+        completion.update(completion_fields or {})
+        rows = [header, *([receipt] if ready else []), final]
+        return self.fixture(root, rows=rows, completion_fields=completion,
+                            readiness=receipt if ready else None,
+                            manifest_fields=dict(usb_startup_contract_version=manifest_version))
+
+    def test_operational_readiness_is_distinct_from_diagnostic_qualification(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,output,_ = self.operational_fixture(Path(temp))
+            self.assertEqual(result['status'], 'COLLECTED_NO_SDR_RECORDING')
+            self.assertEqual(result['stages']['startup']['status'], 'PASS')
+            self.assertEqual(result['stages']['qualification']['status'], 'NOT_REQUESTED')
+            self.assertEqual(result['stages']['audio']['status'], 'OPERATIONAL_STARTUP_READY')
+            self.assertEqual(result['runtime_completion']['completion_reason'], 'navigation')
+            self.assertFalse(result['runtime_completion']['qualification_complete'])
+            self.assertTrue((output/'runtime-readiness.json').exists())
+            self.assertFalse(result['ready_for_rf_test'])
+            self.assertFalse(result['rf_tested'])
+
+    def test_operational_receive_only_readiness_is_not_diagnostic_qualification(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,_,_ = self.operational_fixture(Path(temp), receive_only=True)
+            self.assertEqual(result['status'], 'COLLECTED_NO_SDR_RECORDING')
+            self.assertTrue(result['rf_disabled'])
+            self.assertEqual(result['stages']['startup']['status'], 'PASS')
+            self.assertEqual(result['stages']['qualification']['status'], 'NOT_REQUESTED')
+            self.assertFalse(result['runtime_startup_readiness']['tx_eligible'])
+            self.assertFalse(result['ready_for_rf_test'])
+
+    def test_operational_missing_readiness_is_blocked_without_losing_completion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,_,_ = self.operational_fixture(Path(temp), ready=False, fault=1)
+            self.assertEqual(result['status'], 'BLOCKED')
+            self.assertEqual(result['stages']['session']['status'], 'COMPLETE')
+            self.assertEqual(result['stages']['startup']['status'], 'BLOCKED')
+
+    def test_operational_contract_cannot_claim_qualification_or_ignore_readiness(self):
+        cases = [dict(completion_fields=dict(qualification_complete=True)),
+                 dict(completion_fields=dict(qualification_target=3)),
+                 dict(readiness_fields=dict(ptt=True)), dict(readiness_fields=dict(captures_fresh=False)),
+                 dict(readiness_fields=dict(radio_sequence=True)),
+                 dict(readiness_fields=dict(source_commit='f'*40)),
+                 dict(completion_fields=dict(tx_timeout_seconds=20)),
+                 dict(completion_fields=dict(completion_reason='unknown'))]
+        for change in cases:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temp:
+                result,output,_ = self.operational_fixture(Path(temp), **change)
+                self.assertEqual(result['status'], 'BLOCKED')
+                self.assertTrue((output/'runtime-completion.json').exists())
+
+    def test_operational_and_diagnostic_versions_cannot_be_mixed(self):
+        for manifest,schema in ((3,4), (4,3)):
+            with self.subTest(manifest=manifest), tempfile.TemporaryDirectory() as temp:
+                result,_,_ = self.operational_fixture(Path(temp), manifest_version=manifest, schema_version=schema)
+                self.assertEqual(result['status'], 'BLOCKED')
+
     def test_current_closed_session_is_ready_without_claiming_rf(self):
         with tempfile.TemporaryDirectory() as temp:
             result,output,_=self.fixture(Path(temp))
@@ -640,6 +717,15 @@ class KitContractTests(unittest.TestCase):
                     self.assertEqual(kit[name],manifest[name])
                 for name,digest in kit['files'].items():
                     self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(),digest)
+            manifest['usb_startup_contract_version']=4
+            path.write_text(json.dumps(manifest))
+            operational_command=[*command[:-1],str(root/'operational-kit.zip')]
+            accepted=subprocess.run(operational_command,capture_output=True,text=True,timeout=15)
+            self.assertEqual(accepted.returncode,0,accepted.stderr)
+            with zipfile.ZipFile(root/'operational-kit.zip') as z:
+                kit=json.loads(z.read('rf-test-manifest.json'))
+                self.assertEqual(kit['usb_startup_contract_version'],4)
+                self.assertEqual(kit['usb_output_contract_version'],1)
 
 
 @unittest.skipIf(sys.platform == 'win32', 'The radio CLI uses Linux /tmp.')

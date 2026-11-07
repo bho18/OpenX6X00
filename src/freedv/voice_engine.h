@@ -18,9 +18,11 @@ typedef struct {
     unsigned input_depth, output_depth, input_high_water, output_high_water;
     unsigned failures, rade_creations, encoder_creations, decoder_creations;
     unsigned resampler_creations, worker_creations;
+    unsigned warmup_runs; /* Successful disposable process-wide warm-ups. */
+    bool warmup_reused;
     bool synchronized, finished, cancelled;
 } fd_voice_stats;
-/* Prepare/warm disposable contexts, then allocate one live context and retained
+/* Warm immutable processing paths once successfully per process, then allocate one live context and retained
  * workers. No radio, device, filesystem, or per-turn recording. */
 fd_voice_engine *fd_voice_create(unsigned audio_rate);
 /* Coordinator calls transition only after fencing external audio callbacks.

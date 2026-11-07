@@ -17,8 +17,14 @@
 #include "util.hpp"
 
 #include "cfg/settings_manager.h"
+#include "freedv/mode.h"
+#include "freedv/usb_ui.h"
+#include "freedv/writer_gate.h"
+#include "scheduler.h"
+#include <cmath>
 
 extern "C" {
+#include "front_keys.h"
 #include "cluster/client.h"
 #include "cluster_column.h"
 #include "msg_box.h"
@@ -171,6 +177,37 @@ void controls_encoder_update(cfg_ctrl_t ctrl, int32_t diff, std::string &msg) {
     char  *buf  = msg.data();
     size_t size = msg.capacity();
     int32_t i;
+
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+    struct DisplayScope {
+        bool entered = false;
+        ~DisplayScope() { if (entered) fd_writer_voice_end(); }
+    } display_scope;
+    if (freedv_usb_active() && diff &&
+        (ctrl == CTRL_WF_REF || ctrl == CTRL_WF_MODE)) {
+        if (freedv_usb_finishing() || !scheduler_on_gui_thread() || !front_keys_voice_local_event() ||
+            !(display_scope.entered = fd_writer_voice_begin())) diff = 0;
+    }
+    if (freedv_usb_active() && diff && ctrl == CTRL_SPECTRUM_FACTOR) {
+        snprintf(buf, size, "Zoom fixed while FreeDV is active");
+        return;
+    }
+    if (freedv_usb_active() && ctrl == CTRL_PWR) {
+        int target = (int)std::lround(cfg_sm.p_pwr.get() * 10.0f) + diff;
+        target = target < 1 ? 1 : target > 100 ? 100 : target;
+        if (diff) freedv_mode_request(FD_LOCAL_POWER, target);
+        snprintf(buf, size, "Power: %0.1f W", cfg_sm.p_pwr.get());
+        return;
+    }
+    if (freedv_usb_active() && ctrl == CTRL_VOL) {
+        if (diff) freedv_usb_volume(diff);
+        unsigned percent = 0; bool muted = false;
+        if (freedv_usb_volume_percent(&percent, &muted))
+            snprintf(buf, size, "Headphones: %u%%%s", percent, muted ? " (muted)" : "");
+        else snprintf(buf, size, "Headphones: preparing");
+        return;
+    }
+#endif
 
     if (from_table(ctrl, diff, buf, size)) {
         return;

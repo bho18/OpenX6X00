@@ -68,6 +68,7 @@
 #include "dialog_cluster.h"
 #include "app_sstv.h"
 #include "walkie.h"
+#include "freedv/usb_navigation.h"
 #include "winlink.h"
 
 /* LVGL draws the areas it refreshes here, then flushes them to the panel */
@@ -79,6 +80,13 @@ encoder_t                   *mfk;
 static lv_color_t           draw_mem[DISP_BUF_SIZE];
 static lv_disp_draw_buf_t   draw_buf;
 static lv_disp_drv_t        disp_drv;
+
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+static void terminate_signal(int sig) {
+    (void)sig;
+    freedv_navigation_signal_terminate();
+}
+#endif
 
 #if USE_DRM
 /* Transparent screen: LVGL cleared the whole draw buffer (6 MB) before every area it redraws,
@@ -311,6 +319,7 @@ static void gui_loop(void) {
 
         event_obj_check();
         scheduler_work();
+        freedv_navigation_tick();
 
         int64_t next = start + lv_timer_handler();
 #if USE_DRM
@@ -339,6 +348,10 @@ static void gui_loop(void) {
 
 int main(void) {
     scheduler_init();   /* this is the GUI thread */
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+    signal(SIGTERM, terminate_signal);
+    signal(SIGINT, terminate_signal);
+#endif
     start_trace("GUI start, %s", VERSION);
     setenv("X6100_FW", strrchr(VERSION, 'v') + 1, 1);   /* the helpers' User-Agent (x6100-field, spots) */
     clock_tz_init();

@@ -27,6 +27,8 @@ void mem_save(uint16_t id);
 lv_obj_t * main_screen();
 void main_screen_notify_rx_tx(bool tx);
 void main_screen_notify_low_power(bool is_low);
+/* Temporary owned profiles also change scale/spot alignment without cfg edits. */
+void main_screen_refresh_effective(void);
 
 /* Another theme, live (Settings, the remote) */
 void main_screen_set_theme(const char *name);

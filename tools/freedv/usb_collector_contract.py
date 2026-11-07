@@ -58,7 +58,10 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
     require(samples, 'Actual C controller produced no state samples for the collector contract')
     original = {str(path.relative_to(runtime)):sha(path) for path in runtime.rglob('*')
                 if path.is_file() and path.suffix in ('.json', '.jsonl')}
-    manifest = dict(usb_startup_contract_version=3, usb_output_contract_version=1, on_device_readiness_required=True,
+    sessions = [row for row in rows if row.get('kind') == 'session']
+    require(len(sessions) == 1, 'Collector contract needs exactly one controller session')
+    operational = sessions[0].get('operational') is True
+    manifest = dict(usb_startup_contract_version=4 if operational else 3, usb_output_contract_version=1, on_device_readiness_required=True,
                     firmware_commit=expected_source_commit, build_id=expected_build_id,
                     gui_sha256=expected_binary_sha256)
     output.mkdir(parents=True)
@@ -75,7 +78,7 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
                 'Production collector lost the actual C first fault')
     elif not storage_failure_expected:
         expected = ('READY_FOR_RF_TEST' if last['rf_disabled'] and last['qualification_complete'] else
-                    'COLLECTED_NO_SDR_RECORDING' if last['qualification_complete'] else 'BLOCKED')
+                    'COLLECTED_NO_SDR_RECORDING' if last['qualification_complete'] or operational else 'BLOCKED')
         require(result['status'] == expected, 'Production collector misclassified actual controller result: '+str(result))
     require(result['rf_tested'] is False and result['rf_recording_decoded'] is False,
             'Simulated controller evidence was promoted to RF validation')

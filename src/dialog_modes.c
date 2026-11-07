@@ -65,11 +65,7 @@ static const struct {
     {"SSTV", "", ACTION_APP_SSTV, -1, "image"},
     {"WeFax", "", ACTION_APP_WEFAX, -1, "image"},
     {"NavTex", "", ACTION_APP_NAVTEX, -1, "navtex"},
-#ifdef ENABLE_FREEDV_DIAGNOSTICS
-    {"FreeDV test", "RADE V1 candidate", ACTION_APP_FREEDV, -1, "text"},
-#else
-    {"FreeDV", "RADE V1", ACTION_APP_FREEDV, -1, "text"},
-#endif
+    {"FreeDV", "", ACTION_APP_FREEDV, -1, "text"},
 };
 
 #define MODES_N ((int)(sizeof(modes) / sizeof(modes[0])))
@@ -228,11 +224,11 @@ static void construct_cb(lv_obj_t *parent) {
         lv_obj_t *name = lv_label_create(t);
         lv_obj_set_style_text_font(name, &sony_22, 0);
         lv_label_set_text(name, modes[i].name);
-        lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, -22);
+        lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, modes[i].action == ACTION_APP_FREEDV ? -12 : -22);
 
         lv_obj_t *note = lv_label_create(t);
         lv_obj_set_style_text_font(note, &sony_16, 0);
-        lv_label_set_text(note, i == last_used ? "last used" : modes[i].note);
+        lv_label_set_text(note, modes[i].action == ACTION_APP_FREEDV ? "" : i == last_used ? "last used" : modes[i].note);
         lv_obj_align(note, LV_ALIGN_BOTTOM_MID, 0, -4);
     }
 
@@ -256,7 +252,7 @@ static void construct_cb(lv_obj_t *parent) {
         lv_obj_t *note = lv_label_create(row);
         lv_obj_set_style_text_font(note, &sony_22, 0);
         lv_obj_set_style_text_color(note, TC(text_dim), 0);
-        lv_label_set_text(note, i == last_used ? "last used" : modes[i].note);
+        lv_label_set_text(note, modes[i].action == ACTION_APP_FREEDV ? "" : i == last_used ? "last used" : modes[i].note);
         lv_obj_align(note, LV_ALIGN_RIGHT_MID, -22, 0);
     }
 

@@ -13,6 +13,7 @@
 #include "spectrum_view.h"
 
 #include "cfg/cfg_api.h"
+#include "freedv/mode.h"
 #include "navtex_window.h"
 #include "wefax_window.h"
 #include "dsp.h"
@@ -586,6 +587,9 @@ static void direct_render(void) {
 }
 
 static void spectrum_refresh(void *data) {
+    if (!obj || !lv_obj_is_valid(obj)) {
+        return;
+    }
     keep_trace();
     if (!direct) {
         lv_obj_invalidate(obj);
@@ -607,9 +611,10 @@ static bool below(radio_mode_t mode) {
 }
 
 static void on_filter_change(Subject *subj, void *user_data) {
-    int32_t      low = subject_i_get((SubjectInt *)cfg_cur_filter_low);
-    int32_t      high = subject_i_get((SubjectInt *)cfg_cur_filter_high);
-    radio_mode_t mode = subject_i_get((SubjectInt *)cfg_cur_mode);
+    const fd_qualified_profile *profile = freedv_mode_profile();
+    int32_t      low = profile ? profile->rx_low_hz : subject_i_get((SubjectInt *)cfg_cur_filter_low);
+    int32_t      high = profile ? profile->rx_high_hz : subject_i_get((SubjectInt *)cfg_cur_filter_high);
+    radio_mode_t mode = profile ? radio_mode_usb_dig : subject_i_get((SubjectInt *)cfg_cur_mode);
 
     if (mode == radio_mode_am || mode == radio_mode_nfm || mode == radio_mode_sam || mode == radio_mode_wfm) {
         pass_lo = -high;        /* both sidebands */
@@ -627,11 +632,11 @@ static void on_filter_change(Subject *subj, void *user_data) {
  * sideband; centred on its frequency (upstream 8e4f1d6) */
 static void on_notch_change(Subject *subj, void *user_data) {
     /* Redrawn on the next loop: the change may come from another thread (CAT) */
-    lv_async_call((void (*)(void *))lv_obj_invalidate, obj);
+    scheduler_put_coalesced(spectrum_refresh);
 
     radio_mode_t mode = subject_i_get((SubjectInt *)cfg_cur_mode);
 
-    notch_on = subject_i_get((SubjectInt *)cfg_dnf) && !subject_i_get((SubjectInt *)cfg_dnf_auto) &&
+    notch_on = !freedv_mode_profile() && subject_i_get((SubjectInt *)cfg_dnf) && !subject_i_get((SubjectInt *)cfg_dnf_auto) &&
                mode != radio_mode_am && mode != radio_mode_nfm && mode != radio_mode_sam && mode != radio_mode_wfm;
     if (notch_on) {
         notch_half = subject_i_get((SubjectInt *)cfg_dnf_width);
@@ -641,18 +646,18 @@ static void on_notch_change(Subject *subj, void *user_data) {
 }
 
 static void on_mode_change(Subject *subj, void *user_data) {
-    radio_mode_t mode = subject_i_get((SubjectInt *)subj);
+    radio_mode_t mode = freedv_mode_profile() ? radio_mode_usb_dig : subject_i_get((SubjectInt *)cfg_cur_mode);
 
     vfo_line_on = mode != radio_mode_cw && mode != radio_mode_cwr;
 }
 
 static void on_lo_offset_change(Subject *subj, void *user_data) {
-    lo_offset = subject_i_get((SubjectInt *)subj);
+    lo_offset = freedv_mode_profile() ? 0 : subject_i_get((SubjectInt *)cfg_mode_lo_offset);
     kept_settle();
 }
 
 static void on_if_shift_change(Subject *subj, void *user_data) {
-    if_shift = subject_i_get((SubjectInt *)subj);
+    if_shift = waterfall_effective_if_shift();
     kept_settle();
 }
 
@@ -671,7 +676,22 @@ static void on_vfo_change(Subject *subj, void *user_data) {
 }
 
 static void on_rit_change(Subject *subj, void *user_data) {
-    rit_hz = param_i_get(cfg_rit);
+    rit_hz = freedv_mode_profile() ? 0 : param_i_get(cfg_rit);
+}
+
+void spectrum_refresh_effective(void) {
+    if (!obj || !lv_obj_is_valid(obj)) {
+        return;
+    }
+    /* Ownership changes the applied radio profile, not the saved settings.
+     * Refresh the complete view, including data placement and CW markers. */
+    on_filter_change(NULL, NULL);
+    on_notch_change(NULL, NULL);
+    on_mode_change(NULL, NULL);
+    on_lo_offset_change(NULL, NULL);
+    on_if_shift_change(NULL, NULL);
+    on_rit_change(NULL, NULL);
+    scheduler_put_coalesced(spectrum_refresh);
 }
 
 lv_obj_t *spectrum_init(lv_obj_t *parent) {

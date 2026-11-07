@@ -477,7 +477,7 @@ def capture_close_oracle(rows, microphone_pcm, expected_turns):
                 turn['start_ms']<=times[0]<=turn['drain_ms']<=times[1] and
                 times[-1]<=turn['end_ms'] and times[-1]-times[0]<=750,
                 'Capture closure did not finish within its bounded release phase')
-        releases=[row for row in rows if row.get('kind')=='event' and row.get('event')=='capture-release-observed'
+        releases=[row for row in rows if row.get('kind')=='event' and row.get('event')==('capture-navigation-observed' if close.get('close_trigger')=='navigation' else 'capture-release-observed')
                   and row.get('state')==3 and times[0]<=row.get('ms',-1)<=turn['drain_ms']]
         require(releases and close['capture_started_ms']<=turn['start_ms'],
                 'Capture closure lacks its coordinator release epoch before the I/O fence')
@@ -498,7 +498,8 @@ def capture_close_oracle(rows, microphone_pcm, expected_turns):
             'capture_started_ms':close['capture_started_ms'],'close_started_ms':times[0],
             'timing_issued_ms':times[1],'frozen_ms':times[2],'reached_ms':times[3],'closed_ms':times[4],
             'frontier_extra_frames':extra,'frontier_basis':'Pulse capture production; no monitor playback correction',
-            'physical_latency':'UNMEASURED','rf_completed':turn['rf_completed'],'microphone_frame_budget':budget}
+            'physical_latency':'UNMEASURED','rf_completed':turn['rf_completed'],'microphone_frame_budget':budget,
+            'close_trigger':close.get('close_trigger','ptt-release'),'physical_release_sequence':close.get('physical_release_sequence')}
         if not turn['rf_completed']:
             first=next((row for row in rows if row.get('kind')=='event' and row.get('event')=='first-fault'),{})
             if first.get('status')==1 and first.get('operation')=='local-stop' and first.get('state')==4 and first.get('ms',-1)>=times[-1]:

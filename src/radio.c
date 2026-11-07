@@ -16,7 +16,8 @@
 #endif
 #include "radio.h"
 #include "freedv/mode.h"
-#ifdef ENABLE_FREEDV_USB_TEST
+#include "freedv/usb_navigation.h"
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
 #include "freedv/usb_radio.h"
 #endif
 #include "freedv/writer_gate.h"
@@ -236,6 +237,13 @@ static uint32_t max_tx;
  **********************/
 
 void radio_bb_reset() {
+    if(freedv_navigation_terminal(FD_NAV_RESET))return;
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_owned()){
+        if(radio_usb_terminal_authorize())(void)radio_usb_terminal_hardware(true);
+        return;
+    }
+#endif
     FD_WRITE_GUARD(return);
     hw_bb_reset();
 }
@@ -571,6 +579,9 @@ void radio_change_mute() {
  * silences the speaker (headphones connected) or while a TCI client transmits; the monitor 0 at AF 0 too, which otherwise still played FT8's
  * tones (issue #1). A screen recording keeps the monitor at 30 at least on the X6100, but not under a TCI client's PTT */
 void radio_vol_refresh() {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     bool    muted = mute || tci_mute || btaudio_speaker_muted() || param_i_get(cfg_speaker_off);
     int32_t vol   = param_i_get(cfg_volume);
@@ -586,11 +597,7 @@ void radio_vol_refresh() {
     if (rec_raise) moni = LV_MAX(moni, 30);
     else if (muted || vol == 0) moni = 0;
     radio_lock();
-    hw_set_i(HW_RXVOL,
-#ifdef ENABLE_FREEDV_USB_TEST
-        radio_usb_quiet()?0:
-#endif
-        muted ? 0 : vol);
+    hw_set_i(HW_RXVOL, muted ? 0 : vol);
 #ifdef ENABLE_FREEDV_VOICE
     if(fd_writer_voice_owned())moni=voice_monitor_level();
 #endif
@@ -608,6 +615,9 @@ void radio_set_tci_mute(bool on) {
 }
 
 static void on_volume_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     radio_vol_refresh();
 }
@@ -726,6 +736,10 @@ static void save_log(void) {
 }
 
 void radio_poweroff() {
+    if(freedv_navigation_terminal(FD_NAV_POWEROFF))return;
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_owned() && !radio_usb_terminal_authorize())return;
+#endif
     save_log();
     screen_rec_shutdown();
     if (params.charger.x == RADIO_CHARGER_SHADOW) {
@@ -917,6 +931,10 @@ void radio_set_morse_key(bool on) {
     pthread_mutex_lock(&control_mux);
 }
 
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+static bool radio_try_lock(void) { return pthread_mutex_trylock(&control_mux)==0; }
+#endif
+
 static void radio_unlock() {
     idle_time = get_time();
     pthread_mutex_unlock(&control_mux);
@@ -924,23 +942,35 @@ static void radio_unlock() {
 
 /* A setting straight to the base: user_data is the hw_param_t */
 static void on_change_i(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     int32_t v = subject_i_get((SubjectInt*)subj);
     WITH_RADIO_LOCK(hw_set_i((hw_param_t)(intptr_t)user_data, v));
 }
 
 static void on_change_f(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     float v = subject_f_get((SubjectFloat*)subj);
     WITH_RADIO_LOCK(hw_set_f((hw_param_t)(intptr_t)user_data, v));
 }
 
 static void on_pwr_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     WITH_RADIO_LOCK(set_txpwr(subject_f_get((SubjectFloat*)subj)));
 }
 
 static void on_vfo_freq_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val;
@@ -963,12 +993,18 @@ static void on_vfo_freq_change(Subject *subj, void *user_data) {
  * now applies. A shift set to 0 (off) left the base on the IF until the next retune, and the hand mic's PTT, which
  * the base keys by itself, went out there: 29.500 MHz on 10 m for a 2 m 145.500 */
 static void on_transverter_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     on_vfo_freq_change(NULL, (void *)RADIO_VFO_A);
     on_vfo_freq_change(NULL, (void *)RADIO_VFO_B);
 }
 
 static void on_vfo_mode_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
@@ -995,12 +1031,18 @@ static void apply_vfo_agc(radio_vfo_t vfo) {
 }
 
 static void on_vfo_agc_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     (void)subj;
     apply_vfo_agc((radio_vfo_t)user_data);
 }
 
 static void on_cw_agc_cond_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     (void)subj;
     (void)user_data;
@@ -1009,6 +1051,9 @@ static void on_cw_agc_cond_change(Subject *subj, void *user_data) {
 }
 
 static void update_agc_time(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     radio_agc_t     agc = cparam_i_get(cfg_cur_agc);
     radio_mode_t    mode = cparam_i_get(cfg_cur_mode);
@@ -1059,6 +1104,9 @@ static void update_agc_time(Subject *subj, void *user_data) {
 }
 
 static void on_vfo_att_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
@@ -1067,6 +1115,9 @@ static void on_vfo_att_change(Subject *subj, void *user_data) {
 }
 
 static void on_vfo_pre_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     radio_vfo_t vfo = (radio_vfo_t )user_data;
     int32_t new_val = subject_i_get((SubjectInt*)subj);
@@ -1075,6 +1126,9 @@ static void on_vfo_pre_change(Subject *subj, void *user_data) {
 }
 
 static void on_atu_network_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     (void)subj;
     (void)user_data;
@@ -1084,6 +1138,9 @@ static void on_atu_network_change(Subject *subj, void *user_data) {
 }
 
 static void on_low_filter_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     radio_mode_t mode = cparam_i_get(cfg_cur_mode);
     if (mode == radio_mode_am || mode == radio_mode_nfm || mode == radio_mode_sam || mode == radio_mode_wfm) {
@@ -1100,6 +1157,9 @@ static void on_low_filter_change(Subject *subj, void *user_data) {
 }
 
 static void on_high_filter_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     int32_t high = cparam_i_get(cfg_cur_filter_high);
     int32_t high2 = high + FILTER_2_OFFSET_OUT;
@@ -1126,6 +1186,9 @@ static void on_high_filter_change(Subject *subj, void *user_data) {
 }
 
 static void on_change_comp_ratio(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     uint8_t ratio = subject_i_get((SubjectInt*)subj);
     if (ratio < 1) {
@@ -1143,6 +1206,9 @@ static void on_change_comp_ratio(Subject *subj, void *user_data) {
 }
 
 static void on_fw_zoom_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     uint8_t zoom = subject_i_get((SubjectInt*)subj);
     uint8_t val = 0;
@@ -1154,6 +1220,9 @@ static void on_fw_zoom_change(Subject *subj, void *user_data) {
 }
 
 static void on_if_shift_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     int32_t shift = subject_i_get((SubjectInt*)subj);
     int32_t cur_freq = cparam_i_get(cfg_fg_freq);
@@ -1172,6 +1241,9 @@ static void on_if_shift_change(Subject *subj, void *user_data) {
 }
 
 static void on_band_change(Subject *subj, void *user_data) {
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if(radio_usb_quiet())return;
+#endif
     FD_WRITE_GUARD(return);
     // Workaround for bug with ignored IQ offset on band change from BASE
     int32_t i_val = param_i_get(cfg_band_tx_i_offset);
@@ -1605,7 +1677,14 @@ static bool radio_tick() {
                 break;
 
             case RADIO_POWEROFF:
-                WITH_RADIO_LOCK(hw_poweroff());
+                radio_lock();
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+                if(radio_usb_owned()){
+                    if(!radio_usb_terminal_hardware(false)){radio_unlock();break;}
+                }else
+#endif
+                    hw_poweroff();
+                radio_unlock();
                 state_move(RADIO_POWEROFF, RADIO_OFF);
                 break;
 
@@ -1632,8 +1711,8 @@ static bool radio_tick() {
             case TX_WATCH_RESTORE:
                 radio_lock();
 #ifdef ENABLE_FREEDV_CONTROL
-#ifdef ENABLE_FREEDV_USB_TEST
-                if(radio_usb_quiet()) hw_set_f(HW_TXPWR_F,1.0f);
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+                if(radio_usb_quiet()) hw_set_f(HW_TXPWR_F,radio_usb_power_tenths()/10.0f);
                 else
 #endif
                 if (freedv_owner) hw_set_f(HW_TXPWR_F, freedv_owner->restoration_complete ?
@@ -2172,7 +2251,7 @@ static void freedv_startup_packet(void) {
 
 #ifdef ENABLE_FREEDV_VOICE
 #include "freedv/voice_radio.inc"
-#ifdef ENABLE_FREEDV_USB_TEST
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
 #include "freedv/usb_radio.inc"
 #endif
 #endif

@@ -8,6 +8,9 @@
 
 #include "info_bar.h"
 #include "freedv/mode.h"
+#include "spectrum_view.h"
+#include "waterfall_view.h"
+#include "screen_main.h"
 
 #include "cfg/cfg_api.h"
 #include "gui_styles.h"
@@ -514,7 +517,10 @@ static void atu_update(Subject *subj, void *user_data) {
         pill_paint(o, cfg_atu_is_loaded() ? TC(focus_text) : TC(err_strong), TC(focus), PILL_ON_OPA);
 }
 void info_refresh_effective(void) {
-    if(!obj)return;
+    waterfall_refresh_effective();
+    spectrum_refresh_effective();
+    main_screen_refresh_effective();
+    if(!obj || !lv_obj_is_valid(obj))return;
     vfo_update(NULL,NULL);mode_update(NULL,NULL);agc_update(NULL,NULL);deck_update(NULL,NULL);
     pill_update(NULL,(void *)(intptr_t)INFO_PRE);pill_update(NULL,(void *)(intptr_t)INFO_ATT);
 }

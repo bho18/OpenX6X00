@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Use Ubuntu's canonical HTTPS archive for Azure Ubuntu mirror entries only.
+"""Use Ubuntu's canonical HTTPS archives for Ubuntu CI mirror entries.
 
 This changes URI tokens in APT source files. Suites, components, options,
 Signed-By and other repositories remain byte-for-byte unchanged. It does not
@@ -15,6 +15,8 @@ import tempfile
 
 MIRROR = 'https://archive.ubuntu.com/ubuntu'
 AZURE_URI = re.compile(r'https?://azure\.archive\.ubuntu\.com/ubuntu(/?)', re.IGNORECASE)
+FILE_MIRROR = re.compile(r'(?:mirror\+)?file:/{1,3}etc/apt/apt-mirrors(?P<security>-security)?\.txt/?')
+HTTP_ARCHIVE = re.compile(r'http://(?P<host>archive|security)\.ubuntu\.com/ubuntu(?P<trailing>/?)', re.IGNORECASE)
 LEGACY = re.compile(r'^(\s*deb(?:-src)?\s+(?:\[[^\]\r\n]*\]\s+)?)(\S+)(.*)$')
 FIELD = re.compile(r'^([A-Za-z][A-Za-z0-9-]*):')
 
@@ -28,6 +30,15 @@ def rewrite_source(text, deb822=False):
         if match:
             count += 1
             return MIRROR + match[1]
+        match = FILE_MIRROR.fullmatch(value)
+        if match:
+            count += 1
+            host = 'security.ubuntu.com' if match['security'] else 'archive.ubuntu.com'
+            return 'https://' + host + '/ubuntu'
+        match = HTTP_ARCHIVE.fullmatch(value)
+        if match:
+            count += 1
+            return 'https://' + match['host'].lower() + '.ubuntu.com/ubuntu' + match['trailing']
         return value
 
     output, inside_uris = [], False

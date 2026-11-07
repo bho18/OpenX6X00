@@ -301,6 +301,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
             validate_backend_profile_run(run,name,verify_files=verify_files)
             validate_observer_admission_run(run,name,verify_files=verify_files)
             validate_capture_close_run(run,verify_files=verify_files)
+            validate_operational_run(run,name,verify_files=verify_files)
             validate_sink_turns_run(run,name,verify_files=verify_files,expected_transport_sha256=matrix['identity']['transport_library_sha256'])
             if name in ('capture-release-split','capture-release-held150'):
                 validate_capture_source_boundary_run(run,name,verify_files=verify_files)
@@ -329,7 +330,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                         raise ValueError('Retained USB case evidence changed: ' + name)
                 details=_load(run['case_record_path'])
                 for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
-                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','observer_admission','audio_controls','audio_gain_turn'):
+                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','observer_admission','audio_controls','audio_gain_turn','operational','actual_headset_output'):
                     retained=details.get(key)
                     if key=='actual_sink_turns' and key not in details:
                         from test_usb_audio_integration import WAVEFORM_CASES
@@ -351,6 +352,113 @@ def validate_output_contract_run(run,verify_files=True,expected_identity=None):
         return _validate_output_contract_run(run,verify_files,expected_identity)
     except (OSError,KeyError,TypeError,AttributeError) as error:
         raise ValueError('Required playback completion evidence is missing or malformed: '+str(error)) from error
+
+
+def operational_proof(rows, completion, harness, case):
+    """Grade operational semantics from the produced records, not UI labels."""
+    from usb_rf_evidence import summarize_trace, validate_completion, validate_operational_readiness
+    summary=summarize_trace(rows)
+    headers=[row for row in rows if row.get('kind')=='session']
+    if len(headers)!=1:raise ValueError('Operational exercise has no unique session')
+    header=headers[0]
+    manifest=dict(usb_startup_contract_version=4, firmware_commit=header.get('source_commit'), build_id=header.get('build_id'))
+    validate_completion(summary,manifest,completion)
+    receipts=[row for row in rows if row.get('kind')=='startup-readiness']
+    if len(receipts)!=1:raise ValueError('Operational exercise never reached actual startup readiness')
+    validate_operational_readiness(summary,rows,manifest,receipts[0])
+    ready=receipts[0]
+    if (harness.get('operational') is not True or harness.get('startup_ready') is not True or
+            harness.get('qualification_complete') is not False or harness.get('qualification_turns')!=0 or
+            harness.get('tx_timeout_seconds')!=(30 if case=='operational-timeout' else 180) or harness.get('physical_tx') is not False or
+            harness.get('rf_clear_confirmed') is not True or
+            any(harness.get(key)!=1 for key in ('rade_creations','encoder_creations','decoder_creations')) or
+            any(row.get('event') in ('qualification-start','qualification_complete') for row in rows)):
+        raise ValueError('Operational exercise lost automatic readiness, warm codec, RX clearance, or truthful qualification')
+    fault=10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
+    expected_turns=int(case=='operational-leave-tx')
+    if (harness.get('fault')!=fault or harness.get('turns')!=expected_turns or
+            harness.get('eoo')!=expected_turns or
+            completion.get('completion_reason')!=('fault' if fault>1 else 'stop' if fault else 'navigation')):
+        raise ValueError('Operational exit did not preserve graceful completion versus abort/fault semantics')
+    revision=2 if case in ('operational-retune','operational-receive-only') else 1
+    if harness.get('tuning_revision')!=revision or harness.get('configuration_ready') is not True:
+        raise ValueError('Operational configuration revision was not restored before exit')
+    if case=='operational-retune' and harness.get('rx_synthesis_blocks',0)<4:
+        raise ValueError('Operational RX retune never decoded the public RF signal')
+    if case=='operational-held-ptt' and ready['ptt_release_sequence']<1:
+        raise ValueError('Held startup PTT was admitted without a real release')
+    if case in ('operational-leave-tx','operational-abort','operational-device-loss','operational-timeout'):
+        if harness.get('physical_ptt_pressed') is not True or harness.get('physical_release_sequence')!=0:
+            raise ValueError('Navigation/abort fabricated a physical PTT release')
+    closes=[row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is True]
+    if case=='operational-leave-tx' and (len(closes)!=1 or closes[0].get('close_trigger')!='navigation' or
+            closes[0].get('physical_release_sequence')!=0):
+        raise ValueError('Graceful navigation omitted its independent finite capture boundary')
+    if case=='operational-timeout':
+        on=[row for row in rows if row.get('kind')=='event' and row.get('event')=='state' and row.get('state')==3]
+        fault_row=next((row for row in rows if row.get('event')=='first-fault' and row.get('status')==10 and row.get('operation')=='turn-deadline'),{})
+        windows=harness.get('rf_intervals',[])
+        if (len(on)!=1 or not fault_row or not 29500<=fault_row['ms']-on[0]['ms']<=31500 or
+                len(windows)!=1 or not 29500000000<=windows[0]['off_after_ns']-windows[0]['on_before_ns']<=31500000000 or
+                harness.get('first_fault_origin')!='turn-deadline'):
+            raise ValueError('Operational timeout did not retain held TX beyond old20s and clear at configured30s')
+    return dict(schema='x6200.usb.operational-exercise.v1', status='PASS', case=case,
+                startup_readiness=ready, completion_reason=completion['completion_reason'],
+                final_tuning_revision=revision, physical_release_sequence=harness.get('physical_release_sequence'),
+                close_trigger='navigation' if case=='operational-leave-tx' else None,
+                qualifier='Actual controller records with simulated radio control; no RF hardware qualification')
+
+
+def validate_operational_headset_output(run,verify_files=True):
+    proof=run.get('actual_headset_output',{});waveform=proof.get('waveform',{})
+    if (proof.get('status')!='PASS' or type(proof.get('rendered_frames')) is not int or proof['rendered_frames']<=0 or
+            waveform.get('status')!='PASS' or waveform.get('minimum_correlation')!=.95 or
+            waveform.get('expected_gain')!=1.0 or waveform.get('allowed_window_normalized_error')!=.35 or
+            proof.get('capture_frame_budget',{}).get('status')!='PASS'):
+        raise ValueError('Operational retune requires complete decoded speech at the actual headset output')
+    if verify_files:
+        artifacts=proof.get('artifacts',{})
+        if set(artifacts)!={'decoded','monitor','ledger','trace'}:raise ValueError('Operational RX output artifacts are incomplete')
+        for artifact in artifacts.values():
+            if sha(artifact['path'])!=artifact['sha256']:raise ValueError('Operational RX output artifact changed')
+        from usb_test_support import modem_waveform_match
+        reference=Path(artifacts['decoded']['path']).read_bytes();raw=Path(artifacts['monitor']['path']).read_bytes()
+        begin,frames=proof.get('monitor_frame_start'),proof.get('observed_frames')
+        if (len(reference)//2!=proof['rendered_frames'] or type(begin) is not int or begin<0 or
+                type(frames) is not int or frames<=0 or (begin+frames)*2>len(raw)):
+            raise ValueError('Operational headset waveform is missing its complete decoded interval')
+        observed=raw[begin*2:(begin+frames)*2]
+        matched=modem_waveform_match(reference,48000,observed,48000,expected_gain=1.0,
+                                   maximum_lag_ms=proof['alignment_budget']['maximum_lag_ms'])
+        if matched!=waveform:raise ValueError('Operational RX output waveform differs from retained PCM')
+    return proof
+
+
+def validate_operational_run(run,case,verify_files=True):
+    try:
+        return _validate_operational_run(run,case,verify_files)
+    except (OSError,KeyError,TypeError,AttributeError) as error:
+        raise ValueError('Operational startup/exit evidence is missing or malformed: '+str(error)) from error
+
+
+def _validate_operational_run(run,case,verify_files=True):
+    if not case.startswith('operational-'):return
+    proof=run.get('operational')
+    if not isinstance(proof,dict) or proof.get('schema')!='x6200.usb.operational-exercise.v1' or proof.get('status')!='PASS' or proof.get('case')!=case:
+        raise ValueError('Required operational startup/exit exercise is missing')
+    if case=='operational-retune':validate_operational_headset_output(run,verify_files=verify_files)
+    if verify_files:
+        entries=run.get('output_contract',{}).get('sessions',[])
+        if len(entries)!=1:raise ValueError('Operational exercise requires one full session')
+        directory=Path(run['case_record_path']).parent/'result';entry=entries[0]
+        rows=[json.loads(line) for line in (directory/entry['trace_file']).read_text().splitlines() if line.strip()]
+        completion=_load(directory/entry['completion_file'])
+        if operational_proof(rows,completion,run['harness'],case)!=proof:
+            raise ValueError('Operational proof differs from immutable controller records')
+        readiness=_load(directory/(Path(entry['trace_file']).stem+'-readiness.json'))
+        if readiness!=proof['startup_readiness']:
+            raise ValueError('Operational proof has no matching immutable readiness sidecar')
+    return proof
 
 
 def validate_audio_controls_run(run,verify_files=True):

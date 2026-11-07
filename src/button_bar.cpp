@@ -16,6 +16,10 @@
 #include "tx_player.h"
 #include "cfg/settings_manager.h"
 #include "cfg/encoder_defaults.h"
+#include "freedv/writer_gate.h"
+#include "freedv/mode.h"
+#include "freedv/usb_ui.h"
+#include "scheduler.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -24,6 +28,7 @@
 #include <string>
 
 extern "C" {
+#include "front_keys.h"
 #include "screen_rec.h"
 #include "msg_box.h"
 #include "walkie.h"
@@ -71,9 +76,24 @@ static void knob_press(button_data_t *d) {
 
 /* Hold: the next bind of the control, none -> VOL -> MFK -> none */
 static void knob_bind_hold(button_data_t *d) {
+#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+    if (freedv_usb_finishing()) return;
+#endif
+    bool owned = false;
+#ifdef ENABLE_FREEDV_VOICE
+    if (freedv_mode_active()) {
+        if (!scheduler_on_gui_thread() || !front_keys_voice_local_event() ||
+            !(owned = fd_writer_voice_begin())) return;
+    }
+#endif
     std::string binds = cfg_sm.p_encoder_bind.get();
 
-    if ((size_t)d->ctrl >= binds.size()) return;
+    if ((size_t)d->ctrl >= binds.size()) {
+#ifdef ENABLE_FREEDV_VOICE
+        if (owned) fd_writer_voice_end();
+#endif
+        return;
+    }
     char &b = binds[d->ctrl];
     switch (b) {
         case ENCODER_BIND_NONE:
@@ -92,6 +112,9 @@ static void knob_bind_hold(button_data_t *d) {
             b = ENCODER_BIND_NONE;
     }
     cfg_sm.p_encoder_bind.set(binds);
+#ifdef ENABLE_FREEDV_VOICE
+    if (owned) fd_writer_voice_end();
+#endif
 }
 
 static void app_press(button_data_t *d) {

@@ -15,6 +15,7 @@
 #include "screen_light.h"
 #include "key_input.h"
 #include "freedv/input_drain.h"
+#include "control_owner.h"
 
 #include <fcntl.h>
 #include <linux/input.h>
@@ -38,12 +39,18 @@ static void mfk_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
         }
     }
     if (turned) {
+#ifdef ENABLE_FREEDV_CONTROL
+        if (ctl_diagnostic_input_blocked())
+            knob->diagnostic_generation = ctl_remote_input_generation();
+#endif
+        ctl_local_input();
         backlight_tick();
     }
     /* An open dropdown list moves one line a click: the detents of a fast turn, read together,
      * would jump down the list */
     if (sum) {
-        lv_obj_t *f = lv_group_get_focused(keyboard_group);
+        lv_group_t *group = knob->indev->group;
+        lv_obj_t *f = lv_group_get_focused(group ? group : keyboard_group);
 
         if (f && lv_obj_check_type(f, &lv_dropdown_class) && lv_dropdown_is_open(f))
             sum = sum > 0 ? 1 : -1;

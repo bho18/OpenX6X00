@@ -14,6 +14,8 @@
 #include "lvgl/lvgl.h"
 
 lv_obj_t *spectrum_init(lv_obj_t *parent);
+/* GUI: recompute the applied profile's markers and data alignment without saving preferences. */
+void spectrum_refresh_effective(void);
 
 /* A frame from the DSP thread: size dB values, the base's frequency, the FFT decimation (zoom) */
 void spectrum_data(float *db, uint16_t size, bool tx, uint32_t base_freq, uint8_t fft_dec);

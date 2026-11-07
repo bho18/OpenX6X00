@@ -41,8 +41,8 @@ def validate_output_contract(rows, completion, required_version=1, expected_iden
     require(isinstance(rows, (list, tuple)) and all(isinstance(row, dict) for row in rows),
             'Output contract trace must contain JSON objects.')
     sessions = [row for row in rows if row.get('kind') == 'session']
-    require(len(sessions) == 1 and sessions[0].get('schema') == 'x6200.usb-audio.v3',
-            'USB output contract requires exactly one v3 session header.')
+    require(len(sessions) == 1 and sessions[0].get('schema') in ('x6200.usb-audio.v3', 'x6200.usb-audio.v4'),
+            'USB output contract requires exactly one supported session header.')
     session = sessions[0]
     require(isinstance(completion, dict), 'USB output contract requires an immutable completion record.')
     for record in (session, completion):
@@ -61,7 +61,7 @@ def validate_output_contract(rows, completion, required_version=1, expected_iden
     completed_count = integer(completion, 'playback_tail_completed_intervals')
     interrupted_count = integer(completion, 'playback_tail_interrupted_intervals')
     state, fault = integer(completion, 'state'), integer(completion, 'fault')
-    require((state == 5 and fault > 1) or (state == 6 and fault == 1),
+    require((state == 5 and fault > 1) or (state == 6 and (fault == 1 or (fault == 0 and session.get('operational') is True and completion.get('completion_reason') == 'navigation'))),
             'Output contract requires terminal Stop/fault chronology.')
     samples = [row for row in rows if row.get('kind') == 'sample']
     require(samples, 'Output contract has no final state sample.')

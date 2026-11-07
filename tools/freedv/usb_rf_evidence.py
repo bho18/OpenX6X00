@@ -133,8 +133,8 @@ def output_contract_version(manifest):
     version = manifest['usb_output_contract_version']
     if type(version) is not int or version != 1:
         raise ValueError('Unsupported USB output contract version; new images require integer version 1.')
-    if manifest.get('usb_startup_contract_version') != 3:
-        raise ValueError('USB output contract version 1 requires the startup v3 session contract.')
+    if manifest.get('usb_startup_contract_version') not in (3, 4):
+        raise ValueError('USB output contract version 1 requires startup session contract 3 or 4.')
     return version
 
 
@@ -149,7 +149,7 @@ def collect_persistent_journal(output):
     destination.mkdir()
     records = {}
     names = ['current-session.json'] + [f'slot-{slot:02d}-{kind}.json'
-             for slot in range(16) for kind in ('metadata', 'fault', 'completion', 'aborted')]
+             for slot in range(16) for kind in ('metadata', 'fault', 'completion', 'readiness', 'aborted')]
     for name in names:
         path = directory / name
         if not path.exists() and not path.is_symlink():
@@ -173,7 +173,7 @@ def collect_persistent_journal(output):
                         type(record.get('slot')) is not int or not 0 <= record['slot'] < 16):
                     raise ValueError('Persistent current-session pointer is invalid.')
             else:
-                match = re.fullmatch(r'slot-(\d{2})-(metadata|fault|completion|aborted)\.json', name)
+                match = re.fullmatch(r'slot-(\d{2})-(metadata|fault|completion|readiness|aborted)\.json', name)
                 nested = record.get('record')
                 if (record.get('schema') != 'x6200.usb.incident.v1' or not 0 <= int(match[1]) < 16 or
                         record.get('kind') != match[2] or not isinstance(nested, dict) or nested.get('session_id') != session_id or
@@ -185,7 +185,7 @@ def collect_persistent_journal(output):
         except ERRORS as error:
             report['errors'].append(str(error))
     for name,record in list(records.items()):
-        match=re.fullmatch(r'slot-(\d{2})-(fault|completion|aborted)\.json',name)
+        match=re.fullmatch(r'slot-(\d{2})-(fault|completion|readiness|aborted)\.json',name)
         if match:
             metadata=records.get(f'slot-{int(match[1]):02d}-metadata.json')
             if (not metadata or metadata['session_id'] != record['session_id'] or any(
@@ -196,7 +196,7 @@ def collect_persistent_journal(output):
     pointer = records.get('current-session.json')
     if pointer:
         selected = {}
-        for kind in ('metadata', 'fault', 'completion', 'aborted'):
+        for kind in ('metadata', 'fault', 'completion', 'readiness', 'aborted'):
             record = records.get(f"slot-{pointer['slot']:02d}-{kind}.json")
             if record and record['session_id'] == pointer['session_id']:
                 selected[kind] = record['record']
@@ -226,8 +226,9 @@ def validate_identity(record, manifest, session_id=None):
 def validate_completion(summary, manifest, completion):
     """A parseable last sample is not proof that a worker completed teardown."""
     sessions = [row for row in summary['metadata'] if row.get('kind') == 'session']
-    if len(sessions) != 1 or sessions[0].get('schema') != 'x6200.usb-audio.v3':
-        raise ValueError('Current image requires exactly one v3 runtime session header.')
+    version = manifest['usb_startup_contract_version']
+    if len(sessions) != 1 or sessions[0].get('schema') != f'x6200.usb-audio.v{version}':
+        raise ValueError('Current image requires exactly one matching runtime session header.')
     session = sessions[0]
     validate_identity(session, manifest)
     validate_identity(completion, manifest, session['session_id'])
@@ -244,9 +245,26 @@ def validate_completion(summary, manifest, completion):
     for field in ('rf_disabled', 'rf_valid', 'rf_tx', 'rf_clear_confirmed', 'qualification_complete'):
         if type(last.get(field)) is not bool or type(completion.get(field)) is not bool:
             raise ValueError('Runtime terminal records have an invalid boolean field: ' + field)
-    if (type(session.get('qualification_target')) is not int or session['qualification_target'] < 1 or
+    if (type(session.get('qualification_target')) is not int or session['qualification_target'] < (0 if version == 4 else 1) or
             last['qualification_target'] != session['qualification_target']):
         raise ValueError('Runtime qualification target conflicts with its session header.')
+    if version == 4:
+        for record in (session, last, completion):
+            if (type(record.get('usb_startup_contract_version')) is not int or record['usb_startup_contract_version'] != 4 or
+                    record.get('operational') is not True or record.get('qualification_target') != 0 or
+                    record.get('qualification_complete', False) is not False or
+                    record.get('qualification_turns', 0) != 0):
+                raise ValueError('Operational startup cannot claim diagnostic qualification.')
+        for field in ('startup_ready', 'leaving', 'configuration_ready', 'tx_eligible'):
+            if type(last.get(field)) is not bool or completion.get(field) is not last[field]:
+                raise ValueError('Operational terminal records conflict: ' + field)
+        for field in ('tuning_revision', 'tx_timeout_seconds'):
+            if type(last.get(field)) is not int or completion.get(field) != last[field]:
+                raise ValueError('Operational terminal records conflict: ' + field)
+        if not 30 <= last['tx_timeout_seconds'] <= 600:
+            raise ValueError('Operational TX timeout is outside 30..600 seconds.')
+        if completion.get('completion_reason') not in ('navigation', 'stop', 'fault'):
+            raise ValueError('Operational terminal completion reason is missing.')
     if last.get('state') not in (5, 6) or completion.get('state') != last.get('state'):
         raise ValueError('Runtime trace does not end in the recorded terminal state.')
     fields = ('fault', 'rf_disabled', 'rf_valid', 'rf_tx', 'rf_clear_confirmed',
@@ -274,6 +292,37 @@ def validate_completion(summary, manifest, completion):
     summary['completion'] = completion
 
 
+def validate_operational_readiness(summary, rows, manifest, readiness):
+    """Initial readiness is an immutable observation, separate from qualification."""
+    if readiness is None:
+        summary['startup_readiness'] = None
+        return
+    if not isinstance(readiness, dict):
+        raise ValueError('Operational startup readiness receipt is not an object.')
+    validate_identity(readiness, manifest, summary['session_identity']['session_id'])
+    if (readiness.get('schema') != 'x6200.usb.operational-readiness.v1' or
+            readiness.get('kind') != 'startup-readiness' or readiness.get('status') != 'PASS'):
+        raise ValueError('Operational startup readiness receipt is invalid.')
+    receipts = [row for row in rows if row.get('kind') == 'startup-readiness']
+    if len(receipts) != 1 or receipts[0] != readiness:
+        raise ValueError('Operational startup readiness sidecar conflicts with the completed trace.')
+    for field in ('ready_ms', 'generation', 'tuning_revision', 'radio_sequence', 'ptt_release_sequence'):
+        if type(readiness.get(field)) is not int or readiness[field] < 0:
+            raise ValueError('Invalid startup readiness integer: ' + field)
+    for field, value in (('ptt', False), ('rf_valid', True), ('rf_tx', False),
+                         ('configuration_ready', True), ('captures_fresh', True), ('buffers_ready', True)):
+        if readiness.get(field) is not value:
+            raise ValueError('Operational startup readiness lacks actual released RX readiness: ' + field)
+    if type(readiness.get('tx_eligible')) is not bool:
+        raise ValueError('Operational readiness lacks TX eligibility state.')
+    if readiness['ready_ms'] > summary['last']['ms']:
+        raise ValueError('Startup readiness occurs after terminal completion.')
+    for field in ('headset_id', 'headset_name', 'source', 'sink'):
+        if not isinstance(readiness.get(field), str) or not readiness[field]:
+            raise ValueError('Operational readiness lacks paired USB endpoint identity: ' + field)
+    summary['startup_readiness'] = readiness
+
+
 def preserve_immutable_diagnostics(prefix, output):
     """Read atomically published JSON sidecars even if shutdown is blocked.
 
@@ -282,7 +331,7 @@ def preserve_immutable_diagnostics(prefix, output):
     not presented as an immutable first-fault snapshot.
     """
     errors = []
-    for suffix in ('fault.json', 'completion.json', 'metadata.json', 'config.json', 'configuration.json'):
+    for suffix in ('fault.json', 'completion.json', 'metadata.json', 'config.json', 'configuration.json', 'readiness.json'):
         path = Path(str(prefix) + '-' + suffix)
         if not path.exists():
             continue
@@ -354,6 +403,10 @@ def collect_trace(output, manifest=None):
             validate_completion(summary, manifest, json.loads(completion.read_text()))
             if summary['session_identity']['session_id'] != pointer['session_id']:
                 raise ValueError('Runtime trace conflicts with the explicit current-session pointer.')
+            if manifest.get('usb_startup_contract_version') == 4:
+                readiness_path = output / 'runtime-readiness.json'
+                readiness = json.loads(readiness_path.read_text()) if readiness_path.exists() else None
+                validate_operational_readiness(summary, rows, manifest, readiness)
             summary['current_session'] = pointer
             summary['output_contract'] = validate_output_contract(
                 rows, summary['completion'], output_contract_version(manifest), summary['session_identity'])
@@ -441,7 +494,7 @@ def collect_evidence(output, manifest, sdr=None):
                   usb_output_contract_version=manifest.get('usb_output_contract_version', 0),
                   listening='UNASSESSED', physical_rf_off_timing='UNMEASURED', blockers=[],
                   stages=dict(collection={'status': 'PENDING'}, gui={'status': 'UNASSESSED'},
-                              audio={'status': 'UNASSESSED'}, control_completion={'status': 'UNASSESSED'}, qualification={'status': 'NOT_REQUESTED'},
+                              audio={'status': 'UNASSESSED'}, control_completion={'status': 'UNASSESSED'}, qualification={'status': 'NOT_REQUESTED'}, startup={'status': 'NOT_REQUESTED'},
                               rf_decode={'status': 'NOT_REQUESTED'}))
     def blocker(stage, error):
         result['blockers'].append(dict(stage=stage, reason=str(error)))
@@ -468,7 +521,7 @@ def collect_evidence(output, manifest, sdr=None):
         try:
             if manifest.get('_load_error'):
                 raise ValueError('Kit manifest unavailable: ' + manifest['_load_error'])
-            if type(manifest.get('usb_startup_contract_version', 1)) is not int or manifest.get('usb_startup_contract_version', 1) not in (1, 2, 3):
+            if type(manifest.get('usb_startup_contract_version', 1)) is not int or manifest.get('usb_startup_contract_version', 1) not in (1, 2, 3, 4):
                 raise ValueError('Unsupported USB startup contract version.')
             output_contract_version(manifest)
             inventory = collect(expected_gui=manifest['gui_sha256'])
@@ -515,7 +568,7 @@ def collect_evidence(output, manifest, sdr=None):
             last = summary['last']
             version = manifest.get('usb_startup_contract_version', 1)
             contract_v2 = (type(version) is int and version >= 2) or any(
-                row.get('schema') in ('x6200.usb-audio.v2', 'x6200.usb-audio.v3') for row in summary['metadata'])
+                row.get('schema') in ('x6200.usb-audio.v2', 'x6200.usb-audio.v3', 'x6200.usb-audio.v4') for row in summary['metadata'])
             confirmed_rx = last.get('rf_clear_confirmed') is True and last.get('rf_valid') is True and last.get('rf_tx') is False
             if confirmed_rx:
                 result['stages']['control_completion'] = dict(status='CONFIRMED_RX',
@@ -528,13 +581,25 @@ def collect_evidence(output, manifest, sdr=None):
             else:
                 result['stages']['control_completion'] = dict(status='UNASSESSED',
                     reason='Legacy trace has no explicit post-clear confirmation; no confirmed RF-clear state is inferred.')
+            if version == 4:
+                readiness = summary['startup_readiness']
+                result['runtime_startup_readiness'] = readiness
+                if not readiness:
+                    blocker('startup', 'Operational session did not reach released-PTT startup readiness.')
+                else:
+                    result['stages']['startup'] = dict(status='PASS',
+                        scope='Actual prepared streams, fresh capture/RX, negotiated buffers, released panel PTT; no RF qualification.',
+                        ready_ms=readiness['ready_ms'])
+                if readiness and not summary['first_fault']:
+                    result['stages']['audio'] = dict(status='OPERATIONAL_STARTUP_READY',
+                        reason='Startup readiness passed; inspect continuity and per-turn output evidence for this session.')
             if summary['qualification']:
                 result['runtime_qualification'] = summary['qualification']
                 result['stages']['qualification'] = summary['qualification']
                 if summary['qualification'].get('status') == 'PASS' and not summary['first_fault']:
                     result['stages']['audio'] = dict(status='QUALIFIED_RF_DISABLED',
                         reason='The runtime completed its bounded RF-disabled integrated qualification; RF performance is unassessed.')
-            if summary['rf_disabled']:
+            if summary['rf_disabled'] and version != 4:
                 qualification = summary['qualification']
                 result['stages']['qualification'] = qualification or dict(status='INCOMPLETE')
                 if not qualification or qualification.get('status') != 'PASS':
@@ -542,7 +607,7 @@ def collect_evidence(output, manifest, sdr=None):
                 if summary['unexpected_qualification_tx'] or summary['last'].get('rf_tx') is not False or summary['last'].get('rf_valid') is not True:
                     blocker('qualification', 'RF-disabled qualification requires fresh RX telemetry and no observed TX during that phase.')
                 result['rf_tested'] = False
-            elif manifest.get('on_device_readiness_required') is True and (
+            elif version != 4 and manifest.get('on_device_readiness_required') is True and (
                     not summary['qualification'] or summary['qualification'].get('status') != 'PASS'):
                 blocker('qualification', 'This image requires a completed on-device RF-disabled qualification before RF use.')
         except ERRORS as error:
@@ -594,7 +659,7 @@ def collect_evidence(output, manifest, sdr=None):
                     blocker('rf_decode', 'USB worker is still active; SDR input preserved but decoder was not run.')
                 elif any(item['stage'] == 'collection' for item in result['blockers']):
                     blocker('rf_decode', 'Runtime collection is incomplete; SDR input preserved but decoder was not run.')
-                elif summary and summary['rf_disabled']:
+                elif summary and summary['rf_disabled'] and manifest.get('usb_startup_contract_version') != 4:
                     result['stages']['rf_decode'] = dict(status='NOT_APPLICABLE', reason='RF disabled during this session; external recording is preserved only.')
                 elif not identity_ok:
                     blocker('rf_decode', 'Installed GUI identity was not verified; decoder was not run.')
@@ -606,11 +671,11 @@ def collect_evidence(output, manifest, sdr=None):
         if not any(item['stage'] == 'collection' for item in result['blockers']):
             result['stages']['collection'] = dict(status='PASS')
         if result['blockers']:
-            priority = {'gui': 0, 'audio': 1, 'qualification': 2, 'collection': 3, 'rf_decode': 4}
+            priority = {'gui': 0, 'audio': 1, 'startup': 2, 'qualification': 2, 'collection': 3, 'rf_decode': 4}
             primary = min(result['blockers'], key=lambda item: priority[item['stage']])
             result['reason'] = primary['reason']
             result['primary_failure_stage'] = primary['stage']
-        elif (summary and summary['rf_disabled'] and strict_contract(manifest) and
+        elif (summary and summary['rf_disabled'] and manifest.get('usb_startup_contract_version') != 4 and strict_contract(manifest) and
               summary['output_contract']['status'] == 'PASS'):
             result['status'] = 'READY_FOR_RF_TEST'
             result['ready_for_rf_test'] = True

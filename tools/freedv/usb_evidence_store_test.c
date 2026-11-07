@@ -29,6 +29,9 @@ static void clear_dir(const char *dir){
 static void lifecycle(const char *base){
     char dir[256],p[512],before[17000],after[17000];snprintf(dir,sizeof(dir),"%s/lifecycle",base);
     assert(fd_usb_evidence_store(dir,"run-one","metadata","{\"session_id\":\"run-one\",\"build_id\":\"usb-v3\",\"source_commit\":\"abc123\",\"rf_disabled\":true}")==0);
+    assert(fd_usb_evidence_store(dir,"run-one","readiness","{\"session_id\":\"run-one\",\"status\":\"PASS\"}")==0);
+    path(p,sizeof(p),dir,"run-one","readiness");read_all(p,before,sizeof(before));assert(strstr(before,"\"kind\":\"readiness\"")&&strstr(before,"PASS"));
+    assert(fd_usb_evidence_store(dir,"run-one","readiness","{}")==-EEXIST);read_all(p,after,sizeof(after));assert(!strcmp(before,after));
     assert(fd_usb_evidence_store(dir,"run-one","fault","{\"code\":17,\"origin\":\"capture-stale\"}")==0);
     path(p,sizeof(p),dir,"run-one","fault");read_all(p,before,sizeof(before));
     assert(strstr(before,"\"schema\":\"x6200.usb.incident.v1\"")&&strstr(before,"\"session_id\":\"run-one\""));
@@ -55,13 +58,13 @@ static void rotation_and_retention(const char *base){
     path(p,sizeof(p),dir,id,"metadata");read_all(p,data,sizeof(data));assert(strstr(data,id)&&!strstr(data,old));
     path(p,sizeof(p),dir,id,"fault");assert(!exists(p));
     assert(fd_usb_evidence_store(dir,id,"completion","{}")==0);
-    for(unsigned n=0;n<100;++n){snprintf(id,sizeof(id),"retention-%u",n);assert(fd_usb_evidence_store(dir,id,"metadata","{}")==0);assert(fd_usb_evidence_store(dir,id,"completion","{}")==0);}
+    for(unsigned n=0;n<100;++n){snprintf(id,sizeof(id),"retention-%u",n);assert(fd_usb_evidence_store(dir,id,"metadata","{}")==0);assert(fd_usb_evidence_store(dir,id,"readiness","{}")==0);assert(fd_usb_evidence_store(dir,id,"completion","{}")==0);}
     DIR *d=opendir(dir);assert(d);struct dirent *e;unsigned files=0,metadata=0;
     while((e=readdir(d)))if(strcmp(e->d_name,".")&&strcmp(e->d_name,"..")){
         ++files;if(strstr(e->d_name,"-metadata.json"))++metadata;
         assert(strcmp(e->d_name,".txn.json"));snprintf(p,sizeof(p),"%s/%s",dir,e->d_name);struct stat st;assert(stat(p,&st)==0);assert(st.st_size<=FD_USB_EVIDENCE_MAX_RECORD);
     }
-    closedir(d);assert(files<=FD_USB_EVIDENCE_SLOTS*4+2&&metadata<=FD_USB_EVIDENCE_SLOTS);
+    closedir(d);assert(files<=FD_USB_EVIDENCE_SLOTS*5+2&&metadata<=FD_USB_EVIDENCE_SLOTS);
     assert(metadata==FD_USB_EVIDENCE_SLOTS&&locate(dir,old)<0);
     for(unsigned n=0;n<100;++n){snprintf(id,sizeof(id),"retention-%u",n);assert((locate(dir,id)>=0)==(n>=84));}
     assert(fd_usb_evidence_store(dir,old,"fault","{}")==-ESTALE);
@@ -79,6 +82,7 @@ static void rejected_inputs_and_failure(const char *base){
     assert(fd_usb_evidence_store(dir,"valid","fault","{\"x\":01}")==-EINVAL);
     assert(fd_usb_evidence_store(dir,"valid","fault","{\"x\":\"unterminated}")==-EINVAL);
     assert(fd_usb_evidence_store(dir,"valid","fault","{\"session_id\":\"other\"}")==-ESTALE);
+    assert(fd_usb_evidence_store(dir,"valid","readiness","{\"session_id\":\"other\"}")==-ESTALE);
     assert(fd_usb_evidence_store(dir,"valid","fault","{\"session_id\":\"valid\",\"session_id\":\"valid\"}")==-EINVAL);
     char *large=malloc(FD_USB_EVIDENCE_MAX_RECORD+1);assert(large);memset(large,' ',FD_USB_EVIDENCE_MAX_RECORD);large[0]='{';large[1]='}';large[FD_USB_EVIDENCE_MAX_RECORD]=0;
     assert(fd_usb_evidence_store(dir,"too-large","metadata",large)==-EFBIG);free(large);
@@ -116,12 +120,54 @@ static void atomic_visibility(const char *base){
         close(signal[0]);_exit(0);
     }
     close(signal[0]);
-    for(unsigned i=0;i<40;++i){char id[64];snprintf(id,sizeof(id),"atomic-%u",i);assert(fd_usb_evidence_store(dir,id,"metadata","{}")==0);assert(fd_usb_evidence_store(dir,id,"completion","{}")==0);}
+    for(unsigned i=0;i<40;++i){char id[64];snprintf(id,sizeof(id),"atomic-%u",i);assert(fd_usb_evidence_store(dir,id,"metadata","{}")==0);assert(fd_usb_evidence_store(dir,id,"readiness","{}")==0);assert(fd_usb_evidence_store(dir,id,"completion","{}")==0);}
     assert(write(signal[1],"x",1)==1);close(signal[1]);int status;assert(waitpid(child,&status,0)==child);assert(WIFEXITED(status)&&WEXITSTATUS(status)==0);
+    clear_dir(dir);
+}
+static void runtime_write(const char *directory,const char *name,const char *text){
+    char file[512];snprintf(file,sizeof(file),"%s/%s",directory,name);FILE *f=fopen(file,"wx");assert(f);assert(fputs(text,f)>=0&&fclose(f)==0);
+}
+static void runtime_retention(const char *base){
+    char dir[256],prefix[512],file[1024],target[512],data[128];snprintf(dir,sizeof(dir),"%s/runtime",base);assert(!mkdir(dir,0700));
+    const char *old="freedv-usb-1794000000-000000001",*prior="freedv-usb-1794000001-000000001",*current="freedv-usb-1794000002-000000001",*next="freedv-usb-1794000003-000000001";
+    char name[128];const char *suffixes[]={".jsonl","-mic.raw","-radio-rx.raw","-readiness.json","-completion.json","-fault.json","-fault.json.tmp","-completion.json.123.tmp","-readiness.json.123.tmp"};
+    for(unsigned i=0;i<sizeof(suffixes)/sizeof(suffixes[0]);++i){snprintf(name,sizeof(name),"%s%s",old,suffixes[i]);runtime_write(dir,name,"old");}
+    snprintf(name,sizeof(name),"%s.jsonl",prior);runtime_write(dir,name,"prior");
+    runtime_write(dir,"freedv-usb-current.json","old-pointer");runtime_write(dir,"user-recording.wav","user data");
+    snprintf(name,sizeof(name),"%s-user.wav",old);runtime_write(dir,name,"unknown suffix");
+    snprintf(name,sizeof(name),"%s-completion.json.invalid.tmp",old);runtime_write(dir,name,"unknown temporary");
+    snprintf(target,sizeof(target),"%s/user-recording.wav",dir);snprintf(file,sizeof(file),"%s/%s-decoded.raw",dir,old);assert(!symlink(target,file));
+    snprintf(file,sizeof(file),"%s/%s-modem.raw",dir,old);assert(!link(target,file)); /* multi-link files are protected too */
+    snprintf(prefix,sizeof(prefix),"%s/%s",dir,current);assert(!fd_usb_runtime_trace_prune(prefix,(unsigned)geteuid()));
+    for(unsigned i=0;i<sizeof(suffixes)/sizeof(suffixes[0]);++i){snprintf(file,sizeof(file),"%s/%s%s",dir,old,suffixes[i]);assert(!exists(file));}
+    snprintf(file,sizeof(file),"%s/%s.jsonl",dir,prior);assert(exists(file));
+    snprintf(file,sizeof(file),"%s/%s-decoded.raw",dir,old);struct stat st;assert(!lstat(file,&st)&&S_ISLNK(st.st_mode));
+    snprintf(file,sizeof(file),"%s/%s-modem.raw",dir,old);assert(!lstat(file,&st)&&st.st_nlink==2);
+    snprintf(file,sizeof(file),"%s/%s-user.wav",dir,old);assert(exists(file));
+    snprintf(file,sizeof(file),"%s/%s-completion.json.invalid.tmp",dir,old);assert(exists(file));
+    snprintf(file,sizeof(file),"%s/freedv-usb-current.json",dir);read_all(file,data,sizeof(data));assert(!strcmp(data,"old-pointer"));
+    /* Core updates this pointer after prune/open. Pruning the next session
+     * must preserve that update and retain just this new previous session. */
+    assert(!unlink(file));runtime_write(dir,"freedv-usb-current.json",current);
+    snprintf(name,sizeof(name),"%s.jsonl",current);runtime_write(dir,name,"current");snprintf(name,sizeof(name),"%s-mic.raw",current);runtime_write(dir,name,"PCM");
+    snprintf(prefix,sizeof(prefix),"%s/%s",dir,next);assert(!fd_usb_runtime_trace_prune(prefix,(unsigned)geteuid()));
+    snprintf(file,sizeof(file),"%s/%s.jsonl",dir,prior);assert(!exists(file));snprintf(file,sizeof(file),"%s/%s.jsonl",dir,current);assert(exists(file));
+    snprintf(file,sizeof(file),"%s/freedv-usb-current.json",dir);read_all(file,data,sizeof(data));assert(!strcmp(data,current));
+    snprintf(name,sizeof(name),"%s.jsonl",next);runtime_write(dir,name,"new current");
+    snprintf(prefix,sizeof(prefix),"%s/freedv-usb-1794000004-000000001",dir);
+    assert(fd_usb_runtime_trace_prune(prefix,(unsigned)geteuid()+1)==-EPERM); /* another owner's namespace is untouched */
+    assert(!chmod(dir,0500));assert(fd_usb_runtime_trace_prune(prefix,(unsigned)geteuid())==-EROFS);assert(!chmod(dir,0700));
+    assert(!fd_usb_runtime_trace_prune(prefix,(unsigned)geteuid()));snprintf(file,sizeof(file),"%s/%s.jsonl",dir,current);assert(!exists(file));
+    snprintf(file,sizeof(file),"%s/%s.jsonl",dir,next);assert(exists(file));
+    /* A known current-session collision, even a symlink, fails before deleting
+     * anything. Unknown suffixes and protected files never enter retention. */
+    snprintf(file,sizeof(file),"%s.jsonl",prefix);assert(!symlink(target,file));assert(fd_usb_runtime_trace_prune(prefix,(unsigned)geteuid())==-EEXIST);assert(!unlink(file));
+    snprintf(file,sizeof(file),"%s/freedv-usb-current.json",dir);assert(!unlink(file)&&!symlink(target,file));assert(fd_usb_runtime_trace_prune(prefix,(unsigned)geteuid())==-EPERM);assert(!lstat(file,&st)&&S_ISLNK(st.st_mode));
+    assert(fd_usb_runtime_trace_prune("/tmp/freedv-usb-user-notes",(unsigned)geteuid())==-EINVAL);
     clear_dir(dir);
 }
 int main(void){
     char base[]="/tmp/usb-evidence-store-XXXXXX";assert(mkdtemp(base));
-    lifecycle(base);rotation_and_retention(base);rejected_inputs_and_failure(base);no_symlink_or_foreign_pair(base);atomic_visibility(base);assert(rmdir(base)==0);
+    lifecycle(base);rotation_and_retention(base);runtime_retention(base);rejected_inputs_and_failure(base);no_symlink_or_foreign_pair(base);atomic_visibility(base);assert(rmdir(base)==0);
     puts("PASS persistent USB incident lifecycle, first-fault immutability, interrupted session, bounded retention, identity fencing, invalid storage and atomic visibility");return 0;
 }

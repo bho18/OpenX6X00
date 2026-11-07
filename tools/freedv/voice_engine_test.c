@@ -22,6 +22,8 @@ int main(int argc,char **argv) {
     assert(turns && cycles && (rate==8000 || rate==44100 || rate==48000));
     for(unsigned cycle=0;cycle<cycles;++cycle) {
         fd_voice_engine *e=fd_voice_create(rate);assert(e);
+        fd_voice_stats preparation=fd_voice_observe(e);
+        assert(preparation.warmup_runs==1 && preparation.warmup_reused==(cycle!=0));
         uint64_t gen=0;
         for(unsigned turn=0;turn<turns;++turn) {
             assert(fd_voice_transition(e,FD_VOICE_TX,++gen));

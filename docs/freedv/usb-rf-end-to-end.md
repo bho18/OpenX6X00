@@ -1,136 +1,121 @@
-# X6200 USB Digital Voice beta
+# X6200 FreeDV operational Beta
 
-Use the `usb-voice-beta-20261106.1` image and its matching helper kit on a spare
-SD card. Keep the working `usb-qualification-20261106.2` card as a fallback.
-Stock baseband firmware is unchanged. This beta uses a USB headset with microphone
-and the radio's on-device panel PTT for **half-duplex RADE V1**.
+Use the `freedv-operational-beta-20261106.1` GitHub release and its matching
+helper kit on a spare SD card. Keep the working `usb-voice-beta-20261106.1`
+card as a fallback. Stock baseband firmware is unchanged. The operating path
+is **half-duplex RADE V1**, using a USB headset microphone and headphones or a
+paired USB microphone/speaker device, plus the radio's own panel PTT.
 
-The earlier recording, encoding, decoding, headset playback and initial RF
-transmit results are accepted. The next operating milestone is a live incoming
-RADE V1 signal decoded into the headset, followed by alternating short replies.
-You do not need another basic audio-recording or SDR transmit campaign first.
+The earlier recording, codec round trip, headset playback and RF transmit
+milestones remain accepted. The next field milestone is a known working RADE
+V1 peer received in the headset, followed by alternating replies. This build
+does not ask you to repeat those component tests.
 
-## What changed
+## Install and enter FreeDV
 
-* **Mic gain**: saved manual gain from -12 to +24 dB, initially 0 dB, before the
-  speech encoder. The live RMS/peak meter previews this level even in RX; it
-  does not key the radio. CLIP indicates saturation during accepted TX speech.
-* **Headphones**: the physical VOL knob controls the selected USB headset sink.
-  Its actual volume and mute state are displayed. The extra -18 dB speech-stream
-  attenuation is removed. Start with a low headset volume before opening the mode.
-* The codec, resamplers and four audio streams remain resident through RX/TX
-  turns. RF admission, tail completion and the existing transition check remain.
+1. Download `x6200-usb-rf-windows.zip`, `usb-rf-test-kit.zip` and `SHA256SUMS`
+   from the GitHub release. Verify their SHA-256 hashes, extract the image and
+   flash a spare card using your usual image-writing tool. Image and kit must
+   share the same build ID, image hash, **startup contract 4** and **output
+   contract 1**. No baseband update is needed.
+2. Plug the USB headset or its USB receiver into the radio's **HOST** port.
+   Power and pair it, then start at a comfortable low volume. Built-in mic,
+   hand mic and radio speaker are unsupported for FreeDV audio in this build.
+   Hand-mic PTT and headset call buttons do not start a FreeDV transmission.
+3. Open **Apps → Digital modes → FreeDV**. Read the information box and choose
+   **Continue**. **Cancel** leaves normal operation in place. Select **Don't
+   show this again** only if desired; Continue saves that preference, including
+   across restarts. The Mode menu's Help button can show the instructions again.
+4. The normal waterfall and tuning controls remain visible. The radio applies
+   the required USB data profile and filters. Leave panel PTT released while
+   preparation finishes. **Receiving** follows actual stream preparation, buffers,
+   fresh capture/RX status and a released PTT; these admit operation. There is
+   no Run check or Enable TX step. Startup does not transmit fake qualification
+   turns or wait through a fixed 20-second idle.
 
-The +20 dB control used on the receiving PC was FreeDV's **Speaker / decoded
-speech output** gain. It does not establish that X6200 mic gain needs +20 dB.
-Measured microphone peaks already reached about -5 dBFS; that much input boost
-would clip. Adjust speech gain using the meter and a peer's listening report.
-Mic gain changes speech, not RF/modem drive. There is no automatic gain control
-in this beta.
+With multiple USB devices, select the intended paired device under **Audio**.
+The saved physical device identity is reused; unplugging it stops the session
+and does not move audio or TX to another device. A receive-only frequency can
+still receive, but is not eligible for TX. Split, transverter and native-radio
+mic/speaker operation are outside this Beta.
 
-## Install and prepare
+## Lower buttons and knobs
 
-1. Download `x6200-usb-rf-windows.zip`, `usb-rf-test-kit.zip` and `SHA256SUMS` from
-   the beta release. Verify their SHA-256 hashes. Extract and flash
-   `x6200-usb-rf.img` using your usual image-writing tool, then boot that card.
-   Keep image and kit together; their manifests must have the same build ID and
-   image hash, startup contract 3 and output contract 1. No baseband update is needed.
-2. Connect the Shokz Loop110, then power and pair the headset. Start at low
-   listening volume. Disconnect the hand mic, paddles and other keying accessories.
-   Use **panel PTT**, not the hand mic or a headset call button.
-3. Select the dial frequency before opening FreeDV. Disable split, TX shift,
-   RIT, XIT and transverter offsets. Close other radio apps, recorders and TCI
-   control clients. Tuning stays locked in USB voice mode. It temporarily selects
-   USB-DIG, 100..3100 Hz RX filtering and **1 W requested** TX power. The software
-   limit is **20 seconds per press**; use short beta replies. Radio settings are
-   restored on normal Exit. Saved mic gain and USB headset volume remain user
-   preferences.
-4. For live reception, arrange a peer using **compatible RADE V1**, on the same
-   dial frequency and sideband, without squelch or speech noise processing in
-   the modem path. Another FreeDV mode is not a compatible source. The unvalidated
-   second transmitter can wait; a known working operator is a suitable peer.
-   Use an appropriate antenna and permitted frequency for that exchange.
+| Control | Operation |
+| --- | --- |
+| **Mode** | RADE V1, TX timeout and Help. Other modes appear when supported. |
+| **Mic** | Saved speech gain from −12 to +24 dB and live input/encoder level meters. |
+| **Audio** | Select the USB device that provides both capture and playback. |
+| **Power** | The radio's usual power setting and knob-binding behavior, using the shared 0.1–10 W control. |
+| **Exit** | Gracefully close FreeDV and restore normal operation. A second distinct press while leaving is **Stop now**. |
+| **VOL** | Adjust selected USB headphone/speaker volume when its normal Volume function is selected, including in popups. Selecting Power gives the normal power-knob behavior. |
+| **Tuning** | Tune normally in RX. TX admission pauses while the latest frequency/profile is applied and fresh RX is reacquired. |
 
-## Receive and set the audio controls
+If existing settings are retained, the saved **+16 dB** gain migrates for the
+Loop110. On a fresh card, select **+16 dB** for your current headset and confirm
+its meter. A new device starts at 0 dB. Aim for normal speech peaks near
+−12 to −6 dBFS with room for louder syllables. Avoid CLIP. This is speech gain
+before encoding, not modem/RF drive or automatic gain control. Speaking with
+PTT released previews the meter without sending speech to RF.
 
-1. Open FreeDV and confirm **USB Digital Voice (Beta)**. Wait for **Receiving**,
-   actual radio **RX**, and **TX disabled**. Leave PTT released. Reception and
-   decoding work before TX is enabled; Run check is not needed just to listen.
-2. Turn **VOL** to set headset loudness. The displayed headphone percentage must
-   follow it; clockwise also unmutes. This adjusts USB playback, not radio RF
-   gain or modem drive. On Exit the knob resumes its ordinary radio behavior.
-3. Have the peer send a short RADE V1 transmission. Listen for intelligible
-   decoded speech, including its first and last words. A Receiving label means
-   the controller is in RX; it is not a decoder-sync or intelligibility indicator.
-4. Speak normally with PTT released and use the **Mic gain - / +** buttons only
-   as needed. Aim for ordinary speech peaks around **-12 to -6 dBFS**, with room
-   for louder syllables. Keep peaks below 0 dBFS. The meter displays the proposed
-   encoder input; speaking in RX does not transmit it. Leave gain at 0 dB if
-   your normal speech already reaches that range. Do not add 20 dB by default.
+The TX timeout is **180 seconds** by default and can be set from **30 to 600
+seconds**. Each transmission keeps the timeout selected at its start. Use
+short replies for the initial field test. Power changes use the standard radio
+control and can be applied during TX; choose a suitable power for your setup.
 
-## Enable short half-duplex replies
+## Receive and make a reply
 
-1. With PTT released and actual RX confirmed, select **Run check**. Leave PTT
-   released during its 20-second idle and three automatic direction-change turns.
-   No speaking or listening exercise is required. Real RF TX remains disabled.
-   This is the new session's retained admission check, not a repeat of basic
-   codec qualification.
-2. Continue only after the check passes and RX is confirmed. Select **Enable TX**
-   locally. Hold panel PTT, wait for **Transmitting**, then speak a short reply
-   (about 5-10 seconds). Audio spoken during preparation is discarded. Ask the
-   peer whether your speech is clear, comfortably loud, and complete at both ends.
-3. Release PTT and allow up to three seconds for the accepted speech/modem tail
-   to finish and fresh RX to be confirmed. Then listen for the peer's reply.
-   Make a few alternating turns rather than transmitting and receiving together.
-   If CLIP appears, reduce mic gain before the next turn. Set listening volume
-   separately with VOL.
-4. **Stop** immediately fences further TX admission and requests software TX
-   clear. If TX persists after Stop, switch the radio off. A Linux clear or a
-   telemetry RX flag is not an independent physical RF-off guarantee. Use
-   **Exit**, release PTT and wait for ordinary controls to return when finished.
+1. Arrange a peer with a known working **RADE V1** station, on the same dial
+   frequency and sideband. Another FreeDV mode is not a compatible source. Use
+   a permitted frequency and an appropriate antenna. Have the peer send a short
+   message with recognizable first and last words.
+2. Leave panel PTT released. Listen in the USB headset and set headphone volume
+   with VOL. Waterfall activity or Receiving alone does not prove decoder sync
+   or intelligible speech. Note whether the first and last words are complete.
+3. Wait for Receiving with TX eligible, then hold the **on-radio panel PTT**. Speak normally, then
+   release it. Allow the finishing/drain indication to complete; the accepted
+   microphone interval and end-of-over modem tail finish before TX clears.
+4. Have the peer report speech level, clipping and first/last-word completeness.
+   Make several short alternating turns. Tune in RX and reopen the Mic/Audio/
+   Mode popups to confirm ordinary controls remain usable. The same warm codec
+   stays resident across direction changes, popups, gain, volume and tuning.
 
-A transition fault, missing endpoint or unconfirmed RX must be resolved before
-continuing; do not work around one by changing gains or repeating Enable TX.
-The [qualification strategy](usb-test-strategy.md) describes the software gates
-and retained failure history. This remains a beta: incoming RF reception and
-longer conversations need operator confirmation; split-frequency operation is
-outside this release's qualification.
+## Leave, switch apps or stop
 
-## Save one session report
+GEN, Apps, other mode/page navigation and Exit all use coordinated teardown.
+During a normal exit in TX, the current accepted speech closes at a finite
+capture boundary, its modem tail finishes within the existing three-second
+drain limit, TX clears, fresh RX is checked, and radio settings are restored.
+If panel PTT remains held, release it so the requested destination can open.
+A navigation close is recorded separately from an actual physical PTT release.
 
-After Exit and before rebooting, extract the matching helper kit and run in
-Windows PowerShell:
+If an immediate stop is needed, use a **second distinct Exit/Stop now press**.
+Protection faults, lost USB/server and shutdown use immediate abort behavior.
+A fault does not automatically reconnect, change devices or resume TX. Review
+the displayed fault before reopening FreeDV. Shutdown is bounded even if PTT
+remains held. A software RX confirmation is telemetry evidence; antenna-level
+RF-off timing has not been independently measured.
+
+## Optional evidence collection
+
+After leaving FreeDV, keep the radio running and all PTT released. Extract the
+matching `usb-rf-test-kit.zip` on Windows, open PowerShell in that folder, and run:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Invoke-UsbRfEvidence.ps1 -RadioIp 192.168.4.210
+powershell.exe -ExecutionPolicy Bypass -File .\Invoke-UsbRfEvidence.ps1 -RadioIp 192.168.4.210
 ```
 
-This is read-only collection; it sends no TX/PTT commands. Note the peer/mode,
-frequency, RX first/last-word clarity, mic gain, headphone setting, any clipping,
-and PTT release/return to RX. Return the printed `usb-rf-results-*.zip`, including
-on failure. The ZIP contains microphone audio. Preserve it before reboot because
-detailed traces and audio live under `/tmp`; bounded incident metadata is also
-retained on the card. Report any power-off recovery separately.
+Add `-SdrWav 'C:\path\demodulated-usb-audio.wav'` only if an off-air recording is
+useful. PCM16 mono/stereo at 8, 44.1 or 48 kHz, up to 120 seconds, is supported.
+IQ files are not decoded by this helper. It sends **no TX/PTT commands**.
+Return the printed ZIP if there is a fault, missing speech or an exit problem;
+it contains microphone/audio taps, so review it before sharing.
 
-An SDR recording is optional, not required for the accepted initial TX result
-or the next live RX step. To decode one, add `-SdrWav 'C:\path\to\sdr-usb-audio.wav'`.
-The helper accepts complete **demodulated USB audio**, PCM16 mono/stereo at 8,
-44.1 or 48 kHz, up to **120 seconds and 32 MiB**, with no trimming. Stereo is
-averaged without normalization. It does not accept IQ data. Larger files retain
-only a bounded diagnostic header and digest. Automated sync alone does not
-establish intelligibility or complete first/last words.
-
-## Implementation boundaries
-
-The USB microphone supplies speech independently of the stock baseband's coupled
-mic/line inputs. Radio RX capture and modem playback use the stock 44.1 kHz host
-audio boundary; explicit resamplers bridge the resident 48 kHz codec. RECORD
-stays clear, MODEM is the stock RF TX source, and conservative quarter-amplitude
-modem drive is unchanged. This is half-duplex RF operation.
-
-Normal release completes the modem tail, acknowledges protocol drain, waits for
-a fresh Pulse-reported backend interval within the existing deadline, clears TX
-and waits for a newer RX packet. That receipt is not a physical DAC-empty or
-RF-off measurement. Stop bypasses the normal tail wait and prioritizes clear.
-No raw independent hand-mic PTT interface or baseband watchdog guarantee has
-been added. Native hand-mic isolation remains blocked by the stock routing.
+For contract 4, expect **startup: PASS**, **qualification: NOT_REQUESTED**,
+**control_completion: CONFIRMED_RX**, **output_completion: PASS** and
+**session: COMPLETE** after a healthy exit. No SDR file normally gives
+`COLLECTED_NO_SDR_RECORDING`; that is not a failure or a claim of RF reception.
+A fault, missing readiness, incomplete terminal receipt or mismatched build is
+BLOCKED. A decoded file still needs listening review. Detailed test evidence
+and the distinction between software gates and radio observations are in
+[the test strategy](usb-test-strategy.md).

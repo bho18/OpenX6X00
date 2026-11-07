@@ -182,7 +182,7 @@ static int mark_previous(int dir,const char *next){
 }
 int fd_usb_evidence_store(const char *directory,const char *id,const char *kind,const char *json){
     if(!directory||directory[0]!='/'||!valid_id(id)||!kind||!json)return -EINVAL;
-    if(strcmp(kind,"metadata")&&strcmp(kind,"fault")&&strcmp(kind,"completion"))return -EINVAL;
+    if(strcmp(kind,"metadata")&&strcmp(kind,"fault")&&strcmp(kind,"completion")&&strcmp(kind,"readiness"))return -EINVAL;
     size_t input_size=strnlen(json,FD_USB_EVIDENCE_MAX_RECORD+1);
     if(input_size>FD_USB_EVIDENCE_MAX_RECORD)return -EFBIG;
     int overhead=snprintf(NULL,0,"{\"schema\":\"x6200.usb.incident.v1\",\"session_id\":\"%s\",\"kind\":\"%s\",\"record\":}\n",id,kind);
@@ -208,8 +208,8 @@ int fd_usb_evidence_store(const char *directory,const char *id,const char *kind,
         if(e&&e!=-ENOENT){result=e;goto done;}
         slot=e==-ENOENT?0:(previous+1)%FD_USB_EVIDENCE_SLOTS;
         result=mark_previous(dir,id);if(result)goto done;
-        const char *kinds[]={"metadata","fault","completion","aborted"};
-        for(unsigned i=0;i<4;++i){char name[64];filename(name,sizeof(name),slot,kinds[i]);if(unlinkat(dir,name,0)<0&&errno!=ENOENT){result=-errno;goto done;}}
+        const char *kinds[]={"metadata","fault","completion","aborted","readiness"};
+        for(unsigned i=0;i<sizeof(kinds)/sizeof(kinds[0]);++i){char name[64];filename(name,sizeof(name),slot,kinds[i]);if(unlinkat(dir,name,0)<0&&errno!=ENOENT){result=-errno;goto done;}}
         if(fsync(dir)<0){result=-errno;goto done;}
         result=write_record(dir,slot,id,kind,json);if(result)goto done;
         char pointer[256];snprintf(pointer,sizeof(pointer),"{\"schema\":\"x6200.usb.incident-pointer.v1\",\"session_id\":\"%s\",\"slot\":%u}\n",id,slot);
@@ -219,6 +219,84 @@ int fd_usb_evidence_store(const char *directory,const char *id,const char *kind,
         result=write_record(dir,slot,id,kind,json);
     }
 done:
+    if(lock>=0)close(lock);
+    close(dir);return result;
+}
+
+/* UI runtime PCM belongs to a small, separate /tmp namespace. Opt-in callers
+ * invoke this before opening any audio streams; the persistent incident ring
+ * above is never visited. A strict basename and suffix allowlist is deliberate:
+ * a generic freedv-* glob would also match user-collected evidence. */
+#define RUNTIME_SESSION_LENGTH 31u
+#define RUNTIME_SCAN_LIMIT 8192u
+static bool runtime_session(const char *name){
+    if(strncmp(name,"freedv-usb-",11))return false;
+    for(unsigned i=11;i<21;++i)if(!isdigit((unsigned char)name[i]))return false;
+    if(name[21]!='-')return false;
+    for(unsigned i=22;i<RUNTIME_SESSION_LENGTH;++i)if(!isdigit((unsigned char)name[i]))return false;
+    return true;
+}
+static bool runtime_temporary(const char *suffix,const char *base){
+    size_t n=strlen(base);if(strncmp(suffix,base,n)||suffix[n]!='.')return false;
+    const char *p=suffix+n+1;unsigned digits=0;
+    while(isdigit((unsigned char)*p)&&digits<10){++p;++digits;}
+    return digits&&!strcmp(p,".tmp");
+}
+static bool runtime_file(const char *name,char *session){
+    if(strlen(name)<RUNTIME_SESSION_LENGTH||!runtime_session(name))return false;
+    const char *suffix=name+RUNTIME_SESSION_LENGTH;
+    static const char *const known[]={".jsonl","-mic.raw","-radio-rx.raw","-modem.raw","-decoded.raw","-readiness.json","-completion.json","-fault.json","-fault.json.tmp"};
+    bool allowed=false;for(unsigned i=0;i<sizeof(known)/sizeof(known[0]);++i)if(!strcmp(suffix,known[i])){allowed=true;break;}
+    if(!allowed)allowed=runtime_temporary(suffix,"-readiness.json")||runtime_temporary(suffix,"-completion.json");
+    if(!allowed)return false;
+    memcpy(session,name,RUNTIME_SESSION_LENGTH);session[RUNTIME_SESSION_LENGTH]=0;return true;
+}
+static bool runtime_owned(const struct stat *s,unsigned owner){return S_ISREG(s->st_mode)&&s->st_uid==(uid_t)owner&&s->st_nlink==1;}
+int fd_usb_runtime_trace_prune(const char *prefix,unsigned owner){
+    if(!prefix||prefix[0]!='/')return -EINVAL;
+    size_t length=strnlen(prefix,768);if(length>=768)return -ENAMETOOLONG;
+    const char *base=strrchr(prefix,'/');if(!base||strlen(++base)!=RUNTIME_SESSION_LENGTH||!runtime_session(base))return -EINVAL;
+    char directory[768];size_t dir_length=(size_t)(base-prefix-1);if(!dir_length)dir_length=1;
+    memcpy(directory,prefix,dir_length);directory[dir_length]=0;
+    int dir=open(directory,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);if(dir<0)return -errno;
+    struct stat st;int result=0,lock=-1;DIR *entries=NULL;
+    if(fstat(dir,&st)<0){result=-errno;goto done;}
+    if(st.st_uid!=(uid_t)owner){result=-EPERM;goto done;}
+    if(!(st.st_mode&0222)){result=-EROFS;goto done;}
+    lock=openat(dir,".freedv-usb-runtime.lock",O_RDWR|O_CREAT|O_NOFOLLOW,0600);
+    if(lock<0){result=-errno;goto done;}
+    if(fstat(lock,&st)<0){result=-errno;goto done;}
+    if(!runtime_owned(&st,owner)){result=-EPERM;goto done;}
+    if(flock(lock,LOCK_EX|LOCK_NB)<0){result=-errno;goto done;}
+    if(fstatat(dir,"freedv-usb-current.json",&st,AT_SYMLINK_NOFOLLOW)==0){
+        if(!runtime_owned(&st,owner)){result=-EPERM;goto done;}
+    }else if(errno!=ENOENT){result=-errno;goto done;}
+    int scan_fd=dup(dir);if(scan_fd<0){result=-errno;goto done;}entries=fdopendir(scan_fd);
+    if(!entries){result=-errno;close(scan_fd);goto done;}
+    char previous[RUNTIME_SESSION_LENGTH+1]={0},session[RUNTIME_SESSION_LENGTH+1];
+    /* Pass one proves the directory is bounded and selects the one previous
+     * session. Pass two only removes recognized owned regular files. A final
+     * pass refuses to start if a concurrent producer prevented that bound. */
+    for(unsigned pass=0;pass<3;++pass){
+        rewinddir(entries);unsigned count=0;struct dirent *entry;errno=0;
+        while((entry=readdir(entries))){
+            if(++count>RUNTIME_SCAN_LIMIT){result=-E2BIG;goto done;}
+            if(!runtime_file(entry->d_name,session))continue;
+            if(!strcmp(session,base)){result=-EEXIST;goto done;} /* Never reuse a session or truncate its evidence. */
+            if(fstatat(dir,entry->d_name,&st,AT_SYMLINK_NOFOLLOW)<0){if(errno==ENOENT){errno=0;continue;}result=-errno;goto done;}
+            if(!runtime_owned(&st,owner))continue;
+            if(!pass){if(strcmp(session,previous)>0)strcpy(previous,session);}
+            else if(strcmp(session,previous)){
+                if(pass==2){result=-EBUSY;goto done;}
+                if(unlinkat(dir,entry->d_name,0)<0&&errno!=ENOENT){result=-errno;goto done;}
+            }
+            errno=0;
+        }
+        if(errno){result=-errno;goto done;}
+    }
+    if(fsync(dir)<0)result=-errno;
+done:
+    if(entries)closedir(entries);
     if(lock>=0)close(lock);
     close(dir);return result;
 }

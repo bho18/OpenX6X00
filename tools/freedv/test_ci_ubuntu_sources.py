@@ -8,6 +8,24 @@ from ci_ubuntu_sources import normalize_sources, rewrite_source
 
 
 class UbuntuMirrorTests(unittest.TestCase):
+    def test_runner_file_mirror_routes_to_https_without_changing_trust(self):
+        for scheme in ('file:', 'mirror+file:'):
+            for slashes in ('/', '//', '///'):
+                for suffix, host in (('', 'archive'), ('-security', 'security')):
+                    uri=scheme+slashes+'etc/apt/apt-mirrors'+suffix+'.txt'
+                    for deb822, source in ((False,'deb [signed-by=/keys/ubuntu.gpg] '+uri+' noble main\n'),
+                                           (True,'Types: deb\nURIs: '+uri+'\nSuites: noble\nSigned-By: /keys/ubuntu.gpg\n')):
+                        expected=source.replace(uri,'https://'+host+'.ubuntu.com/ubuntu')
+                        self.assertEqual(rewrite_source(source,deb822),(expected,1))
+                        self.assertEqual(rewrite_source(expected,deb822),(expected,0))
+
+    def test_only_active_ubuntu_http_uri_tokens_change(self):
+        source=('Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/ http://security.ubuntu.com/ubuntu\n'
+                'Suites: noble noble-security\nSigned-By: /keys/ubuntu.gpg\n'
+                '# http://archive.ubuntu.com/ubuntu\n')
+        expected=source.replace('URIs: http://','URIs: https://').replace('ubuntu/ http://security','ubuntu/ https://security')
+        self.assertEqual(rewrite_source(source,True),(expected,2))
+
     def test_legacy_suites_components_and_signature_options_are_unchanged(self):
         source='deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu.gpg] http://azure.archive.ubuntu.com/ubuntu noble main universe\r\n'
         expected=source.replace('http://azure.archive.ubuntu.com/ubuntu','https://archive.ubuntu.com/ubuntu')

@@ -102,6 +102,14 @@ class SettingsManager {
     // USB microphone speech gain is independent of baseband mic/RF controls.
     Parameter<int32_t> p_freedv_usb_mic_gain{"freedv_usb_mic_gain", 0, -12, 24,
         StorageType::GLOBAL, pending_writes_, &global_params_};
+    Parameter<int32_t> p_freedv_usage_hidden{"freedv_usage_hidden", 0, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    Parameter<std::string> p_freedv_usb_headset{"freedv_usb_headset", "", {},
+        StorageType::GLOBAL, pending_writes_, {}, &global_params_};
+    Parameter<std::string> p_freedv_usb_gains{"freedv_usb_gains", "", {},
+        StorageType::GLOBAL, pending_writes_, {}, &global_params_};
+    Parameter<int32_t> p_freedv_usb_gain_migrated{"freedv_usb_gain_migrated", 0, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_imic{"imic", 30, 0, 50,
         StorageType::GLOBAL, pending_writes_, &global_params_};
 #ifdef BOARD_X6200

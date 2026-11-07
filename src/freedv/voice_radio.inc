@@ -699,7 +699,7 @@ bool radio_voice_audio_stats(fd_voice_audio_snapshot *out) {
 }
 bool radio_voice_tuning_request(fd_local_operation op,int32_t value,fd_voice_tuning *out) {return cfg_voice_resolve(op,value,out);}
 static int voice_monitor_level(void) {
-#ifdef ENABLE_FREEDV_USB_TEST
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
     if(radio_usb_quiet())return 0;
 #endif
     return atomic_load(&voice_radio.owned) && voice_radio.profile ? voice_radio.profile->monitor_gain : param_i_get(cfg_moni);
