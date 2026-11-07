@@ -17,7 +17,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, atomic_json, digest,
                                immutable_json, sha, validate_campaign, INFRASTRUCTURE_PREREQUISITES, INFRASTRUCTURE_CHECKS, validate_tail_backpressure_run, validate_capture_close_run,
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
                                host_resource_configuration, validate_host_resources, PRESSURE_COUNTERS, validate_sink_turns_run, validate_release_lock_protocol, validate_capture_pipeline_tail_run, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run)
-from usb_test_campaign import validate_headset_volume_flags, operational_proof, validate_operational_run
+from usb_test_campaign import validate_headset_volume_flags, operational_proof, validate_operational_run, validate_capture_open_contract_run
 
 
 SYNTHETIC_TRANSPORT_LIBRARY=b'synthetic-libsamplerate-gate-fixture'
@@ -324,6 +324,90 @@ def capture_pipeline_tail_fixture(root):
 
 
 
+def capture_open_rows_fixture(rows,completion):
+    """Add explicit, conserved source admission to synthetic trace metadata.
+
+    This constructs unit-test inputs, never controller execution evidence.
+    Opening and closing share one source epoch and native Pulse frontier.
+    """
+    rows=[row for row in rows if not row.get('_synthetic_capture_open')]
+    header=next(row for row in rows if row.get('kind')=='session')
+    key={name:header[name] for name in ('session_id','source_commit','build_id')}
+    header['usb_capture_open_contract_version']=1
+    completion['usb_capture_open_contract_version']=1
+    closes=[row for row in rows if row.get('kind')=='capture-close']
+    tx=sorted((row for row in rows if row.get('kind')=='event' and row.get('event')=='state' and row.get('state')==3),key=lambda row:row['ms'])
+    openings=[]
+    for number in range(1,max(len(closes),len(tx))+1):
+        close=closes[number-1] if number<=len(closes) else None
+        epoch=(close.get('capture_started_ms',max(1,close.get('close_started_ms',1000)-500)) if close else tx[number-1]['ms'])
+        start=close.get('start_index',1000+(number-1)*144000) if close else 1000+(number-1)*144000
+        frontier_extra=min(96,start);prefix=close.get('synthetic_open_prefix_frames',frontier_extra) if close else frontier_extra
+        begin=start-prefix
+        opening=dict(kind='capture-open',schema='x6200.usb.capture-open.v1',**key,turn=number,generation=number*2,
+            complete=True,canceled=False,index_gap=False,read_index_corrupt=False,write_index_corrupt=False,open_timeout_ms=750,
+            scope='pulse-capture-production-frontier',begin_requested_ms=max(0,epoch-(60 if prefix>=2880 else 1)),timing_issued_ms=max(0,epoch-1),
+            frozen_ms=epoch,reached_ms=epoch,opened_ms=epoch,capture_started_ms=epoch,begin_read_index=begin,
+            read_index_bytes=begin*2,write_index_bytes=(start-frontier_extra)*2,source_usec=1000 if frontier_extra==96 else 0,
+            transport_usec=1000 if frontier_extra==96 else 0,sink_usec=10000,frontier_extra_frames=frontier_extra,
+            start_index=start,discarded_prefix_frames=prefix,first_submitted_index=start,_synthetic_capture_open=True)
+        openings.append(opening)
+        if close:
+            close['generation']=number*2;close.setdefault('index_gap',False)
+            if close.get('complete') is True:
+                close.setdefault('submitted_first_index',start)
+                close.setdefault('submitted_end_index',close['cutoff_index'])
+                active=close['close_started_ms']-epoch;expected=active*48
+                rows.append(dict(kind='source-accounting',turn=number,ms=close['closed_ms'],active_ms=active,
+                    accepted_mic_frames=close['cutoff_index']-start,expected_mic_frames=expected,
+                    required_mic_frames=max(expected*99//100-1920,0),boundary_frames=1920,
+                    delivery_tolerance_percent=1,evaluated=active>=750,passed=True,_synthetic_capture_open=True))
+            elif number>len(tx):
+                # Closing failed after TX was admitted. Its opening still
+                # completed, while the finite RF turn did not.
+                rows.extend([dict(kind='event',event='state',state=3,ms=epoch,_synthetic_capture_open=True),
+                    dict(kind='event',event='state',state=4,ms=close.get('close_started_ms',epoch),_synthetic_capture_open=True)])
+    rows.extend(openings)
+    all_openings=[row for row in rows if row.get('kind')=='capture-open']
+    completion.update(capture_open_completed_intervals=sum(row['complete'] for row in all_openings),
+                      capture_open_interrupted_intervals=sum(not row['complete'] for row in all_openings))
+    def chronology(row):
+        kind=row.get('kind')
+        if kind=='session':return (-1,0)
+        if kind=='capture-open':return (row.get('opened_ms') or row.get('begin_requested_ms',0),1)
+        if kind=='capture-close':return (row.get('closed_ms',row.get('close_started_ms',0)),3)
+        if kind=='source-accounting':return (row['ms'],4)
+        if kind=='backend-tail':return ((row.get('completed_us') or row.get('timing_issued_us',0))//1000,5)
+        return (row.get('ms',0),2)
+    return sorted(rows,key=chronology)
+
+
+def refresh_capture_contract_fixture(root,run):
+    """Bind both pure validators to the same retained synthetic files."""
+    from usb_capture_open_contract import validate_capture_open_contract
+    from usb_output_contract import validate_output_contract
+    result=Path(root)/'result';outputs=[];openings=[]
+    for entry in run['output_contract']['sessions']:
+        path=result/entry['trace_file'];cp=result/entry['completion_file']
+        rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        completion=json.loads(cp.read_text());rows=capture_open_rows_fixture(rows,completion)
+        path.write_text(''.join(json.dumps(row)+'\n' for row in rows));atomic_json(cp,completion)
+        files=dict(trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp))
+        outputs.append(dict(validate_output_contract(rows,completion),**files))
+        openings.append(dict(validate_capture_open_contract(rows,completion),**files))
+    run['output_contract']['sessions']=outputs
+    run.update(usb_capture_open_contract_version=1,capture_open_contract=dict(
+        schema='x6200.usb.capture-open-contract-set.v1',status='PASS',usb_capture_open_contract_version=1,sessions=openings))
+    for interval in run.get('capture_close',{}).get('turns',[]):
+        interrupted=interval.get('completion_interruption')
+        if interrupted:interrupted['trace_sha256']=sha(result/interrupted['trace_file'])
+    if 'capture_close_failure' in run:
+        from usb_test_support import validate_capture_close_failure
+        rows=[json.loads(line) for path in sorted(result.glob('freedv-usb-session*.jsonl')) for line in path.read_text().splitlines() if line.strip()]
+        run['capture_close_failure']=validate_capture_close_failure(rows,run['harness'],(Path(root)/'test.log').read_text(),run['capture_close_failure']['mode'])
+    return run
+
+
 def output_contract_fixture(root,harness,identity=None):
     """Hand-computed playback-tail receipts for metadata gate unit tests."""
     from usb_output_contract import validate_output_contract
@@ -378,9 +462,10 @@ def output_contract_fixture(root,harness,identity=None):
         summary=validate_output_contract(trace_rows,completion,required_version=1,expected_identity=key)
         sessions.append(dict(summary,trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp)))
         session_ids.append(path.stem)
-    return {'usb_output_contract_version':1,'identity':{'status':'PASS','source_commit':identity['source_commit'],
+    run={'usb_output_contract_version':1,'identity':{'status':'PASS','source_commit':identity['source_commit'],
             'build_id':identity['build_id'],'binary_sha256':identity['test_binary_sha256'],'session_ids':session_ids},
             'output_contract':{'schema':'x6200.usb.output-contract-set.v1','status':'PASS','usb_output_contract_version':1,'sessions':sessions}}
+    return refresh_capture_contract_fixture(root,run)
 
 
 
@@ -476,7 +561,7 @@ def backend_failure_fixture(case,root,identity=None):
     run['backend_failure']=validate_backend_failure(rows,harness,text,mode)
     run['backend_profile'].update(name='legacy-low-latency',null_norewinds=True)
     (root/'default.pa').write_text('load-module module-null-sink sink_name=radio_sink_fixture norewinds=1\n')
-    return run
+    return refresh_capture_contract_fixture(root,run)
 
 
 def audio_controls_fixture(live=False,root=None):
@@ -512,11 +597,38 @@ def audio_controls_fixture(live=False,root=None):
                  'status':'PASS','initial_sinks':initial,'phases':phases}}
 
 
+def opening_prefix_fixture(root):
+    """Distinct pre-admission PCM precedes an independently indexed turn."""
+    from usb_test_support import indexed_capture_source_match
+    result=capture_source_boundary_fixture('capture-release-split',root)
+    result.pop('capture_source_boundary')
+    interval=result['capture_close']['turns'][0]
+    for field in ('start_index','cutoff_index','consumed_index','release_fence_index'):
+        interval[field]+=4000
+    interval['write_index_bytes']+=8000
+    interval['synthetic_open_prefix_frames']=2880
+    root=Path(root);index=root/'result/mic-observer.jsonl';pcm=root/'result/mic-observer.pcm'
+    ledger=[json.loads(line) for line in index.read_text().splitlines()]
+    for row in ledger:
+        row['index_start']+=4000;row['index_end']+=4000;row['tap_start']+=2880
+    ledger.insert(0,dict(valid=True,index_start=2120,index_end=5000,tap_start=0,tap_frames=2880))
+    index.write_text(''.join(json.dumps(row)+'\n' for row in ledger))
+    pcm.write_bytes((-30001).to_bytes(2,'little',signed=True)*2880+pcm.read_bytes())
+    trace=root/'result/freedv-usb-session-unit.jsonl'
+    mic=trace.with_name(trace.stem+'-mic.raw').read_bytes()
+    result['capture_open_prefix']=dict(schema='x6200.usb.capture-open-prefix.v1',status='PASS',
+        discarded_prefix_frames=2880,held_ms=60,source_match=indexed_capture_source_match(interval,mic,ledger,pcm.read_bytes()),
+        trace_path=str(trace),artifacts={name:dict(path=str(path),sha256=sha(path)) for name,path in
+            (('source_index',index),('source_pcm',pcm))})
+    return result
+
+
 def capture_case_fixture(case,root,identity=None):
     from test_usb_audio_integration import SPEECH_CASES,WAVEFORM_CASES
     if case in ('backend-timing-missing','backend-timing-invalid','backend-stop-before-timing','backend-stop-during-wait'):
         return backend_failure_fixture(case,root,identity)
-    if case=='capture-close-tail120':result=capture_pipeline_tail_fixture(root)
+    if case=='operational-open-prefix':result=opening_prefix_fixture(root)
+    elif case=='capture-close-tail120':result=capture_pipeline_tail_fixture(root)
     elif case in ('capture-release-split','capture-release-held150'):result=capture_source_boundary_fixture(case,root)
     elif case in ('capture-close-missing','capture-close-invalid','capture-close-stop'):result=capture_close_failure_fixture(case,root)
     elif case=='eoo-backpressure':result=tail_backpressure_fixture()
@@ -527,15 +639,17 @@ def capture_case_fixture(case,root,identity=None):
         count=int(case in WAVEFORM_CASES)
         result={'harness':{'turns':count,'total_turns':count,'eoo':count,'fault':1},'capture_close':capture_close_fixture(count)}
     if case.startswith('operational-'):
-        count=int(case in ('operational-leave-tx','operational-key-retune'));fault=10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
+        count=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release'))
+        fault=23 if case in ('operational-open-missing','operational-open-invalid') else 1 if case=='operational-open-stop' else 10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
         result['harness'].update(turns=count,total_turns=count,eoo=count,fault=fault,operational=True,
             startup_ready=True,qualification_complete=False,qualification_turns=0,tx_timeout_seconds=30 if case=='operational-timeout' else 180,
             physical_tx=False,rf_clear_confirmed=True,configuration_ready=True,tuning_revision=2 if case in ('operational-retune','operational-receive-only','operational-key-retune') else 1,
-            physical_ptt_pressed=case in ('operational-leave-tx','operational-abort','operational-device-loss','operational-timeout'),
-            physical_release_sequence=2 if case=='operational-key-retune' else 1 if case in ('operational-held-ptt','operational-retune','operational-receive-only') else 0,
-            keys=count,key_attempts=2 if case=='operational-key-retune' else count,key_denials=int(case=='operational-key-retune'),
+            physical_ptt_pressed=case in ('operational-leave-tx','operational-abort','operational-device-loss','operational-timeout','operational-open-missing','operational-open-invalid','operational-open-stop'),
+            physical_release_sequence=2 if case in ('operational-key-retune','operational-open-release') else 1 if case in ('operational-held-ptt','operational-retune','operational-receive-only','operational-open-prefix') else 0,
+            keys=2 if case=='operational-open-release' else count or int(case in ('operational-open-missing','operational-open-invalid','operational-open-stop')),
+            submitted_mic=count*96000,key_attempts=2 if case in ('operational-key-retune','operational-open-release') else count,key_denials=int(case=='operational-key-retune'),
             rade_creations=1,encoder_creations=1,decoder_creations=1,rx_synthesis_blocks=4 if case=='operational-retune' else 0)
-        result['capture_close']=capture_close_fixture(count)
+        if case!='operational-open-prefix':result['capture_close']=capture_close_fixture(count)
         if count:sink_turn_fixture(result['capture_close'],False,root) # Produce raw finite-close fixture records.
     if case in WAVEFORM_CASES:
         result['actual_sink_turns']=sink_turn_fixture(result['capture_close'],case in SPEECH_CASES,root)
@@ -560,7 +674,7 @@ def capture_case_fixture(case,root,identity=None):
              'scope':'passive rendered sink monitor; not physical DAC time'},
             {'kind':'block','received_ns':ready-1,'frame_start':0,'frames':1}]
     (Path(root)/('headset-output.jsonl' if case=='rx-pause150' else 'radio-output.jsonl')).write_text(''.join(json.dumps(row)+'\n' for row in ledger))
-    return result
+    return refresh_capture_contract_fixture(root,result)
 
 
 def operational_case_fixture(case,root,result):
@@ -574,6 +688,14 @@ def operational_case_fixture(case,root,result):
     if case=='operational-timeout':
         rows.extend([dict(kind='event',event='state',state=3,ms=1000),dict(kind='event',event='first-fault',state=3,ms=31000,status=10,operation='turn-deadline')])
         h=result['harness'];h['first_fault_origin']='turn-deadline';h['rf_intervals']=[dict(on_before_ns=1000000000,off_after_ns=31000000000)]
+    if case in ('operational-open-missing','operational-open-invalid','operational-open-stop','operational-open-release'):
+        rows.append(dict(kind='capture-open',schema='x6200.usb.capture-open.v1',**key,turn=1,generation=1,
+            complete=False,canceled=case=='operational-open-release',index_gap=False,read_index_corrupt=False,
+            write_index_corrupt=False,open_timeout_ms=750,scope='pulse-capture-production-frontier',
+            begin_requested_ms=400,timing_issued_ms=401,frozen_ms=0,reached_ms=0,opened_ms=0,
+            capture_started_ms=0,begin_read_index=0,read_index_bytes=0,
+            write_index_bytes=-1 if case=='operational-open-invalid' else 0,source_usec=0,transport_usec=0,
+            sink_usec=0,frontier_extra_frames=0,start_index=0,discarded_prefix_frames=0,first_submitted_index=0))
     ready=dict(kind='startup-readiness',schema='x6200.usb.operational-readiness.v1',status='PASS',ready_ms=100,
                generation=1,tuning_revision=1,radio_sequence=20,tx_eligible=case!='operational-receive-only',ptt_release_sequence=int(case=='operational-held-ptt'),
                ptt=False,rf_valid=True,rf_tx=False,configuration_ready=True,captures_fresh=True,buffers_ready=True,
@@ -585,7 +707,7 @@ def operational_case_fixture(case,root,result):
                 qualification_complete=False,qualification_turns=0)
     samples=[row for row in rows if row.get('kind')=='sample'];samples[-1].update(fields)
     for row in rows:
-        if row.get('kind')=='capture-close':row.update(close_trigger='ptt-release' if case=='operational-key-retune' else 'navigation',physical_release_sequence=1 if case=='operational-key-retune' else 0)
+        if row.get('kind')=='capture-close':row.update(close_trigger='ptt-release' if case in ('operational-key-retune','operational-open-prefix','operational-open-release') else 'navigation',physical_release_sequence=1 if case in ('operational-key-retune','operational-open-prefix','operational-open-release') else 0)
         if row.get('event')=='capture-release-observed' and case!='operational-key-retune':row['event']='capture-navigation-observed'
     if case=='operational-timeout':
         samples[-1]['ms']=31100;completion['last_sample_ms']=31100
@@ -597,6 +719,8 @@ def operational_case_fixture(case,root,result):
     from usb_output_contract import validate_output_contract
     summary=validate_output_contract(rows,completion)
     result['output_contract']['sessions']=[dict(summary,trace_file=path.name,completion_file=cp.name,trace_sha256=sha(path),completion_sha256=sha(cp))]
+    refresh_capture_contract_fixture(root,result)
+    rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()];completion=json.loads(cp.read_text())
     result['operational']=operational_proof(rows,completion,h,case)
     if case=='operational-retune':result['actual_headset_output']=operational_headset_fixture(root,path)
 
@@ -644,7 +768,8 @@ class CampaignTests(unittest.TestCase):
         self.identity['host_resource_configuration']=host_resource_configuration()
         self.identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
         self.identity['usb_output_contract_version']=1
-        self.plan = {'usb_output_contract_version':1,'profile': 'qualification', 'repetitions': 2,
+        self.identity['usb_capture_open_contract_version']=1
+        self.plan = {'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'profile': 'qualification', 'repetitions': 2,
                      'expected_cases': ['normal'], 'selected_cases': ['normal'],
                      'debug_subset': False, 'case_timeout_seconds': {'normal': 90},
                      'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
@@ -671,7 +796,7 @@ class CampaignTests(unittest.TestCase):
             runs.append({'status': 'PASS', 'repeat': repeat, 'log_path': str(log),
                          'log_sha256': sha(log), 'case_record_path': str(case),
                          'case_record_sha256': sha(case),**extra})
-        result = {'usb_output_contract_version':1,'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
+        result = {'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'schema': MATRIX_SCHEMA, 'status': status, 'identity': self.identity,
                   'plan': self.plan, 'complete_matrix': status == 'PASS',
                   'expected_executions': ['normal@1', 'normal@2'],
                   'executed': ['normal@1', 'normal@2'], 'not_executed': [], 'skipped': [],
@@ -2024,6 +2149,7 @@ class OperationalEvidenceTests(unittest.TestCase):
             with self.subTest(case=case),tempfile.TemporaryDirectory() as directory:
                 run=self.fixture(case,directory)
                 validate_operational_run(run,case,verify_files=True)
+                validate_capture_open_contract_run(run,verify_files=True)
                 validate_output_contract_run(run,verify_files=True)
                 validate_backend_profile_run(run,case,verify_files=True)
                 validate_capture_close_run(run,verify_files=True)

@@ -154,6 +154,10 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_output_contract.py)
                 add_test(NAME freedv_usb_output_contract_optimized COMMAND ${Python3_EXECUTABLE} -O
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_output_contract.py)
+                add_test(NAME freedv_usb_capture_open_contract COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_capture_open_contract.py)
+                add_test(NAME freedv_usb_capture_open_contract_optimized COMMAND ${Python3_EXECUTABLE} -O
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_capture_open_contract.py)
                 add_test(NAME freedv_usb_fifo_clock COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_fifo_clock.py)
                 add_test(NAME freedv_usb_backend_observer COMMAND ${Python3_EXECUTABLE}

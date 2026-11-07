@@ -276,6 +276,8 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
         raise ValueError('USB expected-case registry is empty or duplicated')
     if re.fullmatch('[0-9a-f]{64}',str(matrix.get('identity',{}).get('transport_library_sha256',''))) is None:
         raise ValueError('Qualification did not bind its loaded transport library dependency')
+    if any(type(item.get('usb_capture_open_contract_version')) is not int or item['usb_capture_open_contract_version']!=1 for item in (matrix,plan,matrix.get('identity',{}))):
+        raise ValueError('USB qualification requires explicit indexed capture opening contract version1')
     validate_host_resources(matrix, verify_files=verify_files)
     validate_infrastructure_prerequisites(matrix, verify_files=verify_files)
     if plan.get('expected_cases') != expected or plan.get('selected_cases') != expected:
@@ -297,6 +299,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                 any(run.get('status') != 'PASS' for run in runs)):
             raise ValueError('USB qualification case did not pass every repetition: ' + name)
         for repeat, run in enumerate(runs,1):
+            validate_capture_open_contract_run(run,verify_files=verify_files,expected_identity=matrix['identity'])
             validate_output_contract_run(run,verify_files=verify_files,expected_identity=matrix['identity'])
             validate_backend_profile_run(run,name,verify_files=verify_files)
             validate_observer_admission_run(run,name,verify_files=verify_files)
@@ -330,7 +333,7 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
                         raise ValueError('Retained USB case evidence changed: ' + name)
                 details=_load(run['case_record_path'])
                 for key in ('harness','capture_close','actual_sink_turns','capture_source_boundary',
-                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','observer_admission','audio_controls','audio_gain_turn','operational','actual_headset_output'):
+                            'capture_close_failure','tail_backpressure','capture_pipeline_tail','usb_output_contract_version','output_contract','backend_profile','backend_failure','usb_capture_open_contract_version','capture_open_contract','observer_admission','audio_controls','audio_gain_turn','operational','actual_headset_output','capture_open_prefix'):
                     retained=details.get(key)
                     if key=='actual_sink_turns' and key not in details:
                         from test_usb_audio_integration import WAVEFORM_CASES
@@ -345,6 +348,41 @@ def _validate_campaign(matrix, expected_cases=None, verify_files=True):
     return campaign
 
 
+
+
+def validate_capture_open_contract_run(run,verify_files=True,expected_identity=None):
+    try:
+        return _validate_capture_open_contract_run(run,verify_files,expected_identity)
+    except (OSError,KeyError,TypeError,AttributeError) as error:
+        raise ValueError('Required capture opening evidence is missing or malformed: '+str(error)) from error
+
+
+def _validate_capture_open_contract_run(run,verify_files=True,expected_identity=None):
+    from usb_capture_open_contract import validate_capture_open_contract
+    proof=run.get('capture_open_contract',{})
+    if (type(run.get('usb_capture_open_contract_version')) is not int or run['usb_capture_open_contract_version']!=1 or
+            proof.get('schema')!='x6200.usb.capture-open-contract-set.v1' or proof.get('status')!='PASS' or
+            type(proof.get('usb_capture_open_contract_version')) is not int or proof['usb_capture_open_contract_version']!=1 or not proof.get('sessions')):
+        raise ValueError('Required indexed capture opening evidence is missing')
+    if verify_files:
+        root=Path(run['case_record_path']).parent/'result'
+        outputs=run.get('output_contract',{}).get('sessions',[])
+        if len(outputs)!=len(proof['sessions']):raise ValueError('Capture opening session coverage differs from output completion')
+        for entry,output in zip(proof['sessions'],outputs):
+            if any(not isinstance(entry.get(k),str) or Path(entry[k]).name!=entry[k] for k in ('trace_file','completion_file')):
+                raise ValueError('Capture opening artifact path is not a session basename')
+            for field in ('trace_file','completion_file','trace_sha256','completion_sha256'):
+                if entry.get(field)!=output.get(field):raise ValueError('Capture opening evidence names different session artifacts')
+            rows=[json.loads(line) for line in (root/entry['trace_file']).read_text().splitlines() if line.strip()]
+            completion=_load(root/entry['completion_file'])
+            expected={k:rows[0].get(k) for k in ('session_id','source_commit','build_id')}
+            if expected_identity:
+                for k in ('source_commit','build_id'):
+                    if expected[k]!=expected_identity.get(k):raise ValueError('Capture opening source/build identity mismatch')
+            summary=validate_capture_open_contract(rows,completion,1,expected)
+            if {k:v for k,v in entry.items() if k not in ('trace_file','completion_file','trace_sha256','completion_sha256')}!=summary:
+                raise ValueError('Capture opening summary differs from its unchanged raw records')
+    return proof
 
 
 def validate_output_contract_run(run,verify_files=True,expected_identity=None):
@@ -374,8 +412,8 @@ def operational_proof(rows, completion, harness, case):
             any(harness.get(key)!=1 for key in ('rade_creations','encoder_creations','decoder_creations')) or
             any(row.get('event') in ('qualification-start','qualification_complete') for row in rows)):
         raise ValueError('Operational exercise lost automatic readiness, warm codec, RX clearance, or truthful qualification')
-    fault=10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
-    expected_turns=int(case in ('operational-leave-tx','operational-key-retune'))
+    fault=23 if case in ('operational-open-missing','operational-open-invalid') else 1 if case=='operational-open-stop' else 10 if case=='operational-timeout' else 2 if case=='operational-device-loss' else 1 if case=='operational-abort' else 0
+    expected_turns=int(case in ('operational-leave-tx','operational-key-retune','operational-open-prefix','operational-open-release'))
     if (harness.get('fault')!=fault or harness.get('turns')!=expected_turns or
             harness.get('eoo')!=expected_turns or
             completion.get('completion_reason')!=('fault' if fault>1 else 'stop' if fault else 'navigation')):
@@ -387,13 +425,28 @@ def operational_proof(rows, completion, harness, case):
         raise ValueError('Operational RX retune never decoded the public RF signal')
     if case=='operational-held-ptt' and ready['ptt_release_sequence']<1:
         raise ValueError('Held startup PTT was admitted without a real release')
-    if case in ('operational-leave-tx','operational-abort','operational-device-loss','operational-timeout'):
+    if case in ('operational-leave-tx','operational-abort','operational-device-loss','operational-timeout','operational-open-missing','operational-open-invalid','operational-open-stop'):
         if harness.get('physical_ptt_pressed') is not True or harness.get('physical_release_sequence')!=0:
             raise ValueError('Navigation/abort fabricated a physical PTT release')
     closes=[row for row in rows if row.get('kind')=='capture-close' and row.get('complete') is True]
     if case=='operational-leave-tx' and (len(closes)!=1 or closes[0].get('close_trigger')!='navigation' or
             closes[0].get('physical_release_sequence')!=0):
         raise ValueError('Graceful navigation omitted its independent finite capture boundary')
+    if case=='operational-open-release':
+        openings=[row for row in rows if row.get('kind')=='capture-open']
+        if (len(openings)!=2 or openings[0].get('complete') is not False or openings[0].get('canceled') is not True or
+                openings[1].get('complete') is not True or openings[0].get('generation')==openings[1].get('generation') or
+                harness.get('keys')!=2 or harness.get('physical_release_sequence')!=2):
+            raise ValueError('Pending opening release did not cancel then admit one new warm turn')
+    if case=='operational-open-prefix':
+        openings=[row for row in rows if row.get('kind')=='capture-open' and row.get('complete') is True]
+        if (len(openings)!=1 or openings[0].get('discarded_prefix_frames',0)<2880 or
+                harness.get('keys')!=1 or harness.get('physical_release_sequence')!=1 or
+                len(closes)!=1 or closes[0].get('close_trigger')!='ptt-release'):
+            raise ValueError('Queued opening prefix was not excluded before the real full turn')
+    if case in ('operational-open-missing','operational-open-invalid','operational-open-stop'):
+        if harness.get('submitted_mic')!=0 or any(row.get('event')=='state' and row.get('state')==3 for row in rows):
+            raise ValueError('Failed opening admitted microphone speech or entered TX processing')
     if case=='operational-key-retune':
         cancellations=[row for row in rows if row.get('event')=='key-admission-cancelled' and row.get('operation')=='tuning-revision' and row.get('state') in (2,7)]
         tx=[row for row in rows if row.get('kind')=='event' and row.get('event')=='state' and row.get('state')==3]
@@ -445,6 +498,31 @@ def validate_operational_headset_output(run,verify_files=True):
     return proof
 
 
+def validate_opening_prefix_run(run,verify_files=True):
+    proof=run.get('capture_open_prefix',{})
+    if (proof.get('status')!='PASS' or proof.get('schema')!='x6200.usb.capture-open-prefix.v1' or
+            proof.get('source_match',{}).get('status')!='PASS' or proof.get('discarded_prefix_frames',0)<2880 or
+            proof.get('held_ms',0)<60):
+        raise ValueError('Indexed opening prefix source proof is missing')
+    if verify_files:
+        root=Path(run['case_record_path']).parent/'result'
+        from usb_test_support import indexed_capture_source_match
+        raw=Path(proof['trace_path']);rows=[json.loads(line) for line in raw.read_text().splitlines()]
+        opening=next(row for row in rows if row.get('kind')=='capture-open' and row.get('complete') is True)
+        if opening['discarded_prefix_frames']!=proof['discarded_prefix_frames']:
+            raise ValueError('Opening prefix proof differs from raw frontier')
+        for item in proof['artifacts'].values():
+            if sha(item['path'])!=item['sha256']:raise ValueError('Opening prefix source evidence changed')
+        boundaries=run['capture_close']['turns']
+        if len(boundaries)!=1:raise ValueError('Opening prefix test omitted finite full closure')
+        observed=[json.loads(line) for line in Path(proof['artifacts']['source_index']['path']).read_text().splitlines()]
+        pcm=Path(proof['artifacts']['source_pcm']['path']).read_bytes()
+        mic=raw.with_name(raw.stem+'-mic.raw').read_bytes()
+        matched=indexed_capture_source_match(boundaries[0],mic,observed,pcm)
+        if matched!=proof['source_match']:raise ValueError('Opening prefix accepted PCM differs from exact source interval')
+    return proof
+
+
 def validate_operational_run(run,case,verify_files=True):
     try:
         return _validate_operational_run(run,case,verify_files)
@@ -457,6 +535,7 @@ def _validate_operational_run(run,case,verify_files=True):
     proof=run.get('operational')
     if not isinstance(proof,dict) or proof.get('schema')!='x6200.usb.operational-exercise.v1' or proof.get('status')!='PASS' or proof.get('case')!=case:
         raise ValueError('Required operational startup/exit exercise is missing')
+    if case=='operational-open-prefix':validate_opening_prefix_run(run,verify_files=verify_files)
     if case=='operational-retune':validate_operational_headset_output(run,verify_files=verify_files)
     if verify_files:
         entries=run.get('output_contract',{}).get('sessions',[])

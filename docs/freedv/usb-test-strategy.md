@@ -14,7 +14,7 @@ and the blocked native hand-mic contract remain separate.
 
 ## Operational startup and normal UI
 
-The operational Beta uses startup contract **4** and output contract **1**.
+The operational Beta uses startup contract **4**, output contract **1** and capture opening contract **1**.
 Its initial readiness receipt describes actual prepared streams, negotiated
 buffers, fresh capture/RX, configuration revision and a released panel PTT.
 Readiness is separate from TX eligibility: out-of-band RX is supported with
@@ -24,7 +24,7 @@ The initial receipt is retained verbatim in the trace and immutable readiness
 sidecar, bound to the same session/build/source as terminal completion.
 
 The original **61 diagnostic controller cases** retain startup contract 3;
-nine operational cases add automatic readiness, held startup PTT, RX retuning,
+fourteen operational cases add automatic readiness, held startup PTT, RX retuning,
 receive-only admission, graceful navigation during TX, explicit abort, USB
 loss and a held 30-second TX timeout (including continued TX beyond the old
 20-second diagnostic timeout), plus a configuration revision changing at the
@@ -59,6 +59,18 @@ identities, complete immutable history and all application builds. The
 operator's next task is a known RADE peer receive and alternating replies,
 including normal exits; accepted recording/codec/SDR TX component work is not
 repeated as a startup ritual.
+
+An opening capture receipt freezes a fresh production frontier after key
+confirmation, using the raw write index plus source/transport frames. Frames
+below that frontier are discarded even when they arrive late from the server.
+It records the actual epoch, discarded prefix and first submitted index, paired
+with the closing frontier by turn and generation. The existing 750 ms operation
+bound, 1% plus two-fragment delivery budget and three-second tail limit remain.
+The full-session failure on superseded source5606 is retained: a 60 ms queued
+prefix exceeded its opening allowance while the codec/RF-clear paths completed.
+A deterministic queued-prefix case and opening timeout/invalid/Stop cases check
+the corrected boundary; this is internal qualification, not another operator
+recording test.
 
 ## What the returned failures changed
 

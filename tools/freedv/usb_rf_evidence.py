@@ -13,6 +13,7 @@ import tempfile
 import wave
 from usb_headset_inventory import collect, command, sha256
 from usb_output_contract import validate_output_contract
+from usb_capture_open_contract import validate_capture_open_contract
 
 
 ERRORS = (OSError, ValueError, KeyError, EOFError, wave.Error, subprocess.SubprocessError)
@@ -135,6 +136,16 @@ def output_contract_version(manifest):
         raise ValueError('Unsupported USB output contract version; new images require integer version 1.')
     if manifest.get('usb_startup_contract_version') not in (3, 4):
         raise ValueError('USB output contract version 1 requires startup session contract 3 or 4.')
+    return version
+
+
+def capture_open_contract_version(manifest):
+    if 'usb_capture_open_contract_version' not in manifest:return 0
+    version=manifest['usb_capture_open_contract_version']
+    if type(version) is not int or version!=1:
+        raise ValueError('Unsupported USB capture opening contract version; new images require integer version1.')
+    if manifest.get('usb_startup_contract_version') not in (3,4):
+        raise ValueError('USB capture opening contract requires startup session3 or4.')
     return version
 
 
@@ -408,11 +419,14 @@ def collect_trace(output, manifest=None):
                 readiness = json.loads(readiness_path.read_text()) if readiness_path.exists() else None
                 validate_operational_readiness(summary, rows, manifest, readiness)
             summary['current_session'] = pointer
+            summary['capture_open_contract'] = validate_capture_open_contract(rows, summary['completion'],
+                capture_open_contract_version(manifest), summary['session_identity'])
             summary['output_contract'] = validate_output_contract(
                 rows, summary['completion'], output_contract_version(manifest), summary['session_identity'])
         except ERRORS as error:
             diagnostic_errors.append(str(error))
     else:
+        summary['capture_open_contract'] = validate_capture_open_contract(rows,None,capture_open_contract_version(manifest))
         summary['output_contract'] = validate_output_contract(rows, None, output_contract_version(manifest))
     summary['audio_taps'] = {}
     pcm_seconds = 30
@@ -492,6 +506,7 @@ def collect_evidence(output, manifest, sdr=None):
                   ready_for_rf_test=False,
                   usb_startup_contract_version=manifest.get('usb_startup_contract_version', 1),
                   usb_output_contract_version=manifest.get('usb_output_contract_version', 0),
+                  usb_capture_open_contract_version=manifest.get('usb_capture_open_contract_version',0),
                   listening='UNASSESSED', physical_rf_off_timing='UNMEASURED', blockers=[],
                   stages=dict(collection={'status': 'PENDING'}, gui={'status': 'UNASSESSED'},
                               audio={'status': 'UNASSESSED'}, control_completion={'status': 'UNASSESSED'}, qualification={'status': 'NOT_REQUESTED'}, startup={'status': 'NOT_REQUESTED'},
@@ -524,6 +539,7 @@ def collect_evidence(output, manifest, sdr=None):
             if type(manifest.get('usb_startup_contract_version', 1)) is not int or manifest.get('usb_startup_contract_version', 1) not in (1, 2, 3, 4):
                 raise ValueError('Unsupported USB startup contract version.')
             output_contract_version(manifest)
+            capture_open_contract_version(manifest)
             inventory = collect(expected_gui=manifest['gui_sha256'])
             save(output / 'inventory.json', inventory)
             result['inventory_status'] = inventory['status']
@@ -543,6 +559,8 @@ def collect_evidence(output, manifest, sdr=None):
             result['gui_session_fault'] = fault_code(summary['first_fault'] or summary['last'])
             result['rf_disabled'] = summary['rf_disabled']
             result['audio_taps'] = summary['audio_taps']
+            result['capture_open_contract'] = summary['capture_open_contract']
+            result['stages']['capture_open'] = summary['capture_open_contract']
             result['output_contract'] = summary['output_contract']
             result['stages']['output_completion'] = summary['output_contract']
             if summary['output_contract']['status'] != 'PASS':

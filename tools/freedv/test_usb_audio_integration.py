@@ -30,6 +30,7 @@ from usb_test_support import (ProcessSupervisor, completed_turns, require,
 from usb_transport_oracle import transport_chunks_for_turn,matched_decoder_control
 from usb_collector_contract import validate_collector_contract
 from usb_output_contract import validate_output_contract
+from usb_capture_open_contract import validate_capture_open_contract
 from usb_test_campaign import validate_audio_controls_run,validate_audio_gain_turn_run,validate_headset_volume_flags,operational_proof
 
 CASES = (
@@ -54,6 +55,7 @@ CASES = (
     'audio-controls','audio-gain-turn',
     'operational-ready','operational-held-ptt','operational-retune','operational-receive-only',
     'operational-leave-tx','operational-abort','operational-device-loss','operational-timeout','operational-key-retune',
+    'operational-open-prefix','operational-open-missing','operational-open-invalid','operational-open-stop','operational-open-release',
 )
 OPERATIONAL_CASES = frozenset(name for name in CASES if name.startswith('operational-'))
 DURABILITY_CASES = ('many-turns', 'reopen', 'cold-idle', 'drain-tx-loss')
@@ -74,7 +76,7 @@ BACKEND_FAILURE_CASES={'backend-timing-missing':'missing','backend-timing-invali
     'backend-stop-before-timing':'stop-before-timing','backend-stop-during-wait':'stop-during-wait'}
 BACKEND_PROFILE_CASES={'backend-fixed-pipe':'fixed-pipe','io-pause150':'fixed-pipe','rx-pause150':'default'}
 INJECT_CASES = COLD_CASES | set(PA_CASES) | CAPTURE_RELEASE_CASES | CAPTURE_FAILURE_CASES | {'inactive-hole', 'active-hole', 'inactive-stale', 'inactive-radio-hole', 'inactive-radio-stale', 'prekey-stale', 'capture-stale', 'mic-valid-drop300', 'io-pause150', 'rx-pause150', 'buffer-contract-reject', 'drain-tx-loss', 'eoo-backpressure','capture-close-tail120'}
-INJECT_CASES |= set(BACKEND_FAILURE_CASES)
+INJECT_CASES |= set(BACKEND_FAILURE_CASES)|{'operational-open-prefix','operational-open-missing','operational-open-invalid','operational-open-stop','operational-open-release'}
 CASE_TIMEOUTS = {'many-turns': 120, 'reopen': 180, 'cold-idle': 100, 'drain-tx-loss': 60, 'full-session':120}
 
 
@@ -88,7 +90,10 @@ def injection_environment(case, root, library):
         return {}
     require(library and library.is_file(), 'This case requires --fault-inject-so')
     result = {'LD_PRELOAD': str(library)}
-    if case in BACKEND_FAILURE_CASES:
+    if case.startswith('operational-open-'):
+        result['USB_TEST_MIC_OPEN_MODE']=case.removeprefix('operational-open-')
+        if case=='operational-open-prefix':result['USB_TEST_MIC_OBSERVER_PREFIX']=str(root/'result/mic-observer')
+    elif case in BACKEND_FAILURE_CASES:
         result['USB_TEST_BACKEND_MODE']=BACKEND_FAILURE_CASES[case]
     elif case=='capture-close-tail120':
         result.update(USB_TEST_MIC_CLOSE_MODE='tail120',USB_TEST_MIC_OBSERVER_PREFIX=str(root/'result/mic-observer'))
@@ -621,7 +626,7 @@ def run_case(args):
         trace_paths = sorted((root/'result').glob('freedv-usb-session*.jsonl'))
         require(trace_paths, 'No controller trace was produced')
         rows, identities, capture_closes, abandoned_closes = [], [], [], 0
-        output_sessions=[]
+        output_sessions=[];opening_sessions=[]
         for path in trace_paths:
             trace_rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
             status_rows = [row for row in trace_rows if row.get('kind') == 'sample']
@@ -634,6 +639,8 @@ def run_case(args):
                                                         expected['source_commit'], expected['build_id'],
                                                         args.case in {'storage-start-fails','storage-completion-fails'}))
             output_sessions.append(dict(validate_output_contract(trace_rows,json.loads(completion_path.read_text())),
+                trace_file=path.name,completion_file=completion_path.name,trace_sha256=sha(path),completion_sha256=sha(completion_path)))
+            opening_sessions.append(dict(validate_capture_open_contract(trace_rows,json.loads(completion_path.read_text())),
                 trace_file=path.name,completion_file=completion_path.name,trace_sha256=sha(path),completion_sha256=sha(completion_path)))
             turns=completed_turns(trace_rows)
             abandoned_closes+=sum(row.get('kind')=='capture-close' and row.get('complete') is False for row in trace_rows)
@@ -652,6 +659,8 @@ def run_case(args):
         require(len(capture_closes)==harness.get('total_turns',harness['turns']) or harness['fault']>1 or
                 (harness['fault']==1 and all('completion_interruption' in turn for turn in capture_closes if not turn['rf_completed'])),
                 'A healthy controller abandoned a completely closed capture interval')
+        record['usb_capture_open_contract_version']=1
+        record['capture_open_contract']={'schema':'x6200.usb.capture-open-contract-set.v1','status':'PASS','usb_capture_open_contract_version':1,'sessions':opening_sessions}
         record['usb_output_contract_version']=1
         record['output_contract']={'schema':'x6200.usb.output-contract-set.v1','status':'PASS',
             'usb_output_contract_version':1,'sessions':output_sessions}
@@ -798,6 +807,19 @@ def run_case(args):
                 record['capture_source_boundary']={'status':'PASS','case':args.case,'turns':[boundary],
                     'observer_pcm_sha256':sha(observer_pcm),'observer_index_sha256':sha(observer_index),
                     'physical_latency':'UNMEASURED'}
+        if args.case=='operational-open-prefix':
+            require(len(trace_paths)==1 and len(capture_closes)==1,'Opening prefix case did not complete one full turn')
+            raw_open=next(row for row in rows if row.get('kind')=='capture-open' and row.get('complete') is True)
+            source_index=root/'result/mic-observer.jsonl';source_pcm=root/'result/mic-observer.pcm'
+            observed=json_rows(source_index);microphone=trace_paths[0].with_name(trace_paths[0].stem+'-mic.raw').read_bytes()
+            matched=indexed_capture_source_match(capture_closes[0],microphone,observed,source_pcm.read_bytes())
+            timing=re.search(r'opening prefix released started_ms=(\d+) released_ms=(\d+)',text)
+            require(timing is not None,'Opening prefix injection was not observed')
+            record['capture_open_prefix']={'schema':'x6200.usb.capture-open-prefix.v1','status':'PASS',
+                'discarded_prefix_frames':raw_open['discarded_prefix_frames'],'held_ms':int(timing[2])-int(timing[1]),
+                'source_match':matched,'trace_path':str(trace_paths[0]),
+                'artifacts':{name:{'path':str(path),'sha256':sha(path)} for name,path in
+                    (('source_index',source_index),('source_pcm',source_pcm))}}
         runner = args.runner or (Path(os.environ['USB_RF_REFERENCE_RUNNER']) if os.environ.get('USB_RF_REFERENCE_RUNNER') else None)
         if args.case in WAVEFORM_CASES:
             require(runner is not None, 'Speech cases require the actual codec runner')

@@ -17,7 +17,7 @@ does not ask you to repeat those component tests.
    from the GitHub release. Verify their SHA-256 hashes, extract the image and
    flash a spare card using your usual image-writing tool. Image and kit must
    share the same build ID, image hash, **startup contract 4** and **output
-   contract 1**. No baseband update is needed.
+   contract 1** and **capture opening contract 1**. No baseband update is needed.
 2. Plug the USB headset or its USB receiver into the radio's **HOST** port.
    Power and pair it, then start at a comfortable low volume. Built-in mic,
    hand mic and radio speaker are unsupported for FreeDV audio in this build.
@@ -112,7 +112,7 @@ Return the printed ZIP if there is a fault, missing speech or an exit problem;
 it contains microphone/audio taps, so review it before sharing.
 
 For contract 4, expect **startup: PASS**, **qualification: NOT_REQUESTED**,
-**control_completion: CONFIRMED_RX**, **output_completion: PASS** and
+**control_completion: CONFIRMED_RX**, **capture_open: PASS**, **output_completion: PASS** and
 **session: COMPLETE** after a healthy exit. No SDR file normally gives
 `COLLECTED_NO_SDR_RECORDING`; that is not a failure or a claim of RF reception.
 A fault, missing readiness, incomplete terminal receipt or mismatched build is

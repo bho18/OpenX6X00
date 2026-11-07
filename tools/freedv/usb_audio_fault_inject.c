@@ -67,6 +67,17 @@ void usb_test_backend_timing_requested(void){atomic_store(&backend_timing_reques
 void usb_test_backend_tail_wait_started(uint64_t until){atomic_store(&backend_wait_until,until);atomic_store(&backend_wait_started,now_ms());}
 unsigned long long usb_test_backend_wait_started_ms(void){return atomic_load(&backend_wait_started);}
 unsigned long long usb_test_backend_wait_until_us(void){return atomic_load(&backend_wait_until);}
+static atomic_bool mic_open_prefix_held,mic_open_prefix_released;
+static atomic_ullong mic_open_prefix_started,mic_open_prefix_released_ms,mic_open_prefix_begin_index;
+static atomic_uint mic_open_prefix_hidden_peeks;
+static atomic_int mic_open_requested,mic_open_invalid;static atomic_uint mic_open_release_hits;
+static pa_stream_success_cb_t mic_open_callback;static void *mic_open_userdata;
+void usb_test_mic_open_prefix_start(void){atomic_store(&mic_open_prefix_started,now_ms());atomic_store(&mic_open_prefix_held,true);fprintf(stderr,"INJECT MIC opening prefix held started_ms=%llu no-discard=1\n",now_ms());}
+void usb_test_mic_open_requested(void){atomic_store(&mic_open_requested,1);}
+unsigned long long usb_test_mic_open_prefix_started_ms(void){return atomic_load(&mic_open_prefix_started);}
+unsigned long long usb_test_mic_open_prefix_released_ms(void){return atomic_load(&mic_open_prefix_released_ms);}
+unsigned long long usb_test_mic_open_prefix_begin_index(void){return atomic_load(&mic_open_prefix_begin_index);}
+unsigned usb_test_mic_open_prefix_hidden_peeks(void){return atomic_load(&mic_open_prefix_hidden_peeks);}
 static pa_stream_success_cb_t mic_close_callback;static void *mic_close_userdata;
 static void (*mic_close_stop_callback)(void *);static void *mic_close_stop_userdata;
 void usb_test_mic_stop_callback(void (*callback)(void *),void *userdata){mic_close_stop_callback=callback;mic_close_stop_userdata=userdata;}
@@ -160,8 +171,24 @@ static void backend_timing_done(pa_stream *stream,int success,void *unused){
     if(backend_callback)backend_callback(stream,success,backend_userdata);
     atomic_store(&backend_timing_invalid,0);
 }
+static void open_timing_done(pa_stream *stream,int success,void *unused){
+    (void)unused;const char *mode=setting("USB_TEST_MIC_OPEN_MODE","");
+    fprintf(stderr,"INJECT MIC open-timing mode=%s real_ack_ms=%llu success=%d withheld=%u\n",mode,now_ms(),success,!strcmp(mode,"missing"));
+    if(!strcmp(mode,"missing"))return;
+    if(!strcmp(mode,"release")&&!atomic_fetch_add(&mic_open_release_hits,1)){int posted=usb_test_mic_release_now();fprintf(stderr,"INJECT MIC opening release posted=%d\n",posted);}
+    if(!strcmp(mode,"stop")){if(mic_close_stop_callback)mic_close_stop_callback(mic_close_stop_userdata);}
+    else if(!strcmp(mode,"invalid"))atomic_store(&mic_open_invalid,1);
+    if(mic_open_callback)mic_open_callback(stream,success,mic_open_userdata);
+    atomic_store(&mic_open_invalid,0);
+}
 pa_operation *pa_stream_update_timing_info(pa_stream *stream,pa_stream_success_cb_t callback,void *userdata){
     pa_operation *(*real)(pa_stream*,pa_stream_success_cb_t,void*)=dlsym(RTLD_NEXT,"pa_stream_update_timing_info");
+    const char *open_mode=getenv("USB_TEST_MIC_OPEN_MODE");
+    if(open_mode&&atomic_exchange(&mic_open_requested,0)){
+        mic_open_callback=callback;mic_open_userdata=userdata;
+        fprintf(stderr,"INJECT MIC open-timing requested_ms=%llu mode=%s\n",now_ms(),open_mode);
+        return real(stream,open_timing_done,NULL);
+    }
     const char *backend=getenv("USB_TEST_BACKEND_MODE");
     if(backend&&atomic_exchange(&backend_timing_requested,0)){
         backend_callback=callback;backend_userdata=userdata;
@@ -177,6 +204,15 @@ pa_operation *pa_stream_update_timing_info(pa_stream *stream,pa_stream_success_c
 const pa_timing_info *pa_stream_get_timing_info(pa_stream *stream){
     const pa_timing_info *(*real)(pa_stream*)=dlsym(RTLD_NEXT,"pa_stream_get_timing_info");
     const pa_timing_info *info=real(stream);
+    const char *open_device=pa_stream_get_device_name(stream);
+    if(info&&open_device&&!strcmp(open_device,"alsa_input.usb-fixture")&&atomic_load(&mic_open_prefix_held)&&atomic_load(&mic_open_prefix_hidden_peeks)&&now_ms()-atomic_load(&mic_open_prefix_started)>=60&&!atomic_exchange(&mic_open_prefix_released,true)){
+        atomic_store(&mic_open_prefix_begin_index,info->read_index>=0?(uint64_t)info->read_index/2:0);
+        atomic_store(&mic_open_prefix_released_ms,now_ms());atomic_store(&mic_open_prefix_held,false);
+        fprintf(stderr,"INJECT MIC opening prefix released started_ms=%llu released_ms=%llu read_index_bytes=%lld write_index_bytes=%lld hidden_peeks=%u\n",atomic_load(&mic_open_prefix_started),now_ms(),(long long)info->read_index,(long long)info->write_index,atomic_load(&mic_open_prefix_hidden_peeks));
+    }
+    if(info&&atomic_load(&mic_open_invalid)){
+        static _Thread_local pa_timing_info invalid;invalid=*info;invalid.write_index=0;invalid.source_usec=invalid.transport_usec=0;return &invalid;
+    }
     if(info&&atomic_load(&backend_timing_invalid)){
         static _Thread_local pa_timing_info invalid;invalid=*info;invalid.write_index=-1;
         fprintf(stderr,"INJECT backend timing invalid write_index_bytes=-1 phase=drain\n");return &invalid;
@@ -270,6 +306,10 @@ static void observe_mic(pa_stream *stream,const void **data,size_t bytes){
 int pa_stream_peek(pa_stream *stream,const void **data,size_t *bytes) {
     int (*real)(pa_stream*,const void**,size_t*)=dlsym(RTLD_NEXT,"pa_stream_peek");
     int result=real(stream,data,bytes);
+    const char *open_device=pa_stream_get_device_name(stream);
+    if(result>=0&&open_device&&!strcmp(open_device,"alsa_input.usb-fixture")&&atomic_load(&mic_open_prefix_held)){
+        atomic_fetch_add(&mic_open_prefix_hidden_peeks,1);*data=NULL;*bytes=0;return 0;
+    }
     if(result>=0&&mic_release_target(stream)){
         unsigned long long started=atomic_load(&mic_release_hold_started);
         if(started&&now_ms()-started<150){atomic_fetch_add(&mic_blocked_peeks,1);*data=NULL;*bytes=0;return 0;}
@@ -295,6 +335,8 @@ typedef struct {pa_stream *stream;pa_stream_request_cb_t callback;void *userdata
 static read_registration readers[8];
 static void deliver_read(pa_stream *stream,size_t bytes,void *userdata) {
     read_registration *registration=userdata;
+    const char *open_device=pa_stream_get_device_name(stream);
+    if(open_device&&!strcmp(open_device,"alsa_input.usb-fixture")&&atomic_load(&mic_open_prefix_held))return;
     if(mic_release_target(stream)){
         unsigned long long now=now_ms(),started=atomic_load(&mic_release_hold_started);
         if(!started){started=now;atomic_store(&mic_release_hold_started,now);}

@@ -29,8 +29,9 @@ class UsbReleaseGateTests(unittest.TestCase):
         identity['host_resource_configuration']=host_resource_configuration()
         identity['transport_library_sha256']=SYNTHETIC_TRANSPORT_SHA
         identity['usb_output_contract_version']=1
+        identity['usb_capture_open_contract_version']=1
         expected = list(USB_CONTROLLER_CASES)
-        plan = {'usb_output_contract_version':1,'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
+        plan = {'usb_capture_open_contract_version':1,'usb_output_contract_version':1,'profile':'qualification', 'repetitions':2, 'expected_cases':expected,
                 'selected_cases':expected, 'debug_subset':False,
                 'infrastructure_prerequisites':list(INFRASTRUCTURE_PREREQUISITES),
                 'host_resource_configuration':identity['host_resource_configuration']}
@@ -62,7 +63,7 @@ class UsbReleaseGateTests(unittest.TestCase):
         finally:
             campaign.close()
         matrix = {**matrix, 'campaign':snapshot, 'promotion_eligible':snapshot['promotion_eligible']}
-        return {**identity, 'usb_integration': {'status':'PASS', 'contract_version':3,'usb_output_contract_version':1,
+        return {**identity, 'usb_integration': {'status':'PASS', 'contract_version':3,'usb_capture_open_contract_version':1,'usb_output_contract_version':1,
                 'evidence_cli':{'status':'PASS'}, 'matrix':matrix}}
 
     def test_old_pass_and_incomplete_or_failed_evaluation_cannot_release(self):

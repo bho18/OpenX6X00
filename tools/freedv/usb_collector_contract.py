@@ -61,7 +61,7 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
     sessions = [row for row in rows if row.get('kind') == 'session']
     require(len(sessions) == 1, 'Collector contract needs exactly one controller session')
     operational = sessions[0].get('operational') is True
-    manifest = dict(usb_startup_contract_version=4 if operational else 3, usb_output_contract_version=1, on_device_readiness_required=True,
+    manifest = dict(usb_startup_contract_version=4 if operational else 3, usb_output_contract_version=1, usb_capture_open_contract_version=1, on_device_readiness_required=True,
                     firmware_commit=expected_source_commit, build_id=expected_build_id,
                     gui_sha256=expected_binary_sha256)
     output.mkdir(parents=True)

@@ -42,6 +42,8 @@ def verify_usb_integration(verification, startup_version=None):
     matrix = evidence.get('matrix', {})
     if (evidence.get('status') != 'PASS' or type(evidence.get('contract_version')) is not int or evidence['contract_version'] not in (3,4) or
             (startup_version is not None and evidence['contract_version'] != startup_version) or
+            type(evidence.get('usb_capture_open_contract_version')) is not int or evidence['usb_capture_open_contract_version']!=1 or
+            type(matrix.get('usb_capture_open_contract_version')) is not int or matrix['usb_capture_open_contract_version']!=1 or
             type(evidence.get('usb_output_contract_version')) is not int or evidence['usb_output_contract_version']!=1 or
             type(matrix.get('usb_output_contract_version')) is not int or matrix['usb_output_contract_version']!=1 or
             evidence.get('evidence_cli', {}).get('status') != 'PASS' or
@@ -200,7 +202,7 @@ def main():
                       hardware_status='RF_DISABLED_EVALUATION_REQUIRED',ready_for_guided_hardware_tests=True,
                       usb_rf_test_ready=True,native_mode_status='BLOCKED: unchanged native MCU contract guard',
                       validation_scope='Session-contract v3 repeated software campaign passed; real-device cold-idle evaluation precedes local RF arming and the SDR trial',
-                      usb_startup_contract_version=3,usb_output_contract_version=1,on_device_readiness_required=True,
+                      usb_startup_contract_version=3,usb_output_contract_version=1,usb_capture_open_contract_version=1,on_device_readiness_required=True,
                       rf_arm_policy='Local only, after the shared-core RF-disabled audio evaluation passes; panel PTT only; requested 1 W',
                       stock_baseband_lease_available=False,physical_rf_off_timing='UNMEASURED')
     if a.usb_voice:

@@ -31,6 +31,8 @@ jobs:
           python -O tools/freedv/test_usb_test_support.py
           python tools/freedv/test_usb_output_contract.py
           python -O tools/freedv/test_usb_output_contract.py
+          python tools/freedv/test_usb_capture_open_contract.py
+          python -O tools/freedv/test_usb_capture_open_contract.py
           python tools/freedv/test_usb_fifo_clock.py
           python tools/freedv/test_usb_backend_observer.py
           python -O tools/freedv/test_usb_backend_observer.py

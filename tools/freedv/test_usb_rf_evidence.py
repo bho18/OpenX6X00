@@ -370,7 +370,7 @@ class CurrentSessionTests(unittest.TestCase):
         return dict(kind='first-fault', first_fault=dict(code=17,origin=origin,stream='mic'), **self.identity, **fields)
 
     def operational_fixture(self, root, *, ready=True, completion_fields=None, readiness_fields=None,
-                            manifest_version=4, schema_version=4, fault=0, receive_only=False):
+                            manifest_version=4, schema_version=4, fault=0, receive_only=False, capture_open_fields=None):
         receipt = dict(kind='startup-readiness', schema='x6200.usb.operational-readiness.v1',
                        status='PASS', ready_ms=200, generation=1, tuning_revision=7,
                        radio_sequence=30, ptt_release_sequence=4, ptt=False, rf_valid=True,
@@ -389,10 +389,16 @@ class CurrentSessionTests(unittest.TestCase):
         completion = {key:value for key,value in final.items() if key not in ('kind', 'ms', 'generation')}
         completion.update(completion_reason='fault' if fault > 1 else 'navigation')
         completion.update(completion_fields or {})
+        manifest_fields=dict(usb_startup_contract_version=manifest_version)
+        if capture_open_fields is not None:
+            header['usb_capture_open_contract_version']=1
+            completion.update(usb_capture_open_contract_version=1,capture_open_completed_intervals=0,capture_open_interrupted_intervals=0)
+            completion.update(capture_open_fields)
+            manifest_fields['usb_capture_open_contract_version']=1
         rows = [header, *([receipt] if ready else []), final]
         return self.fixture(root, rows=rows, completion_fields=completion,
                             readiness=receipt if ready else None,
-                            manifest_fields=dict(usb_startup_contract_version=manifest_version))
+                            manifest_fields=manifest_fields)
 
     def test_operational_readiness_is_distinct_from_diagnostic_qualification(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -416,6 +422,19 @@ class CurrentSessionTests(unittest.TestCase):
             self.assertEqual(result['stages']['qualification']['status'], 'NOT_REQUESTED')
             self.assertFalse(result['runtime_startup_readiness']['tx_eligible'])
             self.assertFalse(result['ready_for_rf_test'])
+
+    def test_new_image_binds_opening_contract_and_legacy_reader_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,_,_ = self.operational_fixture(Path(temp), capture_open_fields={})
+            self.assertEqual(result['status'],'COLLECTED_NO_SDR_RECORDING')
+            self.assertEqual(result['stages']['capture_open']['status'],'PASS')
+            self.assertEqual(result['usb_capture_open_contract_version'],1)
+        for mutation in ({'usb_capture_open_contract_version':None}, {'capture_open_completed_intervals':1},
+                         {'capture_open_interrupted_intervals':True}):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as temp:
+                result,output,_=self.operational_fixture(Path(temp),capture_open_fields=mutation)
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertTrue((output/'runtime-completion.json').exists())
 
     def test_operational_missing_readiness_is_blocked_without_losing_completion(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -702,6 +721,7 @@ class KitContractTests(unittest.TestCase):
                 self.assertNotEqual(rejected.returncode,0)
                 self.assertFalse((root/'kit.zip').exists())
             manifest['usb_output_contract_version']=1
+            manifest['usb_capture_open_contract_version']=1
             path.write_text(json.dumps(manifest))
             accepted=subprocess.run(command,capture_output=True,text=True,timeout=15)
             self.assertEqual(accepted.returncode,0,accepted.stderr)
@@ -711,6 +731,8 @@ class KitContractTests(unittest.TestCase):
                 self.assertEqual(kit['usb_startup_contract_version'],3)
                 self.assertEqual(kit['usb_output_contract_version'],1)
                 self.assertIn('usb_output_contract.py',kit['files'])
+                self.assertIn('usb_capture_open_contract.py',kit['files'])
+                self.assertEqual(kit['usb_capture_open_contract_version'],1)
                 self.assertTrue(kit['on_device_readiness_required'])
                 self.assertFalse(kit['rf_commands'])
                 for name in ('gui_sha256','runner_sha256','rade_sha256','image_sha256','firmware_commit','build_id'):
@@ -753,6 +775,7 @@ class CliTests(unittest.TestCase):
             fixture.fixture(root, **fixture_fields)
             shutil.copy2(Path(subject.__file__),root/'usb_rf_evidence.py')
             shutil.copy2(Path(subject.__file__).with_name('usb_output_contract.py'),root/'usb_output_contract.py')
+            shutil.copy2(Path(subject.__file__).with_name('usb_capture_open_contract.py'),root/'usb_capture_open_contract.py')
             (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',
                 usb_startup_contract_version=3,usb_output_contract_version=1,on_device_readiness_required=True,
                 firmware_commit=fixture.identity['source_commit'],build_id=fixture.identity['build_id'])))
@@ -795,6 +818,7 @@ class CliTests(unittest.TestCase):
             root=Path(temp)
             shutil.copy2(Path(subject.__file__),root/'usb_rf_evidence.py')
             shutil.copy2(Path(subject.__file__).with_name('usb_output_contract.py'),root/'usb_output_contract.py')
+            shutil.copy2(Path(subject.__file__).with_name('usb_capture_open_contract.py'),root/'usb_capture_open_contract.py')
             (root/'rf-test-manifest.json').write_text(json.dumps(dict(gui_sha256='fixture',runner_sha256='fixture',rade_sha256='fixture')))
             if damaged_manifest:
                 (root/'rf-test-manifest.json').write_text('{damaged transfer')
