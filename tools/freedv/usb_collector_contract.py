@@ -13,6 +13,16 @@ from unittest.mock import patch
 
 import usb_rf_evidence as collector
 
+LEGACY_COLLECTOR_MUTATIONS = ('missing-completion','truncated-completion','truncated-trace')
+REFINEMENT_COLLECTOR_MUTATIONS = LEGACY_COLLECTOR_MUTATIONS + ('missing-recent','mismatched-recent')
+
+
+def collector_mutation_names(refinement_version):
+    """Keep the evidence producer and matrix consumer on the same contract."""
+    if type(refinement_version) is not int or refinement_version not in (0,1):
+        raise ValueError('Unsupported collector refinement mutation contract version')
+    return REFINEMENT_COLLECTOR_MUTATIONS if refinement_version else LEGACY_COLLECTOR_MUTATIONS
+
 
 def require(condition, reason):
     if not condition:
@@ -96,8 +106,7 @@ def validate_collector_contract(runtime_dir, output_dir, binary, expected_source
                     copied.is_file() and sha(copied)==sha(producer) and entry.get('record')==json.loads(producer.read_text()),
                     'Collector omitted or changed the immutable actual C recent diagnostic receipt: '+kind)
     mutations = {}
-    for name in ('missing-completion', 'truncated-completion', 'truncated-trace',
-                 *(('missing-recent','mismatched-recent') if refinement else ())):
+    for name in collector_mutation_names(1 if refinement else 0):
         mutated = output/name/'runtime'
         mutated.mkdir(parents=True)
         for path in runtime.iterdir():

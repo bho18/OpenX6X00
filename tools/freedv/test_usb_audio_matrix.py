@@ -22,6 +22,7 @@ from usb_test_campaign import (Campaign, MATRIX_SCHEMA, MIN_QUALIFICATION_REPEAT
                                validate_capture_source_boundary_run, validate_capture_close_failure_run,
                                host_resource_configuration, validate_host_resources, validate_sink_turns_run, validate_capture_pipeline_tail_run, USB_OUTPUT_CONTRACT_VERSION, validate_output_contract_run, validate_backend_profile_run, validate_observer_admission_run, validate_backend_failure_run, validate_audio_controls_run, validate_audio_gain_turn_run, validate_operational_run, validate_capture_open_contract_run, validate_refinement_run)
 from usb_test_support import run_bounded
+from usb_collector_contract import collector_mutation_names
 from usb_host_resources import (run_resource_preflight, observe_resource_end, MIN_START_HEADROOM_BYTES,
                                 MIN_END_HEADROOM_BYTES, apply_cpu_scheduling)
 
@@ -97,6 +98,19 @@ CASE_TIMEOUTS = {'many-turns': 150, 'reopen': 210, 'cold-idle': 130, 'drain-tx-l
 def _interrupted(signum, frame):
     del signum, frame
     raise KeyboardInterrupt('Matrix was interrupted; partial evidence is retained')
+
+
+def validate_collector_contract_proof(contract,identity,refinement_version):
+    """Accept exactly the mutations required by this producer's version."""
+    expected=set(collector_mutation_names(refinement_version))
+    mutations=contract.get('mutations',{}) if isinstance(contract,dict) else None
+    if (not isinstance(contract,dict) or contract.get('status')!='PASS' or contract.get('radio_accessed') is not False or
+            contract.get('source_commit')!=identity['source_commit'] or contract.get('build_id')!=identity['build_id'] or
+            contract.get('controller_binary_sha256')!=identity['test_binary_sha256'] or
+            not isinstance(mutations,dict) or set(mutations)!=expected or
+            any(not isinstance(value,dict) or value.get('status')!='PASS' for value in mutations.values())):
+        raise ValueError('Actual C-to-collector contract proof is missing, incomplete or mismatched')
+    return contract
 
 
 def main():
@@ -372,15 +386,12 @@ def main():
                     except ValueError as error:
                         run['status'] = 'FAIL'
                         run.setdefault('reason',str(error))
-                contract = run['collector_contract'] or {}
-                mutations = contract.get('mutations', {})
-                if passed and (contract.get('status') != 'PASS' or contract.get('radio_accessed') is not False or
-                        contract.get('source_commit') != revision or contract.get('build_id') != args.build_id or
-                        contract.get('controller_binary_sha256') != identity['test_binary_sha256'] or
-                        set(mutations) != {'missing-completion','truncated-completion','truncated-trace'} or
-                        any(value.get('status') != 'PASS' for value in mutations.values())):
-                    run['status'] = 'FAIL'
-                    run.setdefault('reason', 'Actual C-to-collector contract proof is missing, incomplete or mismatched')
+                if passed:
+                    try:
+                        validate_collector_contract_proof(run.get('collector_contract'),identity,
+                                                          run.get('usb_refinement_contract_version',0))
+                    except ValueError as error:
+                        run['status']='FAIL';run.setdefault('reason',str(error))
                 aggregate = record['cases'].setdefault(name, {'status': 'PASS', 'runs': []})
                 aggregate['runs'].append(run)
                 aggregate.update(harness=run['harness'], decoded_speech_blocks=run['decoded_speech_blocks'])

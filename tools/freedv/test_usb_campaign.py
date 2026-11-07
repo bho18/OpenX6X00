@@ -1214,6 +1214,51 @@ class CampaignTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text())['status'], 'FAIL')
 
 
+class CollectorProofBoundaryTests(unittest.TestCase):
+    def fixture(self,version):
+        identity=dict(source_commit='a'*40,build_id='matrix-boundary',test_binary_sha256='b'*64)
+        proof=dict(status='PASS',radio_accessed=False,source_commit=identity['source_commit'],build_id=identity['build_id'],
+            controller_binary_sha256=identity['test_binary_sha256'],
+            mutations={name:dict(status='PASS',collector_status='BLOCKED') for name in matrix.collector_mutation_names(version)})
+        return identity,proof
+
+    def test_matrix_accepts_exact_legacy_three_and_refinement_five_proofs(self):
+        for version,count in ((0,3),(1,5)):
+            identity,proof=self.fixture(version)
+            self.assertEqual(len(proof['mutations']),count)
+            self.assertIs(matrix.validate_collector_contract_proof(proof,identity,version),proof)
+
+    def test_matrix_rejects_every_missing_old_and_new_mutation(self):
+        for version in (0,1):
+            for name in matrix.collector_mutation_names(version):
+                identity,proof=self.fixture(version);proof['mutations'].pop(name)
+                with self.subTest(version=version,missing=name),self.assertRaises(ValueError):
+                    matrix.validate_collector_contract_proof(proof,identity,version)
+
+    def test_matrix_rejects_extra_mutations_and_unsupported_or_boolean_versions(self):
+        for version in (None,False,True,-1,2,'1'):
+            identity,proof=self.fixture(1)
+            with self.subTest(version=version),self.assertRaises(ValueError):
+                matrix.validate_collector_contract_proof(proof,identity,version)
+        for version in (0,1):
+            identity,proof=self.fixture(version);proof['mutations']['unregistered']={'status':'PASS'}
+            with self.subTest(version=version),self.assertRaises(ValueError):matrix.validate_collector_contract_proof(proof,identity,version)
+        identity,proof=self.fixture(1)
+        with self.assertRaises(ValueError):matrix.validate_collector_contract_proof(proof,identity,0)
+
+    def test_matrix_rejects_wrong_source_build_or_controller_hash(self):
+        for version in (0,1):
+            for key in ('source_commit','build_id','controller_binary_sha256'):
+                identity,proof=self.fixture(version);proof[key]='wrong-identity'
+                with self.subTest(version=version,key=key),self.assertRaises(ValueError):
+                    matrix.validate_collector_contract_proof(proof,identity,version)
+
+    def test_matrix_rejects_failed_or_malformed_mutation_evidence(self):
+        for value in (None,[],dict(status='FAIL')):
+            identity,proof=self.fixture(1);proof['mutations']['missing-recent']=value
+            with self.subTest(value=value),self.assertRaises(ValueError):matrix.validate_collector_contract_proof(proof,identity,1)
+
+
 class MatrixSupervisionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -1285,6 +1330,7 @@ class MatrixSupervisionTests(unittest.TestCase):
         if self.hang:
             return {'exit_code': -9, 'timed_out': True, 'duration_ms': 90000}
         details = {'status': 'FAIL' if self.fail else 'PASS', 'case': case,
+                   'usb_refinement_contract_version':0,
                    'test_binary_sha256': sha(self.binary), 'harness': {'status':'PASS','turns':0,'total_turns':0,'fault':1},
                    'capture_close':capture_close_fixture(),
                    'identity': {'status':'PASS', 'source_commit':expected_env.get('USB_TEST_EXPECTED_SOURCE_COMMIT'),
@@ -1300,6 +1346,8 @@ class MatrixSupervisionTests(unittest.TestCase):
                          'mutations':{name:{'status':'PASS'} for name in ('missing-completion','truncated-completion','truncated-trace')}}}
         details.update(capture_case_fixture(case,output,{'source_commit':expected_env['USB_TEST_EXPECTED_SOURCE_COMMIT'],
             'build_id':'older-build' if self.old_build else expected_env['USB_TEST_EXPECTED_BUILD_ID'],'test_binary_sha256':sha(self.binary)}))
+        details['collector_contract']['mutations']={name:{'status':'PASS','collector_status':'BLOCKED'}
+            for name in matrix.collector_mutation_names(details['usb_refinement_contract_version'])}
         details['actual_sink_decode']={'synthesis_blocks':sum(turn['observed']['synthesis_blocks'] for turn in details.get('actual_sink_turns',[]))}
         if self.aggregate_only:
             details['actual_sink_decode']={'synthesis_blocks':20}
