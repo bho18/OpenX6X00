@@ -1,0 +1,54 @@
+name: Publish verified FreeDV beta
+on:
+  push:
+    branches: ['publish/freedv-operational-beta-*']
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'bho18/OpenX6X00'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: transport
+      - name: Read immutable product identity
+        id: product
+        run: |
+          python3 - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          m=json.loads(Path('transport/transport-manifest.json').read_text())
+          assert m['repository']=='bho18/OpenX6X00'
+          assert re.fullmatch('[0-9a-f]{40}',m['source_commit'])
+          assert re.fullmatch(r'freedv-operational-beta-[0-9]{8}\.[1-9][0-9]*',m['tag'])
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write('source_commit='+m['source_commit']+'\n')
+              f.write('tag='+m['tag']+'\n')
+          PY
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: bho18/OpenX6X00
+          ref: ${{ steps.product.outputs.source_commit }}
+          path: source
+          fetch-depth: 0
+      - name: Reconstruct, verify, upload and verify fresh downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT: ${{ steps.product.outputs.source_commit }}
+          TAG: ${{ steps.product.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 transport/assemble.py "$RUNNER_TEMP/assets"
+          mode=--publish
+          if gh release view "$TAG" --repo bho18/OpenX6X00 >/dev/null 2>&1; then mode=--complete-existing; fi
+          python3 source/tools/freedv/publish_operational_release.py \
+            --assets "$RUNNER_TEMP/assets" --tag "$TAG" --expected-commit "$PRODUCT" \
+            "$mode" --notes transport/release-notes.md --download "$RUNNER_TEMP/downloads"
+      - name: Preserve publication verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: published-operational-verification
+          path: ${{ runner.temp }}/published-verification.json
+          if-no-files-found: error
