@@ -31,7 +31,7 @@
 #define TIMER_MS  100
 #define LINE_MAX  64
 #define FIELD_W   740
-#define FIELD_X   ((800 - FIELD_W) / 2)   /* the arrow to the MFK fits in the left margin */
+#define FIELD_X   ((BOARD_DISP_W - FIELD_W) / 2)   /* the arrow to the MFK fits in the left margin */
 #define FIELD_H   64
 #define WPM_W     150
 #define FIELD_FONT sony_44   /* big: read at arm's length while keying */
@@ -177,42 +177,45 @@ static bool log_cancel(void) {
 void cw_field_log_open(void) {
     main_screen_keys_enable(false);
     textarea_window_open_w_label(log_ok, log_cancel, "Call [sent [rcvd]]: ");
-    if (*panel_last_call()) {                   /* the last call the decoder wrote, ready to log */
+    /* The last call the decoder wrote, ready to log, while its text is on the screen: a hidden panel keeps its text,
+     * and in SSB after CW the box had the CW decoder's last call in it */
+    if (panel_shown() && *panel_last_call()) {
         char line[24];
         snprintf(line, sizeof(line), "%s ", panel_last_call());
         textarea_window_set(line);
     }
 }
 
+bool cw_field_message(int n) {
+    char msgs[5][PARAMS_MSG_CW_LEN];
+
+    if (!ready() || n < 1 || n > 5 || params_msg_cw_list(msgs, n) < n) {
+        return false;
+    }
+    cw_field_send_text(msgs[n - 1]);
+    timer_cb(NULL);
+    return true;
+}
+
+bool cw_field_log_line(void) {
+    if (!ready() || !input[0]) {
+        return false;
+    }
+    cw_field_log_qso(input);
+    input[0] = 0;
+    timer_cb(NULL);
+    return true;
+}
+
 bool cw_field_key(uint32_t key) {
-    size_t len  = strlen(input);
-    bool   fkey = key >= KEYBOARD_F1 && key <= KEYBOARD_F5;   /* MSG > CW messages 1-5 */
+    size_t len = strlen(input);
 
     if (!ready()) {
         return false;
     }
-    /* Hidden: a letter, digit or F1-F5 opens it, the other keys keep their main screen use */
-    if (lv_obj_has_flag(field, LV_OBJ_FLAG_HIDDEN) && !(key < 127 && isalnum((int)key)) && !fkey) {
+    /* Hidden: a letter or digit opens it, the other keys keep their main screen use */
+    if (lv_obj_has_flag(field, LV_OBJ_FLAG_HIDDEN) && !(key < 127 && isalnum((int)key))) {
         return false;
-    }
-    if (fkey) {
-        char msgs[5][PARAMS_MSG_CW_LEN];
-        int  i = key - KEYBOARD_F1;
-
-        if (params_msg_cw_list(msgs, i + 1) <= i) {
-            return false;
-        }
-        cw_field_send_text(msgs[i]);
-        timer_cb(NULL);
-        return true;
-    }
-    if (key == KEYBOARD_F10) {     /* the line is the QSO to log, not sent */
-        if (input[0]) {
-            cw_field_log_qso(input);
-            input[0] = 0;
-        }
-        timer_cb(NULL);
-        return true;
     }
     switch (key) {
         case LV_KEY_ENTER:
@@ -266,7 +269,7 @@ void cw_field_init(lv_obj_t *parent) {
     field = lv_obj_create(parent);
     lv_obj_remove_style_all(field);
     lv_obj_set_size(field, FIELD_W, FIELD_H);
-    lv_obj_set_pos(field, FIELD_X, 480 - BTN_HEIGHT - FIELD_H - 8);
+    lv_obj_set_pos(field, FIELD_X, BOARD_DISP_H - BTN_HEIGHT - FIELD_H - 8);
     lv_obj_set_style_bg_color(field, TC(panel), 0);
     lv_obj_set_style_bg_opa(field, LV_OPA_80, 0);
     lv_obj_set_style_border_color(field, TC(panel_border), 0);
@@ -310,7 +313,7 @@ void cw_field_init(lv_obj_t *parent) {
     arrow = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(arrow);
     lv_obj_set_size(arrow, 46, 48);              /* a real size, or hiding it would leave the lines on screen */
-    lv_obj_set_pos(arrow, 0, 480 - BTN_HEIGHT - 8 - FIELD_H / 2 - 10);
+    lv_obj_set_pos(arrow, 0, BOARD_DISP_H - BTN_HEIGHT - 8 - FIELD_H / 2 - 10);
     lv_obj_add_flag(arrow, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(arrow, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     for (int i = 0; i < 4; i++) {               /* a dark outline under, then the yellow line */

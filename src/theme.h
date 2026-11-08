@@ -21,7 +21,7 @@
 extern "C" {
 #endif
 
-/* role, RF.Guru, Legacy, Outdoor, Classic (IC-7300 style)
+/* role, RF.Guru, Legacy, Outdoor, Classic
  * a new role: decide its 1bit value too (theme.c onebit_paper[], ink otherwise) */
 #define THEME_COLORS(X) \
     /* screen and the shared boxes (styles.c) */ \
@@ -139,9 +139,15 @@ extern "C" {
     X(bp_dig,            0xe5a823, 0xffd24a, 0x886600, 0xffa000) \
     X(bp_ssb,            0x34d399, 0x60d060, 0x178417, 0x60d060) \
     X(bp_bcn,            0xf87171, 0xff6060, 0x770000, 0xff6060) \
+    X(bp_out,            0x94a3b8, 0x909090, 0x555555, 0x909090) /* a US plan: outside the licence class */ \
     X(bp_text,           0x08090c, 0x000000, 0xffffff, 0x000000) \
     X(finder_band,       0xf87171, 0xff5050, 0x830000, 0xff5050) /* app waterfalls: passband */ \
     X(finder_cursor,     0x34d399, 0x50ff50, 0x008300, 0x50ff50) \
+    \
+    /* the screensaver (screen_saver.c): on black in every theme, the film's green */ \
+    X(saver_bg,          0x000000, 0x000000, 0x000000, 0x000000) /* its ground */ \
+    X(saver,             0x00ff40, 0x00ff40, 0x00ff40, 0x00ff40) /* Matrix rain: the trail, fading into the ground */ \
+    X(saver_head,        0xc8ffc8, 0xc8ffc8, 0xc8ffc8, 0xc8ffc8) /* the head of each column */ \
     \
     /* categories */ \
     X(pill_hp,           0x3a2e0c, 0x4b3c14, 0xebdcb4, 0x3a2800) /* Bluetooth: headphones (text: accent) */ \
@@ -190,9 +196,15 @@ typedef struct {
     int16_t pill_border;    /* border of the info box items (VFO, mode, AGC, PRE, ATT, ATU), 0 = none */
     bool    mode_box;       /* the mode next to the frequency in a box (sel_bg, sel_border), else plain text */
     int16_t btn_gap;        /* more space around the bottom buttons, 0..4 px (pill shapes show their corners) */
+    int16_t btn_text_size;  /* the text on the bottom buttons, one size on every button and page (sony_N, 16..36);
+                             * VISION and the walkie's narrow buttons fit theirs */
+    bool    btn_caps;       /* that text in capitals, a unit after a number kept ("FILTER HIGH 2950 Hz") */
     bool    rule;           /* accent line under the top bar and over the active button (Holo) */
+    bool    codec;          /* Codec: the S-meter as a SIGNAL bar of segments, the scale under it (smeter.c) */
     bool    vision;         /* VISION: big type for weak eyes, a low top bar, a tall frequency strip, the S-meter on a row of its own */
 #define VISION_FONT_STEPS 3 /* VISION: every font this many sizes up, apps and Settings too (fonts_scale) */
+    bool    ops_room;       /* Ops Room (a theme's "ops_room": true): the clock as the activity timer in 7-segment
+                             * digits, the S-meter as a row of hexagons, the TRANSMIT band at TX (ops_room.c) */
     bool    deck;           /* Black Metal, Total Black: two rows of state on top, S/SWR/ALC scales beside a big
                              * frequency, the frequency edges in the spectrum, one-line flat buttons */
     bool     mono;          /* 1bit: every pixel ink or paper (src/mono.c): no anti-aliasing, see-through
@@ -205,6 +217,8 @@ typedef struct {
 } theme_shape_t;
 
 extern theme_shape_t theme_shape;
+extern bool theme_amber;          /* Amber Trey (theme_amber.inc): its display (lcd_panel.c) */
+#define THEME_AMBER_NAME "Amber Trey"
 
 uint32_t theme_hex(theme_color_t c);
 #define TC(role) lv_color_hex(theme_hex(TC_##role))

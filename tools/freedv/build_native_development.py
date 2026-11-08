@@ -51,8 +51,12 @@ def main():
                         help='Pinned RADE modem fixture for host-native-validation codec checks')
     parser.add_argument('--control-headers', type=Path)
     parser.add_argument('--x6100-prefix', type=Path)
+    parser.add_argument('--runtime-inputs', type=Path,
+                        help='Source-bound SDK FT8/XARA inputs from build_runtime_package.py inputs')
     parser.add_argument('--build-id', default='unqualified-development')
     parser.add_argument('--jobs', type=int, default=2)
+    parser.add_argument('--retire-intermediates-before-checks', action='store_true',
+                        help='After archiving linked binaries, retire only regenerable CMake objects before timed checks')
     parser.add_argument('--usb-resource-reclaim-root',type=Path,action='append',default=[],help='Task-owned cache roots passed explicitly to the USB qualification resource prerequisite')
     parser.add_argument('--usb-test', action='store_true', help='Separate GUI USB headset RF development mode')
     parser.add_argument('--usb-voice', action='store_true', help='Operational FreeDV USB headset mode in the normal waterfall UI')
@@ -68,6 +72,8 @@ def main():
         parser.error('--jobs must be positive')
     host = args.variant in ('host', 'host-native-validation')
     host_native = args.variant == 'host-native-validation'
+    if host and args.runtime_inputs:
+        parser.error('--runtime-inputs contains ARM dependencies; do not use it for host builds')
     if not host and not args.sdk:
         parser.error('ARM variants require --sdk')
     if args.variant in ('host-native-validation', 'x6200-diagnostic', 'x6100') and not args.codec:
@@ -83,6 +89,7 @@ def main():
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True, timeout=10).strip()
     record = {'schema_version': 2, 'status': 'RUNNING', 'variant': args.variant,
               'usb_test_enabled':args.usb_test, 'usb_voice_enabled':args.usb_voice or args.usb_test,
+              'retire_intermediates_before_checks': args.retire_intermediates_before_checks,
               'source_commit': revision, 'source_tree_sha256': tree,
               'source_files': before, 'build_id': args.build_id, 'commands': [],
               'hardware_qualified': False, 'hardware_status': 'BLOCKED',
@@ -103,7 +110,8 @@ def main():
     history = None
     try:
         identity = _build_identity(args, revision, tree)
-        plan = {'profile': 'build', 'variant': args.variant, 'usb_test_enabled': args.usb_test, 'usb_voice_enabled':args.usb_voice or args.usb_test}
+        plan = {'profile': 'build', 'variant': args.variant, 'usb_test_enabled': args.usb_test, 'usb_voice_enabled':args.usb_voice or args.usb_test,
+                'retire_intermediates_before_checks': args.retire_intermediates_before_checks}
         record.update(build_identity=identity, build_plan=plan)
         history = Campaign(work/'build-campaigns', identity, plan, attempt, args.build_id)
         _perform_build(args, parser, work, attempt, record, before, tree, revision, host, host_native)
@@ -135,6 +143,13 @@ def _build_identity(args, revision, tree):
     def add(name, path):
         path = Path(path)
         inputs[name] = sha(path.resolve()) if path.is_file() else 'MISSING'
+    if args.runtime_inputs:
+        from runtime_package import validate_inputs
+        runtime = validate_inputs(args.runtime_inputs, sdk=args.sdk)
+        add('runtime-inputs', args.runtime_inputs)
+        add('runtime-ft8', runtime['ft8']['library']['path'])
+        add('runtime-xara', runtime['xara']['binary']['path'])
+        add('runtime-pat', runtime['pat']['binary']['path'])
     if args.variant in ('host','host-native-validation'):
         for name, default in (('CC','cc'),('CXX','c++')):
             compiler = shutil.which(os.environ.get(name,default))
@@ -163,6 +178,7 @@ def _build_identity(args, revision, tree):
                 add(label+'/'+str(path.relative_to(directory)), path)
     return {'source_commit': revision, 'source_tree_sha256': tree,
             'variant': args.variant, 'build_id': args.build_id,
+            'retire_intermediates_before_checks': getattr(args, 'retire_intermediates_before_checks', False),
             'usb_test_enabled': args.usb_test, 'usb_voice_enabled':args.usb_voice or args.usb_test, 'jobs': args.jobs,
             'control_pin': CONTROL_PIN, 'dependency_inputs_sha256': inputs,
             'usb_host_resource_configuration':host_resource_configuration('qualification',
@@ -249,6 +265,17 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
         options += ['-DHOST_BUILD=OFF', '-DCMAKE_TOOLCHAIN_FILE=' + str(sdk / 'share/buildroot/toolchainfile.cmake'),
                     '-DHW_BACKEND=' + ('x6100' if args.variant == 'x6100' else 'x6200'),
                     '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON', '-DFREEDV_HOST_TEST_PROFILE=OFF']
+        if args.runtime_inputs:
+            from runtime_package import validate_inputs
+            runtime = validate_inputs(args.runtime_inputs, sdk=sdk)
+            options += ['-DOPENX6X00_FT8_LIBRARY=' + runtime['ft8']['library']['path'],
+                        '-DOPENX6X00_FT8_INCLUDE_DIR=' + runtime['ft8']['include_dir'],
+                        '-DXARA_BINARY=' + runtime['xara']['binary']['path'],
+                        '-DPAT_BINARY=' + runtime['pat']['binary']['path']]
+            record.update(runtime_inputs_sha256=sha(args.runtime_inputs),
+                          runtime_ft8_sha256=runtime['ft8']['library']['sha256'],
+                          runtime_xara_sha256=runtime['xara']['binary']['sha256'],
+                          runtime_pat_sha256=runtime['pat']['binary']['sha256'])
         options += ['-DENABLE_FREEDV_NATIVE_VALIDATION=' +
                     ('ON' if args.variant == 'x6200-diagnostic' else 'OFF')]
         enabled = args.variant in ('x6200-diagnostic', 'x6100')
@@ -302,6 +329,8 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
         if args.usb_test: targets += ['freedv_usb_audio_test']
     if args.variant == 'x6200-diagnostic':
         targets += ['freedv_voice_runner', 'freedv_voice_pulse_probe']
+    if args.runtime_inputs:
+        targets += ['x6x00-mercury', 'ardopcf', 'btcat', 'x6100-bootanim', 'params_sqlite']
     run(['cmake', '--build', work / 'build', *targets, '-j', args.jobs], 'build.log')
     gui = work / 'build/src/x6100_gui'
     archive = attempt / 'binaries'; archive.mkdir()
@@ -310,6 +339,11 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
         shutil.copy2(binary, target); target.chmod(0o555)
         return {'path': str(target), 'sha256': sha(target)}
     record['binaries'] = {'gui': retained(gui)}
+    if args.runtime_inputs:
+        for relative in ('third-party/mercury/x6x00-mercury', 'third-party/ardopcf/ardopcf',
+                         'btcat/btcat', 'bootanim/x6100-bootanim', 'params.db'):
+            binary = work / 'build' / relative
+            record['binaries'][binary.name] = retained(binary)
     if host_native:
         for name in ('freedv_voice_runner', 'freedv_usb_audio_test', 'freedv_voice_engine_test',
                      'freedv_native_stream_test', 'freedv_native_stream_fixture_test', 'freedv_native_audio_codec_adapter_test'):
@@ -318,6 +352,12 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
         for name in ('freedv_voice_runner', 'freedv_voice_pulse_probe'):
             binary = work / 'build' / name
             record['binaries'][name] = retained(binary)
+    if args.retire_intermediates_before_checks:
+        from release_cache import retire_intermediates
+        retirement = retire_intermediates(work, record['binaries'])
+        immutable_json(attempt/'cache-retirement.json', retirement)
+        record['cache_retirement'] = {'path': str(attempt/'cache-retirement.json'),
+                                      'sha256': sha(attempt/'cache-retirement.json'), 'receipt': retirement}
     if args.variant == 'host':
         run(['ctest', '--test-dir', work / 'build', '-R', '^freedv_', '--no-tests=error',
              '--output-on-failure', '--output-junit', attempt / 'ctest.xml'], 'ctest.log')

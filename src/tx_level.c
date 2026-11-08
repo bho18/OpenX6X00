@@ -15,9 +15,23 @@ void tx_level_start(tx_level_t *l, float target_w) {
 
 static float tx_level_decide(tx_level_t *l);
 
-float tx_level_block(tx_level_t *l, bool have, float pwr_w, float alc) {
+bool tx_level_counts(const tx_level_t *l) {
+    return l->blocks > TX_LEVEL_SETTLE_BLOCKS && l->sound > TX_LEVEL_QUIET_BLOCKS;
+}
+
+float tx_level_block(tx_level_t *l, bool sound, bool have, float pwr_w, float alc) {
     l->blocks++;
-    if (l->blocks <= TX_LEVEL_SETTLE_BLOCKS) return 0.0f;
+    /* Silence in a key (XARA waits out the other station's CW ID keyed, 2.7-3.6 s of zeros): the base puts out
+     * nothing, and its 0 W and ALC 0 took the drive up 0.5 dB a window, kept for every app; on the X6100 towards where
+     * the ALC reads 3, on the X6200 to the codec's top. No readings in it, nor in the sound's first blocks after it,
+     * and the window it cut into starts again */
+    l->sound = sound ? l->sound + 1 : 0;
+    if (!sound) {
+        l->silent++;
+        l->n = l->wb = 0;
+        l->sum_pwr = l->sum_alc = 0.0f;
+    }
+    if (!tx_level_counts(l)) return 0.0f;
     /* A decision every half second of blocks, on the readings that came in it: the radio sends
      * about 2.5 a second, so counting readings made a window of 5 s and the drive crept down
      * by 1-2 dB a transmission */
@@ -44,8 +58,37 @@ static bool tx_level_flat(tx_level_t *l, float p) {
     return flat;
 }
 
+/* power_hold: the steps up on trial, those since the last ones that brought power, judged together from the power
+ * before them. Judged a step at a time (tx_level_flat), the readings' noise and 0.1 W steps fooled it now and then: a
+ * window read a little high, a step that brought nothing passed for one that did, the count of flat steps started
+ * again, and the steps before it were kept. With nothing on the X6200 to take the level down again, it climbed a
+ * little each transmission where the power reads around or short of the setting, up to the top (a model X6200,
+ * tools/txlevel: 7 W asked where the band gives 6 W, 2.5 readings a second, 8.9 dB in 30 transmissions). From half a
+ * dB on trial they pass once they brought half of what they should, and the next go on trial from there */
+static void tx_level_trial(tx_level_t *l, float p, float *trial, float *should) {
+    if (l->up_db <= l->trial_db) l->trial_p = p;    /* none on trial: from the power now */
+    *trial  = l->up_db - l->trial_db;
+    *should = l->trial_p * (powf(10.0f, *trial / 10.0f) - 1.0f);
+    if (*trial >= TX_LEVEL_TRIAL_DB && *should >= TX_LEVEL_PWR_STEP_W && p - l->trial_p >= 0.5f * *should) {
+        l->trial_p  = p;
+        l->trial_db = l->up_db;
+        *trial = *should = 0.0f;
+    }
+}
+
+/* The steps on trial brought next to nothing: under this share of what they should, and under two of the reading's
+ * 0.1 W steps (a soft knee still gives that much, and its steps stay). Judged as tx_level_flat, near the setting */
+static bool tx_level_idle(const tx_level_t *l, float p, float trial, float should, float share) {
+    return trial > 0.0f && l->trial_p >= 0.6f * l->target_w && should >= TX_LEVEL_PWR_STEP_W
+        && p - l->trial_p < fminf(share * should, 2.0f * TX_LEVEL_PWR_STEP_W);
+}
+
 static float tx_level_decide(tx_level_t *l) {
-    float p = l->sum_pwr / l->n, a = l->sum_alc / l->n;
+    /* power_hold: the ALC does not follow the drive (the X6200's reads about 0 whatever it gets), so what it reads is
+     * not ours: an ALC over 3 now and then (RF picked up, a base's own state) took the level down 0.75 dB a window and
+     * kept it, from the setting to 0 W in two or three transmissions, then "TX 0 W" and back from the default (#123) */
+    float p = l->sum_pwr / l->n, a = l->power_hold ? 0.0f : l->sum_alc / l->n;
+    l->windows++;
     l->n = l->wb = 0;
     l->sum_pwr = l->sum_alc = 0.0f;
 
@@ -62,15 +105,29 @@ static float tx_level_decide(tx_level_t *l) {
         if (d < -TX_LEVEL_DOWN_MAX_DB) d = -TX_LEVEL_DOWN_MAX_DB;
         l->held = true;
     } else if (!l->held) {
+        float trial = 0.0f, should = 0.0f;
+
+        if (l->power_hold) tx_level_trial(l, p, &trial, &should);
         if (a >= TX_LEVEL_ALC_SHOWS || (l->target_w > 0.0f && p > l->target_w + TX_LEVEL_PWR_STEP_W)
             || (l->power_hold && l->target_w > 0.0f && p >= l->target_w - TX_LEVEL_PWR_STEP_W)) {
+            /* power_hold: the reading got there by itself (its noise, its 0.1 W steps), not by the steps on trial:
+             * they go back. Kept, they added up a transmission at a time with the power a hair under the setting */
+            if (l->power_hold && tx_level_idle(l, p, trial, should, 0.5f)) d = -trial;
             l->held = true; /* there: the ALC holds the power at the setting (or nothing holds it) */
         } else if (l->power_hold && (l->flat_n = tx_level_flat(l, p) ? l->flat_n + 1 : 0) >= 2) {
             /* No ALC to stop at, and two steps up in a row brought no more power: the setting is out of reach (a
-             * weak supply, the 7 W cap above what the band gives). Those steps back, and held: without this the
-             * drive climbed to full scale over a few transmissions */
+             * weak supply, the 7 W cap above what the band gives). Those steps back, all those on trial when together
+             * they brought next to nothing, and held: without this the drive climbed to full scale over a few
+             * transmissions */
             d = -l->flat_db;
+            if (tx_level_idle(l, p, trial, should, 0.25f) && trial > l->flat_db) d = -trial;
             l->held = true;
+        } else if (l->power_hold && p - l->prev_p > l->prev_p * (powf(10.0f, l->last_up / 10.0f) - 1.0f)
+                                                    + TX_LEVEL_PWR_STEP_W) {
+            /* The power rose by more than the last step up explains: the base still coming up by itself (the X6200
+             * starts from 0 after each move and comes up in 0.1 W steps, #140). No step until it is up: the steps
+             * made meanwhile were kept as found once it got there, and at 7 W the level climbed about 1 dB a
+             * transmission, to the codec's top (#126) */
         } else if (l->up_db < TX_LEVEL_UP_MAX_DB) {
             /* The ALC under 1: up, faster while far short (under half the
              * setting), then gently into the ALC. */

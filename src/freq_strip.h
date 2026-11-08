@@ -26,6 +26,10 @@ void      freq_strip_set_offset(int32_t offset_hz);
 void      freq_strip_set_app(const char *name);
 /* An app window opens (true) or closes: the deck's frequency moves up, out from under it */
 void      freq_strip_set_dialog(bool open);
+/* The frequency lock changed: LOCK shown while the user's is on (true) */
+void      freq_strip_set_lock(bool user_lock);
+/* The X6200's WR12 in use (WR12 on HOST, set up: radio.c): WR12 left of NR NB DNF, in the theme's info colour */
+void      freq_strip_set_wr12(bool in_use);
 
 #ifdef __cplusplus
 }

@@ -110,11 +110,13 @@ typedef struct {
 /* Any thread: the state as of the last second */
 void eth_get_info(eth_info_t *info);
 
-/* True while a wired adapter is connected: WiFi's radio is held off for it (the chip stays on
- * for Bluetooth) and wifi_get_status() says WIFI_OFF. Back on when the cable or the adapter goes. */
+/* True while a wired adapter is connected with a gateway: WiFi's radio is held off for it (the chip
+ * stays on for Bluetooth) and wifi_get_status() says WIFI_OFF. Back on when the gateway, the cable or
+ * the adapter goes. A cable without a gateway leaves WiFi alone. */
 bool wifi_eth_active(void);
 
-/* Any thread: the radio has a network, by WiFi or by the wired adapter */
+/* Any thread: the radio has a network, by WiFi or by a wired adapter (also one without a gateway,
+ * to a computer: a cluster node on it is in reach) */
 bool net_connected(void);
 
 /* Any thread: NULL or what is wrong. A field alone, or the whole set (netmask normalized to dotted) */

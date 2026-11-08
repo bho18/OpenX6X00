@@ -38,6 +38,7 @@ static const theme_color_t onebit_paper[] = {
     TC_veil,       TC_alert_box,     TC_track,        TC_frame,      TC_off,        TC_switch_off,     TC_icon_off,
     TC_mode_text,  TC_bp_text,       TC_pill_hp,      TC_pill_cat,   TC_pill_kbd,   TC_row_alert_text, TC_row_heard,
     TC_row_tx,     TC_row_cq,        TC_row_group,    TC_ft8_cq,     TC_ft8_cq_worked, TC_ft8_cq_same, TC_ft8_tx,
+    TC_saver,      TC_saver_head,    /* paper rain on the ink */
 };
 
 /* VISION: the default's colours made "warm anthracite": white digits on dark grey, orange for what is on,
@@ -121,18 +122,18 @@ static const char *const color_names[TC_COUNT] = {
 
 static const theme_shape_t builtin_shapes[B_OUTDOOR_NEG] = {
     [B_RFGURU]  = {.radius = 7, .radius_btn = 10, .radius_popup = 10, .border = 1, .box_gradient = true,
-                   .images = 1, .font = -1, .waterfall_table = 0},
+                   .images = 1, .font = -1, .waterfall_table = 0, .btn_text_size = 26},
     [B_LEGACY]  = {.radius = 7, .radius_btn = 10, .radius_popup = 10, .border = 1, .box_gradient = true,
-                   .images = 2, .font = -1, .waterfall_table = 1},
+                   .images = 2, .font = -1, .waterfall_table = 1, .btn_text_size = 26},
     /* Light and high contrast for the sun, in grey: the noise light, weak signals already mid grey,
      * then darker at an even pace up to black, so a strong signal shows how strong it is */
     [B_OUTDOOR] = {.radius = 6, .radius_btn = 8, .radius_popup = 8, .border = 2, .focus_solid = true,
-                   .font = -1, .meter_gradient = true, .mono_cluster = true,
+                   .font = -1, .meter_gradient = true, .mono_cluster = true, .btn_text_size = 28,
                    .waterfall = {0xfafafa, 0xe6e6e6, 0xc8c8c8, 0xa0a0a0, 0x787878, 0x585858, 0x3c3c3c, 0x282828,
                                  0x181818, 0x0a0a0a, 0x000000},
                    .waterfall_n = 11},
     [B_CLASSIC] = {.radius = 3, .radius_btn = 4, .radius_popup = 4, .border = 1, .btn_gradient = true,
-                   .focus_solid = true, .font = FONT_ARIAL,
+                   .focus_solid = true, .font = FONT_ARIAL, .btn_text_size = 28,
                    .waterfall = {0x000000, 0x000060, 0x0040e0, 0x00c8ff, 0xffff00, 0xff6000, 0xffffff},
                    .waterfall_n = 7},
 };
@@ -158,6 +159,7 @@ static int builtin_index(const char *name) {
     for (int i = 0; i < B_COUNT; i++) {
         if (name && strcasecmp(name, builtin_names[i]) == 0) return i;
     }
+    if (name && strcasecmp(name, THEME_AMBER_NAME) == 0) return B_COUNT;   /* theme_amber.inc */
     return -1;
 }
 
@@ -176,15 +178,19 @@ static void theme_set(const theme_set_t *s, size_t n) {
 
 /* Outdoor-Negative: Outdoor with every colour and the waterfall through negative() */
 static void use_builtin(int b) {
+    bool theme_amber_use(int b); if (theme_amber_use(b)) return;   /* Amber Trey: theme_amber.inc */
     int src = b == B_OUTDOOR_NEG ? B_OUTDOOR : b >= B_VISION ? B_RFGURU : b;
 
     memcpy(colors, builtin_colors[src], sizeof(colors));
     theme_shape = builtin_shapes[src];
     if (b == B_OUTDOOR_NEG) {
         for (int i = 0; i < TC_COUNT; i++) colors[i] = negative(colors[i]);
-        /* the yellow of the selection stays yellow: its text stays black */
+        /* the yellow of the selection stays yellow: its text stays black; the screensaver stays green on black */
         colors[TC_sel_text]        = builtin_colors[B_OUTDOOR][TC_sel_text];
         colors[TC_btn_active_text] = builtin_colors[B_OUTDOOR][TC_btn_active_text];
+        colors[TC_saver_bg]        = builtin_colors[B_OUTDOOR][TC_saver_bg];
+        colors[TC_saver]           = builtin_colors[B_OUTDOOR][TC_saver];
+        colors[TC_saver_head]      = builtin_colors[B_OUTDOOR][TC_saver_head];
         for (int i = 0; i < theme_shape.waterfall_n; i++) theme_shape.waterfall[i] = negative(theme_shape.waterfall[i]);
     }
     if (b == B_VISION) {
@@ -199,6 +205,8 @@ static void use_builtin(int b) {
         if (b == B_TOTAL_BLACK) theme_set(total_black_colors, sizeof(total_black_colors) / sizeof(total_black_colors[0]));
         theme_shape = (theme_shape_t){.radius_popup = 4, .border = 1, .box_gradient = true,
                                       .btn_gradient = b == B_BLACK_METAL, .font = FONT_RCOND, .deck = true,
+                                      /* the buttons as the state rows: capitals, their size */
+                                      .btn_text_size = 24, .btn_caps = true,
                                       /* black, deep blue, blue, cyan, yellow-green */
                                       .waterfall = {0x000000, 0x000418, 0x00145e, 0x0a5ad2, 0x28c8f0, 0xc8f05a},
                                       .waterfall_n = 6};
@@ -213,7 +221,7 @@ static void use_builtin(int b) {
         theme_shape = (theme_shape_t){.radius = 0, .radius_btn = 0, .radius_popup = 0, .border = 1,
                                       .focus_solid = true, .mono_cluster = true, .images = 0,
                                       .font = FONT_PIXEL, .pill_border = 1, .mode_box = true,
-                                      .mono = true, .ink = ink, .paper = paper,
+                                      .mono = true, .ink = ink, .paper = paper, .btn_text_size = 28,
                                       /* ink density from the noise up (theme_wf_density): paper, then dots */
                                       .waterfall = {0xffffff, 0xffffff, 0xd8d8d8, 0xa8a8a8, 0x707070, 0x383838, 0x000000},
                                       .waterfall_n = 7};
@@ -333,6 +341,10 @@ static bool load_file(const char *name) {
     get_int(root, "btn_gap", &theme_shape.btn_gap);
     theme_shape.btn_gap = theme_shape.btn_gap < 0 ? 0 : theme_shape.btn_gap > 4 ? 4 : theme_shape.btn_gap;
     get_bool(root, "rule", &theme_shape.rule);
+    get_bool(root, "codec", &theme_shape.codec);
+    get_int(root, "btn_text_size", &theme_shape.btn_text_size);
+    get_bool(root, "btn_caps", &theme_shape.btn_caps);
+    get_bool(root, "ops_room", &theme_shape.ops_room);
     v = theme_shape.waterfall_steps;
     get_int(root, "waterfall_steps", &v);
     theme_shape.waterfall_steps = v;
@@ -343,7 +355,9 @@ static bool load_file(const char *name) {
                            !strcasecmp(font, "dejavu") ? FONT_DEJAVU :
                            !strcasecmp(font, "arial") ? FONT_ARIAL :
                            !strcasecmp(font, "pixel") ? FONT_PIXEL :
-                           !strcasecmp(font, "sony") ? FONT_SONY : -1;
+                           !strcasecmp(font, "sony") ? FONT_SONY :
+                           !strcasecmp(font, "codec") ? FONT_CODEC :
+                           !strcasecmp(font, "rcond") ? FONT_RCOND : -1;    /* Roboto Condensed, the deck themes' */
     }
     const cJSON *wf = cJSON_GetObjectItemCaseSensitive(root, "waterfall");
     if (cJSON_IsArray(wf) && cJSON_GetArraySize(wf) >= 2) {
@@ -554,7 +568,7 @@ const uint32_t *theme_waterfall(void) {
     return theme_shape.waterfall_table == 1 ? wf_palette_legacy : wf_palette_gauss;
 }
 
-/* Legacy is kept but not offered: the other built-in ones (1bit last), then the files */
+/* Legacy is kept but not offered: the other built-in ones (Amber Trey last), then the files */
 int theme_list(char names[][32], int max) {
     int            n = 0;
     DIR           *d;
@@ -563,6 +577,7 @@ int theme_list(char names[][32], int max) {
     for (int i = 0; i < B_COUNT && n < max; i++) {
         if (i != B_LEGACY) snprintf(names[n++], 32, "%s", builtin_names[i]);
     }
+    if (n < max) snprintf(names[n++], 32, "%s", THEME_AMBER_NAME);   /* theme_amber.inc */
     d = opendir(THEMES_DIR);
     while (d && (e = readdir(d)) && n < max) {
         size_t len = strlen(e->d_name);
@@ -599,3 +614,5 @@ lv_obj_t *theme_icon_img(lv_obj_t *parent, const char *name, int size, lv_color_
     lv_obj_set_style_img_recolor_opa(img, LV_OPA_COVER, 0);
     return img;
 }
+
+#include "theme_amber.inc"

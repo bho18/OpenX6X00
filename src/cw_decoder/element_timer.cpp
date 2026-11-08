@@ -84,12 +84,12 @@ void ElementTimer::retime() {
 bool ElementTimer::backed(float ms) const {
     float strict = dot_estimate(RELOCK_PEAK);
 
-    return strict >= 0.0f && std::fabs(std::clamp(strict, DOT_MIN_MS, DOT_MAX_MS) - ms) <= NEW_SPEED * ms;
+    return strict >= 0.0f && std::fabs(std::clamp(strict, DOT_MIN_MS, dot_max_) - ms) <= NEW_SPEED * ms;
 }
 
 void ElementTimer::set_dot(float ms) {
     if (std::fabs(ms - dot_ms_) <= NEW_SPEED * dot_ms_) {
-        dot_ms_   = std::clamp(dot_ms_ + DOT_GAIN * (ms - dot_ms_), DOT_MIN_MS, DOT_MAX_MS);
+        dot_ms_   = std::clamp(dot_ms_ + DOT_GAIN * (ms - dot_ms_), DOT_MIN_MS, dot_max_);
         new_dot_  = -1.0f;
         new_seen_ = 0;
     } else if (hist_n_ < MIN_ENTRIES) {
@@ -114,6 +114,30 @@ void ElementTimer::set_dot(float ms) {
         }
     }
     retime();
+}
+
+void ElementTimer::expect(float wpm) {
+    float ms = std::clamp(static_cast<float>(PARIS_MS) / wpm, DOT_MIN_MS, dot_max_);
+
+    if (std::fabs(ms - dot_ms_) <= NEW_SPEED * dot_ms_)
+        return;
+    hist_.fill(0.0f);
+    hist_n_   = 0;
+    gaps_n_   = 0;
+    dot_ms_   = ms;
+    new_dot_  = -1.0f;
+    new_seen_ = 0;
+    retime();
+}
+
+void ElementTimer::trainer_range(bool on) {
+    dot_max_ = on ? TRAINER_DOT_MAX_MS : DOT_MAX_MS;
+    if (dot_ms_ > dot_max_) {
+        dot_ms_   = dot_max_;
+        new_dot_  = -1.0f;
+        new_seen_ = 0;
+        retime();
+    }
 }
 
 void ElementTimer::learn(float ms) {
@@ -211,7 +235,7 @@ Sym ElementTimer::close(bool mark, float ms, bool learn_it) {
         learn(ms);
         float dot = dot_estimate(MIN_PEAK);
         if (dot >= 0.0f)
-            set_dot(std::clamp(dot, DOT_MIN_MS, DOT_MAX_MS));
+            set_dot(std::clamp(dot, DOT_MIN_MS, dot_max_));
     }
     return s;
 }

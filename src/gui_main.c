@@ -9,10 +9,12 @@
  *  order they need each other, then the GUI loop.
  */
 
+#include "gui_wake.h"
 #include "dialog_field.h"
 #include "msg_box.h"
 #include "board.h"
 #include "lvgl/lvgl.h"
+#include "lv_tick_mono.h"
 #if USE_SDL
 #include "host/host_panel.h"
 #else
@@ -47,6 +49,7 @@
 #include "tci_server.h"
 #include "remote_server.h"
 #include "control_owner.h"
+#include "ext_tune.h"
 #include "birdie.h"
 #include "cfg_socket.h"
 #include "clock.h"
@@ -99,7 +102,7 @@ static void clear_cb(lv_disp_drv_t *drv, uint8_t *buf, uint32_t size) {
 /* Display settings that would break the screen are put right at every start
  * (an old or hand-edited params.db, a backup restored from another version):
  * the spectrum is disabled in this firmware, the font
- * must exist and the legacy spectrum values must stay in their ranges. */
+ * must exist and the legacy spectrum values and the screensaver must stay in their ranges. */
 static void fix_uint8(params_uint8_t *p) {
     if (p->max > p->min && (p->x < p->min || p->x > p->max)) {
         uint8_t v = p->x < p->min ? p->min : p->max;
@@ -117,6 +120,7 @@ static void display_settings_check(void) {
     fix_uint8(&params.spectrum_beta);
     fix_uint8(&params.spectrum_peak_hold);
     fix_uint8(&params.spectrum_peak_speed);
+    fix_uint8(&params.screen_saver);
 }
 
 #if USE_DRM || USE_SDL
@@ -129,9 +133,10 @@ static void dump_signal(int sig) {
 }
 #endif
 
-/* The panel is portrait: the walkie screen goes to it turned 180, not 90. DRM only */
+/* The panel is portrait: the walkie screen goes to it turned 180, not 90. DRM only,
+ * and only when the framebuffer is the radios' portrait layout. */
 bool main_display_portrait(bool on) {
-#if USE_DRM
+#if USE_DRM && BOARD_FB_ROTATE_90
     if (screen_rec_out != drm_flush) {
         return false;
     }
@@ -141,6 +146,7 @@ bool main_display_portrait(bool on) {
     lv_disp_drv_update(lv_disp_get_default(), &disp_drv);
     return true;
 #else
+    (void)on;
     return false;
 #endif
 }
@@ -200,12 +206,18 @@ static void inputs_open(void) {
 #else
     keyboard_init();
 #endif
-    keypad_init(BOARD_DEV_KEYPAD);
-    keypad_init(BOARD_DEV_POWER);
-    rotary_main_init(BOARD_DEV_MAIN);
+    keypad_t *keys = keypad_init(BOARD_DEV_KEYPAD), *power = keypad_init(BOARD_DEV_POWER);
+
+    rotary_main_init(BOARD_DEV_MAIN);   /* its thread wakes the GUI itself */
 
     vol = rotary_init(BOARD_DEV_VOL);
     mfk = encoder_init(BOARD_DEV_MFK);
+
+    /* A key or a knob wakes the GUI loop at once (gui_wake.h) */
+    if (keys) gui_wake_add_fd(keys->fd);
+    if (power) gui_wake_add_fd(power->fd);
+    if (vol) gui_wake_add_fd(vol->fd);
+    if (mfk) gui_wake_add_fd(mfk->fd);
 
     /* VOL turns are keys to the focused widget: the value, or the choice of what it controls */
     vol->left[VOL_STATE_EDIT]    = KEY_VOL_LEFT_EDIT;
@@ -220,6 +232,7 @@ static void inputs_open(void) {
     rotary_t *inner = rotary_init(BOARD_DEV_MFK_INNER);
 
     if (inner) {
+        gui_wake_add_fd(inner->fd);
         for (int i = 0; i < 3; i++) {
             inner->left[i]  = KEY_MFK_PREV;
             inner->right[i] = KEY_MFK_NEXT;
@@ -239,7 +252,7 @@ static void settings_load(void) {
     mfk_init();
     vol_init();
     /* The folder for the user's own themes (docs/THEMES.md). None comes with the image any more: the RS
-     * theme that was copied here is cut from a screenshot of Icom's RS-BA1 (themes/make_rs.py) */
+     * theme that was copied here is cut from a screenshot of another maker's remote software (themes/make_rs.py) */
     if (system("mkdir -p " BOARD_DATA "/themes") != 0)
         LV_LOG_WARN("No " BOARD_DATA "/themes folder");
     styles_load(params.theme_name.x);
@@ -271,6 +284,7 @@ static void services_start(void) {
     cat_init();
     cfg_socket_init();
     ctl_init();
+    ext_tune_init();    /* TUNE for an external tuner: stopped when the radio moves */
     tci_server_init();
     remote_server_init();
     winlink_init();     /* ardopcf's audio and Pat's rigctld: idle until they connect */
@@ -287,11 +301,13 @@ static void services_start(void) {
     lv_timer_set_repeat_count(lv_timer_create(settings_note_cb, 3000, NULL), 1);
 }
 
-/* LVGL's clock: 5 ms ticks */
+/* LVGL's clock (lv_tick_mono.h): the GUI loop sets it before each lv_timer_handler(), this thread every 5 ms
+ * meanwhile, through a long frame and for the threads that read it. The kernel's monotonic clock, as get_time() */
+
 static void *tick_thread(void *arg) {
     for (;;) {
         usleep(5000);
-        lv_tick_inc(5);
+        lv_tick_mono_read();
     }
     return NULL;
 }
@@ -299,29 +315,53 @@ static void *tick_thread(void *arg) {
 static void tick_start(void) {
     pthread_t thread;
 
+    /* The first as it is, before both writers (lv_tick_mono.h) */
+    __atomic_store_n(&lv_tick_mono_now, (uint32_t)get_time(), __ATOMIC_RELAXED);
     pthread_create(&thread, NULL, tick_thread, NULL);
     pthread_detach(thread);
 }
 
 /* The events from the threads, the scheduled work, LVGL; then sleep until LVGL wants to
- * run again, at least 5 ms (when it says now) to keep the CPU free */
+ * run again, or until a key, a knob or another thread wakes it (gui_wake.h) */
 /* A version installed by x6100-update is "pending" until the GUI has run a minute: then it is
  * confirmed, otherwise the start loop rolls it back after three failed starts */
 static void update_confirm_cb(lv_timer_t *t) {
     sh_run("/usr/sbin/x6100-update confirm", NULL, NULL);
 }
 
+/* Input drawn at once, frames at least this far apart. On the radios one frame of the panel: drm_flush() waits for
+ * the flip of the frame before, so a frame drawn sooner is not shown sooner, and the GUI thread waits in wait_flip()
+ * meanwhile (the scheduler's jobs and the events with it). The PC build 8 ms */
+static uint32_t min_frame_gap(void) {
+#if USE_DRM
+    return drm_frame_ms();
+#else
+    return 8;
+#endif
+}
+
+/* When the screen's refresh timer last ran: it ran in a lv_timer_handler() when this changed */
+static uint32_t refr_last_run(void) {
+    lv_disp_t *d = lv_disp_get_default();
+
+    return d && d->refr_timer ? d->refr_timer->last_run : 0;
+}
+
 static void gui_loop(void) {
     bool drawn = false;     /* the start trace's last stage */
 
     for (;;) {
-        int64_t start = get_time();
-
         event_obj_check();
         scheduler_work();
         freedv_navigation_tick();
-
-        int64_t next = start + lv_timer_handler();
+        lv_tick_mono_set(get_time());   /* LVGL's timers on the clock's time, not up to 5 ms behind */
+        gui_wake_draw_due();
+        uint32_t frame   = refr_last_run();
+        uint32_t till    = lv_timer_handler();
+        /* LVGL counts the time to its next timer from its clock at the end of the run, not from the loop's top:
+         * from there the loop woke early after every long frame, to sleep again */
+        uint32_t due     = lv_tick_mono_ms() + till;
+        bool     drew    = refr_last_run() != frame;
 #if USE_DRM
         drm_commit();
         if (dump_requested) {
@@ -340,20 +380,48 @@ static void gui_loop(void) {
             drawn = true;
             start_trace("first frame");
         }
-        int64_t wait = next - get_time();
+        /* Both counted from after the commit: a put-off draw whose time came during the pass after the least wait */
+        uint32_t now     = (uint32_t)get_time();
+        int32_t  wait    = till == LV_NO_TIMER_READY ? 100 : (int32_t)(due - now);
+        int32_t  draw_in = gui_wake_draw_left(now);
 
-        usleep(wait > 0 ? wait * 1000 : 5000);
+        if (draw_in >= 0 && draw_in < wait) wait = draw_in;
+        /* A timer due at once after a frame (a frame that ran past its period, 3D with FT8 on the X6100): 5 ms for
+         * the other threads, as before #183; else 1 ms. Input wakes it all the same */
+        int32_t least = drew && till == 0 ? 5 : 1;
+
+        /* Until LVGL's next timer (at most 100 ms), or input: then the keys and knobs are read at once, and what
+         * they changed drawn, frames at least min_frame_gap() apart */
+        if (gui_wake_wait(wait < least ? least : wait > 100 ? 100 : wait) == WAKE_INPUT) {
+            lv_tick_mono_set(get_time());
+            gui_wake_read_input();
+            frame = refr_last_run();
+            lv_timer_handler();
+            if (refr_last_run() != frame) {
+                /* The refresh was due: it ran after the reads (LVGL runs its newer timers first, the indevs'
+                 * after the display's), what they changed is drawn. Shown now, not after the next pass's events
+                 * and jobs */
+#if USE_DRM
+                drm_commit();
+#endif
+            } else {
+                gui_wake_draw_now(min_frame_gap());
+            }
+        }
     }
 }
 
 int main(void) {
+    tick_start();       /* LVGL's clock, from the start */
+    gui_wake_init();    /* the loop's wake, before any thread that posts to it */
     scheduler_init();   /* this is the GUI thread */
 #if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
     signal(SIGTERM, terminate_signal);
     signal(SIGINT, terminate_signal);
 #endif
     start_trace("GUI start, %s", VERSION);
-    setenv("X6100_FW", strrchr(VERSION, 'v') + 1, 1);   /* the helpers' User-Agent (x6100-field, spots) */
+    /* the helpers' User-Agent (x6100-field, spots), the logs' PROGRAMVERSION (field_adif_header) */
+    setenv("X6100_FW", strrchr(VERSION, 'v') + 1, 1);
     clock_tz_init();
     lv_init();
     panel_open();
@@ -377,7 +445,6 @@ int main(void) {
     radio_start();
     services_start();
     start_trace("services started");
-    tick_start();
 
     lv_scr_load(screen);
     walkie_init(screen);      /* its screen instead, when on */

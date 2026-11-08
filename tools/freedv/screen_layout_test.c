@@ -28,5 +28,15 @@ int main(void){
             restored.axis_y==baseline.axis_y && restored.waterfall_y==baseline.waterfall_y);
         ++cases;
     }
+    for (unsigned f=0; f<5; ++f) {
+        fd_main_layout baseline=fd_main_layout_amber(310,294,112,0,false,fonts[f]);
+        fd_main_layout voice=fd_main_layout_amber(310,294,112,0,true,fonts[f]);
+        assert(baseline.spectrum_y==294 && baseline.spectrum_height==112);
+        assert(voice.row_y>=310 && voice.row_height>=fonts[f]+8);
+        assert(voice.spectrum_y>=voice.row_y+voice.row_height && voice.spectrum_height>0);
+        assert(voice.axis_y==voice.spectrum_y && voice.waterfall_y==baseline.waterfall_y);
+        assert(voice.spectrum_y+voice.spectrum_height==406);
+        ++cases;
+    }
     printf("Production main-screen reserved-row geometry: %u cases PASS\n",cases);return 0;
 }

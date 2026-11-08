@@ -1,4 +1,4 @@
-% rebase('base.html', title='Panel')
+% rebase('funnel_base.html' if get('funnel', False) else 'base.html', title='Panel')
 <style>
 /* The panel: the radio worked natively in the browser, on a phone, a tablet or a PC. SPDX-License-Identifier: LGPL-2.1-or-later */
 .pn { --pb:#0d1626; --pc:#15223a; --pl:#27385a; --pt:#e6edf3; --pd:#8fa3b8; --pa:#ffb020; --pok:#5fd38a; --perr:#ff6b6b; --pon:#2a7fff;
@@ -39,6 +39,8 @@
 .b.on { border-color:var(--pon); box-shadow:inset 0 -3px 0 var(--pon); }
 .b.ptt { height:56px; background:#4a1a1a; border-color:#7a2a2a; font-size:15px; color:#fff; }
 .b.ptt.down { background:#e03030; border-color:#e03030; }
+.b.xtune.down { background:#9a6200; border-color:#d08a10; color:#fff; }   /* TUNE for an external tuner on the air */
+.b.xtune.warn { background:#5a3a10; border-color:#8a5a16; }
 .b.lvl { flex-direction:row; justify-content:space-between; padding:0; }
 .b.lvl > span { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; }
 .b.lvl > i { width:34px; align-self:stretch; display:flex; align-items:center; justify-content:center; font:700 18px/1 system-ui,sans-serif; font-style:normal; color:var(--pd); border-left:1px solid var(--pl); }
@@ -117,6 +119,7 @@
 .pad .b.ok { background:var(--pon); border-color:var(--pon); color:#fff; }
 .pop .lohi { display:flex; gap:8px; align-items:center; margin-top:10px; }
 .pop .lohi input[type=number] { width:6em; }
+.pop .fhint { margin-top:8px; font:12px/1.3 system-ui,sans-serif; color:var(--pd); }
 /* Phones and portrait tablets: one column, the radio first */
 @media (max-width: 899px), (orientation: portrait) {
   .pn { flex-direction:column; }
@@ -137,7 +140,7 @@
 body.app header, body.app footer { display:none; }
 body.app main { max-width:none; padding:8px; }
 body.app .pn-bar { margin-bottom:6px; }
-body.app h2, body.app #intro { display:none; }
+body.app h2, body.app #intro, body.app #intro-away { display:none; }
 :fullscreen .pn { max-width:none; }
 /* The link to the radio is down or silent: the controls show the last confirmed state, greyed (R6) */
 .pn-radio.stale .pn-top, .pn-radio.stale .pn-ctl { filter: grayscale(.8); opacity: .55; transition: opacity .3s; }
@@ -148,7 +151,11 @@ body.app h2, body.app #intro { display:none; }
 </style>
 
 <h2><svg class="i"><use href="#i-sliders"/></svg>Panel</h2>
+% if get('funnel', False):
+<p class="sub" id="intro-away">The radio from away, through Tailscale Funnel: the spectrum and the waterfall, every switch and level, the audio both ways. Only a browser paired with the radio at home gets in; you remain the control operator of every transmission. The <a href="/remote">Screen</a> page shows the radio's own display.</p>
+% else:
 <p class="sub" id="intro">The radio worked from the browser: the spectrum and the waterfall live, tap or drag to tune, pinch to zoom, every switch and level at hand, the DX spots, the audio both ways. Phone, tablet or PC, on the same network as the radio. The <a href="/remote">Screen</a> page shows the radio's own display instead. No login: anyone on the network can reach this page.</p>
+% end
 
 <div class="pn-bar">
   <button type="button" id="snd" aria-pressed="false">Sound</button>
@@ -203,10 +210,11 @@ body.app h2, body.app #intro { display:none; }
         <button class="b lvl" data-lvl="pwr"><i data-d="-1">−</i><span><small>POWER</small><span>--</span></span><i data-d="1">+</i></button>
         <button class="b" id="b-filter"><small>FILTER</small><span>--</span></button>
       </div>
-      <div class="row r4">
+      <div class="row r5">
         <button class="b" id="b-tune"><small>knob</small>◀ −</button>
         <button class="b" id="b-tunep"><small>knob</small>+ ▶</button>
         <button class="b" id="b-atune"><small>ATU</small>TUNE</button>
+        <button class="b xtune" id="b-xtune" title="A low-power carrier for a tuner of its own at the antenna, at the radio's TUNE power and time limit (Settings &gt; TX Cal); press again to stop">TUNE<small>external tuner</small></button>
         <button class="b ptt" id="pttbtn">PTT (hold)</button>
       </div>
     </div>
@@ -251,7 +259,7 @@ body.app h2, body.app #intro { display:none; }
     <div class="tab" id="tab-log">
       <div class="logf"><input id="lg-call" placeholder="CALL" autocapitalize="characters" autocomplete="off"><input id="lg-rs" placeholder="RST s" value="59"><input id="lg-rr" placeholder="RST r" value="59"></div>
       <div class="logf2"><input id="lg-name" placeholder="Name (optional)" autocomplete="off"><button class="b" id="lg-log" style="height:40px;padding:0 18px">LOG</button></div>
-      <p class="sub" style="margin:10px 0 0;font-size:12px">A voice or CW QSO on the radio's frequency and mode, into the day's ADIF log on the radio (the web Logs page lists it). Digital QSOs log themselves. Each QSO is confirmed by the radio: one sent into a dropped connection is asked about when the link is back, and never logged twice.</p>
+      <p class="sub" style="margin:10px 0 0;font-size:12px">A QSO by hand (voice, CW, or PSK, Olivia, Contestia, JTTY, RTTY) on the radio's frequency, into the day's ADIF log on the radio (the web Logs page lists it). Its mode is the one of the app open on the radio, else the radio's; in USB-D or LSB-D with no app, away from FT8 and FT4, it has none: set it on the Logs page. FT8, FT4, FT2 and JS8 log their own QSOs. Each QSO is confirmed by the radio: one sent into a dropped connection is asked about when the link is back, and never logged twice.</p>
       <ul class="ft" id="lgrows"></ul>
     </div>
     <div class="tab cur" id="tab-spots"><ul class="spots" id="spots"><li style="display:block;color:var(--pd)">No spots yet: the cluster is set on the radio (Cluster page).</li></ul></div>
@@ -272,26 +280,31 @@ body.app h2, body.app #intro { display:none; }
     </div>
     <div class="tab" id="tab-screen"><div class="screen"><canvas id="scv" width="800" height="480"></canvas></div></div>
   </aside>
+  <!-- inside #pn: its colours are #pn's (dark or light), and Fullscreen shows #pn alone -->
+  <div class="pop" id="pop" hidden><div class="box" id="popbox"></div></div>
 </div>
 
-<p class="sub" style="margin-top:12px">Panorama: tap or drag to tune, pinch (or the mouse wheel with Ctrl) to zoom, the wheel to tune by the step. Tap the frequency to type one, a spot to tune to it. Keyboard: ← → tune (Shift: ten steps), [ ] volume, Space PTT. Sound starts on a tap (browsers ask for one). Mic needs an https page: <a id="httpslink" href="#">https://this radio/panel</a> (accept the certificate once). A browser only watches until it is paired with a code shown on the radio; one paired browser (or the radio's own keys, or a TCI client) controls the radio at a time, and the others take control on purpose.</p>
+<p class="sub" style="margin-top:12px">Panorama: tap or drag to tune, pinch (or the mouse wheel with Ctrl) to zoom, the wheel to tune by the step. Tap the frequency to type one, a spot to tune to it. Keyboard: ← → tune (Shift: ten steps), [ ] volume, Space PTT. Sound starts on a tap (browsers ask for one). <span id="httpsnote">Mic needs an https page: <a id="httpslink" href="#">https://this radio/panel</a> (the browser warns of the radio's own certificate: accept it, once for that address).</span> A browser only watches until it is paired with a code shown on the radio; one paired browser (or the radio's own keys, or a TCI client) controls the radio at a time, and the others take control on purpose.</p>
 
-<div class="pop" id="pop" hidden><div class="box" id="popbox"></div></div>
 
 <script src="/static/js/radio_link.js?v=2"></script>
-<script src="/static/js/radio_session.js?v=3"></script>
+<script src="/static/js/radio_session.js?v=6"></script>
 <script>
 (function() {
   "use strict";
+  /* Through Tailscale Funnel (#58): the page tailscaled serves at https://<name>.ts.net/panel (funnel_base.html),
+   * its sockets on the same address. The away link's key (#t=...) is put away before anything reads the address */
+  const FUNNEL = !!window.X6100_FUNNEL;
+  if (FUNNEL) RadioSession.takeLink();
   const $st = $("#st"), $msg = $("#msg"), pn = document.getElementById("pn");
   const secure = location.protocol === "https:";
   const MODES = ["LSB", "LSB-D", "USB", "USB-D", "CW", "CW-R", "AM", "NFM", "SAM", "WFM"];
   let nModes = 8;    /* "modes N" from the radio: an X6200 has SAM and WFM too */
   const AGCS = ["OFF", "SLOW", "FAST", "AUTO"];
   const STEPS = [10, 100, 500, 1000, 5000];
-  const PLAN_COLORS = ["#2a7fff", "#d08a00", "#2e9e4f", "#b040c0"];     /* CW, DIG, ALL, BCN */
-  const PLAN_NAMES = ["CW", "DIG", "SSB", "BCN"];
-  let conf = null, unreachable = false, updating = null, link = null, tlink = null, ses = null, ptt = null;   /* the links are made below */
+  const PLAN_COLORS = ["#2a7fff", "#d08a00", "#2e9e4f", "#b040c0", "#7d8796"];     /* CW, DIG, ALL, BCN, OUT (a US class) */
+  const PLAN_NAMES = ["CW", "DIG", "SSB", "BCN", "OUT"];
+  let conf = null, unreachable = false, updating = null, link = null, tlink = null, ses = null, ptt = null, xtune = null;   /* the links are made below */
   let micOn = false, txOn = false, micStream = null;   /* the microphone, asked about by the PTT from the start */
   let state = null, stateAt = 0, bands = [], plan = [], spots = [];
   let frames = 0, bytes = 0, lastStat = Date.now(), lastFrame = 0, lastAudio = 0, fpsText = "", abytes = 0, kbsText = "";
@@ -299,17 +312,29 @@ body.app h2, body.app #intro { display:none; }
   try { pref = JSON.parse(localStorage.getItem("x6100panel") || "{}"); } catch (e) {}
   function savePref() { try { localStorage.setItem("x6100panel", JSON.stringify(pref)); } catch (e) {} }
 
-  function status(text, error) { $st.toggleClass("error", !!error).html('<span class="dot"></span>').append(document.createTextNode(text)); }
+  /* The status line: news ("QSO logged"), or how things are ("Take control first", "On the air"). A text of the
+   * second kind comes with holds(), true while it is so, and goes once it is not: statusCheck() at a change of
+   * access or control, and every second (#58: "Take control first" stayed up after control had come back) */
+  let stHolds = null;
+  function status(text, error, holds) { stHolds = holds || null; $st.toggleClass("error", !!error).html('<span class="dot"></span>').append(document.createTextNode(text)); }
+  function statusCheck() { if (stHolds && !stHolds()) { stHolds = null; $st.removeClass("error").empty(); } }
+  /* An https page's sockets on its own address and port, the certificate accepted for the page's (#58): tailscaled
+   * hands the Funnel page's to the radio's ports, the radio's https server its own page's. On ports of their own
+   * (v0.3.7's) Firefox wanted the certificate accepted again, and refused them without a word */
   function wsUrl(kind) {
-    const port = secure ? (kind === "remote" ? conf.wss_port : conf.wss_tci_port) : (kind === "remote" ? conf.port : conf.tci_port);
-    return (secure ? "wss://" : "ws://") + location.hostname + ":" + port + "/";
+    if (FUNNEL || secure) return "wss://" + location.host + "/ws/" + kind;
+    return "ws://" + location.hostname + ":" + (kind === "remote" ? conf.port : conf.tci_port) + "/";
   }
   $("#httpslink").attr("href", "https://" + location.host.replace(/:\d+$/, "") + "/panel");
+  if (FUNNEL) $("#httpsnote").hide();
+  /* Over Funnel the radio says nothing, not even hello, to a browser without a key paired at home, and closes:
+   * then the page says so and stops trying (over the tailnet the same page is greeted, and pairs as at home) */
+  let greeted = false, awayless = false;
   function send(s) { return !!link && link.send(s); }
   /* A change for the radio: not while it does not answer, it would arrive late, after whatever the operator did
    * next (audit C02). Releases and stops go with send(): late, they still let go */
   function act(s) {
-    if (link && link.stalled) { status("The radio does not answer: nothing is sent until it does", true); return false; }
+    if (link && link.stalled) { status("The radio does not answer: nothing is sent until it does", true, function() { return link.stalled; }); return false; }
     return send(s);
   }
   function set(name, v, v2) { return act("set " + name + " " + v + (v2 !== undefined ? " " + v2 : "")); }
@@ -320,6 +345,36 @@ body.app h2, body.app #intro { display:none; }
   function fmtFilter(s) {
     const bw = s.fhi - s.flo;
     return (s.mode === 4 || s.mode === 5) ? bw + "" : (bw >= 1000 ? (bw / 1000).toFixed(1).replace(/\.0$/, "") + "k" : bw + "");
+  }
+  /* The radio's filter rules for a mode, on both radios (filter_mode() and filter_high_max() in
+   * src/cfg/settings_manager.cpp, #91): in CW and CW-R a width around the key tone, its low edge no lower than 0;
+   * in AM, NFM and the X6200's SAM and WFM the high edge alone, the low one always 0; in the others both edges.
+   * No edge above 6 kHz, in WFM 10 kHz */
+  function filterKind(mode) { return mode === 4 || mode === 5 ? "cw" : mode >= 6 && mode <= 9 ? "am" : "ssb"; }
+  function filterMax(mode) { return mode === 9 ? 10000 : 6000; }
+  /* The edges the radio keeps for the ones asked, and the page sends those: the radio checks each edge against
+   * the other as it sets it, so edges outside its rules would come out by what it had before */
+  function filterEdges(s, lo, hi) {
+    const max = filterMax(s.mode), kind = filterKind(s.mode);
+    let a = Math.min(lo, hi), b = Math.max(lo, hi);
+    if (kind === "am") return [0, Math.max(1, Math.min(max, b))];
+    if (kind === "cw") {
+      /* an even width: the radio keeps half of it on either side of the key tone */
+      const w = Math.max(10, Math.min(max, Math.round((b - a) / 2) * 2));
+      a = Math.max(0, keyTone(s) - w / 2);
+      return [a, a + w];
+    }
+    b = Math.max(1, Math.min(max, b));
+    return [Math.max(0, Math.min(b - 1, a)), b];
+  }
+  /* The presets of the mode, as the radio sets them: CW widths, AM and FM high edges, SSB and DIG passbands */
+  function filterPresets(s) {
+    const kind = filterKind(s.mode);
+    const p = kind === "cw" ? [[0, 100], [0, 250], [0, 500], [0, 1000]]
+            : s.mode === 9 ? [[0, 4000], [0, 6000], [0, 8000], [0, 10000]]
+            : kind === "am" ? [[0, 2500], [0, 3000], [0, 4000], [0, 5000], [0, 6000]]
+            : [[100, 1900], [100, 2500], [100, 2800], [50, 3050], [50, 3650]];
+    return p.map(function(e) { return filterEdges(s, e[0], e[1]); });
   }
 
   /* ---- Theme and layout ---- */
@@ -347,9 +402,10 @@ body.app h2, body.app #intro { display:none; }
   function wantDrop() { if (Object.keys(want).length) { want = {}; showState(); } }
   /* May the page ask for a change and show it as asked? Not when it knows the radio would refuse: the reason,
    * and the dialog that changes it */
+  function refusal() { return !link.up ? "No link to the radio: nothing is sent" : link.stalled ? "The radio does not answer: nothing is sent until it does" : ses.can(); }
   function mayAct() {
-    const no = !link.up ? "No link to the radio: nothing is sent" : link.stalled ? "The radio does not answer: nothing is sent until it does" : ses.can();
-    if (no) { status(no, true); if (link.up && !link.stalled) ses.explain(); }
+    const no = refusal();
+    if (no) { status(no, true, function() { return refusal() === no; }); if (link.up && !link.stalled) ses.explain(); }
     return !no;
   }
   function showState() {
@@ -367,12 +423,14 @@ body.app h2, body.app #intro { display:none; }
     $("#b-step span").text(fmtStep(s.step));
     $("#b-zoom span").text("x" + s.zoom);
     $("#b-agc span").text(AGCS[s.agc]);
-    $("#b-lock span").text(s.lock ? "on" : "off"); $("#b-lock").toggleClass("on", !!s.lock);
+    const ulock = "ulock" in s ? s.ulock : s.lock;     /* the user's LOCK; an app's hold greys the frequency only */
+    $("#b-lock span").text(ulock ? "on" : "off"); $("#b-lock").toggleClass("on", !!ulock);
     ["pre", "att", "nb", "nr", "atu"].forEach(function(k) { $("#b-" + k).toggleClass("on", !!s[k]); });
     $('[data-lvl="vol"] span span').text(s.vol); $('[data-lvl="sql"] span span').text(s.sql);
     $('[data-lvl="rfg"] span span').text(s.rfg); $('[data-lvl="pwr"] span span').text(s.pwr.toFixed(1) + " W");
     $("#b-filter span").text(fmtFilter(s));
     if (ptt) ptt.radioTx(!!s.tx);
+    if (xtune) xtune.radio(!!state.tune, state.tune_s);     /* TUNE for an external tuner, as the radio has it */
     markSpots();
   }
   function showMeter(db) {
@@ -466,6 +524,21 @@ body.app h2, body.app #intro { display:none; }
   /* An old base sends the whole 100 kHz whatever the zoom (the radio zooms the view itself): shown is
    * the zoomed part around the centre, a new base's data is already that wide */
   function visSpan() { return Math.min(span, 100000 / (state ? state.zoom : 1)); }
+  /* The CW pitch: a radio before "kt" sent none, and the default is 700 Hz */
+  function keyTone(s) { return typeof s.kt === "number" ? s.kt : 700; }
+  /* The passband around the dial, in Hz. In CW and CWR the edges are tones, and the signal heard at the key
+   * tone is on the dial: the band is around it in both, as on the radio (#34: it was beside it, a pitch off).
+   * Where the tone rises as the dial goes up (CWR; CW too on the X6200, "cwrise", #115) it is the other way
+   * round: a low edge at 0 leaves it off centre on the other side.
+   * AM, NFM, SAM and WFM: both sides of the high edge, as the radio draws it (#91: SAM and WFM had one) */
+  function passband(s) {
+    const kt = keyTone(s);
+    if (s.mode === 0 || s.mode === 1) return [-s.fhi, -s.flo];      /* LSB */
+    if (s.mode === 4 && !s.cwrise) return [s.flo - kt, s.fhi - kt];  /* CW */
+    if (s.mode === 4 || s.mode === 5) return [kt - s.fhi, kt - s.flo];   /* CWR, the X6200's CW */
+    if (filterKind(s.mode) === "am") return [-s.fhi, s.fhi];
+    return [s.flo, s.fhi];
+  }
   function hzToX(hz) { const v = visSpan(); return (hz - (center - v / 2)) * W / v; }
   function xToHz(x) { const v = visSpan(); return center - v / 2 + x * v / W; }
   function draw() {
@@ -498,9 +571,7 @@ body.app h2, body.app #intro { display:none; }
     /* the passband */
     const s = state;
     if (s) {
-      const lsb = s.mode === 0 || s.mode === 1 || s.mode === 5, sym = s.mode === 6 || s.mode === 7;
-      const lo = sym ? -s.fhi : lsb ? -s.fhi : s.flo, hi = sym ? s.fhi : lsb ? -s.flo : s.fhi;
-      const x1 = hzToX(s.freq + lo), x2 = hzToX(s.freq + hi);
+      const pb = passband(s), x1 = hzToX(s.freq + pb[0]), x2 = hzToX(s.freq + pb[1]);
       ctx.fillStyle = light ? "#0b5fd0" : "#7fc4ff"; ctx.globalAlpha = 0.18; ctx.fillRect(x1, top, x2 - x1, H - top); ctx.globalAlpha = 1;
     }
     /* the trace */
@@ -544,7 +615,7 @@ body.app h2, body.app #intro { display:none; }
   let drag = null, pinch = null, tuneTimer = null, tuneWant = null;
   function tuneTo(hz) {
     if (!state) return;
-    if (state.lock) { status("LOCK is on (or an app holds the frequency): the radio stays on " + fmtFreq(state.freq), true); return; }
+    if (state.lock) { status("LOCK is on (or an app holds the frequency): the radio stays on " + fmtFreq(state.freq), true, function() { return !!state && !!state.lock; }); return; }
     if (!mayAct()) return;
     hz = Math.round(hz);
     tuneWant = hz;
@@ -633,16 +704,33 @@ body.app h2, body.app #intro { display:none; }
   }
   function popFilter() {
     const s = state; if (!s) return;
-    const cw = s.mode === 4 || s.mode === 5, am = s.mode === 6 || s.mode === 7;
-    const presets = cw ? [[100, 50], [250, 125], [500, 250], [1000, 500]] : am ? [[6000, 0], [9000, 0], [12000, 0]] : [[1800, 100], [2400, 100], [2700, 100], [3000, 50], [3600, 50]];
+    const kind = filterKind(s.mode), max = filterMax(s.mode);
     $box.empty().append($("<h4>").text("Filter"));
     const list = $("<div class='list'>");
-    presets.forEach(function(p) {
-      const bw = p[0], lo = cw ? Math.max(0, 700 - bw / 2) : am ? 0 : p[1], hi = cw ? 700 + bw / 2 : am ? bw : p[1] + bw;
-      list.append($("<button type='button' class='b'>").toggleClass("on", s.fhi - s.flo === hi - lo).text(bw >= 1000 ? (bw / 1000).toFixed(1).replace(/\.0$/, "") + "k" : bw).on("click", function() { set("filter", lo, hi); popClose(); }));
+    /* lit: the preset whose edges are the radio's, not one of the same width elsewhere */
+    filterPresets(s).forEach(function(p) {
+      const bw = p[1] - p[0];
+      list.append($("<button type='button' class='b'>").toggleClass("on", s.flo === p[0] && s.fhi === p[1]).text(bw >= 1000 ? (bw / 1000).toFixed(1).replace(/\.0$/, "") + "k" : bw).on("click", function() { set("filter", p[0], p[1]); popClose(); }));
     });
-    const lo = $("<input type='number' min='0' max='12000' step='10'>").val(s.flo), hi = $("<input type='number' min='0' max='12000' step='10'>").val(s.fhi);
-    $box.append(list, $("<div class='lohi'>").append("Low ", lo, " High ", hi, $("<button type='button' class='primary'>Set</button>").on("click", function() { set("filter", parseInt(lo.val(), 10) || 0, parseInt(hi.val(), 10) || 0); popClose(); })));
+    const lo = $("<input type='number' min='0' step='10'>").attr("max", max - 1).val(s.flo).prop("disabled", kind === "am"), hi = $("<input type='number' min='0' step='10'>").attr("max", max).val(s.fhi);
+    const hint = kind === "cw" ? "Around the key tone of " + keyTone(s) + " Hz" : kind === "am" ? MODES[s.mode] + ": the high edge alone, the low one is 0" : "Both edges";
+    $box.append(list, $("<div class='lohi'>").append("Low ", lo, " High ", hi, $("<button type='button' class='primary'>Set</button>").on("click", function() {
+      /* a field left empty, or holding no number (the browser empties one typed "3k"), keeps the radio's edge: it
+       * was 0, which took AM down to 1 Hz */
+      let l = parseInt(lo.val(), 10), h = parseInt(hi.val(), 10);
+      if (isNaN(l)) l = s.flo;
+      if (isNaN(h)) h = s.fhi;
+      /* CW: one edge typed takes the other along around the key tone, as the radio's own Filter low and Filter
+       * high do (past twice the key tone the low edge stays at 0 and the high one is the width); the two typed,
+       * their width. It was their width either way, so High typed alone came out as neither edge */
+      if (kind === "cw" && (l !== s.flo) !== (h !== s.fhi)) {
+        const kt = keyTone(s);
+        h = Math.max(0, l !== s.flo ? 2 * (kt - l) : h >= 2 * kt ? h : 2 * (h - kt));
+        l = 0;
+      }
+      const e = filterEdges(s, l, h);
+      set("filter", e[0], e[1]); popClose();
+    })), $("<div class='fhint'>").text(hint + ", up to " + max / 1000 + " kHz"));
     $pop.prop("hidden", false);
   }
 
@@ -676,7 +764,7 @@ body.app h2, body.app #intro { display:none; }
   $("#b-zoom").on("click", function() { if (state) zoomTo(state.zoom >= 8 ? 1 : state.zoom * 2); });
   $("#b-agc").on("click", function() { if (state) popList("AGC", AGCS.map(function(a, i) { return {t: a, v: i}; }), state.agc, function(v) { set("agc", v); }); });
   $("#b-vfo").on("click", function() { set("vfo", 1); });
-  $("#b-lock").on("click", function() { if (state) set("lock", state.lock ? 0 : 1); });
+  $("#b-lock").on("click", function() { if (state) set("lock", ("ulock" in state ? state.ulock : state.lock) ? 0 : 1); });
   $("#b-bup").on("click", function() { set("band", 1); }); $("#b-bdn").on("click", function() { set("band", -1); });
   $("#b-filter").on("click", popFilter);
   $("#freq").on("click", popFreq);
@@ -729,7 +817,7 @@ body.app h2, body.app #intro { display:none; }
     if (f.sending || f.cq || (f.next && f.tx)) ftStopped = false;
     const slotS = f.slot ? f.slot / 1000 : 15, inS = Math.ceil(ftSlotIn() / 1000), msg = f.next || "";
     const queued = !!msg, armed = !!f.tx, cq = /^CQ /.test(msg) || msg.startsWith("CQ_");
-    const dx = queued && !cq ? msg.split(" ")[0] : "";
+    const dx = queued && !cq ? msg.split(" ")[0].replace(/^<(.*)>$/, "$1") : "";   /* "<W1ABC> KF0QGT/6Y": W1ABC */
     /* the steps: which is current, which are done, what each says */
     const stage = !f.open ? "" : f.sending ? "sending" : queued && armed ? "slot" : queued ? "queued" : f.logged_s >= 0 && f.logged_s < 90 ? "logged" : "listen";
     const order = ["listen", "queued", "slot", "sending", "logged"], at = order.indexOf(stage);
@@ -909,6 +997,7 @@ body.app h2, body.app #intro { display:none; }
     try {
       if (ses.onText(head, body)) return;          /* role, ctl, paired, tx, sessions */
       if (head === "err") wantDrop();                /* a change refused (whichever): the radio's values again */
+      if (head === "err" && xtune.err(body)) return; /* a tune refused or stopped by the radio: the TUNE button says so */
       if (head === "err" && ptt.err(body)) return;   /* a refused or ended transmission: the PTT button says so */
       if (head === "state") { state = JSON.parse(body); stateAt = Date.now(); showState(); requestDraw(); }
       else if (head === "m") showMeter(parseFloat(body));
@@ -917,17 +1006,19 @@ body.app h2, body.app #intro { display:none; }
       else if (head === "bands") bands = JSON.parse(body);
       else if (head === "modes") nModes = Math.min(MODES.length, parseInt(body, 10) || 8);
       else if (head === "volmax") LVL.vol.max = parseInt(body, 10) || 55;   /* the X6200: 100 */
+      else if (head === "pwrmax") LVL.pwr.max = (parseInt(body, 10) || 100) / 10;   /* tenths of a watt; the X6200: 80 */
       else if (head === "keys") keysHave(body.split(" "));
       else if (head === "plan") { plan = JSON.parse(body); requestDraw(); }
       else if (head === "ft8") { ft8 = JSON.parse(body); ft8At = Date.now(); showFt8(); }
       else if (head === "ft8r") addFt8Row(JSON.parse(body));
       else if (head === "cw") addCw(JSON.parse(body));
       else if (head === "logged") { const a = body.split(" "); if (a.length > 1) logAnswer(a[0], a[1]); else status(body === "ok" ? "QSO logged" : "QSO not logged (see the radio)", body !== "ok"); }
-      else if (head === "err") status(body, true);
+      else if (head === "err") status(body, true, ses.holds(body));
     } catch (e) { status("Bad message: " + e, true); }
   }
   link = RadioLink.create({
     url: function() {
+      if (FUNNEL) { conf = {enabled: true, tci_enabled: true}; return wsUrl("remote"); }   /* no web server out there */
       /* every try asks the web server first: it tells whether the remote is on, and whether the radio is updating */
       return $.get("/api/remote").then(function(c) {
         conf = c; unreachable = false;
@@ -938,17 +1029,25 @@ body.app h2, body.app #intro { display:none; }
       }, function() { unreachable = true; return null; });
     },
     ping: "ping",
-    onOpen: function() { radio.classList.remove("stale"); lastFrame = Date.now(); send("screen " + (screenOn ? 1 : 0)); send("panel 1"); ses.onOpen(); status("Connected"); view(); },
-    onHello: function(boot, restarted) { if (restarted) status("The radio restarted: what it shows now is its fresh state", true); logReconcile(); },
+    /* the key first: over Funnel anything before it closes the connection */
+    onOpen: function() { greeted = false; radio.classList.remove("stale"); lastFrame = Date.now(); ses.onOpen(); send("screen " + (screenOn ? 1 : 0)); send("panel 1"); status("Connected"); view(); },
+    onHello: function(boot, restarted) { greeted = true; awayless = false; if (FUNNEL) tlink.tryNow(); if (restarted) status("The radio restarted: what it shows now is its fresh state", true); logReconcile(); },
     onText: onText,
     onBinary: function(buf) { if (buf.byteLength >= 16 && new DataView(buf).getUint16(0, true) === 0xFFFF) spectrumFrame(buf); else screenFrame(buf); },
-    onClose: function(gen, retry, wasUp) { dropped(wasUp); },
+    onClose: function(gen, retry, wasUp) {
+      if (FUNNEL && !greeted && !RadioSession.token()) { awayless = true; link.close(); }
+      dropped(wasUp);
+    },
     onStall: function(on) { stalled(on); },
   });
   /* Who this browser is to the radio and who controls it (R3); the PTT as the radio confirms it (R4) */
-  ses = RadioSession.create({send: send, status: status, el: document.getElementById("ses"), onChange: function() { showHealth(); ptt.render(); }, onTx: function(on) { ptt.radioTx(on); }});
+  ses = RadioSession.create({send: send, status: status, el: document.getElementById("ses"), onChange: function() { showHealth(); ptt.render(); if (xtune) xtune.render(); statusCheck(); }, onTx: function(on) { ptt.radioTx(on); },
+    awayUrl: function() { return !FUNNEL && conf && conf.funnel_url ? conf.funnel_url : null; }});   /* Use away from home (#58) */
   ptt = RadioPtt.create({el: document.getElementById("pttbtn"), send: send, status: status, session: ses, link: link,
     mic: {wanted: function() { return micOn; }, ready: function() { return !!micStream && tlink.up; }, start: function() { return txStart(); }, stop: function() { txStop(); }}});
+  /* TUNE for an external tuner (#85): a press, renewed every second while it is on; the radio stops it without */
+  xtune = RadioTune.create({el: document.getElementById("b-xtune"), send: send, status: status, session: ses, link: link});
+  $("#b-xtune").on("click", function() { xtune.press(); });
   /* What touches the air is let go when the link can no longer carry it in time: a held key, a tune on its way, a
    * transmission. The link went (nothing of it is sent again, the radio drops them too), or it stalled: the
    * releases go out behind whatever is stuck, so a late arrival lets go too (audit C02). The operator presses
@@ -959,6 +1058,7 @@ body.app h2, body.app #intro { display:none; }
     const hadKeys = Object.keys(held).length > 0 || ptt.state === "tx" || ptt.state === "requesting";
     Object.keys(held).forEach(function(k) { keyUp(k, document.querySelector('[data-key="' + k + '"]')); });
     ptt.lost(why);
+    xtune.lost();                                     /* no renewal gets through: the radio stops it within 3 s */
     return hadKeys;
   }
   function dropped(wasUp) {
@@ -970,7 +1070,7 @@ body.app h2, body.app #intro { display:none; }
   }
   function stalled(on) {
     radio.classList.toggle("stale", on);
-    if (on && letGo("The radio does not answer: the transmission is ended here. Press PTT again when it answers")) status("The radio does not answer: keys released, press again when it answers", true);
+    if (on && letGo("The radio does not answer: the transmission is ended here. Press PTT again when it answers")) status("The radio does not answer: keys released, press again when it answers", true, function() { return link.stalled; });
     view();
   }
   function stateLine() { return state && stateAt ? "What is shown is from " + RadioLink.age(Date.now() - stateAt) + " ago. " : "Nothing from the radio yet. "; }
@@ -982,6 +1082,11 @@ body.app h2, body.app #intro { display:none; }
     }
     const $m = $msg.empty().prop("hidden", false);
     if (link.up) { $m.append("The radio does not answer. ", stateLine()); return; }
+    if (awayless) {
+      $m.append("This browser is not paired for use away from home. At home, on the Panel, press Use away from home: it opens this page with this browser's key. Or open this page once with Tailscale on, and pair it here as at home. ",
+                $("<button type='button' class='primary'>Try again</button>").on("click", function() { location.reload(); }));
+      return;
+    }
     if (conf && conf.name_refused) { $m.text(conf.name_refused); return; }   /* opened by a name the radio's sockets refuse */
     if (conf && !conf.enabled) {
       $m.html("The browser remote is off on the radio.<br><br>Settings &gt; General &gt; BROWSER REMOTE, or ").append($("<button type='button' class='primary'>Turn it on</button>").on("click", function() {
@@ -1018,7 +1123,7 @@ body.app h2, body.app #intro { display:none; }
     fpsText = (frames / dt).toFixed(0) + " fps, " + (bytes / dt / 1024).toFixed(0) + " kB/s"; kbsText = (abytes / dt / 1024).toFixed(0) + " kB/s";
     frames = 0; bytes = 0; abytes = 0;
   }, 2000);
-  setInterval(function() { showHealth(); view(); logTick(); if (state && Object.keys(want).length) showState(); }, 1000);
+  setInterval(function() { showHealth(); view(); logTick(); statusCheck(); if (state && Object.keys(want).length) showState(); }, 1000);
 
   /* ---- Keys (the Keys tab, PTT) ---- */
   const held = {};
@@ -1076,9 +1181,11 @@ body.app h2, body.app #intro { display:none; }
   /* The format this page plays, asked for on every connection (the radio's TCI default is 48 kHz float32 stereo, 8x the bytes) */
   const AUDIO_START = "audio_samplerate:24000;audio_stream_sample_type:int16;audio_stream_channels:1;audio_stream_samples:512;audio_start:0;";
   tlink = RadioLink.create({
-    url: function() { return conf && conf.tci_enabled ? wsUrl("tci") : null; },
+    /* over Funnel once the radio greeted this browser on the other link, with its key first: TCI takes nothing
+     * from the internet before it (over the tailnet the same page needs none, and TCI ignores it) */
+    url: function() { return conf && conf.tci_enabled && (!FUNNEL || (greeted && link.up)) ? wsUrl("tci") : null; },
     ping: null,
-    onOpen: function() { if (sndOn) tlink.send(AUDIO_START); },
+    onOpen: function() { if (FUNNEL && RadioSession.token()) tlink.send("auth:" + RadioSession.token() + ";"); if (sndOn) tlink.send(AUDIO_START); },
     onBinary: function(buf) {
       if (!sndOn || !actx) return;
       const dv = new DataView(buf);
@@ -1116,7 +1223,7 @@ body.app h2, body.app #intro { display:none; }
       micState = "asking"; status("Asking the browser for the microphone...");
       navigator.mediaDevices.getUserMedia({audio: {echoCancellation: false, noiseSuppression: true, autoGainControl: true}, video: false}).then(function(s) {
         if (req !== micReq) { s.getTracks().forEach(function(t) { t.stop(); }); return; }
-        micStream = s; micState = "ready"; status("Microphone ready: PTT transmits the browser's microphone");
+        micStream = s; micState = "ready"; status("Microphone ready: PTT transmits the browser's microphone", false, function() { return micStream === s; });
         s.getTracks().forEach(function(t) { t.onended = function() { if (micStream === s) { micState = "off"; micOn = false; $("#mic").attr("aria-pressed", "false"); micStream = null; ptt.lost("The microphone went away: transmission ended"); ptt.render(); } }; });
         if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
         ptt.render();

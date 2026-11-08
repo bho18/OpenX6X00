@@ -18,23 +18,23 @@ set -eo pipefail
 exec 3>&1 1>&2          # stdout is the binary's path only: everything else goes to stderr
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-PAT_TAG=v1.0.0
-PAT_COMMIT=2e6a8d14baf0268f4e2aa4d01784a54ca935cf52
+PAT_TAG=v1.0.1
+PAT_COMMIT=2ad31e8fc1f1748ac1b00cac9d88da54e3e0efe2
 PAT_REPO=https://github.com/la5nta/pat
-# The newest stable Go on 2026-10-26 (Pat v1.0.0 needs 1.24 or newer); the hash is go.dev's
+# The newest stable Go on 2026-10-26 (Pat v1.0.1 needs 1.26 or newer); the hash is go.dev's
 # (https://go.dev/dl/?mode=json&include=all)
 GO_VER=1.27.3
 GO_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
 GO_URL=https://go.dev/dl/go$GO_VER.linux-amd64.tar.gz
 
-CACHE=$HOME/.cache/openx6x00
+CACHE=${OPENX6X00_CACHE:-$HOME/.cache/openx6x00}
 GOROOT_DIR=$CACHE/go-$GO_VER
 PATCHES=("$HERE"/patches/*.patch)
 [ -e "${PATCHES[0]}" ] || PATCHES=()
 KEY=$(cat "${PATCHES[@]}" "$HERE/build.sh" | sha256sum | cut -c1-12)
 OUT=$CACHE/pat/pat-$PAT_TAG-go$GO_VER-$KEY/pat
 
-if [ -x "$OUT" ]; then
+if [ -x "$OUT" ] && [ -f "$(dirname "$OUT")/doc/LICENSE" ]; then
     echo "== Pat $PAT_TAG (Go $GO_VER, patches $KEY): built already"
     echo "$OUT" >&3
     exit 0
@@ -55,10 +55,15 @@ if [ ! -x "$GOROOT_DIR/bin/go" ]; then
     echo "== Go $GO_VER from go.dev"
     T=$(mktemp -d "$CACHE/go-$GO_VER.tmp.XXXXXX")
     trap 'rm -rf "$T"' EXIT     # a download or unpack that fails leaves nothing in the cache
-    fetch "$GO_URL" "$T/go.tar.gz"
-    echo "$GO_SHA256  $T/go.tar.gz" | sha256sum -c --quiet - \
-        || { echo "tools/pat/build.sh: $GO_URL does not have the pinned SHA-256"; rm -rf "$T"; exit 1; }
-    tar xzf "$T/go.tar.gz" -C "$T"
+    GO_ARCHIVE=$CACHE/pat/dl/go$GO_VER.linux-amd64.tar.gz
+    mkdir -p "${GO_ARCHIVE%/*}"
+    if ! { [ -f "$GO_ARCHIVE" ] && echo "$GO_SHA256  $GO_ARCHIVE" | sha256sum -c --quiet -; }; then
+        fetch "$GO_URL" "$GO_ARCHIVE.part.$$"
+        echo "$GO_SHA256  $GO_ARCHIVE.part.$$" | sha256sum -c --quiet - \
+            || { echo "tools/pat/build.sh: $GO_URL does not have the pinned SHA-256"; rm -f "$GO_ARCHIVE.part.$$"; exit 1; }
+        mv "$GO_ARCHIVE.part.$$" "$GO_ARCHIVE"
+    fi
+    tar xzf "$GO_ARCHIVE" -C "$T"
     # Moved into place whole (a build next to this one may have done it in the meantime)
     [ -x "$GOROOT_DIR/bin/go" ] || { rm -rf "$GOROOT_DIR"; mv "$T/go" "$GOROOT_DIR"; }
     rm -rf "$T"
@@ -81,6 +86,9 @@ git -c advice.detachedHead=false clone -q --depth 1 --branch "$PAT_TAG" "$PAT_RE
 cd "$SRC/pat"
 HEAD=$(git rev-parse HEAD)
 [ "$HEAD" = "$PAT_COMMIT" ] || { echo "tools/pat/build.sh: $PAT_TAG is $HEAD, not the pinned $PAT_COMMIT"; exit 1; }
+# Keep the exact unpatched source with the pinned archive inputs; subsequent
+# cache retirement can reconstruct this build without preserving its checkout.
+git archive --format=tar HEAD | gzip -9 -n > "$CACHE/pat/dl/pat-$PAT_COMMIT.tar.gz"
 for p in "${PATCHES[@]}"; do
     echo "   $(basename "$p")"
     git apply "$p"
@@ -99,6 +107,22 @@ ELF=$(od -An -tx1 -N20 "$SRC/pat.bin" | tr -d ' \n')
 [ "${ELF:0:12}" = 7f454c460101 ] && [ "${ELF:36:4}" = 2800 ] \
     || { echo "tools/pat/build.sh: the result is not a 32-bit ARM ELF"; exit 1; }
 mkdir -p "$(dirname "$OUT")"
+# Retain the source/toolchain/module notices beside the executable for image
+# assembly. The module versions and their checksum-verified source remain
+# explicit; this does not depend on the build's temporary checkout surviving.
+DOC=$(dirname "$OUT")/doc
+mkdir -p "$DOC/modules"
+cp LICENSE "$DOC/LICENSE"
+cp "$GOROOT_DIR/LICENSE" "$DOC/GO-LICENSE"
+go list -m all > "$DOC/MODULES"
+go list -m -f '{{if .Dir}}{{.Path}} {{.Dir}}{{end}}' all | while read -r module directory; do
+    [ -n "$directory" ] || continue
+    name=$(printf '%s' "$module" | tr '/:' '__')
+    mkdir -p "$DOC/modules/$name"
+    for notice in "$directory"/LICENSE* "$directory"/LICENCE* "$directory"/COPYING* "$directory"/NOTICE*; do
+        if [ -f "$notice" ]; then cp "$notice" "$DOC/modules/$name/"; fi
+    done
+done
 mv -f "$SRC/pat.bin" "$OUT.tmp.$$"
 mv -f "$OUT.tmp.$$" "$OUT"
 echo "== $(wc -c < "$OUT") bytes, sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"

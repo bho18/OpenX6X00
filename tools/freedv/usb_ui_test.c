@@ -13,6 +13,9 @@
 #include <math.h>
 #include <png.h>
 #include "src/freedv/usb_audio_levels.h"
+#include "src/freedv/screen_layout.h"
+#include "src/lcd_panel.h"
+#include "lv_tick_mono.h"
 void usb_ui_cfg_init(void);
 void usb_ui_cfg_verify_hidden(bool);
 void usb_ui_cfg_verify_profiles(void);
@@ -53,12 +56,20 @@ struct fd_usb_headset_scan {bool cancelled;} fake_scan;
 static lv_color_t draw_pixels[800*32];
 static lv_color_t rendered_pixels[800*480];
 bool backlight_tick(void){return false;}
+bool backlight_knob_tick(void){return false;}
 static backlight_observer_fn display_callback;
 void backlight_set_observer(backlight_observer_fn fn,void *context){(void)context;display_callback=fn;}
 void backlight_snapshot(fd_usb_display_event *event){*event=(fd_usb_display_event){.drawing_enabled=true};}
 void fd_usb_audio_note_display(fd_usb_audio *a,const fd_usb_display_event *e){assert(a==&fake_audio && e);++display_notes;}
 void main_screen_freedv_row(bool enabled){row_reserved=enabled;}
-bool main_screen_freedv_bounds(lv_area_t *bounds){if(!row_reserved)return false;int h=sony_18.line_height+8;if(h<28)h=28;*bounds=(lv_area_t){0,TOP_BAR_HEIGHT+FREQ_STRIP_H+METER_ROW_H,799,TOP_BAR_HEIGHT+FREQ_STRIP_H+METER_ROW_H+h-1};return true;}
+bool main_screen_freedv_bounds(lv_area_t *bounds){
+    if(!row_reserved)return false;
+    fd_main_layout geometry=theme_amber ? fd_main_layout_amber(LCD_PLUS_LCD_Y+LCD_PLUS_LCD_H,
+        LCD_PLUS_STRIP_Y,LCD_PLUS_STRIP_H,0,true,sony_18.line_height) :
+        fd_main_layout_compute(TOP_BAR_HEIGHT+FREQ_STRIP_H+METER_ROW_H,true,76,
+            theme_shape.deck,0,true,sony_18.line_height);
+    *bounds=(lv_area_t){0,geometry.row_y,799,geometry.row_y+geometry.row_height-1};return true;
+}
 void knobs_usb_volume_update(bool active,bool ready,unsigned value,bool muted,bool pending){(void)active;(void)ready;(void)value;(void)muted;(void)pending;}
 void vol_update(int16_t delta){++volume_edits;if(selected_volume_control==CTRL_VOL)freedv_usb_volume(delta);}
 void vol_change_ctrl(int16_t delta){++volume_selects;selected_volume_control=delta>0?CTRL_PWR:CTRL_VOL;}
@@ -149,7 +160,8 @@ static void screenshot(const char *theme,const char *state){
     assert(png_image_write_to_file(&image,path,0,rgb,0,NULL));png_image_free(&image);free(rgb);
 }
 static void pointer_read(lv_indev_drv_t *d,lv_indev_data_t *data){(void)d;data->point=pointer_position;data->state=pointer_state;}
-static void pump(void){for(unsigned i=0;i<5;++i){lv_tick_inc(20);lv_timer_handler();struct timespec t={.tv_nsec=1000000};nanosleep(&t,NULL);}}
+static void tick_advance(uint32_t ms){lv_tick_mono_set((uint32_t)(lv_tick_get()+ms));}
+static void pump(void){for(unsigned i=0;i<5;++i){tick_advance(20);lv_timer_handler();struct timespec t={.tv_nsec=1000000};nanosleep(&t,NULL);}}
 static void turn(int direction){struct input_event e={.type=EV_REL,.code=REL_Y,.value=direction};assert(write(vol->fd,&e,sizeof(e))==(ssize_t)sizeof(e));pump();}
 bool front_keys_test_held(int fd,uint16_t code){return panel && fd==panel->fd && code<=KEY_MAX && panel_down[code];}
 static void panel_key(uint16_t code,int down){assert(code<=KEY_MAX);panel_down[code]=down!=0;struct input_event e={.type=EV_KEY,.code=code,.value=down};assert(write(panel->fd,&e,sizeof(e))==(ssize_t)sizeof(e));pump();}
@@ -190,8 +202,8 @@ static void mono_selected_pixels(void){
     assert(letters>8 && ground>8);
 }
 static void presentation_themes(void){
-    static const char *names[]={"RF.Guru","Legacy","Classic","Outdoor","Outdoor-Negative","VISION","Black Metal","Total Black","1bit"};
-    static const char *files[]={"rfguru","legacy","classic","outdoor","negative","vision","black-metal","total-black","mono"};
+    static const char *names[]={"RF.Guru","Legacy","Classic","Outdoor","Outdoor-Negative","VISION","Black Metal","Total Black","1bit","Amber Trey"};
+    static const char *files[]={"rfguru","legacy","classic","outdoor","negative","vision","black-metal","total-black","mono","amber"};
     for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);++i){
         popup_close();styles_load(names[i]);lv_obj_report_style_change(NULL);popup_open(POP_NOTICE);pump();
         assert(lv_color_to32(lv_obj_get_style_text_color(popup_message,0))==lv_color_to32(TC(text)));
@@ -287,11 +299,11 @@ int main(void){
     assert(strstr(lv_label_get_text(mic_level_label),"-24.1") && strstr(lv_label_get_text(mic_level_label),"-6.8"));
     assert(!*lv_label_get_text(clip_label)); /* Historical TX count is diagnostic, not live clipping. */
     observed.mic_peak_dbfs10=-5;observed.mic_near_maximum=true;pump();assert(!strcmp(lv_label_get_text(clip_label),"Near maximum"));
-    observed.mic_near_maximum=false;lv_tick_inc(1600);pump();assert(!*lv_label_get_text(clip_label));
+    observed.mic_near_maximum=false;tick_advance(1600);pump();assert(!*lv_label_get_text(clip_label));
     observed.mic_overload=true;pump();assert(strstr(lv_label_get_text(clip_label),"Mic overload"));
     assert(observed.state==FD_USB_RX && observed.mic_clipped_samples==3); /* RX preview warns too. */
     observed.state=FD_USB_TX;pump();assert(strstr(lv_label_get_text(clip_label),"Mic overload"));
-    observed.state=FD_USB_RX;observed.mic_overload=false;lv_tick_inc(1600);pump();assert(!*lv_label_get_text(clip_label));
+    observed.state=FD_USB_RX;observed.mic_overload=false;tick_advance(1600);pump();assert(!*lv_label_get_text(clip_label));
     assert(!strchr(lv_label_get_text(headset_label),'%') && !strstr(lv_label_get_text(headset_label),"pending"));
     fits(number.row);fits(mic_level_label);fits(mic_rms_bar);fits(mic_peak_bar);fits(clip_label);fits(headset_label);
     touch(find_button("Close"));assert(vol->indev->group==keyboard_group && open_count==1 && !close_count && !leave_count);
@@ -408,8 +420,8 @@ int main(void){
     unsigned before_warning=volume_save_pending_warnings;usb_ui_cfg_pause_volume_storage();freedv_usb_leave();
     for(unsigned n=0;n<30 && stage!=UI_RELEASE;++n)pump();
     assert(stage==UI_RELEASE && freedv_usb_active() && cfg_freedv_usb_volume_busy() && adapter_owned);
-    assert(lv_tick_elaps(volume_exit_tick)<2500);lv_tick_inc(2499-lv_tick_elaps(volume_exit_tick));service(NULL);assert(freedv_usb_active());
-    lv_tick_inc(1);service(NULL);assert(!freedv_usb_active() && !adapter_owned && cfg_freedv_usb_volume_busy());
+    assert(lv_tick_elaps(volume_exit_tick)<2500);tick_advance(2499-lv_tick_elaps(volume_exit_tick));service(NULL);assert(freedv_usb_active());
+    tick_advance(1);service(NULL);assert(!freedv_usb_active() && !adapter_owned && cfg_freedv_usb_volume_busy());
     assert(volume_save_pending_warnings==before_warning+1);
     /* Reentry must use the latest confirmed in-session target even though
      * the worker has not durably committed it yet, and must not rewrite the
@@ -418,7 +430,7 @@ int main(void){
     assert(opened_initial_volume==52 && observed.headset_volume_percent==52 && cfg_freedv_usb_volume_busy());
     freedv_usb_leave();for(unsigned n=0;n<30 && stage!=UI_RELEASE;++n)pump();
     assert(stage==UI_RELEASE && freedv_usb_active() && cfg_freedv_usb_volume_busy());
-    assert(lv_tick_elaps(volume_exit_tick)<2500);lv_tick_inc(2500-lv_tick_elaps(volume_exit_tick));service(NULL);
+    assert(lv_tick_elaps(volume_exit_tick)<2500);tick_advance(2500-lv_tick_elaps(volume_exit_tick));service(NULL);
     assert(!freedv_usb_active() && !adapter_owned && cfg_freedv_usb_volume_busy() && volume_save_pending_warnings==before_warning+2);
     usb_ui_cfg_release_volume_storage();assert(vol->indev->group==keyboard_group);
     usb_ui_cfg_verify_profiles();usb_ui_cfg_close();close(vol->fd);close(mfk->fd);close(panel->fd);close(inner->fd);

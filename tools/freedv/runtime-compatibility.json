@@ -1,0 +1,18 @@
+{
+  "schema": "x6200.runtime.compatibility.v1",
+  "baseline_source": "1a2aad375dadc8a14f2b12c6c939b369cc30004d",
+  "baseline_image_sha256": "a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab",
+  "baseline_buildroot_commit": "8b7ca9d6d4e82ade0fc7654c46b9f8688689a4a3",
+  "baseline_buildroot_submodule": "cc34b5b2abf2588f0ef55e46a4fe85a60c19ba1f",
+  "reviewed_upstream_application": "733c425e40b3bbd41e1bb3eac098edfc1a8f2cb4",
+  "reviewed_upstream_buildroot_recipe": "aa1c7a57e8dc812dacfae2484568f1a5a426342e",
+  "x6200_image_level": "2",
+  "web_project_sha256": "c06984ca070b9a591fecbe5be82034deed7872837850f2bec27fd880afd3e11a",
+  "reviewed_buildroot_changes": {
+    "buildroot/local-build.sh": "52404c71f84585cb8b632d8bdff1b83e92de07827fe1956be05ccb45a816d2e5",
+    "buildroot/br2_external/board/X6100/linux/rootfs-overlay/etc/init.d/S50gpsd": null
+  },
+  "review": "X6200 kernel, device tree, image level, SDK and Python dependencies are unchanged. The local build changes add source-sync guards, SDK-linked XARA, current GPS startup, exact FT8 packaging and checksummed U-Boot fetch fallback. The removed external GPS startup is replaced by rootfs/etc/init.d/S50gpsd. X6100 bootloader changes are outside this X6200 runtime derivation. A changed review hash requires a new explicit compatibility review.",
+  "ft8_commit": "73b0db861dc41c7ca9f3dedc73ee148daa06dd0e",
+  "ft8_archive_sha256": "1fa4ebb8df26bd1b9a150ea91249c003b62c90fde21d8b3cfc41cfba6710fb27"
+}

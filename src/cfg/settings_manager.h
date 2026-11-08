@@ -16,9 +16,11 @@
 // protect themselves with their own mutexes, and PendingWrites has its own
 // mutex, so concurrent readers of parameter values remain safe.
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -27,6 +29,7 @@
 #include "../board.h"
 #include "../radio_types.h"
 #include "../common/math.h"
+#include "smeter_att.h"
 #include "computed_parameter.h"
 #include "encoder_bind_types.h"
 #include "parameter.h"
@@ -45,6 +48,19 @@ enum ModeGroup {
     MODE_GROUP_WFM = radio_mode_wfm,    /* its own filter width */
 };
 
+// The writes of the S-meter figures the parts of 40 m and 20 m share (#125): each one to every part of the band
+// (SettingsManager::smeter_parts), so a set on 40m SSB, by the slider or by Measure, sets 40m CW too
+class SmeterShareSink : public WriteSink {
+  public:
+    explicit SmeterShareSink(WriteSink &to) : to_(to) {}
+    void write(const StorageKey &key, int32_t value) override;
+    void write(const StorageKey &key, float value) override { to_.write(key, value); }
+    void write(const StorageKey &key, const std::string &value) override { to_.write(key, value); }
+
+  private:
+    WriteSink &to_;
+};
+
 class SettingsManager {
   public:
     // Deferred-write buffer (PendingWrites). Declared BEFORE the parameters
@@ -53,6 +69,8 @@ class SettingsManager {
     // Public because it is the shared sink of the managed parameters;
     // flushing goes through the manager methods (flush_all / flush_storage).
     PendingWrites pending_writes_;
+    // The sink of the S-meter cal and the X6200's attenuator figure: into pending_writes_, for every part
+    SmeterShareSink smeter_share_sink_{pending_writes_};
 
     // Parameter registries (non-owning). MUST be declared before any Parameter
     // member — self-registration in NSDMI constructors pushes into these
@@ -60,6 +78,18 @@ class SettingsManager {
     std::vector<ParamBase *> global_params_;
     std::vector<ParamBase *> band_params_;
     std::vector<ParamBase *> mode_params_;
+
+    // The highest TX power p_pwr accepts: BOARD_PWR_MAX, lowered on the X6200's
+    // battery (cfg_pwr_max_set). Declared before p_pwr, whose validator reads it.
+    // CAT, TCI and the web remote hand their sets to the LVGL thread, which also
+    // changes the cap; atomic all the same, as any thread may read a parameter.
+    std::atomic<float> pwr_max_{BOARD_PWR_MAX};
+    // The TX power limit of the transverter the radio is tuned through, W, 0 none (#104, pwr_xvtr_set): p_pwr is
+    // held to it too, whichever of the two is lower (pwr_top)
+    std::atomic<float> pwr_xvtr_{0.0f};
+    // The base's HW_CAP_* bits (radio_types.h), told once hw_start() ran (cfg_hw_caps_set), none before: the LO
+    // offset is computed from them. Declared before cp_mode_lo_offset, whose compute fn reads it
+    uint32_t hw_caps_ = 0;
 
     // -- Parameters (public for C-API / UI access; live for the whole program) --
     // All regular GLOBAL/BAND/MODE params are declared with NSDMI here (one
@@ -74,18 +104,26 @@ class SettingsManager {
     // clang-format off
     Parameter<int32_t> p_volume{"vol", 30, 0, BOARD_VOL_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<float, int32_t, 10> p_pwr{"pwr", 5.0f, 0.1f, 10.0f,
+    // On the step first, then clipped: the top in force (8 W, 5 W on the X6200's battery, a transverter's limit) and
+    // 0.1 W always win, whatever BOARD_PWR_STEP is
+    Parameter<float, int32_t, 10> p_pwr{"pwr", 5.0f, [this](float v) {
+            return clip(align(v, BOARD_PWR_STEP), BOARD_PWR_MIN, pwr_top());
+        },
+        StorageType::GLOBAL, pending_writes_, {}, &global_params_};
+    // The PWR a transverter's limit took down (pwr_xvtr_set), W, 0 none: it comes back off the transverter, after a
+    // restart on it too
+    Parameter<float, int32_t, 10> p_pwr_xvtr_held{"pwr_xvtr_held", 0.0f, 0.0f, BOARD_PWR_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<int32_t> p_squelch{"sql", 0, 0, 100,
+    Parameter<int32_t> p_squelch{"sql", 0, 0, BOARD_SQL_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<int32_t> p_rfgain{"rfgain", 63, 0, 100,
+    Parameter<int32_t> p_rfgain{"rfgain", 63, 0, BOARD_RFG_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_wefax_align{"wefax_align", 0, -1300, 1300, StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_wefax_tilt{"wefax_tilt", 0, -400, 400, StorageType::GLOBAL, pending_writes_, &global_params_};
 
-    Parameter<int32_t> p_rit{"rit", 0, -1500, 1500,
+    Parameter<int32_t> p_rit{"rit", 0, -BOARD_RIT_MAX, BOARD_RIT_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<int32_t> p_xit{"xit", 0, -1500, 1500,
+    Parameter<int32_t> p_xit{"xit", 0, -BOARD_XIT_MAX, BOARD_XIT_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     // Current band id, persisted in the global `params` table (mirrors the
     // legacy cfg.band_id). Restored at init_load to pick the starting band;
@@ -95,7 +133,7 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, {}, &global_params_};
     Parameter<int32_t> p_mic{"mic", radio_mic_auto, 0, 2,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<int32_t> p_hmic{"hmic", 20, 0, 50,
+    Parameter<int32_t> p_hmic{"hmic", 20, 0, BOARD_MIC_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_freedv_timeout{"freedv_timeout", 180, 30, 600,
         StorageType::GLOBAL, pending_writes_, &global_params_};
@@ -118,15 +156,12 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_freedv_usb_preview_enabled{"freedv_usb_preview_enabled", 1, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<int32_t> p_imic{"imic", 30, 0, 50,
+    Parameter<int32_t> p_imic{"imic", 30, 0, BOARD_MIC_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-#ifdef BOARD_X6200
-    /* The TX monitor off: the X6200's speaker and built-in microphone share the case, and at 30 the
-     * microphone took the monitor back into the transmission, a loud ringing on PTT in SSB (issue #15) */
+    /* The TX monitor off on both radios: at 30 the microphone took the monitor back into the transmission,
+     * a loud ringing on PTT in SSB on the X6200 (issue #15), and a feedback loop from the X6100's speaker
+     * on PTT and on an app's tones (issue #72) */
     Parameter<int32_t> p_moni{"moni", 0, 0, 100,
-#else
-    Parameter<int32_t> p_moni{"moni", 30, 0, 100,
-#endif
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_atu_enabled{"atu", false, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
@@ -138,11 +173,24 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, {}, &global_params_};
     Parameter<int32_t> p_knob_info{"knob_info", true, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
+    // Hide buttons (Settings > Display > INTERFACE, live, #128): on the main screen the five buttons and the knob
+    // lines hide after 0 never (the default), 1 3 s, 2 5 s, 3 10 s without a key (screen_main.c)
+    Parameter<int32_t> p_buttons_hide{"buttons_hide", 0, 0, 3,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
     // Independent VFOs: A and B each keep their own band, a VFO switch brings its band back
     // (vfo_toggle). Off: both VFOs live in the current band, as the radio does it.
     // Turning the knob into another band plan segment sets its mode: CW in the CW segment, the
     // sideband of the band in a phone segment (screen_main.c)
     Parameter<int32_t> p_mode_from_plan{"mode_from_plan", true, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // The band plan (band_plan.h bp_plan_t): 0 Auto (the IARU region from where the radio is), 1-3 IARU Region 1,
+    // 2 or 3, 4-7 the US sub-bands of the Extra, Advanced, General or Technician licence
+    Parameter<int32_t> p_band_region{"band_region", 0, 0, 7,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // The IARU region whose default edges the band list's 160m, 80m, 40m SSB and 6m were last given (the defaults
+    // in sql/params.sql are Region 1's): a region change moves only the rows still on these (cfg_bands_follow_region).
+    // Auto's region when nothing tells (band_plan.c)
+    Parameter<int32_t> p_band_edges_region{"band_edges_region", 1, 1, 3,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     // Zoom and step per mode (Settings > Display): on, each mode group keeps its own waterfall zoom and tuning
     // step, as it always did. Off, one zoom and one step for every mode (zoom_step_scope)
@@ -154,7 +202,7 @@ class SettingsManager {
     Parameter<int32_t> p_indep_vfo{"indep_vfo", false, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     // The WR12, Xiegu's receiver on the X6200's HOST port, is there (Settings > General): 54 MHz-1 GHz to receive.
-    // A setting until the radio can tell it is plugged in; read only on the X6200 (band_use)
+    // On, the radio looks for it, sets it up and receives through it (wr12.c, radio.c); read only on the X6200
     Parameter<int32_t> p_wr12{"wr12", false, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_vfoa_band{"vfoa_band", BAND_UNDEFINED, BAND_UNDEFINED, 1000000,
@@ -240,19 +288,28 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_waterfall_ref{"waterfall_ref", 0, -40, 20,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    // S-meter calibration, dB added to the reading. -22: this radio against an IC-7300 on the
-    // same antenna. Now only the start value of p_band_smeter_cal on bands never calibrated.
+    // S-meter calibration, dB added to the reading. -22: one X6100 against a calibrated transceiver on the same
+    // antenna, and the X6200's start too (SMETER_CAL_START, smeter_att.h, #125). Now only the start value of
+    // p_band_smeter_cal on bands never calibrated.
     // RF gain is compensated on its own (meter.c)
-    Parameter<int32_t> p_smeter_cal{"smeter_cal", -22, -40, 20,
+    Parameter<int32_t> p_smeter_cal{"smeter_cal", SMETER_CAL_START, -40, 20,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     // The front end, dB taken off the S-meter reading so it stays put when PRE, ATT or the RF gain
     // change: the preamp's gain, the attenuator's depth, and hundredths of a dB for each RF gain
     // step under 100. Defaults measured on one radio; Settings > TX Cal > S-METER > Measure sets
-    // them for this one (smeter.c, settings_window.cpp)
+    // them for this one (smeter.c, settings_window.cpp). The X6200's preamp gives about 16 dB (two radios, 14 to
+    // 20 dB on 80, 40, 20 and 10 m, #125); its attenuator is the band's, p_band_smeter_att, and the one attenuator
+    // value is the X6100's alone: the X6200 neither reads nor writes the row v0.3.8 stored, left for going back
+#ifdef BOARD_X6200
+    Parameter<int32_t> p_smeter_pre{"smeter_pre", 16, 0, 40,
+#else
     Parameter<int32_t> p_smeter_pre{"smeter_pre", 19, 0, 40,
+#endif
         StorageType::GLOBAL, pending_writes_, &global_params_};
+#ifndef BOARD_X6200
     Parameter<int32_t> p_smeter_att{"smeter_att", 15, 0, 40,
         StorageType::GLOBAL, pending_writes_, &global_params_};
+#endif
     Parameter<int32_t> p_smeter_rfg{"smeter_rfg", 60, 0, 200,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     // Waterfall lines/s: 1 = 5, 2 = 7.5 (frames averaged, less noisy),
@@ -261,6 +318,31 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, &global_params_};
     // Spectrum and waterfall: 0 = VFO centered (the view follows it), 1 = fixed span (the VFO line moves)
     Parameter<int32_t> p_wf_mode{"wf_mode", 0, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // Waterfall drawn in 3D: the last rows as traces one behind the other (waterfall_view.c). On by default: only a
+    // change is stored, so a radio that never switched it gets 3D, and one switched off keeps its stored 0
+    Parameter<int32_t> p_wf_3d{"wf_3d", true, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // 3D colours: 0 by strength (blue, green, yellow, red), 1 the waterfall's, 2 blue
+    Parameter<int32_t> p_wf_3d_colors{"wf_3d_colors", 0, 0, 2,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // 3D depth: the traces shown, every third row (8-64: 1.6-13 s at 15 lines/s)
+    Parameter<int32_t> p_wf_3d_depth{"wf_3d_depth", 32, 8, 64,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // 3D tilt: 0 seen from the front (tall traces, little depth) to 10 from above
+    Parameter<int32_t> p_wf_3d_tilt{"wf_3d_tilt", 5, 0, 10,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // 3D floor: levels (of 255) above each row's noise floor cut away with it
+    Parameter<int32_t> p_wf_3d_floor{"wf_3d_floor", 6, 0, 40,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // 3D range: the dB above the noise floor a trace's full height is (weak signals taller with less)
+    Parameter<int32_t> p_wf_3d_range{"wf_3d_range", 40, 20, 60,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // 3D peaks: the newest trace's peaks held a moment
+    Parameter<int32_t> p_wf_3d_peak{"wf_3d_peak", true, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // 3D glide: the traces move back at every picture (30 a second); off: a step at each new row, less CPU
+    Parameter<int32_t> p_wf_3d_glide{"wf_3d_glide", true, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     // String mapping encoder (cfg_ctrl_t) positions to bind values
     // (ENCODER_BIND_VOL/ENCODER_BIND_MFK/ENCODER_BIND_NONE). GLOBAL: persisted in the flat `params` table under key
@@ -344,12 +426,23 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_iambic_mode{"iambic_mode", radio_iambic_a, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<int32_t> p_key_vol{"key_vol", 10, 0, 32,
+    Parameter<int32_t> p_key_vol{"key_vol", 10, 0, BOARD_KEY_VOL_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_key_train{"key_train", false, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     // SWR protection: the most SWR a transmission keeps, in tenths (10 = off)
     Parameter<int32_t> p_swr_protect{"swr_protect", 20, 10, 50,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // TX outside the amateur bands (#121): off, only the amateur bands (ham_bands.c) and a transverter's range
+    // transmit; on, wherever the hardware does, for operators licensed there (MARS, CAP...). Receive-only stays so
+    Parameter<int32_t> p_tx_outside_bands{"tx_outside_bands", false, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    // TUNE for an external tuner (ext_tune.h): its power, W (tune_tx.h's range: up to the PWR top, #87), and its time
+    // limit, s
+    Parameter<float, int32_t, 10> p_tune_pwr{"tune_pwr", 1.0f,
+        [](float v) { return clip(align(v, BOARD_PWR_STEP), BOARD_PWR_MIN, BOARD_PWR_MAX); },
+        StorageType::GLOBAL, pending_writes_, {}, &global_params_};
+    Parameter<int32_t> p_tune_time{"tune_time", 15, 5, 30,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_qsk_time{"qsk_time", 100, 0, 1000,
         StorageType::GLOBAL, pending_writes_, &global_params_};
@@ -415,9 +508,9 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_nb{"nb", false, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<int32_t> p_nb_level{"nb_level", 10, 0, 100,
+    Parameter<int32_t> p_nb_level{"nb_level", 10, 0, BOARD_NB_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
-    Parameter<int32_t> p_nb_width{"nb_width", 10, 0, 100,
+    Parameter<int32_t> p_nb_width{"nb_width", 10, 0, BOARD_NB_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_nr{"nr", false, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
@@ -448,6 +541,26 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<float, int32_t, 10> p_cessb_power_up{"cessb_power_up", 3.7f, {},
         StorageType::GLOBAL, pending_writes_, {}, &global_params_};
+    // Power display (Settings > Display > MAIN SCREEN, live): the box at the top right shows 0 the charge with the
+    // time left or to full, 1 the voltages (the battery's, and the supply's when one is in), 2 the two in turn, 3 the
+    // charge and, on a supply, the supply's voltage, on battery as 0 (#119) (clock.c)
+    Parameter<int32_t> p_power_display{"power_display", 0, 0, 3,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+
+    // Text log of the keyboard modes (digi_textlog.c, #55): on by default, and the most the folder keeps, MB
+    Parameter<int32_t> p_textlog{"textlog", true, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    Parameter<int32_t> p_textlog_mb{"textlog_mb", 10, 1, 100,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+
+    // Waterfall Mode Fixed (Settings > Display > WATERFALL, live, #10): the view moves on when 0 the line (or what is
+    // received) is 40% of the span from the centre, 1 the passband's edge 100 Hz from the screen's edge, 2 the line
+    // 100 Hz from it; and puts the line 0 where it is received (the centre), 1 at the other edge, 2 where it went
+    // out: the view scrolls along (waterfall_view_shift())
+    Parameter<int32_t> p_wf_fixed_jump{"wf_fixed_jump", 0, 0, 2,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
+    Parameter<int32_t> p_wf_fixed_after{"wf_fixed_after", 0, 0, 2,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
 
     // --- BAND params (`band_params` table) ---
     Parameter<int32_t> p_band_current_vfo{"vfo", (int32_t)RADIO_VFO_A, 0, 1,
@@ -476,10 +589,26 @@ class SettingsManager {
     Parameter<float, int32_t, 10> p_band_dac_offset{"dac_offset", 0.0f, {},
         StorageType::BAND, pending_writes_, {}, &band_params_};
     // S-meter calibration of this band, dB (Settings, S-meter cal): the baseband reads a
-    // different level on each band. A band never set takes the old global smeter_cal
-    Parameter<int32_t> p_band_smeter_cal{"smeter_cal", -22, [](int32_t v) { return clip(v, -40, 40); },
-        StorageType::BAND, pending_writes_, [this] { p_band_smeter_cal.set_quiet(p_smeter_cal.get()); },
+    // different level on each band. A band never set takes the old global smeter_cal, SMETER_CAL_START unless set.
+    // The parts of 40 m and 20 m share it (smeter_parts): a set writes them all, and a part never set takes the
+    // row of another part first
+    Parameter<int32_t> p_band_smeter_cal{"smeter_cal", SMETER_CAL_START, [](int32_t v) { return clip(v, -40, 40); },
+        StorageType::BAND, smeter_share_sink_,
+        [this] { p_band_smeter_cal.set_quiet(smeter_shared_row(p_band_smeter_cal).value_or(p_smeter_cal.get())); },
         &band_params_};
+#ifdef BOARD_X6200
+    // The attenuator's depth on this band, dB, added back to the S-meter reading with ATT on (smeter.c): the
+    // X6200's takes 24 to about 62 dB off depending on the band and the radio (two radios, #125), past the one value
+    // p_smeter_att (0..40) the X6100 keeps. Settings > TX Cal > S-METER and its Measure set the band's. A band never
+    // set starts from the radios' figure for its frequency (smeter_att_start, smeter_att.c), also where v0.3.8 stored
+    // its one value; that start is never written, so a band set keeps its own and the others follow a new figure.
+    // Measure writes the band's also when it comes out at the start (store()). Up to SMETER_ATT_MAX (smeter_att.h).
+    // Shared by the parts of 40 m and 20 m, as p_band_smeter_cal
+    Parameter<int32_t> p_band_smeter_att{"smeter_att", 34, [](int32_t v) { return clip(v, 0, SMETER_ATT_MAX); },
+        StorageType::BAND, smeter_share_sink_,
+        [this] { p_band_smeter_att.set_quiet(smeter_shared_row(p_band_smeter_att).value_or(smeter_att_start())); },
+        &band_params_};
+#endif
     // BAND VFO params (context_id = bands_id). These are NOT in the band
     // registry: load_band_vfo() loads them in explicit dependency order so the
     // DB restore/clamp rules can reference already-loaded siblings. Up to 1 GHz: the WR12's top
@@ -508,22 +637,29 @@ class SettingsManager {
     // context_id is the fixed transverter number (0 or 1) — never switched. NOT registered
     // in any load-all registry (group = nullptr): they are loaded individually
     // in init_load() with explicit load(0)/load(1). Values are frequencies in Hz.
-    // A shift of 0 is a transverter that is off. The X6200's are off by default: its 2 m and 70 cm are the WR12's,
-    // to receive, and the always-on transverters tuned "145.500" to 29.500 MHz and transmitted there, on 10 m.
-    // Migration _11 keeps the shift of one set up before. The X6100 keeps upstream's two, on by default
-    // Transverter 0 (2m: 144-150 MHz, IF at 28 MHz)
+    // A shift of 0 is a transverter that is off, the default on both radios: on, "145.500" was tuned to 29.500 MHz
+    // and a transmission on 2 m or 70 cm sent its 28-34 MHz IF with nothing connected, past the amateur-band limit
+    // (#121); the X6200's 2 m and 70 cm are the WR12's, to receive. Migrations _11 (X6200) and _15 (X6100) keep the
+    // shift of one set up before
+    // Each has a TX power limit (#104), W in 0.1 W steps up to BOARD_PWR_MAX, 0 none: on its band every transmission
+    // stays at or under it (pwr_xvtr_set, radio.c). Settings from before it have no row: no limit
+    // Transverter 0 (2m: 144-150 MHz, IF at 28 MHz with a shift of 116 MHz)
     Parameter<int32_t> p_transverter_0_from{"from", 144'000'000, 70'000'000, 500'000'000,
         StorageType::TRANSVERTER, pending_writes_, nullptr, 0};
     Parameter<int32_t> p_transverter_0_to{"to", 150'000'000, 70'000'000, 500'000'000,
         StorageType::TRANSVERTER, pending_writes_, nullptr, 0};
-    Parameter<int32_t> p_transverter_0_shift{"shift", HAS_VHF_RX ? 0 : 116'000'000, 0, 500'000'000,
+    Parameter<int32_t> p_transverter_0_shift{"shift", 0, 0, 500'000'000,
         StorageType::TRANSVERTER, pending_writes_, nullptr, 0};
-    // Transverter 1 (70cm: 432-438 MHz, IF at 28 MHz)
+    Parameter<float, int32_t, 10> p_transverter_0_pwr{"pwr_max", 0.0f, 0.0f, BOARD_PWR_MAX,
+        StorageType::TRANSVERTER, pending_writes_, nullptr, 0};
+    // Transverter 1 (70cm: 432-438 MHz, IF at 28 MHz with a shift of 404 MHz)
     Parameter<int32_t> p_transverter_1_from{"from", 432'000'000, 70'000'000, 500'000'000,
         StorageType::TRANSVERTER, pending_writes_, nullptr, 1};
     Parameter<int32_t> p_transverter_1_to{"to", 438'000'000, 70'000'000, 500'000'000,
         StorageType::TRANSVERTER, pending_writes_, nullptr, 1};
-    Parameter<int32_t> p_transverter_1_shift{"shift", HAS_VHF_RX ? 0 : 404'000'000, 0, 500'000'000,
+    Parameter<int32_t> p_transverter_1_shift{"shift", 0, 0, 500'000'000,
+        StorageType::TRANSVERTER, pending_writes_, nullptr, 1};
+    Parameter<float, int32_t, 10> p_transverter_1_pwr{"pwr_max", 0.0f, 0.0f, BOARD_PWR_MAX,
         StorageType::TRANSVERTER, pending_writes_, nullptr, 1};
 
     // --- MODE params (`mode_params` table) ---
@@ -571,8 +707,9 @@ class SettingsManager {
     ComputedParameter<int32_t> cp_cur_agc;
     ComputedParameter<int32_t> cp_bg_freq;
 
-    // Computed mode LO offset: CW → -key_tone, CWR → +key_tone, else 0.
-    // Driven by cp_cur_mode and p_key_tone.
+    // Computed mode LO offset, where the base's spectrum is centred: CW → -key_tone,
+    // CWR → +key_tone, else 0; 0 in every mode with HW_CAP_CW_SPECTRUM_ON_DIAL.
+    // Driven by cp_cur_mode, p_key_tone and hw_caps_.
     ComputedParameter<int32_t> cp_mode_lo_offset;
 
     // Computed current filter params for the active MODE category. The compute
@@ -623,10 +760,10 @@ class SettingsManager {
     // and not -1, which load() and flush_storage() take for "the bound one" and "any"
     static constexpr int MODE_ALL = 100;
 
-    // Hardware-usable frequency range limits (in Hz). HF is the native
+    // Hardware-usable frequency range (Hz), from board.h. HF is the native
     // 0.1-55 MHz band; anything above must be covered by a transverter.
-    static constexpr int32_t HF_MIN_FREQ = 100'000;     /* upstream f6c97fa */
-    static constexpr int32_t HF_MAX_FREQ = 55'000'000;
+    static constexpr int32_t HF_MIN_FREQ = BOARD_HF_MIN_HZ;
+    static constexpr int32_t HF_MAX_FREQ = BOARD_HF_MAX_HZ;
     // The X6200 also receives FM broadcast (88-108 MHz, wide FM) and the airband (108-136 MHz, AM), as its
     // specification and the OEM firmware have it; receive only (issue #9)
     static constexpr int32_t VHF_RX_MIN_FREQ = 87'500'000;
@@ -667,6 +804,50 @@ class SettingsManager {
         return 0;
     }
 
+    // The WR12 receives `freq`: on the X6200 with p_wr12 on, 54 MHz-1 GHz, where no transverter with a shift covers it
+    // (a transverter wins, as in band_use). From 54 MHz up, 54-55 MHz too, which the radio otherwise has itself
+    bool wr12_freq(int32_t freq) const {
+        return HAS_VHF_RX && p_wr12.get() && freq >= WR12_MIN_FREQ && freq <= WR12_MAX_FREQ
+            && transverter_shift_for(freq) == 0;
+    }
+
+    // The TX power limit of the transverter that covers `freq` (as transverter_shift_for finds it), W; 0 when none
+    // covers it or it has no limit
+    float transverter_pwr_for(int32_t freq) const {
+        if (p_transverter_0_shift.get() && freq >= p_transverter_0_from.get() && freq <= p_transverter_0_to.get())
+            return p_transverter_0_pwr.get();
+        if (p_transverter_1_shift.get() && freq >= p_transverter_1_from.get() && freq <= p_transverter_1_to.get())
+            return p_transverter_1_pwr.get();
+        return 0.0f;
+    }
+
+    // The limit the radio is held to, tuned to `rx` and transmitting on `tx` (radio_tx_freq: the other VFO in split, a
+    // TX shift's): the lower of the two transverters' limits where both have one, the one there is, else 0
+    float transverter_pwr_cap(int32_t rx, int32_t tx) const {
+        float a = transverter_pwr_for(rx), b = transverter_pwr_for(tx);
+
+        return a > 0.0f && (b <= 0.0f || a < b) ? a : b;
+    }
+
+    // The most p_pwr can be now: pwr_max_, or a transverter's limit under it
+    float pwr_top() const {
+        float x = pwr_xvtr_.load(), m = pwr_max_.load();
+
+        return x > 0.0f && x < m ? x : m;
+    }
+
+    // What pwr_xvtr_set did to PWR
+    enum class XvtrPwr { SAME, HELD, RESTORED };
+
+    // A transverter's TX power limit is in force (W), or none (0), on the LVGL thread (radio.c). Coming onto one, a
+    // PWR above it comes down to it and the PWR from before is kept (p_pwr_xvtr_held, once: the one from before the
+    // first transverter); off the transverters again, that PWR comes back (at most pwr_max_, the X6200's battery).
+    // A PWR the limit holds down follows a new one (another transverter, the limit stepped up in Settings), up to the
+    // PWR from before; one under the limit, or turned down on the transverter, is left as it is. `on_xvtr`: the radio
+    // is still tuned through a transverter, one without a limit (the limit stepped down to Off there, the next one to
+    // the slider's 0.1 W, or another transverter with none): PWR stays as it is there, not the PWR from before on it
+    XvtrPwr pwr_xvtr_set(float w, bool on_xvtr);
+
     // What the radio can do somewhere in [lo, hi]: TX where HF 0.1-55 MHz or a transverter with a shift covers part
     // of it, else RX where the X6200 receives (its FM broadcast and airband; 54 MHz-1 GHz with the WR12 on), else
     // nothing. A transverter wins where they overlap. Bands-table ranges are informational only.
@@ -698,6 +879,12 @@ class SettingsManager {
     // (and on 60 m, where USB is used); wide FM and AM on the X6200's FM broadcast and airband, NFM where only the
     // WR12 receives
     int32_t default_mode(int32_t freq) const;
+
+    // The bands that share the S-meter cal and the X6200's attenuator figure with band_id, by frequency
+    // (smeter_share_group): the parts of 40 m, or of 20 m, band_id among them, in the order of the band list. Only
+    // band_id's own where it shares with none, nothing outside the bands. Read from the list each time: the web page
+    // edits it while the radio runs
+    static std::vector<BandInfo> smeter_parts(int32_t band_id);
 
   private:
     // active VFO frequency of the current band (compute fn for cp_fg_freq).
@@ -759,7 +946,8 @@ class SettingsManager {
     void on_mode_zoom_not_found();
 
     // Shared band-switch core: flush, rebind context, switch-time loads and
-    // recomputes. `implicit` selects whether the active VFO's freq+mode is kept.
+    // recomputes. `implicit`: the active VFO's frequency is kept, and the other VFO
+    // too unless the new band has split on (load_band_vfo).
     void switch_band(int new_band_id, bool implicit);
 
     // -- Context switching --
@@ -782,7 +970,7 @@ class SettingsManager {
     static void zoom_step_scope_cb(Subject *subj, void *user_data);
 
     // Switch-time band loads: never loads current_vfo; when `implicit` is true
-    // also keeps the active VFO's freq+mode (loads only the inactive VFO).
+    // the VFOs as load_band_vfo keeps them.
     void load_band_switch(int new_band_id, bool implicit);
 
     // Loads the four VFO params (vfoa_freq, vfoa_mode, vfob_freq, vfob_mode) in
@@ -791,11 +979,25 @@ class SettingsManager {
     //     is undefined/missing); a loaded value outside [start,stop] is clamped
     //     to start_freq.
     //   - vfoa_mode: NOT_FOUND/error -> resolve_default_mode(vfoa_freq).
-    //   - vfob_freq: NOT_FOUND -> current vfoa_freq; else clamped as vfoa_freq.
+    //   - vfob_freq: NOT_FOUND -> current vfoa_freq, or with vfoa kept on its own band the
+    //     vfoa_freq this band restores (then saved as vfob's, with vfob_mode); else clamped as vfoa_freq.
     //   - vfob_mode: NOT_FOUND/error -> current vfoa_mode.
     // Restored/clamped values are applied with set_quiet (no deferred write).
-    // When `implicit` the active VFO's freq+mode is skipped (kept, not loaded).
-    void load_band_vfo(int band_id, bool implicit);
+    // When `implicit` the active VFO's frequency is kept. When `keep` (an implicit
+    // switch, every switch with independent VFOs, a start with the other VFO
+    // loaded from its own band) the other VFO keeps all it had, unless the band
+    // has split on (then it is loaded as above).
+    void load_band_vfo(int band_id, bool implicit, bool keep);
+
+    // The band can be used by the radio as it is set up (band_use): not a 2 m with no transverter or WR12
+    bool band_usable(int32_t id) const;
+
+#ifdef BOARD_X6200
+    // p_band_smeter_att on a band never set: the X6200s' figure for the band's frequency
+    int32_t smeter_att_start() const;
+#endif
+    // A shared S-meter figure on a part with no row of its own: the row of another part of the band, if one has it
+    std::optional<int32_t> smeter_shared_row(const ParamBase &p) const;
 
     // Default mode for a band with none saved: default_mode(freq), AM in the broadcast bands
     int32_t resolve_default_mode(int32_t freq, int32_t band_id) const;

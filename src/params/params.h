@@ -45,6 +45,9 @@ typedef enum {
     ACTION_PRE_TOGGLE,
     ACTION_ATU_TOGGLE,  /* appended after PRE_TOGGLE */
     ACTION_ATU_TUNE,    /* start a tuning cycle: transmits a carrier */
+    ACTION_EXT_TUNE,    /* appended after ATU_TUNE: TUNE for an external tuner, on or off (ext_tune.h) */
+    ACTION_FREQ_LOCK,   /* appended after EXT_TUNE: the user's frequency lock on or off, as the X6100's LOCK key */
+    ACTION_WF_3D,       /* appended after FREQ_LOCK: the 3D waterfall on or off */
 
     ACTION_APP_RTTY = 100,
     ACTION_APP_FT8,
@@ -71,6 +74,10 @@ typedef enum {
     ACTION_APP_CHANNELS, /* 124: the CHANNELS window, as the hand mic V/M key */
     ACTION_APP_BIRDIE,   /* 125: Birdie Cal */
     ACTION_APP_FREEDV = 126, /* stable persisted action, qualification gated */
+    ACTION_APP_SCAN = 127, /* upstream's persisted Scanner action */
+    /* Upstream used 126 for Propagation after FreeDV had shipped it. Its
+     * unambiguous existing bindings migrate by the named FreeDV ledger. */
+    ACTION_APP_PROPAGATION = 128,
 } press_action_t;
 
 typedef enum {
@@ -96,8 +103,10 @@ typedef struct {
     int16_t             brightness_normal;
     int16_t             brightness_idle;
     uint16_t            brightness_timeout; /* seconds */
-    uint16_t            screen_off_min;     /* the screen blanked after this long without a key, minutes, 0 never */
+    uint16_t            screen_off_min;     /* the screen blanked after this long without use, minutes, 0 never */
     bool                screen_off_always;  /* the screen stays dark: a radio run from the knob or a browser */
+    params_uint8_t      screen_saver;       /* SCREEN_SAVER_* (screen_idle.h) after screen_saver_min, until a use */
+    params_uint16_t     screen_saver_min;   /* minutes without a key, a knob or TX */
     buttons_light_t     brightness_buttons;
 
     /* radio */
@@ -134,6 +143,12 @@ typedef struct {
 
     uint16_t            cw_encoder_period;  /* seconds */
     uint16_t            voice_msg_period;   /* seconds */
+    params_int32_t      cw_qrss_hz[2];      /* MSG > CW QRSS3 on 30 m and 80 m (cw_beacon.h): the frequency chosen, Hz,
+                                             * 0 the band's own */
+    params_int32_t      cw_bcn_start;       /* MSG > CW beacon's schedule (bcn_sched_t): start minute, -1 at once */
+    params_uint8_t      cw_bcn_until;       /* bcn_until_t */
+    params_uint16_t     cw_bcn_sends;
+    params_int32_t      cw_bcn_end;         /* end minute, -1 none chosen yet */
 
     /* RTTY */
 
@@ -174,13 +189,16 @@ typedef struct {
     uint8_t             long_msg;
     uint8_t             long_dfn;
     uint8_t             long_dfl;
+    uint8_t             long_fst;   /* the FST key held; a press steps up */
 
-    /* HMic F1, F2 actions */
+    /* HMic F1, F2 actions, and F3 (the X6200's H-22) */
 
     uint8_t             press_f1;
     uint8_t             press_f2;
+    uint8_t             press_f3;
     uint8_t             long_f1;
     uint8_t             long_f2;
+    uint8_t             long_f3;
 
     /* Audio play/rec */
 
@@ -244,11 +262,14 @@ typedef struct {
         bool    long_msg;
         bool    long_dfn;
         bool    long_dfl;
+        bool    long_fst;
 
         bool    press_f1;
         bool    press_f2;
+        bool    press_f3;
         bool    long_f1;
         bool    long_f2;
+        bool    long_f3;
 
     } dirty;
 } params_t;

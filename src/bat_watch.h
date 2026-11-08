@@ -18,18 +18,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "board.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Voltages in 0.1 V; LOW + HYSTERESIS = HIGH (upstream 21c2b93) */
-#define BAT_LOW         60      /* the power-off */
+#define BAT_LOW         BOARD_BAT_LOW   /* the power-off: 6.0 V, the X6200 6.8 V (board.h) */
 #define BAT_HYSTERESIS  2
 #define BAT_HIGH        (BAT_LOW + BAT_HYSTERESIS)
 #define BAT_LOW_READS   3       /* in a row, about 1.2 s */
 #define BAT_NONE        30      /* under 3.0 V: no battery, none fitted or nothing measured yet (clock.c) */
 #define BAT_EXT         90      /* on the jack: external power whatever the flags say */
 #define BAT_SETTLE_MS   15000   /* after the first reading with a voltage: twice the climb #17 saw */
+#define BAT_HELD_MS     5000    /* the X6200: DC IN at BOARD_BAT_EXT_MIN so long holds the battery up (bat_watch.c) */
 
 typedef struct {
     uint64_t settle_at;     /* the readings count from then on; 0 before the first with a voltage */
@@ -38,20 +41,38 @@ typedef struct {
     bool     counts;        /* the last reading is the battery's and the supply's */
     bool     ext;           /* the last reading: on external power */
     bool     by_volts;      /* the % shown is the voltage's, not the base's (bat_watch_cap) */
+    uint8_t  cap_vbat;      /* the voltage the voltage's % is of (bat_watch_cap); 0 none yet */
+    uint8_t  up_reads;      /* readings in a row over cap_vbat */
+    bool     held;          /* the X6200: on a supply that holds the battery up (bat_watch.c) */
+    uint64_t over_since;    /* the X6200: the first of the readings in a row at BOARD_BAT_EXT_MIN and more; 0 none */
+    uint8_t  under_reads;   /* the X6200: receive readings in a row under BOARD_BAT_EXT_MIN */
 } bat_watch_t;
 
-/* One reading. True when low changed */
-bool bat_watch_reading(bat_watch_t *w, uint8_t vbat, uint8_t vext, bool vext_flag, bool charging, uint64_t now_ms);
+/* One reading; bat_missing: the base found no battery (the X6200's says so), tx: the base transmits. True when low
+ * changed */
+bool bat_watch_reading(bat_watch_t *w, uint8_t vbat, uint8_t vext, bool vext_flag, bool charging, bool bat_missing,
+                       bool tx, uint64_t now_ms);
 
 /* The % of a pack at vbat (0.1 V) on battery and receive: what an X6100 base (1.1.8) reports there,
  * from its discharge 8.3 to 6.4 V on the bench */
 uint8_t bat_cap_of_volts(uint8_t vbat);
 
 /* The % to show on battery, on receive: the base's, and the voltage's while the two are more than
- * BAT_CAP_APART apart, until they meet within BAT_CAP_MET. The base counts the charge it sees: a
- * pack charged with the radio off stayed near empty at 8.2 V, in Xiegu's firmware too (#49) */
+ * BAT_CAP_APART apart, until they meet within BAT_CAP_MET with the voltage's at BAT_CAP_STEEP or more.
+ * The base counts the charge it sees: a pack charged with the radio off stayed near empty at 8.2 V,
+ * in Xiegu's firmware too (#49). From 7.3 V down the voltage's falls through 24, 9 and 3 to 0, where
+ * it meets a base stuck at 0 as well as one that counts right: there it does not go back to the base's.
+ * Nor is a stuck base 25 apart there: the voltage's is also taken when the base says 0 % with the
+ * voltage's at BAT_CAP_AT_ZERO or more (7.2 V and up), where one that counts right still had some */
 #define BAT_CAP_APART   25
 #define BAT_CAP_MET     10
+#define BAT_CAP_STEEP   25
+#define BAT_CAP_AT_ZERO 9
+
+/* The voltage's % follows a voltage down at once, back up 0.1 V only after BAT_CAP_UP_READS readings in a row over
+ * it (about 1 min), 0.2 V or more at once: on a 0.1 V step the readings go back and forth, and the % with them,
+ * 24 and 9 % in turn at 7.3 and 7.2 V (#160). From the first reading again after external power */
+#define BAT_CAP_UP_READS 150
 uint8_t bat_watch_cap(bat_watch_t *w, uint8_t vbat, uint8_t batcap);
 
 #ifdef __cplusplus

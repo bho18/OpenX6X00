@@ -33,10 +33,12 @@ extern "C" {
 #include <cmath>
 
 extern "C" {
+    #include "band_plan.h"
     #include "cJSON.h"
     #include "params/params.h"
     #include "radio.h"
     #include "scheduler.h"
+    #include "screen_idle.h"
     #include "screen_light.h"
     #include "screen_main.h"
     #include "theme.h"
@@ -61,6 +63,16 @@ static const struct {
     int32_t             min, max;
 } disp_ints[] = {
     {"wf_mode", &cfg_sm.p_wf_mode, 0, 1},
+    {"wf_3d", &cfg_sm.p_wf_3d, 0, 1},             /* live, waterfall_view.c reads them at each draw */
+    {"wf_3d_colors", &cfg_sm.p_wf_3d_colors, 0, 2},
+    {"wf_3d_depth", &cfg_sm.p_wf_3d_depth, 8, 64},
+    {"wf_3d_tilt", &cfg_sm.p_wf_3d_tilt, 0, 10},
+    {"wf_3d_floor", &cfg_sm.p_wf_3d_floor, 0, 40},
+    {"wf_3d_peak", &cfg_sm.p_wf_3d_peak, 0, 1},
+    {"wf_3d_glide", &cfg_sm.p_wf_3d_glide, 0, 1},
+    {"wf_3d_range", &cfg_sm.p_wf_3d_range, 20, 60},
+    {"wf_fixed_jump", &cfg_sm.p_wf_fixed_jump, 0, 2},  /* Fixed mode: live, waterfall_view.c reads them */
+    {"wf_fixed_after", &cfg_sm.p_wf_fixed_after, 0, 2},
     {"auto_level", &cfg_sm.p_auto_level_enabled, 0, 1},
     {"wf_speed", &cfg_sm.p_waterfall_speed, 1, 5},
     {"band_plan", &cfg_sm.p_band_plan, 0, 1},
@@ -82,12 +94,17 @@ static const struct {
     {"spectrum_height", &cfg_sm.p_spectrum_height, 60, 160},
     {"digi_text_compact", &cfg_sm.p_digi_text_compact, 0, 1},
     {"knob_info", &cfg_sm.p_knob_info, 0, 1},
+    {"buttons_hide", &cfg_sm.p_buttons_hide, 0, 3},     /* live: screen_main.c follows it */
     {"walkie", &cfg_sm.p_walkie, 0, 1},                 /* live: walkie.c follows it */
     {"speaker_off", &cfg_sm.p_speaker_off, 0, 1},       /* live: radio.c follows it */
     {"indep_vfo", &cfg_sm.p_indep_vfo, 0, 1},           /* Station: independent VFOs */
     {"mode_from_plan", &cfg_sm.p_mode_from_plan, 0, 1}, /* Station: the mode follows the band plan */
+    {"band_region", &cfg_sm.p_band_region, 0, BP_PLAN_COUNT - 1},  /* Station: the band plan; live, screen_main.c */
     {"birdie_marks", &cfg_sm.p_birdie_marks, 0, 2},     /* Main screen: Birdie Cal's carriers */
     {"zoom_step_per_mode", &cfg_sm.p_zoom_step_per_mode, 0, 1},   /* Main screen: live, zoom_step_scope follows it */
+    {"power_display", &cfg_sm.p_power_display, 0, 3},  /* Main screen: live, clock.c reads it */
+    {"tx_outside_bands", &cfg_sm.p_tx_outside_bands, 0, 1},   /* TX Cal (#121): live, radio.c, info_bar.c and
+                                                                 * freq_strip.c follow it */
 #ifdef BOARD_X6200
     {"wr12", &cfg_sm.p_wr12, 0, 1},                     /* live: screen_main.c follows it; the X6100 has no row */
 #endif
@@ -161,6 +178,12 @@ static void disp_apply(void *arg) {
         params.screen_off_always = d->val != 0;
         params_unlock(&params.dirty.screen_off_always);
         backlight_settings_changed();
+    } else if (!strcmp(d->name, "screen_saver")) {
+        params_uint8_set(&params.screen_saver, d->val);
+        backlight_settings_changed();
+    } else if (!strcmp(d->name, "screen_saver_min")) {
+        params_uint16_set(&params.screen_saver_min, d->val);
+        backlight_settings_changed();
     } else if (!strcmp(d->name, "bright_buttons")) {
         backlight_set_buttons((buttons_light_t)d->val);
     } else if (!strcmp(d->name, "theme")) {
@@ -216,6 +239,10 @@ static const char *disp_set(cJSON *req, disp_set_t *d) {
         min = 0, max = 120, known = true;
     if (!strcmp(d->name, "screen_off_always"))
         min = 0, max = 1, known = true;
+    if (!strcmp(d->name, "screen_saver"))
+        min = 0, max = SCREEN_SAVER_LAST, known = true;
+    if (!strcmp(d->name, "screen_saver_min"))
+        min = 1, max = SCREEN_MIN_MAX, known = true;
     if (!known)
         return "Unknown option";
     if (!get_int(req, min, max, &d->val))
@@ -234,13 +261,20 @@ static int disp_get(char *buf, size_t size) {
         l += snprintf(buf + l, size - l, ",\"%s\":%d", o.name, o.b->x ? 1 : 0);
     l += snprintf(buf + l, size - l,
                   ",\"auto_level_offset\":%d,\"bright_normal\":%d,\"bright_idle\":%d,\"bright_timeout\":%d,"
-                  "\"bright_buttons\":%d,\"screen_off_min\":%d,\"screen_off_always\":%d,\"theme\":\"%s\",\"themes\":[",
+                  "\"bright_buttons\":%d,\"screen_off_min\":%d,\"screen_off_always\":%d,\"screen_saver\":%d,"
+                  "\"screen_saver_min\":%d,\"theme\":\"%s\",\"themes\":[",
                   (int)lroundf(cfg_sm.p_auto_level_offset.get() * 10), params.brightness_normal, params.brightness_idle,
                   params.brightness_timeout, (int)params.brightness_buttons, params.screen_off_min, params.screen_off_always ? 1 : 0,
-                  params.theme_name.x);
-    for (int i = 0; i < count && l < (int)size - 40; i++)
+                  params.screen_saver.x, params.screen_saver_min.x, params.theme_name.x);
+    for (int i = 0; i < count && l < (int)size - 160; i++)   /* room for the band plan after them */
         l += snprintf(buf + l, size - l, "%s\"%s\"", i ? "," : "", names[i]);
-    l += snprintf(buf + l, size - l, "]}\n");
+    l += snprintf(buf + l, size - l, "]");
+    /* The band plan in use and what Auto finds (the locator or the callsign: letters, digits and /) */
+    const char *how;
+    char        at[16];
+    int         region = band_plan_auto(&how, at, sizeof(at));
+    l += snprintf(buf + l, size - l, ",\"band_region_now\":%d,\"band_region_auto\":%d,\"band_region_how\":\"%s\","
+                  "\"band_region_at\":\"%s\"}\n", band_plan_now(), region, how, at);
     return l;
 }
 

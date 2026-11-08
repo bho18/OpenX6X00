@@ -19,8 +19,6 @@
 
 #define SIZEOF_ARRAY(arr) (sizeof(arr) > 0 ? sizeof(arr) / sizeof(arr[0]) : 0)
 
-static sqlite3_stmt *update_ver_stmt;
-
 static int get_current_version(int * ver);
 static int set_current_version(int ver);
 
@@ -39,7 +37,6 @@ static int _1_create_ftx_table() {
     int rc;
     char *query;
     rc = asprintf(&query,
-        "BEGIN;"
         "CREATE TABLE IF NOT EXISTS digital_modes("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "label varchar(64) NOT NULL, "
@@ -61,8 +58,7 @@ static int _1_create_ftx_table() {
         "FROM memory AS m1  "
         "INNER JOIN memory AS m2 ON m1.id == m2.id  "
         "INNER JOIN memory AS m3 ON m1.id == m3.id  "
-        "WHERE m1.name='label' AND m2.name='vfoa_freq' AND m3.name = 'vfoa_mode' AND m1.id >= 200; "
-        "COMMIT",
+        "WHERE m1.name='label' AND m2.name='vfoa_freq' AND m3.name = 'vfoa_mode' AND m1.id >= 200; ",
         CFG_DIG_TYPE_FT8, CFG_DIG_TYPE_FT4
     );
     if (rc == -1) {
@@ -268,7 +264,7 @@ static int _10_band_60m() {
 
 /* The X6200's two transverters are off by default now (a shift of 0, settings_manager.h): its 2 m and 70 cm are the
  * WR12's, to receive. One set up before (a row saved for it) keeps its shift, the old default where only its edges
- * were changed. The X6100 keeps its transverters as they were */
+ * were changed. The X6100's: _15 */
 static int _11_x6200_transverters_off() {
 #ifdef BOARD_X6200
     if (sqlite3_exec(db,
@@ -320,10 +316,69 @@ static int _13_x6200_stock_transverters() {
     return 0;
 }
 
+/* TX outside the amateur bands (#121) starts off on every radio this update reaches. A radio without the row is off
+ * already (the default); the row goes anyway, belt and braces, so whatever wrote one before (a test build of the
+ * change) starts limited. Runs once, on the version step: the switch set on afterwards stays across updates */
+static int _14_tx_outside_bands_off() {
+    if (sqlite3_exec(db, "DELETE FROM params WHERE name = 'tx_outside_bands';", NULL, NULL, NULL) != SQLITE_OK) {
+        printf("Cannot reset TX outside the amateur bands: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+    return 0;
+}
+
+/* The X6100's two transverters are off by default now too (a shift of 0, settings_manager.h): on from the start, a
+ * transmission on 2 m or 70 cm sent its 28-34 MHz IF with nothing connected, and a transverter's range passes the
+ * amateur-band limit (#121). _11's rule: one set up before (a row saved for it) keeps its shift, the old default where
+ * only its edges or its TX power limit were changed; one never touched is off. As in _13: gdyuldin's stock X6100 GUI
+ * saves both at their defaults when it first loads them, six rows (144-150 shift 116, 432-438 shift 404). Exactly
+ * those six and nothing else are the stock GUI's, not the user's (ours saves a value only when it is changed): they
+ * go first */
+static int _15_x6100_transverters_off() {
+#ifndef BOARD_X6200
+    if (sqlite3_exec(db,
+                     "DELETE FROM transverter WHERE (SELECT count(*) FROM transverter) = 6 AND 6 = "
+                     "(SELECT count(*) FROM transverter AS t JOIN (VALUES "
+                     "(0, 'from', 144000000), (0, 'to', 150000000), (0, 'shift', 116000000), "
+                     "(1, 'from', 432000000), (1, 'to', 438000000), (1, 'shift', 404000000)) AS s "
+                     "ON t.id = s.column1 AND t.name = s.column2 AND t.val = s.column3);"
+                     "INSERT OR IGNORE INTO transverter SELECT DISTINCT id, 'shift', "
+                     "CASE id WHEN 0 THEN 116000000 ELSE 404000000 END FROM transverter WHERE id IN (0, 1);",
+                     NULL, NULL, NULL) != SQLITE_OK) {
+        printf("Cannot keep the transverters: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+/* The screensaver (screen_idle.h) comes after 5 minutes without use, and the screen goes dark never by default now,
+ * where it went dark after 5 minutes. A radio whose screen off time was changed (only a change is saved: a row) keeps
+ * going dark at that moment, with the screensaver before it: at 5 minutes, or a minute before when the screen off
+ * comes at 5 minutes or sooner. Dark after a minute leaves no room for it: no screensaver there, as before. A radio
+ * set never to go dark takes the screensaver and stays so. One with the screen always off and its screen off time
+ * never changed keeps the 5 minutes POWER showed the screen for (0 is a minute there), and the screensaver a minute
+ * before them should always off be cleared. Every other radio takes the new defaults. Runs once, on the version
+ * step: what is set afterwards stays */
+static int _16_screen_saver() {
+    if (sqlite3_exec(db,
+                     "INSERT OR IGNORE INTO params SELECT 'screen_off_min', 5 FROM params "
+                     "WHERE name = 'screen_off_always' AND val = 1;"
+                     "INSERT OR IGNORE INTO params SELECT 'screen_saver_min', val - 1 FROM params "
+                     "WHERE name = 'screen_off_min' AND val BETWEEN 2 AND 5;"
+                     "INSERT OR IGNORE INTO params SELECT 'screen_saver', 0 FROM params "
+                     "WHERE name = 'screen_off_min' AND val = 1;",
+                     NULL, NULL, NULL) != SQLITE_OK) {
+        printf("Cannot keep the screen off time: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+    return 0;
+}
+
 /* Pinned official GUI a2d5365f, ReportingConfiguration HF frequencies.
  * Bookmarks store a compatible USB value; recall never changes the profile.
- * Run once as a migration: deleted/edited user bookmarks stay deleted/edited. */
-static int _14_freedv_bookmarks() {
+ * Run once through the named ledger: deleted/edited user bookmarks stay deleted/edited. */
+static int freedv_seed_bookmarks() {
     return add_dial_presets(CFG_DIG_TYPE_FREEDV,
         "('FreeDV 1.8700', 1870000), ('FreeDV 3.6250', 3625000), ('FreeDV 3.6430', 3643000), ('FreeDV 3.6930', 3693000), ('FreeDV 3.6970', 3697000), ('FreeDV 3.8030', 3803000), ('FreeDV 5.4035', 5403500), ('FreeDV 5.3685', 5368500), ('FreeDV 7.1770', 7177000), ('FreeDV 7.1970', 7197000), ('FreeDV 14.2360', 14236000), ('FreeDV 14.2400', 14240000), ('FreeDV 18.1180', 18118000), ('FreeDV 21.3130', 21313000), ('FreeDV 24.9330', 24933000), ('FreeDV 28.3300', 28330000), ('FreeDV 28.7200', 28720000)", "FreeDV");
 }
@@ -343,8 +398,109 @@ static int (*migrations[])() = {
     _11_x6200_transverters_off,
     _12_line_in_restore,
     _13_x6200_stock_transverters,
-    _14_freedv_bookmarks,
+    _14_tx_outside_bands_off,
+    _15_x6100_transverters_off,
+    _16_screen_saver,
 };
+
+/* The public FreeDV beta used numeric version 14 for its bookmarks, whereas
+ * upstream used it for the TX policy. Keep upstream's numbers unchanged and
+ * record FreeDV's independent steps by name. The original version is durable
+ * before any numeric step: a restart after step 15 must not turn a beta into
+ * an apparent upstream installation. */
+static int freedv_migration_origin(int original, int *origin) {
+    sqlite3_stmt *stmt = NULL;
+    int rc;
+    if (sqlite3_exec(db,
+            "BEGIN IMMEDIATE;"
+            "CREATE TABLE IF NOT EXISTS freedv_migrations("
+                "name TEXT PRIMARY KEY, value INTEGER NOT NULL);",
+            NULL, NULL, NULL) != SQLITE_OK) goto failed;
+    rc = sqlite3_prepare_v2(db,
+            "INSERT OR IGNORE INTO freedv_migrations(name,value) VALUES('origin_version',?)",
+            -1, &stmt, NULL);
+    if (rc != SQLITE_OK) goto failed;
+    sqlite3_bind_int(stmt, 1, original);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt); stmt = NULL;
+    if (rc != SQLITE_DONE) goto failed;
+    rc = sqlite3_prepare_v2(db,
+            "SELECT value FROM freedv_migrations WHERE name='origin_version'", -1, &stmt, NULL);
+    if (rc != SQLITE_OK || sqlite3_step(stmt) != SQLITE_ROW ||
+            sqlite3_column_type(stmt, 0) != SQLITE_INTEGER) goto failed;
+    *origin = sqlite3_column_int(stmt, 0);
+    if (*origin < -1 || sqlite3_step(stmt) != SQLITE_DONE) goto failed;
+    sqlite3_finalize(stmt); stmt = NULL;
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) goto failed;
+    return 0;
+failed:
+    printf("Cannot record the FreeDV migration origin: %s\n", sqlite3_errmsg(db));
+    sqlite3_finalize(stmt);
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    return 1;
+}
+
+static int freedv_migration_done(const char *name, bool *done) {
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+            "SELECT value FROM freedv_migrations WHERE name=?", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return 1;
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    *done = rc == SQLITE_ROW;
+    if (*done && (sqlite3_column_type(stmt, 0) != SQLITE_INTEGER ||
+            sqlite3_column_int(stmt, 0) != 1 || sqlite3_step(stmt) != SQLITE_DONE)) rc = SQLITE_ERROR;
+    else if (*done) rc = SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE ? 0 : 1;
+}
+
+static int freedv_migration_mark(const char *name) {
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+            "INSERT INTO freedv_migrations(name,value) VALUES(?,1)", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return 1;
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE ? 0 : 1;
+}
+
+static int freedv_migrations_apply(int origin) {
+    bool done;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) return 1;
+    if (freedv_migration_done("tx_policy_bridge_v1", &done)) goto failed;
+    if (!done) {
+        /* Version 14 alone cannot distinguish beta from upstream. Apply the
+         * missed upstream reset once; later intentional settings stay saved. */
+        if (origin == 14 && _14_tx_outside_bands_off()) goto failed;
+        if (freedv_migration_mark("tx_policy_bridge_v1")) goto failed;
+    }
+    if (freedv_migration_done("bookmarks_v1", &done)) goto failed;
+    if (!done) {
+        /* Existing 14+ lists, including no rows, may represent user deletions.
+         * No preference or remaining bookmark proves which branch ran. */
+        if (origin < 14 && freedv_seed_bookmarks()) goto failed;
+        if (freedv_migration_mark("bookmarks_v1")) goto failed;
+    }
+    if (freedv_migration_done("app_action_bridge_v1", &done)) goto failed;
+    if (!done) {
+        /* Only upstream has numeric 15+ before this bridge. Preserve the
+         * released FreeDV action 126 and move those Propagation bindings to
+         * 128. Ambiguous version-14 bindings retain their exact value. */
+        if (origin >= 15 && sqlite3_exec(db,
+                "UPDATE params SET val=128 WHERE val=126 AND name IN ("
+                "'long_gen','long_app','long_key','long_msg','long_dfn','long_dfl','long_fst',"
+                "'press_f1','press_f2','press_f3','long_f1','long_f2','long_f3');",
+                NULL, NULL, NULL) != SQLITE_OK) goto failed;
+        if (freedv_migration_mark("app_action_bridge_v1")) goto failed;
+    }
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK) return 0;
+failed:
+    printf("Cannot apply the FreeDV compatibility bridge: %s\n", sqlite3_errmsg(db));
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    return 1;
+}
 
 int migrations_apply(void) {
     int rc = 0;
@@ -359,16 +515,20 @@ int migrations_apply(void) {
         printf("Cannot get current version\n");
         return 1;
     }
+    int origin;
+    if (freedv_migration_origin(ver, &origin)) return 1;
     for (size_t i = ver+1; i < SIZEOF_ARRAY(migrations); i++){
-        printf("Apply migration: %i ...\n", i);
+        printf("Apply migration: %zu ...\n", i);
+        if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) return 1;
         rc = (*migrations[i])();
-        if (rc != 0) {
-            printf("Can't apply %i migration\n", i);
-            break;
+        if (rc != 0 || set_current_version(i) ||
+                sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+            printf("Can't apply %zu migration\n", i);
+            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            return 1;
         }
-        set_current_version(i);
     }
-    return rc;
+    return freedv_migrations_apply(origin);
 }
 
 
@@ -387,13 +547,14 @@ static int get_current_version(int * ver) {
     }
     rc = sqlite3_step(stmt);
 
-    if (rc == SQLITE_ROW) {
+    if (rc == SQLITE_ROW && sqlite3_column_type(stmt, 0) == SQLITE_INTEGER) {
         *ver = sqlite3_column_int(stmt, 0);
-    } else {
+        rc = *ver >= 0 ? sqlite3_step(stmt) : SQLITE_ERROR;
+    } else if (rc == SQLITE_DONE) {
         *ver = -1;
     }
     sqlite3_finalize(stmt);
-    return 0;
+    return rc == SQLITE_DONE ? 0 : 1;
 }
 
 static int set_current_version(int ver) {
@@ -407,5 +568,5 @@ static int set_current_version(int ver) {
     sqlite3_bind_int(stmt, 1, ver);
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    return 0;
+    return rc == SQLITE_DONE && sqlite3_changes(db) == 1 ? 0 : 1;
 }

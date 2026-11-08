@@ -34,6 +34,9 @@ void meter_update(float db, float beta);
 /* From the DSP: the noise floor in the filter, in dB; the bars under it stay grey */
 void meter_set_noise(float db);
 
+/* New TX readings (tx_meters.c, LVGL thread): the box shows them while transmitting with no TX panel */
+void meter_tx_redraw(void);
+
 /* The needle dial on any box (the walkie screen), at the current reading */
 void meter_needle_draw(lv_obj_t *obj, lv_draw_ctx_t *draw_ctx);
 
@@ -42,3 +45,10 @@ int16_t meter_get_raw_db(void);
 
 /* The same, unrounded (the front end measurement in Settings) */
 float meter_get_db(void);
+
+/* Counts the readings: a new one when it changed (the scanner and the beacons take each reading
+ * once, and none from before a retune) */
+uint32_t meter_seq(void);
+
+/* x of db on a bar w wide with S9 at 70% (Codec's SIGNAL bar, Ops Room's hexagons): S1 at 0, S9+40 at w */
+lv_coord_t meter_x70(float db, lv_coord_t w);

@@ -199,6 +199,8 @@ class BandsTable {
     static BandInfoLoadResult    get_by_freq(uint32_t freq);
     static BandInfoLoadResult    next(int32_t cur_band_id, uint32_t cur_freq, bool up);
     static std::vector<BandInfo> all_bands();
+    // The rows whose default edges differ by IARU region still on region from's: to region to's. The count changed
+    static int                   follow_region(int from, int to);
 
   private:
     // Database handle shared by all statements of this table.
@@ -323,6 +325,9 @@ class BandParamsTable {
 
     // The bands that have this param stored, as (band name, value): no log line per band
     static std::vector<std::pair<std::string, int32_t>> all_int(const char *name);
+
+    // The band's row of this param gone: the next load of the band takes its default again
+    static bool Remove(int32_t band_id, const char *name);
 
   private:
     // Database handle shared by all statements of this table.

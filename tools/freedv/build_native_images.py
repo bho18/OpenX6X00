@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build normal/diagnostic v0.3.6 images from one source and matching SDK.
+"""Build normal/diagnostic images from reviewed source and the matching SDK.
 
 Consumes completed host, codec and SDK correctness gates; edits only disposable
 rootfs copies. No flashing, RF control, baseband updates or release publishing.
@@ -17,6 +17,7 @@ from fetch_native_baseline import BUILDROOT, BUILDROOT_SUBMODULE, ARTIFACT_SHA25
 from fetch_native_fixture import PREFIX_SHA as CONTINUOUS_FIXTURE_SHA256
 from native_image import sha
 from prepare_native_image import prepare
+from runtime_package import application_version, compatibility, validate_package
 
 ROOT=Path(__file__).resolve().parents[2]
 # Public snapshot of the reviewed baseline-compatible runtime sources. Its
@@ -38,7 +39,11 @@ def copy_files(source,destination):
             target=destination/path.relative_to(source); target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(path,target)
 
 
-def current_overlay(work,version,web_wheel=None):
+def current_overlay(work,version,web_wheel=None,runtime_package=None):
+    review = compatibility(ROOT)
+    if not runtime_package:
+        raise ValueError('current upstream application requires a verified runtime package')
+    runtime = validate_package(runtime_package, ROOT)
     overlay=work/'runtime-overlay'; overlay.mkdir()
     copy_files(ROOT/'rootfs',overlay)
     copy_files(ROOT/'images',overlay/'usr/share/x6100/images')
@@ -46,21 +51,13 @@ def current_overlay(work,version,web_wheel=None):
     shutil.copy2(ROOT/'third-party/cty/cty.dat',destination/'cty.dat')
     shutil.copy2(ROOT/'boot/logo.png',destination/'bootlogo.png')
     (destination/'app-version').write_text(version+'\n')
-    # Rootfs package requirements and boot/kernel sources must be identical to
-    # the verified baseline for this offline derivation. The v0.3.6 additions in
-    # local-build.sh are X6100-only U-Boot or informational upstream reporting.
-    changed=subprocess.check_output(['git','diff','--name-only',BASELINE_SOURCE,'HEAD','--','buildroot'],cwd=ROOT,text=True).splitlines()
-    for name in changed:
-        if name!='buildroot/local-build.sh' and not name.startswith('buildroot/br2_external/board/X6100/u-boot/'):
-            raise ValueError('new image/kernel dependency requires a full pinned Buildroot rebuild: '+name)
-    expected=subprocess.check_output(['git','show',BASELINE_SOURCE+':rootfs/usr/share/x6100/image-required'],cwd=ROOT,text=True)
-    old=next(line for line in expected.splitlines() if line.startswith('x6200 ')).split()[1]
-    new=next(line for line in (ROOT/'rootfs/usr/share/x6100/image-required').read_text().splitlines() if line.startswith('x6200 ')).split()[1]
-    if old!=new: raise ValueError('X6200 image level changed; full baseline rebuild required')
+    # Reviewed hashes permit only the audited application-only derivation;
+    # kernel/package, image-level and Python dependency changes still block it.
+    new = review['x6200_image_level']
     (overlay/'etc/openx6x00-image').write_text('model=x6200\nlevel='+new+'\nversion='+version+'\n')
-    old_web_project=subprocess.check_output(['git','show',BASELINE_SOURCE+':webserver/pyproject.toml'],cwd=ROOT,text=True)
-    if old_web_project!=(ROOT/'webserver/pyproject.toml').read_text():
-        raise ValueError('webserver package requirements changed; review baseline runtime dependencies explicitly')
+    copy_files(Path(runtime_package)/'overlay', overlay)
+    provenance=overlay/'usr/share/x6100/freedv'; provenance.mkdir(parents=True,exist_ok=True)
+    (provenance/'runtime-manifest.json').write_text(json.dumps(runtime,indent=2)+'\n')
     wheels=work/'wheels'; wheels.mkdir()
     if web_wheel:
         shutil.copy2(web_wheel,wheels/Path(web_wheel).name)
@@ -89,6 +86,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('recovery','benchmark-work','host-gates','host-codec-gates','codec-gates','work','output'):
         parser.add_argument('--'+name,type=Path,required=True)
+    parser.add_argument('--runtime-package',type=Path,required=True)
     parser.add_argument('--jobs',type=int,default=2)
     parser.add_argument('--debugfs',default='debugfs'); parser.add_argument('--e2fsck',default='e2fsck'); parser.add_argument('--qemu',default='qemu-arm')
     a=parser.parse_args()
@@ -128,9 +126,8 @@ def main():
         raise ValueError('pinned continuous diagnostic fixture required')
     work=a.work.resolve(); work.mkdir(parents=True,exist_ok=False)
     output=a.output.resolve(); output.mkdir(parents=True,exist_ok=False)
-    version=re.search(r'#define VERSION\s+".* v([0-9.]+)"',(ROOT/'src/main.h').read_text())[1]
-    if version!='0.3.6': raise ValueError('explicitly re-qualify changed application version')
-    overlay=current_overlay(work,version)
+    version=application_version(ROOT)
+    overlay=current_overlay(work,version,runtime_package=a.runtime_package)
     opus=package_work/'rade_c/build_opus-prefix/src/build_opus'
     paths={'FREEDV_RADE_SOURCE':package_work/'sources/rade_c/src','FREEDV_OPUS_BUILD':opus,
            'FREEDV_RADE_LIBRARY':package_work/'rade_c/src/librade.so.0.1','FREEDV_OPUS_LIBRARY':opus/'.libs/libopus.a',
@@ -170,7 +167,8 @@ def main():
         run(sdk/'bin'/(target+'-strip'),'--strip-unneeded',runtime)
         run(sdk/'bin'/(target+'-objcopy'),'--add-gnu-debuglink='+str(symbols),runtime)
         candidate=output/('x6200-'+variant+'.img')
-        result=prepare(baseline,runtime,package,overlay,variant,revision,sdk,candidate,record,a.debugfs,a.e2fsck,a.qemu)
+        result=prepare(baseline,runtime,package,overlay,variant,revision,sdk,candidate,record,a.debugfs,a.e2fsck,a.qemu,
+                       runtime_package=a.runtime_package)
         variants.append({'variant':variant,'image_sha256':result['image_sha256'],'path':candidate.name})
         shutil.copy2(build/'CMakeCache.txt',output/('cmake-'+variant+'.txt'))
     for source,name in [(ROOT/'tools/freedv/sources.json','sources.json'),(a.host_gates,'host-gates.json'),

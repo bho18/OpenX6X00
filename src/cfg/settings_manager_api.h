@@ -6,6 +6,7 @@
 // parameter_api.h.
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -36,10 +37,37 @@ band_use_t cfg_band_use(int32_t start, int32_t stop);
 bool cfg_is_valid_hw_freq(int32_t freq);
 /* Received but never transmitted on: the X6200's FM broadcast and airband, the WR12's range */
 bool cfg_is_rx_only_freq(int32_t freq);
-/* Transmitted on: HF, a transverter with a shift */
+/* The X6200's WR12 receives freq: WR12 on HOST on, 54 MHz-1 GHz that no transverter covers (#134) */
+bool cfg_wr12_freq(int32_t freq);
+/* The hardware transmits on freq: HF, a transverter with a shift. Whether the radio may: cfg_tx_refusal */
 bool cfg_is_tx_freq(int32_t freq);
+/* Why the radio may not transmit on freq (#121), NULL: it may. "receive only": the hardware does not transmit there,
+ * whatever the setting; "outside the amateur bands (Settings > TX Cal)": HF outside them (ham_bands.h) with
+ * Settings > TX Cal > TX outside ham bands off. A transverter's range transmits. Before those, what keeps the radio
+ * from transmitting anywhere for now (cfg_tx_block). Any thread */
+const char *cfg_tx_refusal(int32_t freq);
+/* What keeps the radio from transmitting on any frequency for now, its words or NULL: the X6200's WR12 out of its
+ * bypass or asked out of it (wr12_tx_block, #134). Set once at the start (radio.c); the function is called on any
+ * thread. The get: its words now, NULL nothing */
+void        cfg_tx_block_set(const char *(*block)(void));
+const char *cfg_tx_block(void);
+/* freq as a refusal names it, "27.185 MHz", with the Hz when there are any, "7.3005 MHz": 500 Hz past 40 m read
+ * "7.300", its edge. Into buf */
+const char *cfg_tx_mhz(int32_t freq, char *buf, size_t size);
+/* The same with the frequency, "27.185 MHz: outside the amateur bands (Settings > TX Cal)", into buf for a
+ * "No TX on ..."; NULL: it may */
+const char *cfg_tx_refusal_text(int32_t freq, char *buf, size_t size);
+/* The frequencies transmitted on the same way as freq, [*lo, *hi] (Hz): the range of the transverter it is on (the
+ * first, as cfg_transverter_shift_for), else HF 0.1-55 MHz, cut where a transverter before it in that order starts
+ * or ends; on HF with TX outside the amateur bands off, the amateur band freq is in (#121). False when freq is not
+ * transmitted on */
+bool cfg_tx_range(int32_t freq, int32_t *lo, int32_t *hi);
 /* The band the radio is on is one it can use (band_use over its edges); true between bands */
 bool cfg_band_usable(void);
+
+/* The base's HW_CAP_* bits (radio_caps()), from radio.c once hw_start() ran: the LO offset (cfg_mode_lo_offset) is
+ * computed again from them. None until then */
+void cfg_hw_caps_set(uint32_t caps);
 
 // Persist all pending deferred writes immediately.
 void cfg_api_flush_all(void);
@@ -53,11 +81,57 @@ void cfg_api_stop_flush_thread(void);
 // Load the next/previous band above/below current frequency.
 void cfg_band_load_next(bool up);
 
-/* TX power in W (p_pwr, 0.1..10), saved and applied as Settings does it */
+/* TX power in W (p_pwr, 0.1..BOARD_PWR_MAX), saved and applied as Settings does it */
 void cfg_pwr_set(float watts);
+
+/* The highest TX power in W that can be set (BOARD_PWR_MAX; the X6200 on battery BOARD_PWR_MAX_BAT).
+ * Only later settings are clipped to it: the power already set is left as it is. The get is the top in force: a
+ * transverter's TX power limit under it too (cfg_pwr_xvtr_set) */
+void cfg_pwr_max_set(float watts);
+float cfg_pwr_max_get(void);
+
+/* What cfg_pwr_xvtr_set did to PWR */
+typedef enum {
+    PWR_XVTR_SAME = 0,
+    PWR_XVTR_HELD,          /* to the limit (down, or up after it with a new one), the PWR from before kept */
+    PWR_XVTR_RESTORED,      /* off the transverter: the PWR from before back */
+} pwr_xvtr_t;
+
+/* The TX power limit of a transverter (#104), W, 0 none: of the one that covers freq (on, with a shift), and the one
+ * the radio is held to tuned to rx and transmitting on tx, the lower where both have one */
+float cfg_transverter_pwr_for(int32_t freq);
+float cfg_transverter_pwr_cap(int32_t rx, int32_t tx);
+
+/* The transverter limit in force (radio.c, LVGL thread), 0 none: PWR stays at or under it, and comes down to it; off
+ * the transverters (on_xvtr false) the PWR from before comes back. The get: the limit in force, 0 none */
+pwr_xvtr_t cfg_pwr_xvtr_set(float watts, bool on_xvtr);
+float cfg_pwr_xvtr_get(void);
+
+/* The transverter at freq for the screen: the name of the band list's band there ("2m"), else its number ("1") */
+void cfg_transverter_name(int32_t freq, char *buf, size_t size);
 
 /* The other VFO; with independent VFOs (p_indep_vfo) its own band comes with it */
 void cfg_vfo_toggle(void);
+
+/* A band's dial as the settings file has it: each VFO's frequency, mode, ATT, PRE and AGC, and the VFO in use. For an
+ * app that tunes across the bands (band_keep.h): taken before it first tunes into a band, put back once the radio is
+ * off that band. A tune into a band stores its frequency and mode there, and the band key then went to the app's */
+#define CFG_BAND_DIAL_N 11
+typedef struct {
+    int32_t band_id;
+    int32_t val[CFG_BAND_DIAL_N];
+    bool    stored[CFG_BAND_DIAL_N];    /* false: the band had none, its default at the next load: put back so */
+} cfg_band_dial_t;
+
+/* The band in use, -1 between the bands */
+int32_t cfg_band_current(void);
+/* The band freq is in, -1 none */
+int32_t cfg_band_of(int32_t freq);
+/* The dial of the band freq is in, the band in use too (its pending writes first); false when there is none there or a
+   row could not be read (the band is then left alone). LVGL thread */
+bool cfg_band_dial_get(int32_t freq, cfg_band_dial_t *d);
+/* d back into the settings file, unless its band is the one in use (false then, nothing written). LVGL thread */
+bool cfg_band_dial_put(const cfg_band_dial_t *d);
 
 /* The mode a frequency opens in: its sideband (LSB under 10 MHz, USB above and on 60 m), WFM and AM on the X6200's FM
  * broadcast and airband, NFM where only the WR12 receives */
@@ -67,6 +141,13 @@ int32_t cfg_default_mode(int32_t freq);
 int cfg_bands_active(int32_t *start, int32_t *stop, char (*names)[16], int max);
 /* The same with the bands' ids (ids may be NULL) */
 int cfg_bands_active_ids(int32_t *ids, int32_t *start, int32_t *stop, char (*names)[16], int max);
+/* The band plan's IARU region (1, 2, 3; the US plans 2; 0 none known, nothing moves): the band list's 160m, 80m,
+ * 40m SSB and 6m still on the edges of the region before take this one's (BandsTable::follow_region). The count of
+ * rows changed. LVGL thread */
+int cfg_bands_follow_region(int region);
+/* The IARU region whose edges the band list's 160m, 80m, 40m SSB and 6m were last given (1, the defaults', until
+ * another region came): the last region the band plan had, for Auto when nothing tells now */
+int cfg_bands_region(void);
 
 // Copy active VFO (freq, mode, agc, att, pre) to inactive VFO.
 void cfg_band_vfo_copy(void);

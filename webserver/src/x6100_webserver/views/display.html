@@ -1,6 +1,6 @@
 % rebase('base.html', title='Display')
 <h2><svg class="i"><use href="#i-monitor"/></svg>Display</h2>
-<p class="sub">How the radio's screen looks: the same options as Settings &rarr; Display. Every change is applied on the radio as you make it and each row says so (Applied on the radio, or why not); Theme, Spectrum and Spectrum height restart the radio's screen for a few seconds.</p>
+<p class="sub">How the radio's screen looks (Settings &rarr; Display), and a few station options of the other tabs. Every change is applied on the radio as you make it and each row says so (Applied on the radio, or why not); Theme, Spectrum and Spectrum height restart the radio's screen for a few seconds.</p>
 
 <style>
 .dp-grid{columns:2 430px;column-gap:18px}
@@ -12,10 +12,32 @@
 .col{display:flex;align-items:center;gap:8px}
 .col input[type=color]{width:38px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;background:none}
 .col input[type=color]:disabled{opacity:.35}
+/* Boot picture: the screen's 5:3 at the card's width */
+.bp-prev{display:block;width:100%;max-width:400px;aspect-ratio:5/3;margin:0 0 12px;border-radius:8px;border:1px solid var(--line);background:#08090c;object-fit:contain}
+.bp-prev[hidden]{display:none}
+#bp_now.note{color:var(--err)}
 </style>
 
 <div class="dp-foot"><span class="status" id="status" style="margin-left:0"></span></div>
 <div class="dp-grid" id="cards"></div>
+
+<!-- Not a GUI option: the web server keeps it (/api/boot_picture), so it works with the radio's screen down too -->
+<div class="dp-grid">
+<section class="dp-card" id="bootpic">
+<div class="dp-head"><span class="dp-ico"><svg class="i"><use href="#i-image"/></svg></span><div><h3>Boot picture<span class="eff">Takes effect: at the next start</span></h3><p>On the screen while the radio starts: the built-in logo, or a picture of your own</p></div></div>
+<div class="dp-body">
+<img class="bp-prev" id="bp_img" alt="The picture the radio starts with" hidden>
+<p id="bp_now"></p>
+<p class="sub">A PNG of 800x480 pixels, the screen's size, up to 2 MB. It is kept on the card's DATA partition, so updates leave it as it is, and the Backup takes it along. Default goes back to the built-in logo.</p>
+<input type="file" id="bp_file" accept="image/png,.png" aria-label="Your picture, a PNG of 800x480">
+<div class="actions">
+  <button id="bp_upload" class="primary"><svg class="i"><use href="#i-upload"/></svg>Upload</button>
+  <button id="bp_default">Default</button>
+  <span class="status" id="bp_status"></span>
+</div>
+</div>
+</section>
+</div>
 
 <script>
 const ICONS = {
@@ -25,7 +47,8 @@ const ICONS = {
   layers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>',
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>',
-  antenna: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10" r="1.4"/><path d="M12 11.4V21M8.5 6.5a5 5 0 0 0 0 7M15.5 6.5a5 5 0 0 1 0 7M5.6 3.6a9 9 0 0 0 0 12.8M18.4 3.6a9 9 0 0 1 0 12.8"/></svg>'
+  antenna: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="10" r="1.4"/><path d="M12 11.4V21M8.5 6.5a5 5 0 0 0 0 7M15.5 6.5a5 5 0 0 1 0 7M5.6 3.6a9 9 0 0 0 0 12.8M18.4 3.6a9 9 0 0 1 0 12.8"/></svg>',
+  tx: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7l-5 14M12 7l5 14M9 15h6"/><circle cx="12" cy="6" r="1.4"/><path d="M15.5 3.5a4 4 0 0 1 0 5M8.5 3.5a4 4 0 0 0 0 5M18.5 1.5a7 7 0 0 1 0 9M5.5 1.5a7 7 0 0 0 0 9"/></svg>'
 };
 
 /* [icon, title, note, rows]; row: [name, label, hint, kind, extra]
@@ -51,14 +74,25 @@ const CARDS = [
     ["spectrum_fill_gradient", "Fill gradient", "The fill fading to the background at the bottom", "sw"],
     ["wf_palette", "Waterfall colours", "The theme's, or one of these", "sel", ["Theme", "Classic", "Gauss", "Grey", "Fire", "Ice", "Rainbow"]],
     ["wf_mode", "Mode", "Centered keeps the VFO in the middle, Fixed keeps the span", "seg", ["Centered", "Fixed"]],
+    ["wf_fixed_jump", "Jump at", "Fixed: the view moves on when the VFO line is 40% of the span from the centre, or when the passband or the line reaches the screen's edge (100 Hz from it)", "sel", ["40%", "Passband", "Line"]],
+    ["wf_fixed_after", "Jump to", "Fixed: the line back in the centre, at the other edge to tune on across the screen, or kept at the edge with the view scrolling along", "sel", ["Center", "Other edge", "Scroll"]],
     ["wf_speed", "Speed", "Lines a second, slow to fast", "range", [1, 5, 1, 1, ""]],
     ["auto_level", "Auto level", "Follows the noise floor by itself", "sw"],
     ["auto_level_offset", "Auto level offset", "Darker or brighter than the noise", "range", [-150, 150, 5, 10, " dB"]],
     ["wf_center_line", "Center line", "A line on the VFO", "sw"],
     ["wf_zoom", "Zoom", "Zoom with the waterfall instead of the span", "sw"],
-    ["wf_smooth", "Smooth scroll", "Scrolls by pixels instead of lines", "sw"]]],
+    ["wf_smooth", "Smooth scroll", "Scrolls by pixels instead of lines", "sw"],
+    ["wf_3d", "3D", "The last seconds as traces one behind the other, the newest in front; not with Amber Trey, whose display covers the waterfall", "sw"],
+    ["wf_3d_colors", "3D colours", "3D: by signal strength, the waterfall's, or blue", "sel", ["Strength", "Waterfall", "Blue"]],
+    ["wf_3d_depth", "3D depth", "3D: the traces shown, every third line", "range", [8, 64, 4, 1, " traces"]],
+    ["wf_3d_tilt", "3D tilt", "3D: seen from the front (tall traces) to from above (more depth)", "range", [0, 10, 1, 1, ""]],
+    ["wf_3d_floor", "3D floor", "3D: how much above the noise floor is cut away", "range", [0, 40, 2, 1, ""]],
+    ["wf_3d_range", "3D range", "3D: the dB above the noise floor at the full height; less makes weak signals taller", "range", [20, 60, 5, 1, " dB"]],
+    ["wf_3d_peak", "3D peaks", "3D: the newest trace's peaks held a moment", "sw"],
+    ["wf_3d_glide", "3D glide", "3D: the traces move back smoothly, 30 pictures a second; off: a step at each line, less CPU", "sw"]]],
   ["layers", "On the waterfall", "What is drawn over it", [
-    ["band_plan", "Band plan", "The IARU segments on top", "sw"],
+    ["band_plan", "Band plan", "The plan's segments on top", "sw"],
+    ["band_region", "Plan", "", "sel", ["Auto", "Region 1", "Region 2", "Region 3", "US Extra", "US Advanced", "US General", "US Technician"]],
     ["cluster_spots_wf", "Cluster spots", "The calls at their frequencies", "sw"],
     ["cluster_column", "Cluster column", "The spot list on the right", "sw"]]],
   ["sun", "Backlight", "Screen and button lights", [
@@ -66,23 +100,29 @@ const CARDS = [
     ["bright_idle", "Brightness when idle", "", "range", [-1, 9, 1, 1, ""]],
     ["bright_timeout", "Idle after", "Seconds without a key or the knob", "range", [5, 120, 5, 1, " s"]],
     ["bright_buttons", "Button lights", "", "sel", ["Always off", "Always on", "Temporarily on"]],
-    ["screen_off_min", "Screen off after", "Minutes without a key or the knob, 0 never; the next key wakes it", "range", [0, 120, 1, 1, " min"]],
-    ["screen_off_always", "Screen always off", "A radio run from the knob or a browser; POWER shows the screen for a while", "sw"]]],
+    ["screen_saver", "Screensaver", "Over the screen after a time without use; a key, a knob or TX ends it, and that key or turn only wakes the screen", "sel", ["None", "Matrix rain"]],
+    ["screen_saver_min", "Screensaver after", "Minutes without a key, a knob or TX", "range", [1, 120, 1, 1, " min"]],
+    ["screen_off_min", "Screen off after", "Minutes without a key or the knob, 0 never; a screensaver shows until then; the next key wakes it", "range", [0, 120, 1, 1, " min"]],
+    ["screen_off_always", "Screen always off", "A radio run from the knob or a browser; POWER shows the screen for a while, no screensaver", "sw"]]],
   ["remote", "Remote station", "A radio run from a browser or a TCI client", [
     ["speaker_off", "Speaker always off", "The speaker and the TX monitor stay silent whatever the volume; the sound to the browser, TCI and Bluetooth headphones goes on", "sw"]]],
   ["antenna", "Receiver", "What the radio receives above HF", [
-    ["wr12", "WR12 on HOST", "Xiegu's WR12 receiver on the HOST port: 54 MHz-1 GHz to receive, never to transmit. The band keys and the band plan take its bands (2 m, 70 cm)", "sw"]]],
+    ["wr12", "WR12 on HOST", "Xiegu's WR12 receiver on the HOST port: 54 MHz-1 GHz to receive, never to transmit. The radio tunes it and listens through it from 54 MHz up, and transmits nothing meanwhile; the band keys and the band plan take its bands (2 m, 70 cm)", "sw"]]],
+  ["tx", "Transmitter", "Where the radio may transmit (Settings → TX Cal)", [
+    ["tx_outside_bands", "TX outside ham bands", "Off: PTT, the apps, CW, the tuners and the SWR scan only on the amateur bands and a transverter's range; the hand mic, VOX and the KEY jack held at 0 W elsewhere. On: wherever the radio can transmit, only for operators licensed there (MARS, CAP). Receive-only ranges stay receive only", "sw"]]],
   ["text", "Text and info", "What the screen shows bigger", [
     ["indep_vfo", "Independent VFOs", "VFO A and VFO B each keep their own band, frequency and mode; A=B copies everything", "sw"],
     ["birdie_marks", "Birdies", "The radio's own carriers found by Birdie Cal: marked on the waterfall, and notched out of the passband", "seg", ["Off", "Marks", "Marks + notch"]],
     ["mode_from_plan", "Mode from band plan", "Turning the knob into another band plan segment sets its mode: CW there, the sideband in the phone part", "sw"],
     ["zoom_step_per_mode", "Zoom and step per mode", "Each mode keeps its own waterfall zoom and tuning step; off: one zoom and one step for every mode, a mode change keeps them", "sw"],
+    ["power_display", "Power display", "The box at the top right: the battery's charge with the time left or to full, the battery's and the supply's voltages, the two in turn every 5 s, or the charge with the supply's voltage", "sel", ["% + time", "Volts", "Alternate", "% + V"]],
     ["icon_menus", "Icon menus", "APP, Modes and the Settings rail as grids of icons; off: the old text menus", "sw"],
     ["knob_info", "Knob info", "The value shown while a knob turns", "sw"],
+    ["buttons_hide", "Hide buttons", "The main screen's five buttons and the knob lines over them hidden after so long without a key, the waterfall down to the bottom; any key brings them back, F1-F5 only that", "seg", ["Off", "3 s", "5 s", "10 s"]],
     ["digi_text_compact", "Decoder text", "CW and RTTY text: large, or compact with more lines", "seg", ["Large", "Compact"]],
     ["mag_freq", "Magnify frequency", "Big frequency while tuning", "sw"],
-    ["mag_info", "Magnify info", "Big value of the control being changed", "sw"],
-    ["mag_alc", "Magnify ALC", "Big ALC reading while transmitting", "sw"]]]
+    ["mag_info", "Magnify info", "A short note when a key switches the VFO, split, the AGC, PRE, ATT or the ATU", "sw"],
+    ["mag_alc", "TX panel", "The big panel while transmitting: power, SWR and ALC, the frequency and the time on the air (the radio's Popups TX). Off, the S-meter box shows the readings instead (the apps keep their TX strip); a TUNE for an external tuner still brings up the panel", "sw"]]]
 ];
 
 let D = {};
@@ -123,6 +163,7 @@ var setVal = function(name, v) {
   rowState(name, "saving");
   send({name: name, val: v}, function() {
     rowState(name, "applied", RESTARTS[name] ? "Applied: the radio's screen restarts" : "Applied on the radio");
+    if (name === "band_region") setTimeout(reread, 500);   /* the plan the radio uses now */
   }, function(msg) {
     /* not taken: the control shows what the radio still has */
     D[name] = old;
@@ -173,7 +214,7 @@ var control = function(o) {
       if (kind === "theme") {
         const old = D.theme, sel2 = this;
         D.theme = this.value; rowState("theme", "saving");
-        send({name: "theme", theme: this.value}, function() { rowState("theme", "applied", "Applied: the radio's screen restarts"); },
+        send({name: "theme", theme: this.value}, function() { rowState("theme", "applied", "Applied: the radio's screen restarts"); refresh(); },
              function(msg) { D.theme = old; sel2.value = old; rowState("theme", "failed", msg); });
       } else setVal(name, parseInt(this.value, 10));
     });
@@ -223,14 +264,42 @@ var preview = function() {
   return s + '</svg>';
 }
 
-/* Rows that only matter with another option on */
+/* The band plan in use, and what Auto finds on the radio (from its GPS, locator or callsign, else the region it had
+ * last: "last") */
+const PLAN_HOW = {gps: "the GPS", qth: "the locator", call: "the callsign"};
+var planHint = function() {
+  const how = PLAN_HOW[D.band_region_how];
+  const auto = "Region " + D.band_region_auto + (how ? " from " + how + " " + D.band_region_at
+    : D.band_region_how === "last" ? ", the last one it had: no GPS, locator or callsign now" : ", no GPS, locator or callsign");
+  return D.band_region ? "In use: " + ROWS.band_region[4][D.band_region_now] + " (Auto would take " + auto + ")" : "Auto: " + auto;
+}
+
+var reread = function() {
+  $.ajax({url: "/api/display", dataType: "json", success: function(d) { D = d; refresh(); }});
+}
+
+/* Rows that only matter with another option on. Amber Trey draws no 3D: there 3D shows off and greyed, as on the
+ * radio, and the radio keeps its setting for the other themes */
 var refresh = function() {
+  const amber = String(D.theme).toLowerCase() === "amber trey";   /* the GUI's name match ignores case */
   $("#row-auto_level_offset").toggleClass("off", !D.auto_level);
+  $("#row-wf_fixed_jump, #row-wf_fixed_after").toggleClass("off", D.wf_mode !== 1);
+  $("#row-wf_3d").toggleClass("off", amber);
+  $("#opt-wf_3d").prop({checked: !!D.wf_3d && !amber, disabled: amber});
+  $("#row-wf_3d_colors, #row-wf_3d_depth, #row-wf_3d_tilt, #row-wf_3d_floor, #row-wf_3d_range, #row-wf_3d_peak, #row-wf_3d_glide").toggleClass("off", !D.wf_3d || amber);
   $("#row-spectrum_filled, #row-spectrum_peak, #row-spectrum_height, #row-spectrum_line_color").toggleClass("off", !D.spectrum_show);
   $("#row-spectrum_fill_color, #row-spectrum_fill_gradient").toggleClass("off", !D.spectrum_show || !D.spectrum_filled);
   $("#row-smeter_bar_color").toggleClass("off", D.smeter_color !== 0 || (D.smeter_needle === 1 && D.smeter_lamp === 1));
   $("#row-smeter_lamp").toggleClass("off", D.smeter_needle !== 1);
   $("#row-smeter_color").toggleClass("off", D.smeter_needle === 1 && D.smeter_lamp === 1);
+  $("#row-screen_saver").toggleClass("off", D.screen_off_always === 1);    /* always off: dark, no screensaver */
+  $("#row-screen_saver_min").toggleClass("off", !D.screen_saver || D.screen_off_always === 1);
+  if ("band_region" in D) {
+    $("#opt-band_region option[value=0]").text("Auto (Region " + D.band_region_auto + ")");
+    let hint = $("#row-band_region .dp-lbl span");
+    if (!hint.length) hint = $("<span>").appendTo("#row-band_region .dp-lbl");
+    hint.text(planHint());
+  }
   $("#prev").html(preview());
 }
 
@@ -257,4 +326,53 @@ var render = function() {
 
 $.ajax({url: "/api/display", dataType: "json", success: function(d) { D = d; render(); },
   error: function(xhr) { showStatus(xhr.responseJSON ? xhr.responseJSON.msg : "Radio not reachable", true); }});
+
+/* Boot picture: what the radio starts with, an upload, Default */
+var bpStatus = function(text, error=false) {
+  const el = $("#bp_status");
+  el.toggleClass("error", error);
+  el.html('<span class="dot"></span>').append(document.createTextNode(text));
+}
+
+var bpShow = function(st) {
+  $("#bp_img").attr("src", "/api/boot_picture/png?" + Date.now());
+  const about = [st.size, st.date].filter(Boolean).join(", ");
+  const now = !st.own ? "The radio starts with the built-in logo."
+    : st.error ? "Your picture" + (about ? " (" + about + ")" : "") + ", but the radio can't show it and starts with the built-in logo: " + st.error
+    : "The radio starts with your picture (" + about + ").";
+  $("#bp_now").toggleClass("note", !!(st.own && st.error)).text(now);
+  $("#bp_default").prop("disabled", !st.own);
+}
+
+var bpLoad = function() {
+  $.ajax({url: "/api/boot_picture", dataType: "json", timeout: X6100_WAIT_MS, success: bpShow,
+    error: function(xhr, why) { bpStatus(x6100FailText(xhr, why), true); }});
+}
+
+$("#bp_img").on("load", function() { $(this).prop("hidden", false); })
+  .on("error", function() { $(this).prop("hidden", true); });   /* none (the web server on a PC) */
+
+$("#bp_upload").on("click", function() {
+  const f = $("#bp_file")[0].files[0];
+  if (!f) { bpStatus("Choose a picture first", true); return; }
+  const fd = new FormData();
+  fd.append("file", f);
+  $("#bp_upload").prop("disabled", true);
+  bpStatus("Uploading...");
+  $.ajax({url: "/api/boot_picture", type: "POST", data: fd, processData: false, contentType: false, dataType: "json",
+    timeout: X6100_WAIT_MS,
+    success: function(st) { bpShow(st); bpStatus("Saved: the radio starts with it from the next start"); $("#bp_file").val(""); },
+    error: function(xhr, why) { bpStatus(x6100FailText(xhr, why), true); },
+    complete: function() { $("#bp_upload").prop("disabled", false); }});
+});
+
+$("#bp_default").on("click", function() {
+  if (!confirm("Remove your boot picture? The radio starts with the built-in logo again.")) return;
+  bpStatus("Removing...");
+  $.ajax({url: "/api/boot_picture", type: "DELETE", dataType: "json", timeout: X6100_WAIT_MS,
+    success: function(st) { bpShow(st); bpStatus("Removed: the built-in logo from the next start"); },
+    error: function(xhr, why) { bpStatus(x6100FailText(xhr, why), true); }});
+});
+
+bpLoad();
 </script>

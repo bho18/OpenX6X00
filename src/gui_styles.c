@@ -33,7 +33,7 @@ static lv_style_t popup_check_style, popup_check_on_style;
 int top_bar_h = TOP_BAR_STD_H, freq_strip_h = FREQ_STRIP_STD_H, clock_w = 168, meter_row_h = 0;
 
 /* x of a box w wide in the middle of the screen (odd widths round to the right) */
-#define CENTRED(w) (400 - (w) / 2)
+#define CENTRED(w) ((BOARD_DISP_W / 2) - (w) / 2)
 
 static void place(lv_style_t *s, lv_coord_t x, lv_coord_t y, lv_coord_t w, lv_coord_t h) {
     lv_style_set_x(s, x);
@@ -89,6 +89,7 @@ static void bar_sizes(void) {
         freq_strip_h = 102;
         clock_w      = 280;
     }
+    if (theme_amber) buttons_h = 36;                       /* Amber Trey: one line of text */
 }
 
 static void screen_styles(void) {
@@ -96,7 +97,7 @@ static void screen_styles(void) {
     lv_style_set_border_color(&spectrum_style, lv_color_hex(0xAAAAAA));
     lv_style_set_border_width(&spectrum_style, 0);
     lv_style_set_radius(&spectrum_style, 0);
-    lv_style_set_width(&spectrum_style, 800);
+    lv_style_set_width(&spectrum_style, BOARD_DISP_W);
     lv_style_set_x(&spectrum_style, 0);
 
     /* the frequencies under the spectrum; VISION's font is the 28 of fonts_scale() */
@@ -110,7 +111,7 @@ static void screen_styles(void) {
     lv_style_set_border_width(&waterfall_style, 0);
     lv_style_set_radius(&waterfall_style, 0);
     lv_style_set_clip_corner(&waterfall_style, true);
-    lv_style_set_width(&waterfall_style, 800);
+    lv_style_set_width(&waterfall_style, BOARD_DISP_W);
     lv_style_set_x(&waterfall_style, 0);
     lv_style_set_pad_all(&waterfall_style, 0);
 }
@@ -142,7 +143,7 @@ static void message_styles(void) {
 
     /* RTTY, NavTex and the SWL panel: 24 px text */
     lv_style_set_text_font(&panel_style, &sony_24);
-    place(&panel_style, CENTRED(795), 230, 795, 480 - BUTTONS_H - TOP_BAR_MARGIN - 230);
+    place(&panel_style, CENTRED(795), 230, 795, BOARD_DISP_H - BUTTONS_H - TOP_BAR_MARGIN - 230);
     lv_style_set_pad_ver(&panel_style, 10);
     lv_style_set_pad_hor(&panel_style, 10);
     lv_style_set_radius(&panel_style, 0);
@@ -166,7 +167,7 @@ static void window_styles(void) {
     lv_style_set_pad_ver(&dialog_style, 0);
     lv_style_set_pad_hor(&dialog_style, 0);
 
-    place(&freq_strip_style, TOP_BAR_MARGIN, FREQ_STRIP_Y, 800 - 2 * TOP_BAR_MARGIN, FREQ_STRIP_H);
+    place(&freq_strip_style, TOP_BAR_MARGIN, FREQ_STRIP_Y, BOARD_DISP_W - 2 * TOP_BAR_MARGIN, FREQ_STRIP_H);
 
     lv_style_set_bg_opa(&dialog_item_style, LV_OPA_TRANSP);
     lv_style_set_bg_opa(&dialog_item_edited_style, LV_OPA_COVER);
@@ -181,7 +182,7 @@ static void top_bar_styles(void) {
 
     lv_style_set_align(&info_style, LV_ALIGN_TOP_LEFT);
     place(&info_style, TOP_BAR_MARGIN, TOP_BAR_MARGIN,
-          theme_shape.vision ? 800 - CLOCK_W - 3 * TOP_BAR_MARGIN - 3 : 360, TOP_BAR_BOX_H);
+          theme_shape.vision ? BOARD_DISP_W - CLOCK_W - 3 * TOP_BAR_MARGIN - 3 : 360, TOP_BAR_BOX_H);
     lv_style_set_pad_hor(&info_style, 5);
     lv_style_set_pad_ver(&info_style, 0);
     lv_style_set_pad_row(&info_style, 0);
@@ -205,7 +206,7 @@ static void top_bar_styles(void) {
         lv_style_set_align(meters[i], LV_ALIGN_TOP_LEFT);
         if (theme_shape.vision) {
             place(meters[i], TOP_BAR_MARGIN, FREQ_STRIP_Y + FREQ_STRIP_H + TOP_BAR_MARGIN,
-                  i ? 800 - 2 * TOP_BAR_MARGIN : 800 - 3 * TOP_BAR_MARGIN - VISION_POWER_W,
+                  i ? BOARD_DISP_W - 2 * TOP_BAR_MARGIN : BOARD_DISP_W - 3 * TOP_BAR_MARGIN - VISION_POWER_W,
                   METER_ROW_H - 2 * TOP_BAR_MARGIN);
         } else {
             place(meters[i], TOP_BAR_METER_X, TOP_BAR_MARGIN, TOP_BAR_METER_W, TOP_BAR_BOX_H);
@@ -226,7 +227,7 @@ static void top_bar_styles(void) {
 /* Deck (Black Metal, Total Black): rows and panel the full width, the clock drawn on the rows,
  * the S-meter and TX info on the frequency panel */
 static void deck_layout(void) {
-    place(&info_style, 0, 0, 800, TOP_BAR_HEIGHT);
+    place(&info_style, 0, 0, BOARD_DISP_W, TOP_BAR_HEIGHT);
     lv_style_set_pad_hor(&info_style, 0);
     lv_style_set_x(&clock_style, -10);
     lv_style_set_y(&clock_style, 0);
@@ -234,7 +235,7 @@ static void deck_layout(void) {
     place(&meter_style, 0, FREQ_STRIP_Y, 300, FREQ_STRIP_H - 1);
     place(&tx_info_style, 0, FREQ_STRIP_Y, 300, FREQ_STRIP_H - 1);
     lv_style_set_x(&freq_strip_style, 0);
-    lv_style_set_width(&freq_strip_style, 800);
+    lv_style_set_width(&freq_strip_style, BOARD_DISP_W);
 }
 
 /* Again on a theme change: reset, not init, so that the old theme's properties go */
@@ -321,7 +322,12 @@ static void button_colours(void) {
     lv_style_set_border_color(&btn_active_style, TC(btn_active_border));
     lv_style_set_border_width(&btn_active_style, top_line ? 3 : LV_MAX(theme_shape.border, 2));
     lv_style_set_border_side(&btn_active_style, top_line ? LV_BORDER_SIDE_TOP : LV_BORDER_SIDE_FULL);
-    lv_style_set_border_side(&btn_style, theme_shape.deck ? LV_BORDER_SIDE_TOP : LV_BORDER_SIDE_FULL);
+    lv_style_set_border_side(&btn_style, theme_amber ? LV_BORDER_SIDE_LEFT
+                                         : theme_shape.deck ? LV_BORDER_SIDE_TOP : LV_BORDER_SIDE_FULL);
+    if (theme_amber) {   /* Amber Trey: a line between the buttons, the active one plain */
+        lv_style_set_border_side(&btn_active_style, LV_BORDER_SIDE_LEFT);
+        lv_style_set_border_width(&btn_active_style, 1);
+    }
     lv_style_set_text_color(&btn_active_style, TC(btn_active_text));
 
     /* disabled: the same solid button, text and border dimmed */
@@ -422,7 +428,7 @@ static void surface_images(void) {
     lv_style_remove_prop(&btn_disabled_style, LV_STYLE_BG_OPA);
     lv_style_remove_prop(&btn_disabled_style, LV_STYLE_BORDER_WIDTH);
 
-    surface_img(&background_style, TI_bg, 800, 480);
+    surface_img(&background_style, TI_bg, BOARD_DISP_W, BOARD_DISP_H);
     lv_style_set_bg_opa(&background_style, LV_OPA_COVER);   /* the colour stays under a picture */
     surface_img(&btn_style, TI_btn, bw, bh);
     surface_img(&btn_active_style, TI_btn_active, bw, bh);
@@ -431,7 +437,7 @@ static void surface_images(void) {
     surface_img(&meter_style, TI_bar, TOP_BAR_METER_W, TOP_BAR_BOX_H);
     surface_img(&tx_info_style, TI_bar, TOP_BAR_METER_W, TOP_BAR_BOX_H);
     surface_img(&clock_style, TI_bar, CLOCK_W, TOP_BAR_BOX_H);
-    surface_img(&freq_strip_style, TI_strip, 800 - 2 * TOP_BAR_MARGIN, FREQ_STRIP_H);
+    surface_img(&freq_strip_style, TI_strip, BOARD_DISP_W - 2 * TOP_BAR_MARGIN, FREQ_STRIP_H);
     surface_img(&dialog_style, TI_dialog, 796, DIALOG_H);
 
     /* encoder marks: the theme's LED picture, else a bar (deck: a 3 px line along the top) */
@@ -449,6 +455,7 @@ static void surface_images(void) {
         lv_style_remove_prop(&btn_mark_style, LV_STYLE_BG_IMG_SRC);
         if (theme_shape.mono) lv_style_set_width(&btn_mark_active_style, 8);   /* 1bit: the knob's one twice as wide */
     }
+    if (theme_amber) lv_style_set_width(&btn_mark_style, 0);   /* Amber Trey: no line over the buttons */
 }
 
 void styles_apply(void) {

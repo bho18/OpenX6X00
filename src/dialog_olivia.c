@@ -49,12 +49,15 @@
 #include "theme.h"
 #include "params/params.h"
 #include "pskreporter.h"
+#include "digi_textlog.h"       /* the text on the card (#55) */
 #include "station.h"
 #include "main.h"
+#include "freq_strip.h"
 
 #include "widgets/lv_waterfall.h"
 #include "widgets/lv_finder.h"
 
+#include "olivia.h"
 #include "olivia_app.h"
 #include "olivia_tx.h"
 #include "olivia_macro.h"
@@ -218,12 +221,12 @@ static void macro_hold(int idx);
 
 static char macro_labels[OLIVIA_MACRO_MAX][OLIVIA_MACRO_NAME_LEN + 2];
 
-static buttons_page_t page_1, page_2, page_3, page_4, page_5;
+static buttons_page_t page_1, page_2, page_3, page_4, page_5, page_6;
 
 static button_data_t btn_p1 = {
-    .type = BTN_TEXT, .label = "(OLV 1:5)",
+    .type = BTN_TEXT, .label = "(OLV 1:6)",
     .press = button_next_page_cb, .hold = button_prev_page_cb,
-    .next = &page_2, .prev = &page_5,
+    .next = &page_2, .prev = &page_6,
 };
 static button_data_t btn_text = {
     .type = BTN_TEXT, .label = "Free\nText", .press = text_press_cb,
@@ -241,7 +244,7 @@ static button_data_t btn_status = {
 };
 
 static button_data_t btn_p2 = {
-    .type = BTN_TEXT, .label = "(OLV 2:5)",
+    .type = BTN_TEXT, .label = "(OLV 2:6)",
     .press = button_next_page_cb, .hold = button_prev_page_cb,
     .next = &page_3, .prev = &page_1,
 };
@@ -298,19 +301,25 @@ static button_data_t *const macro_btns[OLIVIA_MACRO_MAX] = {
 };
 
 static button_data_t btn_p3 = {
-    .type = BTN_TEXT, .label = "(OLV 3:5)",
+    .type = BTN_TEXT, .label = "(OLV 3:6)",
     .press = button_next_page_cb, .hold = button_prev_page_cb,
     .next = &page_4, .prev = &page_2,
 };
 static button_data_t btn_p4 = {
-    .type = BTN_TEXT, .label = "(OLV 4:5)",
+    .type = BTN_TEXT, .label = "(OLV 4:6)",
     .press = button_next_page_cb, .hold = button_prev_page_cb,
     .next = &page_5, .prev = &page_3,
 };
 static button_data_t btn_p5 = {
-    .type = BTN_TEXT, .label = "(OLV 5:5)",
+    .type = BTN_TEXT, .label = "(OLV 5:6)",
     .press = button_next_page_cb, .hold = button_prev_page_cb,
-    .next = &page_1, .prev = &page_4,
+    .next = &page_6, .prev = &page_4,
+};
+/* TUNE for an external tuner, on the centre chosen for TX (ext_tune.h) */
+static button_data_t btn_p6 = {
+    .type = BTN_TEXT, .label = "(OLV 6:6)",
+    .press = button_next_page_cb, .hold = button_prev_page_cb,
+    .next = &page_1, .prev = &page_5,
 };
 
 static buttons_page_t page_1 = {
@@ -327,6 +336,9 @@ static buttons_page_t page_4 = {
 };
 static buttons_page_t page_5 = {
     {&btn_p5, &btn_macro8, &btn_macro9, &btn_macro10, &btn_macro11}
+};
+static buttons_page_t page_6 = {
+    {&btn_p6, &btn_ext_tune}
 };
 
 static dialog_t dialog = {
@@ -476,6 +488,32 @@ static void text_timer_cb(lv_timer_t *t)
     }
 }
 
+bool dialog_olivia_is_contestia(void)
+{
+    return olivia_tx_mode_proto(olivia_tx_get_mode()) == OLIVIA_PROTO_CONTESTIA;
+}
+
+/* The mode's name in the window's messages: Olivia or Contestia */
+static const char *family(void)
+{
+    return olivia_tx_mode_family(olivia_tx_get_mode());
+}
+
+/* The text log's mode and frequency: OLIVIA-8/250, the dial and the audio centre */
+static const char *log_mode(void)
+{
+    static char buf[24];
+
+    snprintf(buf, sizeof(buf), "%s-%s", dialog_olivia_is_contestia() ? "CONTESTIA" : "OLIVIA",
+             olivia_tx_mode_name(olivia_tx_get_mode()));
+    return buf;
+}
+
+static uint32_t sig_freq(void)
+{
+    return (uint32_t)cparam_i_get(cfg_fg_freq) + olivia_tx_get_center();
+}
+
 /* UI thread: one decoded block, at most 8 characters. */
 static void rx_text_ui(void *data)
 {
@@ -484,6 +522,7 @@ static void rx_text_ui(void *data)
 
     if (!alive)
         return;
+    digi_textlog_rx(log_mode(), sig_freq(), DIGI_TEXTLOG_SIG_Q, olivia_app_quality(), s);
 
     snprintf(before, sizeof(before), "%s", digi_qso_dx());
 
@@ -493,7 +532,8 @@ static void rx_text_ui(void *data)
         const char *de = digi_qso_feed_rx(*s);
         if (de && param_i_get(cfg_pskreporter))     /* no S/N figure in these modes: 0 dB */
             pskr_spot(params.callsign.x, station_qth(), VERSION, de, "",
-                      (uint32_t)cparam_i_get(cfg_fg_freq) + olivia_tx_get_center(), 0, "OLIVIA");
+                      (uint32_t)cparam_i_get(cfg_fg_freq) + olivia_tx_get_center(), 0,
+                      dialog_olivia_is_contestia() ? "CONTESTIA" : "OLIVIA");
     }
 
     if (strcmp(before, digi_qso_dx()) != 0)
@@ -514,6 +554,7 @@ static void tx_echo_cb(const char *text)
 
     if (!alive || !text)
         return;
+    digi_textlog_tx(log_mode(), sig_freq(), text);
 
     /* The line breaks sent around every transmission are for the other
      * station's screen; here each transmission gets its own line. */
@@ -734,10 +775,10 @@ static int band_nearest(uint32_t freq)
 static void band_msg(uint32_t f)
 {
     if (dial_offset_hz == 0)
-        msg_update_text_fmt("Olivia %s  %u.%04u MHz", olivia_bands[cur_band].label,
+        msg_update_text_fmt("%s %s  %u.%04u MHz", family(), olivia_bands[cur_band].label,
                             (unsigned)(f / 1000000u), (unsigned)((f / 100u) % 10000u));
     else
-        msg_update_text_fmt("Olivia %s  %u.%04u MHz (%+d kHz)", olivia_bands[cur_band].label,
+        msg_update_text_fmt("%s %s  %u.%04u MHz (%+d kHz)", family(), olivia_bands[cur_band].label,
                             (unsigned)(f / 1000000u), (unsigned)((f / 100u) % 10000u),
                             (int)(dial_offset_hz / 1000));
 }
@@ -778,7 +819,7 @@ static void change_band(int8_t dir)
         return;
 
     if (olivia_tx_is_on()) {
-        msg_update_text_fmt("#%06x Olivia: stop TX first#", theme_hex(TC_err));
+        msg_update_text_fmt("#%06x %s: stop TX first#", theme_hex(TC_err), family());
         return;
     }
 
@@ -843,7 +884,7 @@ static void dial_change(int d)
     int32_t v = dial_offset_hz + d * DIAL_STEP_HZ;
 
     if (olivia_tx_is_on()) {
-        msg_update_text_fmt("#%06x Olivia: stop TX first#", theme_hex(TC_err));
+        msg_update_text_fmt("#%06x %s: stop TX first#", theme_hex(TC_err), family());
         return;
     }
 
@@ -883,7 +924,7 @@ static void dial_hold_cb(button_data_t *b)
     (void)b;
 
     if (olivia_tx_is_on()) {
-        msg_update_text_fmt("#%06x Olivia: stop TX first#", theme_hex(TC_err));
+        msg_update_text_fmt("#%06x %s: stop TX first#", theme_hex(TC_err), family());
         return;
     }
     if (dial_offset_hz != 0) {
@@ -919,7 +960,8 @@ static const char *mode_label_getter(void)
 {
     static char buf[24];
 
-    snprintf(buf, sizeof(buf), "Mode\n%s", olivia_tx_mode_name(olivia_tx_get_mode()));
+    snprintf(buf, sizeof(buf), "Mode\n%s%s", dialog_olivia_is_contestia() ? "CT " : "",
+             olivia_tx_mode_name(olivia_tx_get_mode()));
     return buf;
 }
 
@@ -1024,7 +1066,7 @@ static void send_text(const char *text)
         return;
 
     if (olivia_tx_is_on()) {
-        msg_update_text_fmt("#%06x Olivia TX busy#", theme_hex(TC_err));
+        msg_update_text_fmt("#%06x %s TX busy#", theme_hex(TC_err), family());
         return;
     }
 
@@ -1032,11 +1074,11 @@ static void send_text(const char *text)
     snprintf(buf, sizeof(buf), "\n%s\n", text);
 
     if (olivia_tx_send(buf)) {
-        msg_update_text_fmt("Olivia %s TX...",
+        msg_update_text_fmt("%s %s TX...", olivia_tx_mode_family(olivia_tx_get_mode()),
                             olivia_tx_mode_name(olivia_tx_get_mode()));
         refresh_btn(&btn_status);
     } else {
-        msg_update_text_fmt("#%06x Olivia TX busy#", theme_hex(TC_err));
+        msg_update_text_fmt("#%06x %s TX busy#", theme_hex(TC_err), family());
     }
 }
 
@@ -1057,12 +1099,17 @@ static void text_press_cb(button_data_t *b)
     if (input_active)
         return;
     if (olivia_tx_is_on()) {
-        msg_update_text_fmt("#%06x Olivia TX busy#", theme_hex(TC_err));
+        msg_update_text_fmt("#%06x %s TX busy#", theme_hex(TC_err), family());
         return;
     }
 
     input_begin();
-    textarea_window_open_w_label(free_text_ok_cb, input_cancel_cb, "Olivia msg:");
+    {
+        char label[24];
+
+        snprintf(label, sizeof(label), "%s msg:", family());   /* the label copies it */
+        textarea_window_open_w_label(free_text_ok_cb, input_cancel_cb, label);
+    }
     /* The stock window takes 64 characters. */
     lv_textarea_set_max_length(textarea_window_text(), OLIVIA_MACRO_TEXT_LEN - 1);
 }
@@ -1074,7 +1121,7 @@ static void stop_press_cb(button_data_t *b)
     (void)b;
     if (olivia_tx_is_on()) {
         olivia_tx_stop();
-        msg_update_text_fmt("Olivia: stopping after this block");
+        msg_update_text_fmt("%s: stopping after this block", family());
     }
 }
 
@@ -1083,7 +1130,7 @@ static void mode_press_cb(button_data_t *b)
     olivia_mode_t m;
 
     if (olivia_tx_is_on()) {
-        msg_update_text_fmt("#%06x Olivia: stop TX first#", theme_hex(TC_err));
+        msg_update_text_fmt("#%06x %s: stop TX first#", theme_hex(TC_err), family());
         return;
     }
 
@@ -1094,7 +1141,8 @@ static void mode_press_cb(button_data_t *b)
     set_center((int)olivia_tx_get_center());
     rebuild_rx();
 
-    msg_update_text_fmt("Olivia %s", olivia_tx_mode_name(m));
+    msg_update_text_fmt("%s %s", olivia_tx_mode_family(m), olivia_tx_mode_name(m));
+    freq_strip_set_app(family());   /* as screen_main.c's app_name() gives it at the opening */
     buttons_refresh(b);
 }
 
@@ -1102,7 +1150,7 @@ static void status_press_cb(button_data_t *b)
 {
     (void)b;
     rebuild_rx();
-    msg_update_text_fmt("Olivia RX resync");
+    msg_update_text_fmt("%s RX resync", family());
 }
 
 /* Hold: clear the text and the waterfall. */
@@ -1319,7 +1367,7 @@ static void rotary_cb(int32_t diff)
     int32_t step = ROTARY_HZ * (mag > 6 ? 6 : (mag > 3 ? 3 : 1));
 
     if (olivia_tx_is_on()) {
-        msg_update_text_fmt("#%06x Olivia: stop TX first#", theme_hex(TC_err));
+        msg_update_text_fmt("#%06x %s: stop TX first#", theme_hex(TC_err), family());
         return;
     }
 
@@ -1524,6 +1572,7 @@ static void destruct_cb(void)
     olivia_app_set_text_cb(NULL);
     olivia_app_set_audio_tap(NULL);
     olivia_tx_set_echo_cb(NULL);
+    digi_textlog_end();
 
     pthread_mutex_lock(&spec_mux);
     if (spec_ok)

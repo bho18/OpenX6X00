@@ -188,7 +188,7 @@ void radio_voice_observation(fd_voice_observation *o) {
         hw_ptt_observation_t p={0};
         if(voice_physical_ptt((hw_ptt_source_t)i,&p))o->ptt[i]=(fd_ptt_observation){p.valid,p.pressed,p.sequence,p.monotonic_ms,p.release_sequence};
     }
-    o->protection=atomic_load(&voice_radio.owned) && (radio_swr_trips()!=voice_radio.swr_at_entry ||
+    o->protection=atomic_load(&voice_radio.owned) && (cfg_tx_block() || radio_swr_trips()!=voice_radio.swr_at_entry ||
         atomic_load(&freedv_base_errors)!=voice_radio.errors_at_entry || atomic_load(&voice_radio.failed));
 }
 static bool voice_released_rx(fd_voice_observation *o) {
@@ -482,7 +482,7 @@ static bool voice_tx_admit(void *context) {
     if(a->rejected)return false;
     fd_abort_reason reason=FD_ABORT_NONE;
     bool ok=atomic_load(&voice_radio.owned) && voice_native_healthy() && !atomic_load(a->cancel) &&
-        !atomic_load(&voice_radio.cancelled) && a->epoch==atomic_load(&voice_radio.epoch);
+        !atomic_load(&voice_radio.cancelled) && a->epoch==atomic_load(&voice_radio.epoch) && !cfg_tx_block();
     if(a->release_epoch!=atomic_load(&voice_radio.release_epoch)){ok=false;reason=FD_ABORT_START_RELEASE;}
     fd_voice_observation o;radio_voice_observation(&o);uint64_t time=get_time();
     bool healthy=o.valid && o.monotonic_ms && time>=o.monotonic_ms &&
@@ -560,7 +560,8 @@ static bool voice_transmit(void *unused,uint64_t generation,const atomic_bool *c
         voice_radio.starting_epoch,voice_radio.starting_release_epoch);
     if(!voice_tx_admit(&admission))return false;
     radio_lock();
-    bool ok=(state==RADIO_RX || state==RADIO_TX) && cfg_is_tx_freq(cparam_i_get(cfg_fg_freq)) &&
+    bool ok=(state==RADIO_RX || state==RADIO_TX) && !radio_no_data() && cfg_is_tx_freq(cparam_i_get(cfg_fg_freq)) &&
+        !cfg_tx_refusal(cparam_i_get(cfg_fg_freq)) &&
         voice_tx_admit(&admission) && fd_writer_voice_begin();
     if(ok){
         ok=voice_profile_locked();

@@ -321,6 +321,7 @@ function makeJQuery(doc, win) {
     css(k, v) { if (typeof k === 'object') return this.each((i, el) => Object.assign(el.style, k)); if (v === undefined) return this[0] && this[0].style[k]; return this.each((i, el) => { el.style[k] = v; }); }
     show() { return this.each((i, el) => { el.style.display = ''; }); }
     hide() { return this.each((i, el) => { el.style.display = 'none'; }); }
+    toggle(on) { return this.each((i, el) => { el.style.display = (on === undefined ? el.style.display === 'none' : on) ? '' : 'none'; }); }
   }
   function $(s) {
     if (typeof s === 'function') { s(); return; }
@@ -366,8 +367,9 @@ function expand(text) {
   return out.join('\n');
 }
 
-/* A page: its markup in the body, base.html's helpers, jQuery; scripts run in it with page.run(file or text) */
-function page(view) {
+/* A page: its markup in the body, base.html's helpers, jQuery; scripts run in it with page.run(file or text).
+ * values: what bottle puts in for a {{name}} or {{name[0]}} of the page, as text (memories.html's TUNE_MHZ) */
+function page(view, values) {
   const doc = new Document(), win = new Window(doc);
   doc.defaultView = win;
   const timers = [];
@@ -390,7 +392,8 @@ function page(view) {
   const base = fs.readFileSync(path.join(WEB, 'views/base.html'), 'utf8');
   p.run(/<script>([\s\S]*?)<\/script>/.exec(base)[1], 'views/base.html');
   if (view) {
-    const text = fs.readFileSync(path.join(WEB, 'views', view), 'utf8');
+    const text = fs.readFileSync(path.join(WEB, 'views', view), 'utf8')
+      .replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (x, e) => values && Object.prototype.hasOwnProperty.call(values, e) ? values[e] : x);
     const markup = expand(text).split('\n').filter(l => !/^\s*%/.test(l)).join('\n').replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '');
     parseHTML(doc, markup).forEach(n => doc.body.appendChild(n));
     p.script = [...text.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).pop();

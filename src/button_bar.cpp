@@ -10,10 +10,12 @@
  */
 #include "button_bar.h"
 
+#include "board.h"
 #include "radio_controls.h"
 #include "util.h"
 #include "radio.h"
 #include "tx_player.h"
+#include "knob_info.h"
 #include "cfg/settings_manager.h"
 #include "cfg/encoder_defaults.h"
 #include "freedv/writer_gate.h"
@@ -28,11 +30,14 @@
 #include <string>
 
 extern "C" {
-#include "front_keys.h"
+#include "ext_tune.h"
 #include "screen_rec.h"
 #include "msg_box.h"
 #include "walkie.h"
 #include "cw_field.h"
+#include "front_keys.h"
+#include "control_owner.h"
+#include "screen_light.h"
 }
 
 #define STATE_ASSIGNED LV_STATE_USER_1  /* bound to a knob in the knob binds */
@@ -50,6 +55,7 @@ struct _disp_button_t {
 
 static disp_btn_t      slots[BUTTONS];
 static buttons_page_t *cur_page;
+static bool            hidden;       /* buttons_hide() */
 static std::string     knob_binds;   /* cfg encoder_bind as last notified: a char a control */
 
 static void slot_refresh(disp_btn_t *s);
@@ -161,6 +167,10 @@ static const char *wf_mode_label() {
     return cfg_sm.p_wf_mode.get() ? "WF\nFixed" : "WF\nCenter";
 }
 
+static const char *wf_3d_label() {
+    return cfg_sm.p_wf_3d.get() ? "WF\n3D" : "WF\n2D";
+}
+
 /* Label shows the span the button selects */
 static const char *span_label(int32_t zoom) {
     static char buf[2][24];
@@ -201,6 +211,17 @@ static void dig_pwr_cb(button_data_t *data) {
         }
     }
     cfg_sm.p_pwr.set(next);
+    /* A step up that the setting did not take is the top it allows now (the X6200 on battery: 5 W),
+     * so round to the first: the button stayed on 5 W there */
+    if (next > p && cfg_sm.p_pwr.get() < p + 0.05f) {
+        cfg_sm.p_pwr.set(steps[0]);
+    }
+}
+
+/* TUNE for an external tuner: a press starts it at its own power (the label's), again stops it. ext_tune.c
+ * refreshes and marks it as it starts and ends */
+static const char *ext_tune_label() {
+    return ext_tune_on() ? "Ext tune:\nStop" : text("Ext tune:\n%0.1f W", cfg_sm.p_tune_pwr.get());
 }
 
 /* ---- the buttons ---- */
@@ -249,6 +270,7 @@ static button_data_t btn_rfg = knob([] { return text("RF gain:\n%i", cfg_sm.p_rf
 button_data_t btn_tx_pwr = knob([] { return text("TX power:\n%0.1f W", cfg_sm.p_pwr.get()); },
                                 CTRL_PWR, &cfg_sm.p_pwr);
 button_data_t btn_dig_pwr = fn_btn(dig_pwr_label, dig_pwr_cb, &cfg_sm.p_pwr);
+button_data_t btn_ext_tune = fn_btn(ext_tune_label, [](button_data_t *) { ext_tune_toggle(); }, &cfg_sm.p_tune_pwr);
 static button_data_t btn_moni = knob([] { return text("Moni level:\n%i", cfg_sm.p_moni.get()); },
                                      CTRL_MONI, &cfg_sm.p_moni);
 
@@ -267,19 +289,28 @@ static button_data_t btn_zoom = {.type = BTN_TEXT, .label = "Spectrum\nZoom", .p
                                  .hold = knob_bind_hold, .ctrl = CTRL_SPECTRUM_FACTOR, .encoder_allowed = true};
 static button_data_t btn_wf_ref = knob([] { return text("WF ref:\n%+i dB", cfg_sm.p_waterfall_ref.get()); },
                                        CTRL_WF_REF, &cfg_sm.p_waterfall_ref);
-static button_data_t btn_agc = fn_btn(agc_label, [](button_data_t *) { main_screen_agc_next(); }, &cfg_sm.cp_cur_agc);
+/* AGC, PRE, ATT and ATU: a press does what their key does; held, they go on a knob like NB and NR */
+static button_data_t btn_agc = knob_toggle(agc_label, [](button_data_t *) { main_screen_agc_next(); }, CTRL_AGC,
+                                           &cfg_sm.cp_cur_agc);
 /* PRE and ATT: the X6200 has no PRE key (the X6100's PRE key, held: ATT), and its sensitivity is specified with
  * the preamp on; per band, as the keys set them */
-static button_data_t btn_pre = fn_btn([] { return text("PRE:\n%s", on_off(cfg_sm.cp_cur_pre.get())); },
-                                      [](button_data_t *b) {
-                                          cfg_sm.cp_cur_pre.set(!cfg_sm.cp_cur_pre.get());
-                                          buttons_refresh(b);
-                                      }, &cfg_sm.cp_cur_pre);
-static button_data_t btn_att = fn_btn([] { return text("ATT:\n%s", on_off(cfg_sm.cp_cur_att.get())); },
-                                      [](button_data_t *b) {
-                                          cfg_sm.cp_cur_att.set(!cfg_sm.cp_cur_att.get());
-                                          buttons_refresh(b);
-                                      }, &cfg_sm.cp_cur_att);
+static button_data_t btn_pre = knob_toggle([] { return text("PRE:\n%s", on_off(cfg_sm.cp_cur_pre.get())); },
+                                           [](button_data_t *b) {
+                                               cfg_sm.cp_cur_pre.set(!cfg_sm.cp_cur_pre.get());
+                                               buttons_refresh(b);
+                                           }, CTRL_PRE, &cfg_sm.cp_cur_pre);
+static button_data_t btn_att = knob_toggle([] { return text("ATT:\n%s", on_off(cfg_sm.cp_cur_att.get())); },
+                                           [](button_data_t *b) {
+                                               cfg_sm.cp_cur_att.set(!cfg_sm.cp_cur_att.get());
+                                               buttons_refresh(b);
+                                           }, CTRL_ATT, &cfg_sm.cp_cur_att);
+static button_data_t btn_atu = knob_toggle([] { return text("ATU:\n%s", on_off(cfg_sm.p_atu_enabled.get())); },
+                                           [](button_data_t *) {
+                                               cfg_sm.p_atu_enabled.set(!cfg_sm.p_atu_enabled.get());
+                                           }, CTRL_ATU, &cfg_sm.p_atu_enabled);
+/* The tuning step: a press puts it on the MFK, as RIT and XIT; held, it goes on a knob too */
+static button_data_t btn_step = knob([] { return text("Step:\n%i Hz", cfg_sm.p_mode_freq_step.get()); }, CTRL_STEP,
+                                     &cfg_sm.p_mode_freq_step);
 static button_data_t btn_comp = knob([] { return text("Comp:\n%s", params_comp_str_get(cfg_sm.p_comp.get())); },
                                      CTRL_COMP, &cfg_sm.p_comp);
 static button_data_t btn_if_shift = knob([] { return text("IF shift:\n%i", cfg_sm.p_band_if_shift.get()); },
@@ -287,6 +318,13 @@ static button_data_t btn_if_shift = knob([] { return text("IF shift:\n%i", cfg_s
 static button_data_t btn_vox = knob_toggle([] { return text("VOX:\n%s", on_off(cfg_sm.p_vox_en.get())); },
                                            controls_toggle_vox, CTRL_VOX_ON, &cfg_sm.p_vox_en);
 static button_data_t btn_wf_mode = knob_toggle(wf_mode_label, controls_toggle_wf_mode, CTRL_WF_MODE, &cfg_sm.p_wf_mode);
+static button_data_t btn_wf_3d = knob_toggle(wf_3d_label, controls_toggle_wf_3d, CTRL_WF_3D, &cfg_sm.p_wf_3d);
+static button_data_t btn_3d_depth = knob([] { return text("3D depth:\n%i", cfg_sm.p_wf_3d_depth.get()); },
+                                         CTRL_WF_3D_DEPTH, &cfg_sm.p_wf_3d_depth);
+static button_data_t btn_3d_tilt = knob([] { return text("3D tilt:\n%i", cfg_sm.p_wf_3d_tilt.get()); },
+                                        CTRL_WF_3D_TILT, &cfg_sm.p_wf_3d_tilt);
+static button_data_t btn_3d_floor = knob([] { return text("3D floor:\n+%i", cfg_sm.p_wf_3d_floor.get()); },
+                                         CTRL_WF_3D_FLOOR, &cfg_sm.p_wf_3d_floor);
 static button_data_t btn_span_wider = fn_btn(span_wider_label, controls_span_wider, &cfg_sm.p_mode_zoom);
 static button_data_t btn_span_narrower = fn_btn(span_narrower_label, controls_span_narrower, &cfg_sm.p_mode_zoom);
 static button_data_t btn_screen_rec = fn_btn(screen_rec_label, [](button_data_t *) { screen_rec_toggle(); }, NULL);
@@ -365,6 +403,8 @@ static button_data_t btn_cwkbd = app_btn("CW\nKeyboard", ACTION_APP_CW_KBD);
 static button_data_t btn_field = app_btn("Field\nOps", ACTION_APP_FIELD);
 static button_data_t btn_chans = app_btn("Channels", ACTION_APP_CHANNELS);
 static button_data_t btn_bands = app_btn("Bands", ACTION_APP_BANDS);
+static button_data_t btn_prop = app_btn("Propa-\ngation", ACTION_APP_PROPAGATION);
+static button_data_t btn_scan = app_btn("Scanner", ACTION_APP_SCAN);
 static button_data_t btn_gps = {.type = BTN_TEXT, .label = "GPS", .press = app_press,
                                 .hold = [](button_data_t *) { main_screen_start_app(ACTION_APP_SNAKE); },  /* the hidden game */
                                 .ctrl = ACTION_APP_GPS};
@@ -388,10 +428,10 @@ buttons_page_t buttons_page_rtty = {{&btn_rtty_p1, &btn_rtty_rate, &btn_rtty_shi
 /* ---- pages and groups; buttons_init() links the page buttons of a group in a ring ---- */
 
 static button_data_t btn_vol_p1 = page_btn("(VOL 1:2)"), btn_vol_p2 = page_btn("(VOL 2:2)");
-static button_data_t btn_mfk_p1 = page_btn("(MFK 1:3)"), btn_mfk_p2 = page_btn("(MFK 2:3)"),
-                     btn_mfk_p3 = page_btn("(MFK 3:3)");
-static button_data_t btn_app_p1 = page_btn("(APP 1:3)"), btn_app_p2 = page_btn("(APP 2:3)"),
-                     btn_app_p3 = page_btn("(APP 3:3)");
+static button_data_t btn_mfk_p1 = page_btn("(MFK 1:4)"), btn_mfk_p2 = page_btn("(MFK 2:4)"),
+                     btn_mfk_p3 = page_btn("(MFK 3:4)"), btn_mfk_p4 = page_btn("(MFK 4:4)");
+static button_data_t btn_app_p1 = page_btn("(APP 1:4)"), btn_app_p2 = page_btn("(APP 2:4)"),
+                     btn_app_p3 = page_btn("(APP 3:4)"), btn_app_p4 = page_btn("(APP 4:4)");
 static button_data_t btn_key_p1 = page_btn("(KEY 1:2)"), btn_key_p2 = page_btn("(KEY 2:2)");
 static button_data_t btn_cw_p1 = page_btn("(CW 1:2)"), btn_cw_p2 = page_btn("(CW 2:2)");
 static button_data_t btn_dfn_p1 = page_btn("(DFN 1:3)"), btn_dfn_p2 = page_btn("(DFN 2:3)"),
@@ -399,14 +439,17 @@ static button_data_t btn_dfn_p1 = page_btn("(DFN 1:3)"), btn_dfn_p2 = page_btn("
 static button_data_t btn_mem_p1 = page_btn("(MEM 1:2)"), btn_mem_p2 = page_btn("(MEM 2:2)");
 
 buttons_page_t        buttons_page_vol_1 = {{&btn_vol_p1, &btn_vol, &btn_sql, &btn_rfg, &btn_tx_pwr}};
-static buttons_page_t page_vol_2 = {{&btn_vol_p2, &btn_moni, &btn_pre, &btn_att}};
+static buttons_page_t page_vol_2 = {{&btn_vol_p2, &btn_moni, &btn_pre, &btn_att, &btn_atu}};
 static buttons_page_t page_mfk_1 = {{&btn_mfk_p1, &btn_rit, &btn_xit, &btn_zoom, &btn_wf_ref}};
 static buttons_page_t page_mfk_2 = {{&btn_mfk_p2, &btn_agc, &btn_comp, &btn_if_shift, &btn_vox}};
 static buttons_page_t page_mfk_3 = {{&btn_mfk_p3, &btn_wf_mode, &btn_span_wider, &btn_span_narrower, &btn_screen_rec}};
+static buttons_page_t page_mfk_4 = {{&btn_mfk_p4, &btn_wf_3d, &btn_3d_depth, &btn_3d_tilt, &btn_3d_floor}};
 
 static buttons_page_t page_app_1 = {{&btn_app_p1, &btn_modes, &btn_cluster, &btn_swr, &btn_rec}};
 static buttons_page_t page_app_2 = {{&btn_app_p2, &btn_settings, &btn_cwt, &btn_field, &btn_chans}};
-static buttons_page_t page_app_3 = {{&btn_app_p3, &btn_bands, &btn_gps, &btn_screen_rec, &btn_cwkbd}};   /* Screen rec: the MFK 3:3 one too */
+/* Screen rec: the MFK 3:4 one too */
+static buttons_page_t page_app_3 = {{&btn_app_p3, &btn_bands, &btn_gps, &btn_screen_rec, &btn_cwkbd}};
+static buttons_page_t page_app_4 = {{&btn_app_p4, &btn_prop, &btn_scan}};
 
 static buttons_page_t page_key_1 = {{&btn_key_p1, &btn_key_speed, &btn_key_vol, &btn_key_train, &btn_key_tone}};
 static buttons_page_t page_key_2 = {{&btn_key_p2, &btn_key_mode, &btn_iambic, &btn_qsk, &btn_ratio}};
@@ -417,13 +460,15 @@ static buttons_page_t page_dfn_1 = {{&btn_dfn_p1, &btn_dnf, &btn_dnf_center, &bt
 static buttons_page_t page_dfn_2 = {{&btn_dfn_p2, &btn_nb, &btn_nb_level, &btn_nb_width}};
 static buttons_page_t page_dfn_3 = {{&btn_dfn_p3, &btn_nr, &btn_nr_level}};
 
-static buttons_page_t page_dfl = {{&btn_flt_low, &btn_flt_high, &btn_flt_bw}};   /* one page, no page button */
+/* one page, no page button */
+static buttons_page_t page_dfl = {{&btn_flt_low, &btn_flt_high, &btn_flt_bw, &btn_step}};
 
 static buttons_page_t page_mem_1 = {{&btn_mem_p1, &btn_mem[0], &btn_mem[1], &btn_mem[2], &btn_mem[3]}};
 static buttons_page_t page_mem_2 = {{&btn_mem_p2, &btn_mem[4], &btn_mem[5], &btn_mem[6], &btn_mem[7]}};
 
-buttons_group_t buttons_group_gen = {&buttons_page_vol_1, &page_vol_2, &page_mfk_1, &page_mfk_2, &page_mfk_3};
-buttons_group_t buttons_group_app = {&page_app_1, &page_app_2, &page_app_3};
+buttons_group_t buttons_group_gen = {&buttons_page_vol_1, &page_vol_2,
+                                     &page_mfk_1, &page_mfk_2, &page_mfk_3, &page_mfk_4};
+buttons_group_t buttons_group_app = {&page_app_1, &page_app_2, &page_app_3, &page_app_4};
 buttons_group_t buttons_group_key = {&page_key_1, &page_key_2, &page_cw_1, &page_cw_2};
 buttons_group_t buttons_group_dfn = {&page_dfn_1, &page_dfn_2, &page_dfn_3};
 buttons_group_t buttons_group_dfl = {&page_dfl};
@@ -536,14 +581,32 @@ static lv_obj_t *make_mark(lv_obj_t *btn, lv_coord_t x, lv_coord_t y) {
     lv_obj_t *m = lv_obj_create(btn);
 
     lv_obj_set_pos(m, x, y);
-    lv_obj_clear_flag(m, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(m, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_style(m, &btn_mark_style, 0);
     lv_obj_add_style(m, &btn_mark_assigned_style, STATE_ASSIGNED);
     lv_obj_add_style(m, &btn_mark_active_style, STATE_ACTIVE);
     return m;
 }
 
-static void make_slot(disp_btn_t *s, lv_obj_t *parent, lv_coord_t x) {
+/* Pointer on an F-slot: press and release the same key the front panel uses, so the
+ * hold time (HOLD_MS / keypad_set_long_time) and Hide-buttons wake match a real key. */
+static void slot_event_cb(lv_event_t *e) {
+    uint8_t         n    = (uint8_t)(intptr_t)lv_event_get_user_data(e);
+    lv_event_code_t code = lv_event_get_code(e);
+    keypad_key_t    key  = (keypad_key_t)(KEYPAD_F1 + n);
+
+    if (code == LV_EVENT_PRESSED) {
+        ctl_local_input();
+        if (backlight_tick()) {
+            return;     /* woke the screen: that was the press's job */
+        }
+        keypad_button(key, 1);
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        keypad_button(key, 0);
+    }
+}
+
+static void make_slot(disp_btn_t *s, lv_obj_t *parent, lv_coord_t x, uint8_t idx) {
     lv_obj_t *f = lv_obj_create(parent);
 
     s->parent = f;
@@ -553,8 +616,12 @@ static void make_slot(disp_btn_t *s, lv_obj_t *parent, lv_coord_t x) {
     lv_obj_add_style(f, &btn_active_style, LV_STATE_CHECKED);
     lv_obj_add_style(f, &btn_disabled_style, LV_STATE_DISABLED);
     /* Drawn buttons: 1 px apart on every side, more when the theme says (btn_gap) */
-    lv_obj_set_pos(f, x + BTN_INSET, 480 - BTN_HEIGHT + BTN_INSET);
+    lv_obj_set_pos(f, x + BTN_INSET, BOARD_DISP_H - BTN_HEIGHT + BTN_INSET);
     lv_obj_set_size(f, BTN_WIDTH - 2 * BTN_INSET, BTN_HEIGHT - 2 * BTN_INSET);
+    lv_obj_add_flag(f, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(f, slot_event_cb, LV_EVENT_PRESSED, (void *)(intptr_t)idx);
+    lv_obj_add_event_cb(f, slot_event_cb, LV_EVENT_RELEASED, (void *)(intptr_t)idx);
+    lv_obj_add_event_cb(f, slot_event_cb, LV_EVENT_PRESS_LOST, (void *)(intptr_t)idx);
 
     /* Knob marks: a bar on the left edge, green VOL, blue MFK, or the theme's LED */
     lv_coord_t mx = theme_shape.mark[1] ? theme_shape.mark[0] : 0;
@@ -572,12 +639,14 @@ static void make_slot(disp_btn_t *s, lv_obj_t *parent, lv_coord_t x) {
     s->label = lv_label_create(f);
     lv_obj_center(s->label);
     lv_obj_set_style_text_align(s->label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_clear_flag(s->label, LV_OBJ_FLAG_CLICKABLE);
 
     s->value = lv_label_create(f);
     lv_obj_set_style_text_font(s->value, &sony_32, 0);
     lv_obj_set_style_text_color(s->value, TC(btn_text), 0);
     lv_obj_align(s->value, LV_ALIGN_BOTTOM_MID, 0, -5);
     lv_obj_add_flag(s->value, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s->value, LV_OBJ_FLAG_CLICKABLE);
 }
 
 static void knob_binds_cb(Subject *subj, void *user_data) {
@@ -598,8 +667,20 @@ void buttons_init(lv_obj_t *parent) {
             first->prev = g.pages[(i + g.n - 1) % g.n];
         }
     }
-    for (int i = 0; i < BUTTONS; i++) make_slot(&slots[i], parent, i * BTN_WIDTH);
+    for (int i = 0; i < BUTTONS; i++) make_slot(&slots[i], parent, i * BTN_WIDTH, (uint8_t)i);
+    hidden = false;     /* made shown (a theme change), the knob lines too (knobs_init()) */
     cfg_sm.p_encoder_bind.subscribe_delayed_and_notify(knob_binds_cb, NULL);
+}
+
+void buttons_hide(bool hide) {
+    if (hide == hidden) return;
+    hidden = hide;
+    for (disp_btn_t &s : slots) set_hidden(s.parent, hide);
+    knobs_hide(hide);
+}
+
+bool buttons_hidden() {
+    return hidden;
 }
 
 static uint32_t land_index[BUTTONS];   /* their place among the main screen's children */
@@ -607,6 +688,7 @@ static uint32_t land_index[BUTTONS];   /* their place among the main screen's ch
 void buttons_vertical(lv_obj_t *parent, lv_coord_t w, lv_coord_t h) {
     lv_coord_t bw = w - 2 * BTN_INSET, bh = h - 2 * BTN_INSET;
 
+    buttons_hide(false);    /* Hide buttons is the main screen's: the walkie's column always shows */
     for (uint8_t i = 0; i < BUTTONS; i++) {
         lv_obj_t           *f = slots[i].parent;
         const lv_img_dsc_t *img;
@@ -628,7 +710,7 @@ void buttons_horizontal(lv_obj_t *parent) {
 
         lv_obj_set_parent(f, parent);
         lv_obj_move_to_index(f, land_index[i]);
-        lv_obj_set_pos(f, i * BTN_WIDTH + BTN_INSET, 480 - BTN_HEIGHT + BTN_INSET);
+        lv_obj_set_pos(f, i * BTN_WIDTH + BTN_INSET, BOARD_DISP_H - BTN_HEIGHT + BTN_INSET);
         lv_obj_set_size(f, BTN_WIDTH - 2 * BTN_INSET, BTN_HEIGHT - 2 * BTN_INSET);
         lv_obj_remove_local_style_prop(f, LV_STYLE_BG_IMG_SRC, LV_STATE_CHECKED);
         lv_obj_remove_local_style_prop(f, LV_STYLE_BG_IMG_SRC, LV_STATE_DISABLED);
@@ -762,49 +844,138 @@ static const lv_font_t *narrow_value_font(disp_btn_t *b, const char *text) {
     return &sony_18;
 }
 
-/* "Name:\nvalue" shows a small name over a large value; "(PAGE 1:2)" is a
- * page button, drawn darker; anything else is an action, centred. */
+/* The theme's one size for the text of every button (theme_shape.btn_text_size), and the sizes
+ * under it for a text too wide for it */
+static const struct {
+    int16_t          size;
+    const lv_font_t *font;
+} btn_sizes[] = {{16, &sony_16}, {18, &sony_18}, {20, &sony_20}, {22, &sony_22}, {24, &sony_24}, {26, &sony_26},
+                 {28, &sony_28}, {30, &sony_30}, {32, &sony_32}, {34, &sony_34}, {36, &sony_36}};
+
+/* The theme's size, smaller where two lines of it do not fit the button's height (a taller font,
+ * btn_gap): then the whole row takes the smaller one, a text on one line as one on two */
+static int btn_size_index(disp_btn_t *b) {
+    int i = 0;
+
+    while (i + 1 < (int)ARRAY_SIZE(btn_sizes) && btn_sizes[i + 1].size <= theme_shape.btn_text_size) i++;
+    while (!theme_amber && i > 0 && 2 * lv_font_get_line_height(btn_sizes[i].font) > btn_h(b)) i--;   /* Amber Trey: one line */
+    return i;
+}
+
+/* The text in f, on its one line or two, inside the button */
+static bool btn_fits(disp_btn_t *b, const char *text, const lv_font_t *f) {
+    lv_point_t size;
+
+    lv_txt_get_size(&size, text, f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return size.x <= btn_w(b) - 8 && size.y <= btn_h(b);
+}
+
+/* The theme's size, or the biggest under it that the text fits in */
+static const lv_font_t *btn_font(disp_btn_t *b, const char *text) {
+    int i = btn_size_index(b);
+
+    while (i > 0 && !btn_fits(b, text, btn_sizes[i].font)) i--;
+    return btn_sizes[i].font;
+}
+
+static bool ascii_letter(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+/* The word of n letters at w is a unit ("2950 Hz", "15 wpm", "20m"); another word after a number is
+ * not ("599 Nr", a JTTY key's name) */
+static bool btn_unit(const char *w, size_t n) {
+    static const char *const units[] = {"Hz", "kHz", "MHz", "W", "dB", "dBm", "wpm", "ms", "s", "min",
+                                        "m", "cm", "km"};
+
+    for (const char *u : units)
+        if (strlen(u) == n && !strncmp(u, w, n)) return true;
+    return false;
+}
+
+/* Capitals (btn_caps), a unit after a number as it is: "Filter high:\n2950 Hz" -> "FILTER HIGH:\n2950 Hz",
+ * as the deck's state rows write "STEP 500 Hz" */
+static void btn_upper(char *out, size_t size, const char *text) {
+    bool   unit = false;   /* in a unit right after a number */
+    size_t n    = 0;
+
+    for (const char *c = text; *c && n + 1 < size; c++) {
+        if (ascii_letter(*c) && (c == text || !ascii_letter(c[-1]))) {
+            const char *p = c, *e = c;
+
+            while (p > text && p[-1] == ' ') p--;
+            while (ascii_letter(*e)) e++;
+            unit = p > text && p[-1] >= '0' && p[-1] <= '9' && btn_unit(c, e - c);
+        }
+        out[n++] = !unit && *c >= 'a' && *c <= 'z' ? *c - 'a' + 'A' : *c;
+    }
+    out[n] = '\0';
+}
+
+/* "Name:\nvalue": the name (text_head) over the value, both in the button's size; deck: "Volume 30" on
+ * one line, the name grey, and the name over the value only where one line does not fit */
+static void btn_name_value(disp_btn_t *b, const char *name, const char *value) {
+    char             two[64];
+    const lv_font_t *f   = NULL;
+    bool             one = false;
+    lv_point_t       ns, vs;
+
+    snprintf(two, sizeof(two), "%s\n%s", name, value);
+    for (int i = btn_size_index(b); !f; i--) {
+        const lv_font_t *t = btn_sizes[i].font;
+
+        lv_txt_get_size(&ns, name, t, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        lv_txt_get_size(&vs, value, t, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        one = theme_shape.deck && ns.x + 6 + vs.x <= btn_w(b) - 8;
+        if (one || btn_fits(b, two, t) || i == 0) f = t;
+    }
+    lv_label_set_text(b->label, name);
+    lv_obj_set_style_text_font(b->label, f, 0);
+    lv_obj_set_style_text_color(b->label, theme_shape.deck ? TC(text_dim) : TC(text_head), 0);
+    lv_label_set_text(b->value, value);
+    lv_obj_set_style_text_font(b->value, f, 0);
+    if (one) {
+        lv_obj_align(b->label, LV_ALIGN_CENTER, -(vs.x + 6) / 2, 0);
+        lv_obj_align(b->value, LV_ALIGN_CENTER, (ns.x + 6) / 2, 0);
+    } else {   /* the two lines as one block in the middle, as an action's two lines */
+        lv_coord_t h = lv_font_get_line_height(f);
+
+        lv_obj_align(b->label, LV_ALIGN_CENTER, 0, -h / 2);
+        lv_obj_align(b->value, LV_ALIGN_CENTER, 0, h - h / 2);
+    }
+    lv_obj_clear_flag(b->value, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(b->parent, TC(btn), 0);
+}
+
+/* "Name:\nvalue" is a name over its value; "(PAGE 1:2)" is a page button, drawn darker; anything
+ * else is an action, centred. All of them in the theme's one size (btn_text_size), in capitals where
+ * the theme says so (btn_caps); VISION and the walkie's narrow buttons fit each text to the button. */
 static void set_btn_text(disp_btn_t *b, const char *text) {
+    bool even = !theme_shape.vision && !btn_narrow(b);
+    char upper[64];
+
+    if (even && theme_shape.btn_caps) {
+        btn_upper(upper, sizeof(upper), text);
+        text = upper;
+    }
     const char *nl = strchr(text, '\n');
 
     if (nl && nl > text && nl[-1] == ':') {
         char name[32];
         snprintf(name, sizeof(name), "%.*s", (int)(nl - text - 1), text);
-        /* Deck: "Volume 30" on one line, the name grey, the value white */
-        if (theme_shape.deck && !btn_narrow(b)) {
-            /* The biggest that fits on one line */
-            static const lv_font_t *const fonts[] = {&sony_30, &sony_28, &sony_26, &sony_24, &sony_20};
-            const lv_font_t *f;
-            lv_point_t       ns, vs;
-
-            for (size_t i = 0; i < sizeof(fonts) / sizeof(fonts[0]); i++) {
-                f = fonts[i];
-                lv_txt_get_size(&ns, name, f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-                lv_txt_get_size(&vs, nl + 1, f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-                if (ns.x + 6 + vs.x <= btn_w(b) - 8) break;
-            }
-            lv_label_set_text(b->label, name);
-            lv_obj_set_style_text_font(b->label, f, 0);
-            lv_obj_set_style_text_color(b->label, TC(text_dim), 0);
-            lv_obj_align(b->label, LV_ALIGN_CENTER, -(vs.x + 6) / 2, 0);
-            lv_label_set_text(b->value, nl + 1);
-            lv_obj_set_style_text_font(b->value, f, 0);
-            lv_obj_align(b->value, LV_ALIGN_CENTER, (ns.x + 6) / 2, 0);
-            lv_obj_clear_flag(b->value, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_style_bg_color(b->parent, TC(btn), 0);
+        if (even) {
+            btn_name_value(b, name, nl + 1);
             return;
         }
-        /* Name over value; one size smaller when the two lines don't fit (taller fonts, btn_gap) */
+        /* A small name over the value; VISION: the value as big as the button takes (capitals and
+         * digits: no overlap); narrow: the biggest that fits its width */
         bool fit = lv_font_get_line_height(&sony_22) + lv_font_get_line_height(&sony_32) + 9
                    <= btn_h(b);
         lv_label_set_text(b->label, name);
-        lv_obj_set_style_text_font(b->label, theme_shape.vision || btn_narrow(b) ? &sony_18 : fit ? &sony_22 : &sony_20, 0);
+        lv_obj_set_style_text_font(b->label, &sony_18, 0);
         lv_obj_set_style_text_color(b->label, TC(text_head), 0);
         lv_obj_align(b->label, LV_ALIGN_TOP_MID, 0, theme_shape.vision ? 0 : fit ? 4 : 2);
-        /* VISION: the value as big as the button takes, the name over it (capitals and digits: no overlap) */
-        lv_obj_set_style_text_font(b->value, btn_narrow(b)        ? narrow_value_font(b, nl + 1)
-                                             : theme_shape.vision ? &sony_30
-                                             : fit                ? &sony_32 : &sony_28, 0);
+        lv_obj_set_style_text_font(b->value, btn_narrow(b) ? narrow_value_font(b, nl + 1) : &sony_30, 0);
         lv_obj_align(b->value, LV_ALIGN_BOTTOM_MID, 0, theme_shape.vision ? 0 : fit ? -5 : -2);
         lv_label_set_text(b->value, nl + 1);
         lv_obj_clear_flag(b->value, LV_OBJ_FLAG_HIDDEN);
@@ -820,11 +991,17 @@ static void set_btn_text(disp_btn_t *b, const char *text) {
             if (*c != '(' && *c != ')') t[n++] = *c;
         t[n] = '\0';
         lv_label_set_text(b->label, t);
+    } else if (theme_amber && strchr(text, '\n')) {   /* Amber Trey: "Spectrum Zoom" on one line, two did not fit */
+        char t[64];
+        snprintf(t, sizeof(t), "%s", text);
+        for (char *c = t; *c; c++)
+            if (*c == '\n') *c = ' ';
+        lv_label_set_text(b->label, t);
     } else {
         lv_label_set_text(b->label, text);
     }
-    lv_obj_set_style_text_font(b->label, theme_shape.vision || btn_narrow(b) ? vision_label_font(b, lv_label_get_text(b->label))
-                                                                              : theme_shape.deck ? &sony_30 : page ? &sony_28 : &sony_30, 0);
+    const char *shown = lv_label_get_text(b->label);
+    lv_obj_set_style_text_font(b->label, even ? btn_font(b, shown) : vision_label_font(b, shown), 0);
     if (page) lv_obj_set_style_text_color(b->label, TC(btn_page_text), 0);
     else lv_obj_remove_local_style_prop(b->label, LV_STYLE_TEXT_COLOR, 0);   /* the button's: btn_text, btn_active_text, btn_off_text */
     lv_obj_center(b->label);

@@ -1,4 +1,5 @@
 import argparse
+import io
 import logging
 import os
 import signal
@@ -6,7 +7,6 @@ import socket
 import subprocess
 import threading
 import time
-import socketserver
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
@@ -118,8 +118,8 @@ def ensure_cert(cert_dir):
 
 
 class TlsContext:
-    """The certificate the HTTPS server and the wss proxies hand out. load() puts a new one in for the next
-    connections; a handshake under way keeps the context it started with"""
+    """The certificate the HTTPS server hands out, to its pages and their sockets. load() puts a new one in for the
+    next connections; a handshake under way keeps the context it started with"""
 
     def __init__(self, cert, key):
         self.load(cert, key)
@@ -146,7 +146,118 @@ def renew_when_clock_set(tls, cert_dir, every=30):
             logging.error("HTTPS: can't load the new certificate (%s)", e)
 
 
+def pipe(tls, port, head=b""):
+    """The browser's TLS connection and a plain one to the GUI's WebSocket server on 127.0.0.1:port, the bytes piped
+    both ways untouched (head: what was read of the browser's already, sent first), so the GUI still sees the
+    browser's Origin and Host, and tailscaled's Tailscale-Funnel-Request on a request through it, and does its own
+    checks (src/tci_ws.c)"""
+    try:
+        plain = socket.create_connection(("127.0.0.1", port), timeout=5)
+    except OSError:
+        tls.close()
+        return
+    try:
+        plain.sendall(head)
+    except OSError:
+        tls.close()
+        plain.close()
+        return
+    tls.settimeout(None)
+    plain.settimeout(None)
+
+    def pump(src, dst):
+        try:
+            while True:
+                data = src.recv(65536)
+                if not data:
+                    break
+                dst.sendall(data)
+        except OSError:
+            pass
+        for s in (src, dst):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    threading.Thread(target=pump, args=(plain, tls), daemon=True).start()
+    pump(tls, plain)
+    tls.close()
+    plain.close()
+
+
+# The Panel's and the Screen page's sockets on the https page's own port (#58), at the paths the Funnel page has them
+# on (tailscaled hands those on, rootfs/usr/sbin/x6100-tailscale): the GUI's browser remote and TCI
+WS_PATHS = {b"/ws/remote": lambda: apps.read_remote_conf()["port"], b"/ws/tci": lambda: apps.read_tci_conf()["port"]}
+HEAD_MAX = 8192   # the GUI takes an upgrade request of 4096 bytes at most (WS_REQUEST_MAX)
+
+
+def read_head(sock):
+    """A request's first bytes: up to the end of its head, HEAD_MAX, or the end of the connection. A head of bare LF
+    line ends (a tool's, never a browser's) ends at its blank line too: the web server answers it, as it did before"""
+    head = b""
+    while b"\r\n\r\n" not in head and b"\n\n" not in head and len(head) < HEAD_MAX:
+        data = sock.recv(HEAD_MAX)
+        if not data:
+            break
+        head += data
+    return head
+
+
+def ws_port(head):
+    """The GUI's port for a request of a page's socket, GET /ws/remote or /ws/tci with Upgrade: websocket; None for
+    anything else, which the web server answers"""
+    if b"\r\n\r\n" not in head:
+        return None
+    lines = head.split(b"\r\n\r\n", 1)[0].split(b"\r\n")
+    word = lines[0].split(b" ")
+    port = WS_PATHS.get(word[1].split(b"?")[0]) if len(word) == 3 and word[0] == b"GET" else None
+    for line in lines[1:] if port else ():
+        name, sep, value = line.partition(b":")
+        if sep and name.strip().lower() == b"upgrade" and value.strip().lower() == b"websocket":
+            return port()
+    return None
+
+
+class Replay(io.RawIOBase):
+    """A connection read from: the bytes read of it already first, then the connection"""
+
+    def __init__(self, head, sock):
+        super().__init__()
+        self.head, self.sock = head, sock
+
+    def readable(self):
+        return True
+
+    def readinto(self, b):
+        if self.head:
+            n = min(len(b), len(self.head))
+            b[:n], self.head = self.head[:n], self.head[n:]
+            return n
+        return self.sock.recv_into(b)
+
+
+class Replayed:
+    """The TLS connection of a request whose head was read to tell a page's socket from a page: the web server reads
+    the request whole (makefile), and does the rest on the connection itself"""
+
+    def __init__(self, sock, head):
+        self.sock, self.head = sock, head
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+    def makefile(self, mode="r", *args, **kwargs):
+        if "r" not in mode:
+            return self.sock.makefile(mode, *args, **kwargs)
+        return io.BufferedReader(Replay(self.head, self.sock))
+
+
 def make_https_server(app, host, port, tls):
+    """The https server: the pages, and their sockets on the same port (#58). A secure page may only open wss://
+    sockets, and on ports of their own (v0.3.7's) the browser wanted the radio's certificate accepted again: Firefox
+    keeps an accepted certificate per port, and refused those sockets without a word ("Connection lost", no pairing
+    code)"""
     class SSLServer(ThreadingWSGIServer):
         def finish_request(self, request, client_address):
             # handshake in the worker thread, so a stalled client can't block accept()
@@ -155,69 +266,21 @@ def make_https_server(app, host, port, tls):
                 request = tls.wrap(request)
             except (ssl.SSLError, OSError):
                 return   # e.g. the browser rejected the self-signed certificate
-            super().finish_request(request, client_address)
+            try:
+                head = read_head(request)
+            except (ssl.SSLError, OSError):
+                request.close()   # nothing in time: a connection a browser opened in advance and never used
+                return
+            port = ws_port(head)
+            if port:
+                pipe(request, port, head)
+                return
+            try:
+                super().finish_request(Replayed(request, head), client_address)
+            finally:
+                request.close()
 
     return make_server(host, port, app, SSLServer, RequestHandler)
-
-
-class WssProxy(ThreadingMixIn, socketserver.TCPServer):
-    """A TLS front door to one of the GUI's plain WebSocket servers (the remote on 50002, TCI on
-    50001), for the https Remote page: a secure page may only open wss:// sockets, and the
-    browser's microphone is only given to a secure page. Bytes are piped both ways untouched, so
-    the GUI still sees the browser's Origin and Host headers and does its own check."""
-    allow_reuse_address = True
-    daemon_threads = True
-
-    def __init__(self, addr, tls, target_port):
-        self.tls = tls
-        self.target_port = target_port   # a callable: the port to connect to, read when a client comes
-        super().__init__(addr, None)
-
-    def finish_request(self, request, client_address):
-        request.settimeout(10)
-        try:
-            tls = self.tls.wrap(request)
-        except (ssl.SSLError, OSError):
-            return
-        try:
-            plain = socket.create_connection(("127.0.0.1", self.target_port()), timeout=5)
-        except OSError:
-            tls.close()
-            return
-        tls.settimeout(None)
-        plain.settimeout(None)
-
-        def pump(src, dst):
-            try:
-                while True:
-                    data = src.recv(65536)
-                    if not data:
-                        break
-                    dst.sendall(data)
-            except OSError:
-                pass
-            for s in (src, dst):
-                try:
-                    s.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-
-        threading.Thread(target=pump, args=(plain, tls), daemon=True).start()
-        pump(tls, plain)
-        tls.close()
-        plain.close()
-
-
-def start_wss_proxies(host, tls):
-    for name, port, target in (("WSS_REMOTE_PORT", 50003, lambda: apps.read_remote_conf()["port"]),
-                               ("WSS_TCI_PORT", 50004, lambda: apps.read_tci_conf()["port"])):
-        try:
-            server = WssProxy((host, port), tls, target)
-        except OSError as e:
-            logging.error("wss proxy: can't listen on %d (%s)", port, e)
-            continue
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        setattr(settings, name, port)
 
 
 def start_https(app, host, port, cert_dir):
@@ -235,7 +298,6 @@ def start_https(app, host, port, cert_dir):
         return
     threading.Thread(target=server.serve_forever, daemon=True).start()
     settings.HTTPS_PORT = port
-    start_wss_proxies(host, tls)
     if not clock_set():
         threading.Thread(target=renew_when_clock_set, args=(tls, cert_dir), daemon=True).start()
 
@@ -311,7 +373,35 @@ def options():
     p.add_argument("--channels-file", help="path to channels.json", default=settings.CHANNELS_FILE)
     p.add_argument("--https-port", type=int, help="port for HTTPS (0 = off)", default=443)
     p.add_argument("--cert-dir", help="directory of the self-signed cert.pem and key.pem", default="/mnt/https")
+    p.add_argument("--funnel-dir", help="where the Panel for Tailscale Funnel is written (empty: not written)",
+                   default=settings.FUNNEL_DIR)
     return p.parse_args()
+
+
+FUNNEL_NAME_POLL = 5     # s between looks at the radio's name on the internet, for the Funnel pages
+
+
+def write_funnel_pages(out_dir, name):
+    """The Panel and the Screen page as tailscaled serves them over Tailscale Funnel (#58, apps.funnel_render), at
+    every start: they follow the pages of the version installed. In RAM (/run): written anew at each boot"""
+    if not out_dir:
+        return
+    try:
+        apps.funnel_render(out_dir, name)
+    except (OSError, ValueError) as e:
+        logging.error("Funnel: the pages for %s not written (%s)", out_dir, e)
+
+
+def follow_funnel_name(out_dir, name):
+    """The Funnel pages name the radio's address on the internet in what they may connect to (funnel_base.html):
+    tailscaled tells it once Tailscale is up, at boot after this server's start, and it changes with the radio's
+    name or the tailnet's. The pages are written anew when it does"""
+    while True:
+        time.sleep(FUNNEL_NAME_POLL)
+        now = apps.funnel_name()
+        if now and now != name:
+            name = now
+            write_funnel_pages(out_dir, name)
 
 
 def serve():
@@ -326,6 +416,11 @@ def serve():
         start_https(apps.app, opts.host, opts.https_port, opts.cert_dir)
     adopt_old_ssh_keys()
     follow_sshd_config()
+    settings.FUNNEL_DIR = opts.funnel_dir
+    name = apps.funnel_name()
+    write_funnel_pages(opts.funnel_dir, name)
+    if opts.funnel_dir and not (opts.debug and "BOTTLE_CHILD" not in os.environ):   # not in the reloader's parent
+        threading.Thread(target=follow_funnel_name, args=(opts.funnel_dir, name), daemon=True).start()
     settings.HTTP_PORT = opts.port
     apps.app.run(server=ThreadedServer, host=opts.host, port=opts.port, debug=opts.debug, reloader=opts.debug)
 

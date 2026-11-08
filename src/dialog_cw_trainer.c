@@ -13,7 +13,10 @@
  *  Safety: key train is forced on while the app is open and restored when
  *  it closes, whatever closes it (destruct_cb runs for the close button,
  *  another app, a key page, or a mode change caught by the timer).
- *  The encoder is also told to never key while train is off.
+ *  The encoder is also told to never key while train is off. With train on
+ *  radio.c holds the TX power at 0 W (#127): in Manual the X6200's base keyed
+ *  the transmitter at PWR from the KEY jack all the same. That holds for the
+ *  trainer's own keying too.
  *  Calls changes the key speed: it is given back when leaving Calls too.
  */
 
@@ -26,6 +29,7 @@
 #include "cw.h"
 #include "cw_decoder.h"
 #include "cw_encoder.h"
+#include "cw_trainer_answer.h"
 #include "dialog.h"
 #include "events.h"
 #include "keyboard.h"
@@ -46,7 +50,6 @@
 
 #define TIMER_MS    100
 #define GUARD_MS    600     /* the end of our own sidetone is still being decoded */
-#define ANSWER_MS   3000    /* silence that ends an answer shorter than the group */
 #define NEXT_OK_MS  1000    /* auto mode: pause before the next group */
 #define NEXT_BAD_MS 2500    /* longer after a wrong answer, to read it */
 #define WINDOW      10      /* results the accuracy is measured over */
@@ -69,6 +72,7 @@
 #define BOX_Y       44
 #define BOX_H       (DIALOG_H - BOX_Y - 34)
 #define SIDE_W      270
+#define LINE_W      (W - SIDE_W - 24)   /* Learn's Sent and Heard lines: up to 12 px before the side panel */
 #define CALLS_X     18      /* Calls: call box, score box */
 #define CALLS_W     480
 #define SCORE_X     508
@@ -118,6 +122,7 @@ static char     heard[HEARD_MAX];
 static int      heard_n;        /* decoded characters in heard[] */
 static bool     heard_end;      /* word gap after the answer */
 static uint32_t listen_t, last_rx_t;
+static int      told_wpm;       /* the speed the decoder was told (cw_trainer_speed), 0 none */
 static bool     last_ok;
 static bool     autoplay;       /* Start: groups follow each other until Pause */
 static uint32_t result_t;
@@ -152,7 +157,7 @@ static bool     run_done;
 
 /* Practice */
 static char text[TEXT_MAX];
-static int  wpm_seen;
+static int  wpm_seen;       /* the decoder's speed, also for the end of an answer (cwt_answer_ms) */
 
 static lv_obj_t   *head, *head_right, *box, *big, *line1, *line2, *side_score, *side_chars, *hint, *text_lbl;
 static lv_obj_t   *box_r, *calls_cont, *c_sent_cap, *c_call, *c_key_cap, *c_keyed, *c_res, *c_score, *c_stats;
@@ -238,8 +243,10 @@ static bool is_cw(void) {
 static void on_text(void *arg);
 static void on_wpm(void *arg);
 
-/* Audio thread: hand over to the LVGL thread */
-static void sink_text(const char *t) {
+/* Audio thread: hand over to the LVGL thread. Our own group is not the answer, however late
+ * the decoder ends its last character (cw_trainer_own) */
+static void sink_text(const char *t, bool own) {
+    if (own) return;
     scheduler_put(on_text, (void *)t, strlen(t) + 1);
 }
 
@@ -254,12 +261,19 @@ static const char *morse_of(char c) {
     return "";
 }
 
-/* Morse of every character of s, separated by spaces */
+/* Dits and dahs of a group or callsign */
+static int elements_of(const char *s) {
+    int n = 0;
+    for (; *s; s++) n += (int)strlen(morse_of(*s));
+    return n;
+}
+
+/* Morse of every character of s, separated by spaces; a place with no character (CWT_NO_CHAR) as "<?>" */
 static void morse_line(const char *s, char *out, size_t size) {
     out[0] = 0;
     for (; *s; s++) {
         size_t n = strlen(out);
-        snprintf(out + n, size - n, "%s%s", n ? "  " : "", morse_of(*s));
+        snprintf(out + n, size - n, "%s%s", n ? "  " : "", *s == CWT_NO_CHAR ? CWT_NO_CHAR_SHOWN : morse_of(*s));
     }
 }
 
@@ -290,8 +304,7 @@ static void on_text(void *arg) {
     if (t[0] == ' ') {
         heard_end = heard_n > 0;
     } else if (heard_n < (mode == MODE_CALLS ? 12 : 6)) {
-        size_t n = strlen(heard);
-        snprintf(heard + n, HEARD_MAX - n, "%s", strcmp(t, "<?>") == 0 ? "?" : t);
+        cwt_answer_add(heard, HEARD_MAX, t);    /* "<?>" and prosigns as CWT_NO_CHAR, never "?" */
         heard_n++;
     }
     refresh_ui();
@@ -488,6 +501,18 @@ static bool play(void) {
     heard_n  = 0;
     heard_end = false;
     st       = ST_PLAYING;
+    /* The decoder ends our last character when the user starts keying, or after 8.5 dots of
+     * silence: at slow speeds, or with the audio's delay, that was past GUARD_MS, and it was taken
+     * for the answer. The next group then came while the user was still keying, and the two ran
+     * together into one character not in the table: "?" (#144) */
+    cw_trainer_own(elements_of(target));
+    /* At the key speed, as the paddle's: opened at 10 WPM, the decoder, still near 20, misread
+     * the second answer. Told when the speed is new, so it learns a straight key's from there */
+    int wpm = param_i_get(cfg_key_speed);
+    if (wpm != told_wpm) {
+        cw_trainer_speed(wpm);
+        told_wpm = wpm;
+    }
     cw_encoder_send(target, false);
     return true;
 }
@@ -636,7 +661,9 @@ static void tick_cb(lv_timer_t *t) {
         last_rx_t = listen_t;
         refresh_ui();
     } else if (st == ST_LISTEN && heard_n > 0 &&
-               (heard_n >= (int)strlen(target) || heard_end || lv_tick_elaps(last_rx_t) > ANSWER_MS)) {
+               (heard_n >= (int)strlen(target) || heard_end ||
+                lv_tick_elaps(last_rx_t) > cwt_answer_ms(param_i_get(cfg_key_speed), wpm_seen,
+                                                         param_f_get(cfg_key_ratio)))) {
         if (mode == MODE_CALLS) evaluate_call();
         else evaluate();
         refresh_ui();
@@ -656,6 +683,7 @@ static void tick_cb(lv_timer_t *t) {
 /* Nothing of a round stays when the mode or the view changes */
 static void stop_round(void) {
     cw_encoder_stop();
+    cw_trainer_own(0);
     autoplay  = false;
     st        = ST_READY;
     target[0] = 0;
@@ -838,7 +866,7 @@ static void fmt_num(uint32_t v, char *out, size_t size) {
 }
 
 static void refresh_calls(void) {
-    char buf[200], n1[16], n2[16];
+    char buf[200], n1[16], n2[16], shown[HEARD_MAX * 3], one[2];
     bool rev  = st == ST_RESULT;
     int  done = (st == ST_PLAYING || st == ST_LISTEN) ? call_no - 1 : call_no;
 
@@ -851,14 +879,20 @@ static void refresh_calls(void) {
     lv_obj_set_style_text_color(c_call, lv_color_hex(rev ? theme_hex(TC_text) : (st == ST_READY ? COLOR_HEAD : COLOR_NEW)), 0);
     lv_label_set_text(c_call, rev ? target : (st == ST_PLAYING ? "Listen..." : (st == ST_LISTEN ? "Your turn" : "Press Start")));
 
-    /* wrong characters in red once the call is revealed */
-    char *p = buf;
-    for (int i = 0; heard[i] && rev; i++) {
-        bool bad = target[i] == 0 || heard[i] != target[i];
-        p += bad ? sprintf(p, "#%06x %c#", theme_hex(TC_err), heard[i]) : sprintf(p, "%c", heard[i]);
+    /* Wrong characters in red once the call is revealed, each place against the callsign's own place. A place with
+     * no character is a red "<?>", three characters wide: the places after it move to the right, each still in its
+     * own colour. They never stood exactly under the callsign's in this font (a W is four times as wide as an I),
+     * and the colours go by place, not by where a character stands; "<?>" in one place's width would take a font
+     * too small to read */
+    size_t k = 0;
+    buf[0]   = 0;
+    for (int i = 0; heard[i] && rev && k < sizeof(buf); i++) {
+        bool        bad = target[i] == 0 || heard[i] != target[i];
+        const char *s   = cwt_place_shown(heard[i], one);
+        k += bad ? snprintf(buf + k, sizeof(buf) - k, "#%06x %s#", theme_hex(TC_err), s)
+                 : snprintf(buf + k, sizeof(buf) - k, "%s", s);
     }
-    *p = 0;
-    lv_label_set_text(c_keyed, rev ? buf : heard);
+    lv_label_set_text(c_keyed, rev ? buf : cwt_answer_shown(heard, shown, sizeof(shown)));
 
     buf[0] = 0;
     if (rev) {
@@ -871,7 +905,9 @@ static void refresh_calls(void) {
     }
     lv_obj_set_style_text_color(c_res, lv_color_hex(last_ok ? COLOR_OK : COLOR_BAD), 0);
     lv_label_set_text(c_res, buf);
-    lv_label_set_text(hint, run_done && rev ? "Start: a new run of 50 callsigns" : "Key back the callsign with the paddle. Right: +1 WPM, wrong: -1 WPM.");
+    if (run_done && rev) lv_label_set_text(hint, "Start: a new run of 50 callsigns");
+    else if (rev && strchr(heard, CWT_NO_CHAR)) lv_label_set_text(hint, CWT_NO_CHAR_SHOWN " = not a character. Right: +1 WPM, wrong: -1 WPM.");
+    else lv_label_set_text(hint, "Key back the callsign with the paddle. Right: +1 WPM, wrong: -1 WPM.");
 
     fmt_num(score, n1, sizeof(n1));
     lv_label_set_text(c_score, n1);
@@ -915,10 +951,30 @@ static void refresh_stats(void) {
     lv_label_set_text(hint, "Last 20 tries per character. Weak ones (red, yellow) come up more often in Learn.");
 }
 
+/* A line of Learn into the label l, Sent or Heard: its head, the characters as shown in color, then the dits and dahs
+ * of as many of the places as fit before the side panel, whole places only. A "<?>" takes three characters' room in
+ * the answer and again in the dits and dahs: two of them in a group of 5 could run into the side panel, and so could
+ * long characters on either line (five ? in the default font, a third to half of the groups of 5 at level 40 in the
+ * 1bit theme's). Cut at the label's edge instead, half a place stayed: a lone "<", or a dah that looked like a dit */
+static void group_line(lv_obj_t *l, const char *head, uint32_t color, const char *shown, const char *places) {
+    const lv_font_t *font = lv_obj_get_style_text_font(l, 0);
+    lv_coord_t       ls   = lv_obj_get_style_text_letter_space(l, 0);
+    char             buf[160], part[HEARD_MAX], m[48];
+
+    for (size_t n = strlen(places);; n--) {
+        memcpy(part, places, n);
+        part[n] = 0;
+        morse_line(part, m, sizeof(m));
+        snprintf(buf, sizeof(buf), "%s#%06x %s#   %s", head, color, shown, m);
+        if (n == 0 || lv_txt_get_width(buf, strlen(buf), font, ls, LV_TEXT_FLAG_RECOLOR) <= LINE_W) break;
+    }
+    lv_label_set_text(l, buf);
+}
+
 static void refresh_ui(void) {
     bool learn = mode == MODE_LEARN, calls = mode == MODE_CALLS, sv = learn && stats_view;
     int  wpm   = param_i_get(cfg_key_speed);
-    char m1[48], m2[48], buf[160];
+    char buf[160], shown[HEARD_MAX * 3];
 
     set_btn(&btn_play, mode == MODE_PRACTICE || sv);
     set_btn(&btn_skip, mode == MODE_PRACTICE || sv);
@@ -977,6 +1033,7 @@ static void refresh_ui(void) {
 
     lv_label_set_text(line1, "");
     lv_label_set_text(line2, "");
+    cwt_answer_shown(heard, shown, sizeof(shown));
     switch (st) {
         case ST_READY:
             lv_label_set_text(big, "Press Play");
@@ -988,32 +1045,24 @@ static void refresh_ui(void) {
             lv_obj_set_style_text_color(big, lv_color_hex(COLOR_NEW), 0);
             lv_label_set_text(hint, "The radio keys the group (sidetone only)");
             /* The group stays on screen while playing and answering, to memorise it */
-            morse_line(target, m1, sizeof(m1));
-            snprintf(buf, sizeof(buf), "Sent:   #%06x %s#   %s", theme_hex(TC_accent), target, m1);
-            lv_label_set_text(line1, buf);
+            group_line(line1, "Sent:   ", theme_hex(TC_accent), target, target);
             lv_label_set_text(line2, "");
             break;
         case ST_LISTEN:
-            lv_label_set_text(big, heard[0] ? heard : "Your turn");
+            lv_label_set_text(big, heard[0] ? shown : "Your turn");
             lv_obj_set_style_text_color(big, lv_color_hex(heard[0] ? theme_hex(TC_text) : COLOR_NEW), 0);
             lv_label_set_text(hint, "Key the group with the paddle. Replay: hear it again");
-            morse_line(target, m1, sizeof(m1));
-            snprintf(buf, sizeof(buf), "Sent:   #%06x %s#   %s", theme_hex(TC_accent), target, m1);
-            lv_label_set_text(line1, buf);
-            morse_line(heard, m2, sizeof(m2));
-            snprintf(buf, sizeof(buf), "Heard: #%06x %s#   %s", theme_hex(TC_text), heard, m2);
-            lv_label_set_text(line2, heard[0] ? buf : "");
+            group_line(line1, "Sent:   ", theme_hex(TC_accent), target, target);
+            if (heard[0]) group_line(line2, "Heard: ", theme_hex(TC_text), shown, heard);
             break;
         case ST_RESULT:
             lv_label_set_text(big, last_ok ? "OK" : "WRONG");
             lv_obj_set_style_text_color(big, lv_color_hex(last_ok ? COLOR_OK : COLOR_BAD), 0);
-            morse_line(target, m1, sizeof(m1));
-            morse_line(heard, m2, sizeof(m2));
-            snprintf(buf, sizeof(buf), "Sent:   #%06x %s#   %s", theme_hex(TC_accent), target, m1);
-            lv_label_set_text(line1, buf);
-            snprintf(buf, sizeof(buf), "Heard: #%s %s#   %s", last_ok ? "60ff60" : "ff6060", heard, m2);
-            lv_label_set_text(line2, buf);
-            lv_label_set_text(hint, autoplay ? "Next group follows. Pause: stop after this one" : "Start: resume. Skip: another group");
+            group_line(line1, "Sent:   ", theme_hex(TC_accent), target, target);
+            group_line(line2, "Heard: ", last_ok ? COLOR_OK : COLOR_BAD, shown, heard);
+            snprintf(buf, sizeof(buf), "%s%s", strchr(heard, CWT_NO_CHAR) ? CWT_NO_CHAR_SHOWN " = not a character. " : "",
+                     autoplay ? "Next group follows. Pause: stop after this one" : "Start: resume. Skip: another group");
+            lv_label_set_text(hint, buf);
             break;
     }
 
@@ -1046,7 +1095,6 @@ static void key_cb(lv_event_t *e) {
             change_speed(1);
             break;
         case LV_KEY_ENTER:
-        case KEYBOARD_F4:
             play_cb(NULL);
             break;
         case LV_KEY_ESC:
@@ -1125,6 +1173,7 @@ static void construct_cb(lv_obj_t *parent) {
     mode = MODE_LEARN;
     st   = ST_READY;
     autoplay = false;
+    told_wpm = 0;
     target[0] = heard[0] = text[0] = 0;
     heard_n = tried = right = wpm_seen = 0;
     reset_score();
@@ -1160,6 +1209,11 @@ static void construct_cb(lv_obj_t *parent) {
     lv_obj_set_pos(line1, 0, 90);
     line2 = label(box, &sony_28, COLOR_DIM);
     lv_obj_set_pos(line2, 0, 140);
+    /* group_line() fits their text; what still does not fit is cut, not wrapped */
+    lv_obj_set_width(line1, LINE_W);
+    lv_label_set_long_mode(line1, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(line2, LINE_W);
+    lv_label_set_long_mode(line2, LV_LABEL_LONG_CLIP);
     side_score = label(box, &sony_22, theme_hex(TC_text_value));
     lv_obj_set_width(side_score, SIDE_W - 12);
     lv_obj_set_pos(side_score, W - SIDE_W - 12, 0);

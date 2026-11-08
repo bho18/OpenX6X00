@@ -34,8 +34,8 @@ class Receiver {
 
     static constexpr float RATE = RX_RATE;   /* feed() wants this rate */
 
-    /* text: each decoded character; key: key down/up; step: after every
-     * detector step (8 ms) */
+    /* text: each decoded character, and whether it holds our own keying
+     * (own()); key: key down/up; step: after every detector step (8 ms) */
     Receiver(TextFn text, KeyFn key, StepFn step = {});
 
     void feed(const float *x, size_t n);
@@ -52,6 +52,17 @@ class Receiver {
     void  set_apf(bool on, float tone_hz, float q);
     /* The VFO moved: the station is df Hz further up in the audio */
     void  follow_vfo(float df) { lock_.shift(df); }
+    /* The next n dits and dahs are our own keying (MorseText::own), not
+     * learned (ElementTimer::ours) */
+    void  own(int n) { text_.own(n); }
+    /* Our own keying follows at wpm (the CW trainer's, ElementTimer::expect) */
+    void  expect(float wpm) { timer_.expect(wpm); }
+    /* The CW trainer is open: down to 5 WPM (ElementTimer::trainer_range), its
+     * long dahs no carrier (KeyDetector::trainer_range) */
+    void  trainer_range(bool on) {
+        timer_.trainer_range(on);
+        keyer_.trainer_range(on);
+    }
 
   private:
     friend struct ReceiverPeek;   /* tests only */

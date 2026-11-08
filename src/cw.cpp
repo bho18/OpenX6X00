@@ -26,6 +26,7 @@ extern "C" {
     #include "audio.h"
     #include "cw_decoder.h"
     #include "cw_tune_ui.h"
+    #include "radio.h"
 }
 
 /* Frames (8 ms) between updates of the tune indicator */
@@ -37,6 +38,9 @@ static std::atomic<bool> started{false};
 static std::atomic<bool> decode_on{false};
 static std::atomic<bool> tune_on{false};
 static std::atomic<bool> trainer{false};
+static std::atomic<int>  trainer_own{-1};      /* cw_trainer_own's count for the audio thread, -1 none */
+static std::atomic<int>  trainer_wpm{0};       /* cw_trainer_speed's for the audio thread, 0 none */
+static std::atomic<bool> tune_turned{false};   /* the bars' offset turned round: CW on the X6200 */
 static int32_t key_tone = 0;
 static int32_t band_lo;
 static int32_t band_hi;
@@ -84,8 +88,9 @@ static std::string sq_pending;
 static void on_flag(Subject *subj, void *user_data);
 static void on_rx_param_change(Subject *subj, void *user_data);
 static void on_freq_change(Subject *subj, void *user_data);
+static void on_mode_change(Subject *subj, void *user_data);
 
-static void on_text(const char *text);
+static void on_text(const char *text, bool own);
 static void on_keyed(bool on);
 static void on_frame();
 
@@ -101,6 +106,7 @@ void cw_init(void) {
     cfg_sm.cp_cur_filter_high.subscribe_and_notify(on_rx_param_change);
     last_freq = cfg_sm.cp_fg_freq.get();
     cfg_sm.cp_fg_freq.subscribe(on_freq_change);
+    cfg_sm.cp_cur_mode.subscribe_and_notify(on_mode_change);
     tone_freq = key_tone;
 
     receiver  = new cw::Receiver(on_text, on_keyed, on_frame);
@@ -108,18 +114,19 @@ void cw_init(void) {
     started   = true;
 }
 
-/* The tone moves in the audio as the VFO turns: CW is the upper sideband (a higher
- * VFO lowers the tone), CW-R the lower one. Big jumps (band, memory) are left to
- * the tracker: the station is gone anyway. */
+/* The tone moves in the audio as the VFO turns: CW on the X6100 is the upper sideband
+ * (a higher VFO lowers the tone), CW-R the lower one, and so is CW on the X6200 (#115:
+ * there the tone of a dial step of +150 Hz was followed 150 Hz down; it went 150 Hz up).
+ * Big jumps (band, memory) are left to the tracker: the station is gone anyway. */
 static void on_freq_change(Subject *subj, void *user_data) {
     int32_t freq = cfg_sm.cp_fg_freq.get();
     int32_t d    = freq - last_freq;
-    int32_t mode = cfg_sm.cp_cur_mode.get();
+    int     dir  = radio_cw_tone_dir((radio_mode_t)cfg_sm.cp_cur_mode.get());
 
     last_freq = freq;
-    if ((mode == radio_mode_cw || mode == radio_mode_cwr) && d != 0 && d >= -1500 && d <= 1500) {
+    if (dir && d != 0 && d >= -1500 && d <= 1500) {
         float s = rx_shift.load();
-        while (!rx_shift.compare_exchange_weak(s, s + (mode == radio_mode_cw ? -d : d))) {}
+        while (!rx_shift.compare_exchange_weak(s, s + dir * d)) {}
     }
 }
 
@@ -150,11 +157,25 @@ static void apply_rx_params() {
 }
 
 void cw_put_audio_samples(unsigned int n, float *samples) {
-    bool wanted = decode_on || tune_on || trainer;
+    static bool trainer_range = false;   /* the receiver has the trainer's speed range */
+    bool        tr     = trainer;
+    bool        wanted = decode_on || tune_on || tr;
 
     if (!started || !wanted)
         return;
     apply_rx_params();
+    /* The trainer's speed range (down to 5 WPM) while it is open, the band's (10 WPM) again from the first block
+     * after it closed; set before the trainer's speed, which the range clamps */
+    if (tr != trainer_range) {
+        receiver->trainer_range(tr);
+        trainer_range = tr;
+    }
+    int wpm = trainer_wpm.exchange(0);
+    if (wpm > 0)
+        receiver->expect(wpm);
+    int own = trainer_own.exchange(-1);
+    if (own >= 0)
+        receiver->own(own);
     resampler->process(n, samples, *receiver);
 }
 
@@ -183,7 +204,7 @@ static bool squelch(const char *text) {
                 return true;
             }
             sq_pending += text;
-            cw_decoder_text(sq_pending.c_str());
+            cw_decoder_text(sq_pending.c_str(), false);
             sq_pending.clear();
             return false;
         }
@@ -211,18 +232,18 @@ static bool squelch(const char *text) {
     if (++sq_good >= SQ_OPEN) {
         sq_open = true;
         sq_bad  = 0;
-        cw_decoder_text(sq_pending.c_str());
+        cw_decoder_text(sq_pending.c_str(), false);
         sq_pending.clear();
     }
     return false;
 }
 
-static void on_text(const char *text) {
+static void on_text(const char *text, bool own) {
     if (!decode_on && !trainer)
         return;
     if (!trainer && !squelch(text))
         return;
-    cw_decoder_text(text);
+    cw_decoder_text(text, own);
 
     int wpm = lroundf(receiver->wpm());
     if (wpm != wpm_sent) {
@@ -274,13 +295,29 @@ static void on_frame() {
     if (++frame_counter >= TUNE_UPDATE_FRAMES) {
         frame_counter = 0;
         if (tuned) {
-            cw_tune_set_freq(key_tone - tone_freq);
+            cw_tune_set_freq(tune_turned ? tone_freq - key_tone : key_tone - tone_freq);
         }
     }
 }
 
 void cw_trainer_set(bool on) {
     trainer = on;
+    if (!on) {
+        trainer_own = 0;
+        trainer_wpm = 0;    /* not yet handed over: the trainer's speed, not the band's */
+    }
+}
+
+void cw_trainer_own(int elements) {
+    trainer_own = elements > 0 ? elements : 0;
+}
+
+void cw_trainer_speed(int wpm) {
+    trainer_wpm = wpm;
+}
+
+bool cw_trainer_on(void) {
+    return trainer;
 }
 
 float cw_get_tone_freq(void) {
@@ -295,6 +332,15 @@ static void on_flag(Subject *subj, void *user_data) {
     auto *flag = static_cast<std::atomic<bool> *>(user_data);
 
     *flag = static_cast<SubjectT<int32_t> *>(subj)->get() != 0;
+}
+
+/* The tune bars as the X6100 lights them: in CW on the station's side of the dial (the key tone minus the tone,
+ * CW's tone falling as the dial goes up), in CW-R the other way round. The X6200's CW tone rises as the dial
+ * goes up, as CW-R's does: there the offset is turned round in CW, the bars the same way up on both radios (#115) */
+static void on_mode_change(Subject *subj, void *user_data) {
+    radio_mode_t mode = (radio_mode_t)cfg_sm.cp_cur_mode.get();
+
+    tune_turned = mode == radio_mode_cw && radio_cw_tone_dir(mode) > 0;
 }
 
 static void on_rx_param_change(Subject *subj, void *user_data) {

@@ -4,8 +4,8 @@
 'use strict';
 const {page} = require('./browser-dom.js');
 
-function open(view, libs, answers) {
-  const p = page(view);
+function open(view, libs, answers, values) {
+  const p = page(view, values);
   libs.forEach(f => p.run(f));
   p.run(p.script, 'views/' + view);
   for (const a of answers) next(p, a[0]).ok(a[1]);
@@ -161,8 +161,9 @@ scenario(() => {
 /* ---- Memories: a slot that times out, a channel renamed while its save is on its way ---- */
 const slot = (id, f) => ({id: id, frequency: f, mode: 'USB', agc: 'AUTO', pre: false, att: false});
 const chan = (n, f) => ({name: n, frequency: f, mode: 'USB-D', agc: 'FAST', pre: false, att: false});
-function memories() {
-  return open('memories.html', ['static/js/edit_flow.js'], [['/api/memories', {slots: [slot(1, 14074000), slot(2, null)]}], ['/api/channels', {max: 100, channels: [chan('FT8 20', 14074000)]}]]);
+function memories(chans) {
+  return open('memories.html', ['static/js/edit_flow.js'], [['/api/memories', {slots: [slot(1, 14074000), slot(2, null)]}], ['/api/channels', {max: 100, channels: chans || [chan('FT8 20', 14074000)]}]],
+              {'mhz[0]': '0.1', 'mhz[1]': '1000.0'});   /* an X6200's */
 }
 scenario(() => {
   const p = memories();
@@ -195,6 +196,112 @@ scenario(() => {
   p.type(st.querySelector('.freq'), '14.0745'); st.querySelector('.save').click();
   p.type(ch.querySelector('.name'), 'FT8 X'); ch.querySelector('.save').click();
   check('Memories, a slot and a channel saved together: both on their way', {requests: onTheirWay(p)}, {requests: ['PUT /api/memories/1', 'PUT /api/channels/0']});
+});
+
+/* #158: a change to a channel says which channel it means; the list changed meanwhile (409): the radio's list,
+ * the draft kept, and Save again goes to the channel where it is now */
+const changed = list => ({status: 'error', msg: 'The channel list changed meanwhile', channels: list, max: 100});
+scenario(() => {
+  const p = memories([chan('FT8 20', 14074000), chan('FT8 40', 7074000)]);
+  const tr = k => p.doc.querySelector('#channels tbody tr[data-key="' + k + '|USB-D"]');
+  const mode = tr('FT8 40|7074000').querySelector('.mode');
+  mode.value = 'CW'; mode.dispatchEvent(new p.Event('change'));
+  tr('FT8 40|7074000').querySelector('.save').click();
+  let req = next(p, '/api/channels/1');
+  check('Memories, a channel\'s Save says which channel it means', {was: req.body.was, mode: req.body.mode}, {was: chan('FT8 40', 7074000), mode: 'CW'});
+  req.fail(409, 'error', changed([chan('FT8 40', 7074000)]));
+  check('Memories, FT8 20 deleted on the radio meanwhile: the radio\'s list, the draft kept',
+        Object.assign(view(p, tr('FT8 40|7074000')), {rows: p.doc.querySelectorAll('#channels tbody tr').length}),
+        {values: 'FT8 40|7.074|CW|FAST|false|false', st: 'failed', save: true, warns: true, rows: 1});
+  tr('FT8 40|7074000').querySelector('.save').click();
+  req = next(p, '/api/channels/0');
+  check('Memories, Save again: to the channel where it is now', {was: req.body.was, mode: req.body.mode}, {was: chan('FT8 40', 7074000), mode: 'CW'});
+});
+scenario(() => {
+  const p = memories([chan('FT8 20', 14074000), chan('FT8 40', 7074000), chan('FT8 80', 3573000)]);
+  const tr = k => p.doc.querySelector('#channels tbody tr[data-key="' + k + '|USB-D"]');
+  tr('FT8 80|3573000').querySelector('.up').click();
+  let req = next(p, '/api/channels/2/move');
+  check('Memories, Up says which channel moves past which', req.body, {to: 1, was: chan('FT8 80', 3573000), past: chan('FT8 40', 7074000)});
+  req.fail(409, 'error', changed([chan('FT8 40', 7074000), chan('FT8 80', 3573000)]));
+  check('Memories, the list changed: nothing moved, the radio\'s list and why',
+        {rows: p.doc.querySelectorAll('#channels tbody tr').length, status: p.doc.querySelector('#status_channels').textContent},
+        {rows: 2, status: 'The channel list changed meanwhile'});
+  tr('FT8 40|7074000').querySelector('.remove').click();
+  req = next(p, '/api/channels/0');
+  check('Memories, Delete says which channel goes', {type: req.type, body: req.body}, {type: 'DELETE', body: {was: chan('FT8 40', 7074000)}});
+  /* Undo hands back what the delete's answer gave, as it is: the server puts the entry back as the file had it */
+  const deleted = {entry: '{"name": "FT8 40", "frequency": 7074000.5, "mode": "USB-D", "agc": "FAST", "pre": false, "att": false, "note": 1}', place: 3};
+  req.ok({max: 100, channels: [chan('FT8 80', 3573000)], deleted: deleted});
+  p.doc.querySelector('#status_channels button').click();
+  req = next(p, '/api/channels/restore');
+  check('Memories, Undo of a delete', {type: req.type, body: req.body}, {type: 'POST', body: deleted});
+  req.ok({max: 100, channels: [chan('FT8 40', 7074000), chan('FT8 80', 3573000)]});
+  check('Memories, then brought back', {rows: p.doc.querySelectorAll('#channels tbody tr').length, status: p.doc.querySelector('#status_channels').textContent},
+        {rows: 2, status: 'Brought back'});
+});
+
+/* #158: a change clicked while another of the page's is on its way takes the channel's place and what the page
+ * shows there when it goes out, after that answer: v0.3.8 sent the places of the click, so a second Up undid the
+ * first, and with "was" from the click such a change was refused (409) */
+const answer = (list, more) => Object.assign({max: 100, channels: list}, more || {});
+const inMode = (c, m) => Object.assign({}, c, {mode: m});
+scenario(() => {
+  const [c20, c40, c80] = [chan('FT8 20', 14074000), chan('FT8 40', 7074000), chan('FT8 80', 3573000)];
+  const p = memories([c20, c40, c80]);
+  const tr = k => p.doc.querySelector('#channels tbody tr[data-key="' + k + '"]');
+  const mode = tr('FT8 80|3573000|USB-D').querySelector('.mode');
+  mode.value = 'CW'; mode.dispatchEvent(new p.Event('change'));
+  tr('FT8 80|3573000|USB-D').querySelector('.save').click();
+  tr('FT8 80|3573000|USB-D').querySelector('.up').click();
+  check('Memories, Save then Up before the answer: the Save on its way, the Up waits', {requests: onTheirWay(p)}, {requests: ['PUT /api/channels/2']});
+  next(p, '/api/channels/2').ok(answer([c20, c40, inMode(c80, 'CW')]));
+  const req = next(p, '/api/channels/2/move');
+  check('Memories, then the Up: the channel as saved', req.body, {to: 1, was: inMode(c80, 'CW'), past: c40});
+  req.ok(answer([c20, inMode(c80, 'CW'), c40]));
+  check('Memories, then moved', {rows: [...p.doc.querySelectorAll('#channels tbody tr')].map(t => t.getAttribute('data-key')), status: p.doc.querySelector('#status_channels').textContent},
+        {rows: ['FT8 20|14074000|USB-D', 'FT8 80|3573000|CW', 'FT8 40|7074000|USB-D'], status: ''});
+});
+scenario(() => {
+  const [c20, c40, c80] = [chan('FT8 20', 14074000), chan('FT8 40', 7074000), chan('FT8 80', 3573000)];
+  const p = memories([c20, c40, c80]);
+  const up = () => p.doc.querySelector('#channels tbody tr[data-key="FT8 80|3573000|USB-D"] .up').click();
+  up(); up(); up();
+  let req = next(p, '/api/channels/2/move');
+  check('Memories, Up three times before the first answer: one move on its way', {requests: onTheirWay(p), body: req.body}, {requests: ['POST /api/channels/2/move'], body: {to: 1, was: c80, past: c40}});
+  req.ok(answer([c20, c80, c40]));
+  req = next(p, '/api/channels/1/move');
+  check('Memories, the second Up: from where the first put it', req.body, {to: 0, was: c80, past: c20});
+  req.ok(answer([c80, c20, c40]));
+  check('Memories, the third Up: at the top, nothing sent', {requests: onTheirWay(p), rows: [...p.doc.querySelectorAll('#channels tbody tr')].map(t => t.querySelector('.name').value)},
+        {requests: [], rows: ['FT8 80', 'FT8 20', 'FT8 40']});
+});
+scenario(() => {
+  const [c20, c40, c80] = [chan('FT8 20', 14074000), chan('FT8 40', 7074000), chan('FT8 80', 3573000)];
+  const p = memories([c20, c40, c80]);
+  const tr = k => p.doc.querySelector('#channels tbody tr[data-key="' + k + '"]');
+  p.type(tr('FT8 40|7074000|USB-D').querySelector('.name'), 'FT8 X');
+  tr('FT8 40|7074000|USB-D').querySelector('.save').click();
+  tr('FT8 40|7074000|USB-D').querySelector('.remove').click();
+  check('Memories, Save of a rename then Delete before the answer: the Delete waits', {requests: onTheirWay(p)}, {requests: ['PUT /api/channels/1']});
+  const cx = Object.assign({}, c40, {name: 'FT8 X'});
+  next(p, '/api/channels/1').ok(answer([c20, cx, c80]));
+  const req = next(p, '/api/channels/1');
+  check('Memories, then the Delete: the channel as renamed', {type: req.type, body: req.body}, {type: 'DELETE', body: {was: cx}});
+  req.ok(answer([c20, c80], {deleted: {entry: JSON.stringify(cx), place: 1}}));
+  check('Memories, then deleted, the name it had', {rows: p.doc.querySelectorAll('#channels tbody tr').length, status: p.doc.querySelector('#status_channels').textContent},
+        {rows: 2, status: 'Deleted "FT8 X" (7.074 MHz USB-D). Undo'});
+});
+scenario(() => {
+  const [c20, c40, c80] = [chan('FT8 20', 14074000), chan('FT8 40', 7074000), chan('FT8 80', 3573000)];
+  const p = memories([c20, c40, c80]);
+  const tr = k => p.doc.querySelector('#channels tbody tr[data-key="' + k + '"]');
+  tr('FT8 40|7074000|USB-D').querySelector('.remove').click();
+  tr('FT8 40|7074000|USB-D').querySelector('.up').click();
+  next(p, '/api/channels/1').ok(answer([c20, c80], {deleted: {entry: JSON.stringify(c40), place: 1}}));
+  check('Memories, Delete then Up on it before the answer: nothing sent for the Up, and why',
+        {requests: onTheirWay(p), rows: p.doc.querySelectorAll('#channels tbody tr').length, status: p.doc.querySelector('#status_channels').textContent},
+        {requests: [], rows: 2, status: 'That channel is no longer in the list: nothing was changed'});
 });
 
 /* ---- Macros ---- */

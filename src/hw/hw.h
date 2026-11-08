@@ -17,6 +17,7 @@
 #include "../freedv/features.h"
 #include <complex.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "../radio_types.h"
@@ -50,7 +51,12 @@ typedef struct {
     uint16_t    n_psd;
     uint32_t    psd_span;       /* Hz the bins cover (the base's own zoom steps) */
     int16_t     smeter_dbm;     /* its own S-meter reading, dBm; 0 with the samples */
+    /* The base's warnings (the X6200 reports them, the X6100 does not) */
+    bool        bat_hot, bat_cold;  /* the battery too hot or too cold */
+    bool        pa_hot;         /* the PA too hot */
+    bool        dcin_low;       /* the DC input too low */
     bool        power_key;      /* the POWER key, where the base reports it instead of an input device */
+    bool        bat_missing;    /* the base found no battery (the X6200 says so, the X6100 does not) */
 } hw_pack_t;
 
 /* The board's switches */
@@ -136,6 +142,10 @@ typedef enum {
     HW_NB_WIDTH,
     HW_NR,
     HW_NR_LEVEL,
+    HW_IQ_SWAP,         /* the X6200 with the WR12: I and Q of its IF the other way round; compared first, as a register */
+    HW_OPEN_TX,         /* the X6200: the base keys outside its own band table (byte 280 of its calibration block);
+                         * read from the base at each call, radio.c keeping what it has. hw_set_i: true when the base
+                         * has it as asked now, written or so already; false when refused or failed (hw_x6200.c) */
     HW_PARAM_COUNT
 } hw_param_t;
 
@@ -146,6 +156,12 @@ bool hw_control_init(void);
 void hw_bb_reset(void);
 /* The base answered: what it needs once (its sample format, the IF shift at rest) */
 void hw_start(void);
+
+#ifdef BOARD_X6200
+/* The base's calibration block (pa_bias.h) as it was before this run wrote to the base, read by hw_control_init;
+ * its length in *len. NULL: not read */
+const uint8_t *hw_cal_block(size_t *len);
+#endif
 
 radio_base_ver_t hw_base_ver(void);
 const char      *hw_base_ver_str(void);

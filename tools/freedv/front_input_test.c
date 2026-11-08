@@ -10,9 +10,11 @@
 static lv_indev_t *active_input;
 static lv_indev_t pad_input, encoder_input;
 static unsigned resets, waits, deleted_timers;
-static lv_timer_t retained_timer;
+static lv_timer_t retained_timers[64];
+static unsigned timer_count;
+static unsigned presses[KEYS], releases[KEYS];
 static lv_obj_t test_screen;
-static bool kernel_held,long_was_local;
+static bool kernel_held,long_was_local,release_on_press;
 static uint16_t kernel_code;
 static unsigned long_events;
 encoder_t *mfk;
@@ -21,6 +23,7 @@ lv_group_t *keyboard_group;
 lv_event_code_t EVENT_KEYPAD=123;
 radio_state_t radio_get_state(void) { return RADIO_RX; }
 bool backlight_tick(void) { return false; }
+bool backlight_knob_tick(void) { return false; }
 bool rotary_diagnostic_reset(void) { return true; }
 bool rotary_diagnostic_local_event(lv_indev_t *input,unsigned generation) { (void)input;(void)generation;return false; }
 bool keyboard_diagnostic_reset(void) { return true; }
@@ -30,13 +33,15 @@ lv_indev_t *lv_indev_get_next(lv_indev_t *input) { return !input?&pad_input:inpu
 void lv_indev_reset(lv_indev_t *input,lv_obj_t *obj) { assert(input&&!obj);++resets; }
 void lv_indev_wait_release(lv_indev_t *input) { assert(input);++waits; }
 void lv_timer_del(lv_timer_t *timer) { assert(timer);++deleted_timers; }
-lv_timer_t *lv_timer_create(lv_timer_cb_t callback,uint32_t period,void *arg) { assert(callback==held_cb && period);retained_timer.timer_cb=callback;retained_timer.user_data=arg;return &retained_timer; }
-void lv_timer_set_repeat_count(lv_timer_t *timer,int32_t count) { assert(timer==&retained_timer && count==1); }
+lv_timer_t *lv_timer_create(lv_timer_cb_t callback,uint32_t period,void *arg) { assert(callback==held_cb && period && timer_count<64);lv_timer_t *t=&retained_timers[timer_count++];t->timer_cb=callback;t->user_data=arg;return t; }
+void lv_timer_set_repeat_count(lv_timer_t *timer,int32_t count) { assert(timer && count==1); }
 lv_disp_t *lv_disp_get_default(void) { return NULL; }
 lv_obj_t *lv_disp_get_scr_act(lv_disp_t *disp) { (void)disp;return &test_screen; }
 lv_res_t lv_event_send(lv_obj_t *object,lv_event_code_t code,void *param) {
     assert(object==&test_screen && code==EVENT_KEYPAD);event_keypad_t *key=param;
     if(key->state==KEYPAD_LONG){++long_events;long_was_local=front_keys_diagnostic_local_event();}
+    if(key->state==KEYPAD_PRESS) {++presses[key->key];if(release_on_press)front_keys_diagnostic_input_release();}
+    if(key->state==KEYPAD_RELEASE || key->state==KEYPAD_LONG_RELEASE) ++releases[key->key];
     return LV_RES_OK;
 }
 int ioctl(int fd,unsigned long request,...) {
@@ -61,7 +66,7 @@ int main(void) {
     encoder_t knob={.fd=encoder[0],.indev=&encoder_input,.pressed=true};
     pad.indev_drv.user_data=&pad;mfk=diagnostic_encoder=&knob;
     diagnostic_pads[0]=&pad;diagnostic_pad_count=1;
-    hold_timer=(lv_timer_t *)&pad;
+    key_st[KEYPAD_F3].hold_timer=(lv_timer_t *)&pad;
     assert(ctl_claim(CTL_BROWSER,9,"remote",false));
     ctl_injected(); /* fresh local consent must not depend on waiting150ms */
     post_key(front[1],1);post_key(front[1],0); /* pre-fence remote navigation */
@@ -83,29 +88,41 @@ int main(void) {
     front_keys_diagnostic_input_release();
     assert(front_keys_diagnostic_input_acquire());
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY15,1);
-    assert(hold_timer==&retained_timer && !front_keys_diagnostic_local_event());
-    held_cb(hold_timer);assert(long_events==1 && long_was_local);
+    assert(key_st[KEYPAD_F3].hold_timer && !front_keys_diagnostic_local_event());
+    held_cb(key_st[KEYPAD_F3].hold_timer);assert(long_events==1 && long_was_local);
     assert(!front_keys_diagnostic_local_event()); /* provenance is scoped to dispatch */
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY15,0);
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY15,1);kernel_held=false;
-    held_cb(hold_timer);assert(long_events==1); /* release not yet read still wins */
+    held_cb(key_st[KEYPAD_F3].hold_timer);assert(long_events==1); /* release not yet read still wins */
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY15,0);
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY15,1);
     ctl_diagnostic_input_unblock();assert(ctl_diagnostic_input_block());
-    held_cb(hold_timer);assert(long_events==1); /* generation changed */
+    held_cb(key_st[KEYPAD_F3].hold_timer);assert(long_events==1); /* generation changed */
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY15,0);
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY15,1);
-    lv_timer_t *old_timer=hold_timer;
+    lv_timer_t *old_timer=key_st[KEYPAD_F3].hold_timer;
     front_keys_diagnostic_input_release();assert(front_keys_diagnostic_input_acquire());
     held_cb(old_timer);assert(long_events==1); /* entry/exit drained the held press */
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY15,1);
-    physical_key(&pad,front[1],MFK_PRESS,1);held_cb(hold_timer);assert(long_events==1);
+    physical_key(&pad,front[1],MFK_PRESS,1);held_cb(key_st[KEYPAD_F3].hold_timer);assert(long_events==1);
     physical_key(&pad,front[1],MFK_PRESS,0);
-    keypad_power_set(true);assert(hold_timer==&retained_timer);
-    held_cb(hold_timer);assert(long_events==2 && !long_was_local);
+    keypad_power_set(true);assert(key_st[KEYPAD_POWER].hold_timer);
+    held_cb(key_st[KEYPAD_POWER].hold_timer);assert(long_events==2 && !long_was_local);
     assert(!front_keys_diagnostic_local_event()); /* POWER is terminal, never F3 consent */
     keypad_power_set(false);
     front_keys_diagnostic_input_release();
+    /* PTT release remains independent of another key's press/release and hold. */
+    physical_key(&pad,front[1],BTN_TRIGGER_HAPPY4,1);
+    physical_key(&pad,front[1],BTN_TRIGGER_HAPPY14,1);
+    held_cb(key_st[KEYPAD_F2].hold_timer);
+    physical_key(&pad,front[1],BTN_TRIGGER_HAPPY14,0);
+    physical_key(&pad,front[1],BTN_TRIGGER_HAPPY4,0);
+    assert(presses[KEYPAD_PTT]==1 && releases[KEYPAD_PTT]==1 && !key_st[KEYPAD_PTT].down);
+    assert(presses[KEYPAD_F2]==1 && releases[KEYPAD_F2]==1 && !key_st[KEYPAD_F2].down);
+    assert(front_keys_diagnostic_input_acquire());release_on_press=true;
+    physical_key(&pad,front[1],BTN_TRIGGER_HAPPY20,1);
+    assert(!key_st[KEYPAD_F5].down && !key_st[KEYPAD_F5].hold_timer);
+    assert(!ctl_diagnostic_input_blocked());release_on_press=false;
     close(front[0]);close(front[1]);close(encoder[0]);close(encoder[1]);
-    puts("PASS: fresh held-key provenance is dispatch-scoped; release, new press, generation and input drains revoke consent");
+    puts("PASS: fresh held-key provenance is dispatch-scoped; release, new press, generation and input drains revoke consent; independent keys retain PTT release");
 }

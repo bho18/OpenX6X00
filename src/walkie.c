@@ -3,7 +3,7 @@
  *
  *  Xiegu X6100 LVGL GUI
  *
- *  Walkie Talkie: a portrait screen (480x800, the knobs on top) in place of
+ *  Walkie Talkie: a portrait screen (the panel turned, 480x800 on the X6100 and X6200) in place of
  *  the main one, which is still built and does the radio work unseen. On and
  *  off live: built the first time, then kept.
  */
@@ -39,7 +39,7 @@
 #include <string.h>
 #include <time.h>
 
-#define W           480
+#define W           BOARD_DISP_H
 #define SIDE_W      104             /* the bottom buttons, in a column on the left edge */
 #define SIDE_KEY_H  160             /* the F keys are 160 px apart, as the landscape buttons */
 #define X0          (SIDE_W + 8)    /* the rest of the screen */
@@ -359,7 +359,7 @@ static button_data_t wlk_atu = KEY_BTN("ATU", KEYPAD_ATU, key_hold_cb);         
 static button_data_t wlk_agc = KEY_BTN("AGC", KEYPAD_AGC, key_hold_cb);         /* held: split */
 static button_data_t wlk_pre = KEY_BTN("PRE", KEYPAD_PRE, key_hold_cb);         /* held: ATT */
 static button_data_t wlk_ab = KEY_BTN("A/B", KEYPAD_AB, key_hold_cb);           /* held: copy */
-static button_data_t wlk_step = KEY_BTN("Step", KEYPAD_FST, key_hold_cb);       /* held: back */
+static button_data_t wlk_step = KEY_BTN("Step", KEYPAD_FST, key_hold_cb);       /* held: FST held (Settings > Keys) */
 static button_data_t wlk_lock = KEY_BTN("Lock", KEYPAD_LOCK, NULL);             /* held would reset */
 static button_data_t wlk_exit = { .type = BTN_TEXT, .label = "Exit\nhold", .hold = exit_cb };
 
@@ -458,12 +458,15 @@ static void update_cb(lv_timer_t *t) {
     snprintf(buf, sizeof(buf), "%i.%03i.%03i", mhz, khz, hz);
     freq_set(buf);
 
-    /* No repeater offset or tone in this firmware: split is the TX on the other VFO */
+    /* No repeater offset or tone in this firmware: split is the TX on the other VFO. LOCK: the user's frequency
+     * lock (the Lock button) */
+    const char *lock = main_screen_freq_user_locked() ? " - LOCK" : "";
+
     if (param_i_get(cfg_band_split)) {
         split_freq(cparam_i_get(cfg_bg_freq), &mhz, &khz, &hz);
-        snprintf(buf, sizeof(buf), "%s - SPLIT %i.%03i.%03i", info_params_mode_label_get(), mhz, khz, hz);
+        snprintf(buf, sizeof(buf), "%s - SPLIT %i.%03i.%03i%s", info_params_mode_label_get(), mhz, khz, hz, lock);
     } else {
-        snprintf(buf, sizeof(buf), "%s", info_params_mode_label_get());
+        snprintf(buf, sizeof(buf), "%s%s", info_params_mode_label_get(), lock);
     }
     set_text(mode_label, buf);
 
@@ -499,6 +502,8 @@ static void update_cb(lv_timer_t *t) {
         lv_label_set_text(rxtx_label, tx ? "TX" : "RX");
         if (!tx)
             lv_label_set_text(tx_label, "");
+        else
+            tx_pwr = tx_swr = tx_alc = 0.0f;    /* the bars from 0, not the last TX's readings (#53) */
     }
     if (tx && tx_info_refresh(&tx_msg_id, &tx_alc, &tx_pwr, &tx_swr)) {
         /* SWR from 2 a warning in yellow, from 3 in red (the bar colours of the TX panel) */
@@ -521,7 +526,7 @@ static void build(void) {
 
     scr = lv_obj_create(NULL);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-    styles_theme_box(&scr_style, TC_bg, TC_bg, TC_bg, 0, TI_bg, W, 800);
+    styles_theme_box(&scr_style, TC_bg, TC_bg, TC_bg, 0, TI_bg, W, BOARD_DISP_W);
     lv_obj_add_style(scr, &scr_style, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);         /* opaque: nothing of the waterfall plane */
     lv_obj_set_style_border_color(scr, TC(tx), 0);
@@ -606,7 +611,7 @@ static void build(void) {
     rule(ROWS_Y - 14);
     vol_bar = level_row("VOL", ROWS_Y, BOARD_VOL_MAX, &vol_val);
     sql_bar = level_row("SQL", ROWS_Y + ROW_STEP, 100, &sql_val);
-    pwr_bar = level_row("PWR", ROWS_Y + 2 * ROW_STEP, 100, &pwr_val);
+    pwr_bar = level_row("PWR", ROWS_Y + 2 * ROW_STEP, (int32_t)(BOARD_PWR_MAX * 10), &pwr_val);
 
     timer = lv_timer_create(update_cb, 100, NULL);
 }

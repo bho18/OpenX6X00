@@ -12,19 +12,41 @@
 #include <stdint.h>
 #include "lvgl/lvgl.h"
 
-/* The TX views: the panel under the frequency strip, the strip over the digital apps.
- * Returns the object that takes the TX and RX events */
+/* The TX views: the panel under the frequency strip (Settings > Display > INTERFACE > Popups TX, and every TUNE for
+ * an external tuner), the strip over the digital apps. Returns the object that takes the TX and RX events */
 lv_obj_t *tx_info_init(lv_obj_t *parent);
 
-/* A reading from the base (any thread): power in W, SWR, ALC as the base sends it */
+/* At the TX event (LVGL thread): this TX's readings on the panel or the apps' strip; if not, the S-meter box shows
+ * them (#166) */
+bool tx_info_shown(void);
+
+/* Where the TX panel ends, y on the screen, as the theme places it (Ops Room's TRANSMIT band goes under it) */
+lv_coord_t tx_info_bottom(void);
+
+/* The S-meter box while transmitting with neither up (not the deck's scales): power, SWR and ALC */
+void tx_meters_draw(lv_obj_t *box, lv_draw_ctx_t *draw_ctx);
+
+/* A reading from the base (the radio thread): power in W, SWR, ALC as the base sends it */
 void tx_info_update(float pwr, float swr, float alc);
 
-/* The last power and SWR */
+/* The radio out of TX or a tune (radio.c, in the radio thread, as tx_info_update): the readings back to 0, the next
+ * transmission's start from there. Not a reading: tx_info_refresh does not tell of it (#53) */
+void tx_info_clear(void);
+
+/* The last power and SWR; 0 in RX and in a TX until the base's first reading */
 void tx_info_get(float *pwr, float *swr);
+
+/* The last ALC, as the power; *greyed (unless NULL) when it only tells how far the base turned its own carrier down
+ * (CW, CW-R) */
+float tx_info_get_alc(bool *greyed);
 
 /* The length of the transmission starting, seconds (a slot: FT8 15, JS8 by its speed, WSPR 120): the
  * strip counts up to it, "5 / 15 s". 0 (the TX player at the end): the time alone. Any thread. */
 void tx_info_set_length(float seconds);
+
+/* A TUNE for an external tuner at w W for at most `seconds` (tune_tx.c): the panel and the strip say TUNE and count up
+ * to its limit, the strip's power bar to w. 0: over. Any thread. */
+void tx_info_set_tune(float w, float seconds);
 
 /* The last readings if there is a new one since *seen (then *seen follows); any pointer may be NULL */
 bool tx_info_refresh(uint8_t *seen, float *alc, float *pwr, float *swr);

@@ -48,14 +48,15 @@ if(ENABLE_FREEDV_NATIVE_CODEC)
 endif()
 
 target_sources(${PROJECT_NAME} PUBLIC
-    gui_main.c screen_main.c walkie.c gui_styles.c mono.c wf_palettes.c
+    gui_main.c gui_wake.c ops_room.c screen_main.c walkie.c gui_styles.c mono.c wf_palettes.c
     spectrum_view.c radio.c dsp.cpp util.cpp
-    waterfall_view.c knob_device.c key_input.c mfk_device.c
-    gui_events.c msg_box.c msg_note.c front_keys.c kbd_rollover.c
+    waterfall_view.c knob_device.c key_input.c input_caps.c mfk_device.c
+    gui_events.c msg_box.c msg_note.c front_keys.c kbd_rollover.c kbd_hyper.c kbd_keymap.c kbd_ptt.c
     mic_keys.c clock.c bat_est.c bat_watch.c info_bar.c smeter.c
     band_names.cpp tx_meters.c
     audio.c mfk_control.cpp cw.cpp cw_decoder.c cw_parse.c text_panel.cpp
-    rtty.c screen_shot.c screen_rec.c avi_writer.c screen_light.c gps.c cat.cpp tci_ws.c tci_audio.c tci_server.c cfg_socket.cpp
+    rtty.c screen_shot.c screen_rec.c avi_writer.c screen_light.c screen_idle.c screen_saver.c gps.c
+    cat.cpp tci_ws.c tci_audio.c tci_server.c cfg_socket.cpp
     app_window.c settings_window.cpp swrscan_window.c ft8_window.c
     freq_entry.c gps_window.c cw_messages.c
     voice_messages.c recorder_window.c qth_entry.c station.c dialog_channels.c
@@ -64,8 +65,9 @@ target_sources(${PROJECT_NAME} PUBLIC
     dialog_olivia.c olivia.c olivia_app.c olivia_demod.c olivia_macro.c olivia_mod.c olivia_resamp.c
     olivia_rx.c olivia_tx.c
     dialog_jtty.c jtty.c jtty_rx.c jtty_tx.c
+    digi_textlog.c
     tx_player.c tx_level.c
-    swr_guard.c
+    swr_guard.c tune_tx.c ext_tune.c
     base_guard.c
     app_sstv.c
     app_sstv_tx.c
@@ -82,9 +84,11 @@ target_sources(${PROJECT_NAME} PUBLIC
     dialog_cw_kbd.c
     theme.c
     freq_strip.c
+    lcd_panel.c
     freq_scale.c
     spot_marks.c
     band_plan.c
+    itu_region.c
     cw_field.c
     paddle_keyer.c
     cluster_column.c
@@ -99,13 +103,17 @@ target_sources(${PROJECT_NAME} PUBLIC
     navtex_window.c navtex/sitorb.c navtex/dsc.c
     channel_list.c broadcast_db.c cJSON.c
     text_popup.c cw_encoder.c image_level.c start_trace.c
+    cw_beacon.c
     button_bar.cpp vol_control.cpp recorder.c
     cw_tune_view.c adif.c qso_log.c scheduler.cpp
     wifi_window.c wifi.cpp btaudio.cpp bt_dev.c radio_controls.cpp
     usb_devices.cpp knob_info.cpp
+    wr12.c pa_bias.c
     dialog_wspr.c app_frame.c
     dialog_field.c
     dialog_bands.c
+    sun.c prop_map.c conditions.c beacons.c dialog_propagation.c
+    scan.c dialog_scan.c band_keep.c
     dialog_snake.c
     remote_server.c
     control_owner.c
@@ -131,10 +139,21 @@ foreach(dir fonts ft8 js8 widgets params qth cluster field wspr cfg cw_decoder)
     add_subdirectory(${dir})
 endforeach()
 
-# ft8_lib headers (buildroot package ft8lib; the host build has them in build-host/deps);
+# ft8_lib headers (buildroot package ft8lib; the host build has them in HOST_DEPS, build-host/deps by default);
 # only for the GUI itself, not the libraries above
-if(NOT HOST_BUILD)
+set(OPENX6X00_FT8_LIBRARY "" CACHE FILEPATH "Verified target FT8 runtime library")
+set(OPENX6X00_FT8_INCLUDE_DIR "" CACHE PATH "Headers matching the verified FT8 runtime library")
+if(OPENX6X00_FT8_LIBRARY OR OPENX6X00_FT8_INCLUDE_DIR)
+    if(NOT EXISTS "${OPENX6X00_FT8_LIBRARY}" OR NOT IS_DIRECTORY "${OPENX6X00_FT8_INCLUDE_DIR}")
+        message(FATAL_ERROR "Provide both the verified FT8 library and its matching headers")
+    endif()
+    include_directories(BEFORE "${OPENX6X00_FT8_INCLUDE_DIR}")
+    set(OPENX6X00_FT8_LINK "${OPENX6X00_FT8_LIBRARY}")
+elseif(NOT HOST_BUILD)
     include_directories(${CMAKE_SYSROOT}/usr/include/ft8lib/)
+endif()
+if(NOT OPENX6X00_FT8_LINK)
+    set(OPENX6X00_FT8_LINK ft8)
 endif()
 
 # The panel on a PC
@@ -163,7 +182,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     FT8 QTH CLUSTER FIELD WSPR CW_DECODER JS8 cfg
     Threads::Threads
     lvgl lvgl::drivers
-    ${HW_LIBS} liquid ft8
+    ${HW_LIBS} liquid ${OPENX6X00_FT8_LINK}
 )
 
 # For a debug build on the radio add to the target, compile and link:

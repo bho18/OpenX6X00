@@ -18,6 +18,7 @@
 #include "../vol.h"
 #include "../dialog_msg_cw.h"
 #include "../qth/qth.h"
+#include "../screen_idle.h"
 
 #include "../cfg/db.h"
 #include "../cfg/cfg_api.h"
@@ -34,7 +35,11 @@
 
 params_t params = {
     .brightness_normal = 5, .brightness_idle = 4, .brightness_timeout = 30,
-    .screen_off_min = 5, .screen_off_always = false,
+    /* The screensaver after 5 minutes and never dark, until set. Dark after 5 minutes before it came: a radio
+     * where that was changed keeps its moment, with the screensaver before it (migrations.c, _16) */
+    .screen_off_min = SCREEN_OFF_MIN_DEFAULT, .screen_off_always = false,
+    .screen_saver           = { .x = SCREEN_SAVER_DEFAULT, .min = 0, .max = SCREEN_SAVER_LAST, .name = "screen_saver" },
+    .screen_saver_min       = { .x = SCREEN_SAVER_MIN_DEFAULT, .name = "screen_saver_min" },
     .brightness_buttons     = BUTTONS_TEMPORARILY,
 
     .spectrum_beta          = { .name = "spectrum_beta", .x = 85, .min = 0, .max = 90 },
@@ -55,15 +60,9 @@ params_t params = {
     .clock_tx_timeout       = 1,
 
     .charger                = { .x = 1, .min = 0, .max = 2, .name = "charger"},
-#ifdef BOARD_X6200
-    /* The X6200's PA bias as the OEM app writes it (0x0eec0d20: drive 3360, final 3820), as gdyuldin's X6200 GUI
-     * does; the X6100's 450/650 went to it before */
-    .bias_drive             = 3360,
-    .bias_final             = 3820,
-#else
+    /* The X6100's PA bias. The X6200 takes its base's own (pa_bias.c, #173) */
     .bias_drive             = 450,
     .bias_final             = 650,
-#endif
     .line_in                = 10,
     .line_out               = 10,
     .spmode                 = { .x = false,             .name = "spmode" },
@@ -99,13 +98,20 @@ params_t params = {
     .ft8_custom_hz          = { .x = 0,         .name = "ft8_custom_hz" },
 #ifdef BOARD_X6200
     /* Its own name: v0.3.0 to v0.3.3 read the X6200's ALC the wrong way round (as the X6100's) and learned the
-     * drive down to the floor, 40 dB under the power (issues #1, #8); that value is left behind */
-    .ft8_output_gain_offset = { .x = 0.0f,      .name = "ft8_output_gain_offset_v2" },
+     * drive down to the floor, 40 dB under the power (issues #1, #8); that value is left behind. Again after
+     * v0.3.8, which kept the steps made while the base's power still came up after the key: the level climbed to
+     * the codec's top, 33.4 dB (#126). Every X6200 starts once from the default, where it gives its setting at once */
+    .ft8_output_gain_offset = { .x = 0.0f,      .name = "ft8_output_gain_offset_v3" },
 #else
     .ft8_output_gain_offset = { .x = 0.0f,      .name = "ft8_output_gain_offset" },
 #endif
     .ft8_cq_modifier        = { .x = "",        .name = "ft8_cq_modifier"},
     .sstv_denoise           = { .x = true,      .name = "sstv_denoise" },
+    .cw_qrss_hz             = { { .name = "cw_qrss_30m_hz" }, { .name = "cw_qrss_80m_hz" } },
+    .cw_bcn_start           = { .x = -1,        .name = "cw_bcn_start" },
+    .cw_bcn_until           = { .x = 0,         .name = "cw_bcn_until", .min = 0, .max = 2 },
+    .cw_bcn_sends           = { .x = 10,        .name = "cw_bcn_sends" },
+    .cw_bcn_end             = { .x = -1,        .name = "cw_bcn_end" },
 
     .long_gen               = ACTION_SCREENSHOT,
     .long_app               = ACTION_APP_RECORDER,
@@ -113,11 +119,14 @@ params_t params = {
     .long_msg               = ACTION_RECORDER,
     .long_dfn               = ACTION_NONE,
     .long_dfl               = ACTION_NONE,
+    .long_fst               = ACTION_STEP_DOWN, /* as before it could be set; the stock firmware locks the dial */
 
     .press_f1               = ACTION_STEP_UP,
     .press_f2               = ACTION_NONE,
+    .press_f3               = ACTION_NONE,
     .long_f1                = ACTION_STEP_DOWN,
     .long_f2                = ACTION_NONE,
+    .long_f3                = ACTION_NONE,
 
     .play_gain_db_f         = { .x = 0.0f, .name = "play_gain_db_f"},
     .rec_gain_db_f          = { .x = 0.0f, .name = "rec_gain_db_f"},
@@ -188,6 +197,16 @@ static bool params_load_js8(params_t *p, const char *name, int32_t i) {
         params_load_bool(&p->js8_custom_on, name, i) ||
         params_load_int32(&p->js8_custom_hz, name, i) ||
         params_load_uint16(&p->js8_tx_freq, name, i);
+}
+
+/* MSG > CW's beacon (#71) */
+static bool params_load_cw_beacon(params_t *p, const char *name, int32_t i) {
+    return params_load_int32(&p->cw_qrss_hz[0], name, i) ||
+        params_load_int32(&p->cw_qrss_hz[1], name, i) ||
+        params_load_int32(&p->cw_bcn_start, name, i) ||
+        params_load_uint8(&p->cw_bcn_until, name, i) ||
+        params_load_uint16(&p->cw_bcn_sends, name, i) ||
+        params_load_int32(&p->cw_bcn_end, name, i);
 }
 
 static bool params_load_float(params_float_t *var, const char *name, float x) {
@@ -277,23 +296,32 @@ static bool params_load() {
             params.long_dfn = i;
         } else if (strcmp(name, "long_dfl") == 0) {
             params.long_dfl = i;
+        } else if (strcmp(name, "long_fst") == 0) {
+            params.long_fst = i;
         } else if (strcmp(name, "press_f1") == 0) {
             params.press_f1 = i;
         } else if (strcmp(name, "press_f2") == 0) {
             params.press_f2 = i;
+        } else if (strcmp(name, "press_f3") == 0) {
+            params.press_f3 = i;
         } else if (strcmp(name, "long_f1") == 0) {
             params.long_f1 = i;
         } else if (strcmp(name, "long_f2") == 0) {
             params.long_f2 = i;
+        } else if (strcmp(name, "long_f3") == 0) {
+            params.long_f3 = i;
         }
 
         if (params_load_float(&params.play_gain_db_f, name, f)) continue;
         if (params_load_float(&params.rec_gain_db_f, name, f)) continue;
 
         if (params_load_uint8(&params.charger, name, i)) continue;
+        if (params_load_uint8(&params.screen_saver, name, i)) continue;
+        if (params_load_uint16(&params.screen_saver_min, name, i)) continue;
         if (params_load_bool(&params.mag_freq, name, i)) continue;
         if (params_load_bool(&params.icon_menus, name, i)) continue;
         if (params_load_js8(&params, name, i)) continue;
+        if (params_load_cw_beacon(&params, name, i)) continue;
         if (params_load_bool(&params.sstv_denoise, name, i)) continue;
         if (params_load_bool(&params.ft8_custom_on, name, i)) continue;
         if (params_load_int32(&params.ft8_custom_hz, name, i)) continue;
@@ -371,6 +399,15 @@ static void params_save_js8(params_t *p) {
     params_save_uint16(&p->js8_tx_freq);
 }
 
+static void params_save_cw_beacon(params_t *p) {
+    params_save_int32(&p->cw_qrss_hz[0]);
+    params_save_int32(&p->cw_qrss_hz[1]);
+    params_save_int32(&p->cw_bcn_start);
+    params_save_uint8(&p->cw_bcn_until);
+    params_save_uint16(&p->cw_bcn_sends);
+    params_save_int32(&p->cw_bcn_end);
+}
+
 static void params_save_float(params_float_t *var) {
     if (var->dirty) {
         params_write_float(var->name, var->x, &var->dirty);
@@ -416,11 +453,14 @@ static bool params_save() {
     if (params.dirty.long_msg)              params_write_int("long_msg", params.long_msg, &params.dirty.long_msg);
     if (params.dirty.long_dfn)              params_write_int("long_dfn", params.long_dfn, &params.dirty.long_dfn);
     if (params.dirty.long_dfl)              params_write_int("long_dfl", params.long_dfl, &params.dirty.long_dfl);
+    if (params.dirty.long_fst)              params_write_int("long_fst", params.long_fst, &params.dirty.long_fst);
 
     if (params.dirty.press_f1)              params_write_int("press_f1", params.press_f1, &params.dirty.press_f1);
     if (params.dirty.press_f2)              params_write_int("press_f2", params.press_f2, &params.dirty.press_f2);
+    if (params.dirty.press_f3)              params_write_int("press_f3", params.press_f3, &params.dirty.press_f3);
     if (params.dirty.long_f1)               params_write_int("long_f1", params.long_f1, &params.dirty.long_f1);
     if (params.dirty.long_f2)               params_write_int("long_f2", params.long_f2, &params.dirty.long_f2);
+    if (params.dirty.long_f3)               params_write_int("long_f3", params.long_f3, &params.dirty.long_f3);
 
     params_save_float(&params.play_gain_db_f);
     params_save_float(&params.rec_gain_db_f);
@@ -431,9 +471,12 @@ static bool params_save() {
     params_save_uint16(&params.ft8_tx_freq);
 
     params_save_uint8(&params.charger);
+    params_save_uint8(&params.screen_saver);
+    params_save_uint16(&params.screen_saver_min);
     params_save_bool(&params.mag_freq);
     params_save_bool(&params.icon_menus);
     params_save_js8(&params);
+    params_save_cw_beacon(&params);
     params_save_bool(&params.sstv_denoise);
     params_save_bool(&params.ft8_custom_on);
     params_save_int32(&params.ft8_custom_hz);

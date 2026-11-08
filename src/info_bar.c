@@ -138,6 +138,7 @@ lv_obj_t *info_init(lv_obj_t *parent) {
     subject_subscribe_delayed((Subject *)cfg_band_tx_shift, vfo_update, NULL);
     subject_subscribe_delayed((Subject *)cfg_fg_freq, vfo_update, NULL);    /* where it transmits, for the colour */
     subject_subscribe_delayed((Subject *)cfg_bg_freq, vfo_update, NULL);
+    subject_subscribe_delayed((Subject *)cfg_tx_outside_bands, vfo_update, NULL);
     subject_subscribe_delayed_and_notify((Subject *)cfg_band_split, vfo_update, NULL);
     subject_subscribe_delayed((Subject *)cfg_cur_mode, mode_update, NULL);
     subject_subscribe_delayed_and_notify((Subject *)mode_locked, mode_update, NULL);
@@ -338,8 +339,8 @@ const char *info_params_tx_shift_label(void) {
 }
 
 bool info_tx_blocked(void) {
-    if(freedv_mode_active())return !cfg_is_tx_freq(cparam_i_get(cfg_fg_freq));
-    return param_i_get(cfg_band_split) && !cfg_is_tx_freq(radio_tx_freq());
+    if (freedv_mode_active()) return cfg_tx_refusal(cparam_i_get(cfg_fg_freq)) != NULL;
+    return param_i_get(cfg_band_split) && cfg_tx_refusal(radio_tx_freq());     /* outside the amateur bands too (#121) */
 }
 
 const char *info_params_vfo_label_get(void) {
@@ -365,19 +366,23 @@ static void icon_box(lv_obj_t *o, bool on) {
 }
 
 /* The network cell: the WiFi symbol, or the USB one with a wired adapter plugged in (lit when
- * it is connected; WiFi is held off then) */
+ * it is connected). A cable without a gateway leaves WiFi on: while WiFi is connected the cell is
+ * WiFi's, which carries the internet then (wifi_get_status() says WIFI_OFF while a cable with a
+ * gateway holds it off) */
 static void wifi_icon_update(void *arg) {
     wifi_status_t st = wifi_get_status();
     lv_color_t    c  = st == WIFI_CONNECTED ? TC(ok) : st == WIFI_OFF ? TC(icon_off) : lv_color_hex(COLOR_ICON_IDLE);
     eth_info_t    eth;
 
     eth_get_info(&eth);
-    if (eth.present) {
+    bool usb = eth.present && (!eth.connected || st != WIFI_CONNECTED);
+
+    if (usb) {
         c = eth.connected ? TC(ok) : lv_color_hex(COLOR_ICON_IDLE);
     }
-    lv_label_set_text(items[INFO_WIFI], eth.present ? LV_SYMBOL_USB : LV_SYMBOL_WIFI);
+    lv_label_set_text(items[INFO_WIFI], usb ? LV_SYMBOL_USB : LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(items[INFO_WIFI], c, 0);
-    icon_box(items[INFO_WIFI], eth.present ? eth.connected : st == WIFI_CONNECTED);
+    icon_box(items[INFO_WIFI], usb ? eth.connected : st == WIFI_CONNECTED);
 }
 
 /* Sent from NetworkManager's thread: the icon is set on the LVGL one (a theme change may be

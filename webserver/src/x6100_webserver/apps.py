@@ -4,6 +4,7 @@ try:
 except ImportError:   # images built before python3-zlib was selected
     zlib = None
 import base64
+import binascii
 import csv
 import fcntl
 import hashlib
@@ -33,8 +34,9 @@ app = bottle.Bottle()   # the configurator pages and their API
 
 # Reads that hand out what the radio keeps secret, taken only by its own names as the changes are: the Files page
 # serves all of /mnt (the Wavelog, QRZ, HOTA and WWFF keys, backups/backup.tgz with the SSH host keys and the WiFi
-# passwords, the Winlink mail), and the Backup download can hold the WiFi passwords
-HOST_ONLY_READS = ("/files/", "/api/backup/download")
+# passwords, the Winlink mail), the Backup download can hold the WiFi passwords, and the Winlink logs your mail's
+# subjects and gateways
+HOST_ONLY_READS = ("/files/", "/api/backup/download", "/api/winlink/logs")
 # Reads sent as a POST (a form with the selection), with no secret in them: by any name, as the GET reads are (the
 # QSOs and the pictures are on the pages by any name). The cross-site check still applies
 POST_READS = ("/logs/export", "/api/gallery/zip")
@@ -67,9 +69,23 @@ def radio_settings_release():
 
 
 def host_refused():
-    msg = (f"Open this page by the radio's address, {socket.gethostname()}.local or its Tailscale name: by another "
-           "name a page from another site could do the same through your browser")
+    msg = not_own_name("by another name a page from another site could do the same through your browser")
     if bottle.request.path.startswith("/api/"):   # the pages show the msg of an API's answer
+        return bottle.HTTPResponse(json.dumps({"status": "error", "msg": msg}), 403,
+                                   {"Content-Type": "application/json"})
+    return bottle.HTTPError(403, msg)
+
+
+def via_funnel():
+    """The request came from the internet through Tailscale Funnel: tailscaled sets this header on every one of
+    those and drops one a browser sent, so a request from the LAN or the tailnet never has it (#58)"""
+    return bottle.request.get_header("Tailscale-Funnel-Request") is not None
+
+
+def funnel_refused():
+    msg = ("The radio's web pages are not on the internet: open them on the radio's own network or over Tailscale. "
+           "Tailscale Funnel only carries the Panel and the Screen page (Remote > Tailscale)")
+    if bottle.request.path.startswith("/api/"):
         return bottle.HTTPResponse(json.dumps({"status": "error", "msg": msg}), 403,
                                    {"Content-Type": "application/json"})
     return bottle.HTTPError(403, msg)
@@ -82,8 +98,18 @@ def refuse_other_sites():
     host. Browsers mark the request with Sec-Fetch-Site, older ones only with Origin.
     A site that points a name of its own at the radio (DNS rebinding) sends that name as Host and Origin
     alike and passes this: a change, and a read of HOST_ONLY_READS, needs one of the radio's own names
-    (local_host_ok) as well. Before, the Wavelog page sent the key and Files handed it out by any name (audit C08)"""
+    (local_host_ok) as well. Before, the Wavelog page sent the key and Files handed it out by any name (audit C08).
+    A request from the internet through Tailscale Funnel is refused whatever it asks, also a page: these pages have
+    no login, and a funnel made by hand (tailscale funnel 80) would hand anyone the settings, the Files page with
+    the keys, Backup restore and the updates. A Funnel name is a *.ts.net name and passed the name check (#58).
+    The page's port counts too (review of #105): Pat's mailbox is on port 8080 of the same names, opens a received
+    message's attachments there and shows the names of its files as they came, so a script in a message could run
+    on Pat's page. What such a page sends without asking first passed: a form's POST (an update bundle, an older
+    signed one too, Go back to the previous version, Upgrade, the uploads). A change sent as JSON, a PUT or a DELETE
+    the browser asks for first (CORS), which these pages never allow"""
     req = bottle.request
+    if via_funnel():
+        raise funnel_refused()
     write = req.method not in ("GET", "HEAD", "OPTIONS")
     change = write and req.path not in POST_READS
     if (change or req.path.startswith(HOST_ONLY_READS)) and not local_host_ok():
@@ -94,9 +120,15 @@ def refuse_other_sites():
         bottle.abort(403, "Cross-site request refused")
     origin = req.headers.get("Origin", "")
     if origin:   # "null" (a file:// page) has no host and is refused too
-        theirs = (urllib.parse.urlsplit(origin).hostname or "").lower()
-        ours = (urllib.parse.urlsplit("//" + req.headers.get("Host", "")).hostname or "").lower()
-        if not theirs or theirs != ours:
+        theirs = urllib.parse.urlsplit(origin)
+        ours = urllib.parse.urlsplit("//" + req.headers.get("Host", ""))
+        # A browser names the port in Origin, as in Host, only when it is not the scheme's own (80, 443): the radio's
+        # pages, by http, https, the tailnet or on a PC on a port of their own, send the same port in both
+        try:
+            same_port = theirs.port is None or theirs.port == ours.port
+        except ValueError:   # no port number
+            same_port = False
+        if not theirs.hostname or theirs.hostname.lower() != (ours.hostname or "").lower() or not same_port:
             bottle.abort(403, "Cross-site request refused")
 
 
@@ -159,7 +191,8 @@ CLUSTER_DEFAULT_PORT = 8000
 CLUSTER_MAX_SERVERS = 16
 CLUSTER_MAX_ALERTS = 50
 CLUSTER_MODES = ["CW", "SSB", "DIG", "AMFM"]
-CLUSTER_BANDS = [160, 80, 60, 40, 30, 20, 17, 15, 12, 10, 6]
+# The GUI's cluster bands (src/cluster/spots.c), as cluster.conf has them: the number in the name, 70 for 70 cm
+CLUSTER_BANDS = [160, 80, 60, 40, 30, 20, 17, 15, 12, 10, 8, 6, 4, 2, 70]
 CLUSTER_ACTIVITY = ["POTA", "SOTA", "WWBOTA", "HOTA"]   # the GUI's cluster_act_names
 # Written by the radio GUI: pattern|freq_hz|HH:MM of the last spot that matched
 CLUSTER_ALERTS_SEEN = "/tmp/cluster_alerts_seen"
@@ -270,8 +303,9 @@ def cluster_option_lines(opts):
 config_lock = threading.RLock()   # cluster_update() holds it around write_cluster_conf()
 
 
-def replace_file(path, write, mode=0o644, **kw):
-    """The file written whole through a unique temporary name next to it, then put in place in one step."""
+def replace_file(path, write, mode=0o644, ready=None, **kw):
+    """The file written whole through a unique temporary name next to it, then put in place in one step. ready():
+    called with the new file on the card, just before that step, which it stops by raising"""
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path) + ".", suffix=".tmp")
     try:
         os.chmod(tmp, mode)
@@ -279,6 +313,8 @@ def replace_file(path, write, mode=0o644, **kw):
             write(f)
             f.flush()
             os.fsync(f.fileno())   # /mnt is FAT on the SD card, as the GUI does
+        if ready:
+            ready()
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -286,6 +322,16 @@ def replace_file(path, write, mode=0o644, **kw):
         except OSError:
             pass
         raise
+    # The rename on the card too, as the GUI does for channels.json (channel_list.c): FAT writes the folder out
+    # later, and a power cut in between could leave the old file after the page said Saved
+    try:
+        dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
 
 
 def write_cluster_conf(host, port, servers, opts=None):
@@ -417,12 +463,13 @@ def write_remote_conf(enabled, port):
 def remote_state():
     r = read_remote_conf()
     t = read_tci_conf()
-    r.update({"tci_enabled": t["enabled"], "tci_port": t["port"],
-              "wss_port": settings.WSS_REMOTE_PORT, "wss_tci_port": settings.WSS_TCI_PORT})
+    r.update({"tci_enabled": t["enabled"], "tci_port": t["port"]})
     if not local_host_ok():   # the radio takes a page's sockets by these names only (src/tci_ws.c): say so
-        r["name_refused"] = (f"Open this page by the radio's address, {socket.gethostname()}.local or its Tailscale "
-                             "name: by another name the radio does not take its connection, as a page from another "
-                             "site could make your browser connect the same way")
+        r["name_refused"] = not_own_name("by another name the radio does not take its connection, as a page from "
+                                         "another site could make your browser connect the same way")
+    ts = tailscale_status()   # Funnel on (#58): the Panel's address on the internet, for "Use away from home"
+    if ts.get("state") == "running" and ts.get("funnel") == "on" and ts.get("public", "").startswith("https://"):
+        r["funnel_url"] = ts["public"]
     return r
 
 
@@ -435,6 +482,61 @@ def remote():
 @app.route('/panel')
 def panel():
     return bottle.template('panel')
+
+
+# Tailscale Funnel (#58): the Panel and the Screen page for the internet, written at the start into a folder in RAM
+# (settings.FUNNEL_DIR) with the files they load. tailscaled serves them itself, path by path
+# (rootfs/usr/sbin/x6100-tailscale, which lists the same files): no request from the internet reaches this server
+FUNNEL_FILES = ("favicon.ico", "css/base.css", "css/siimple-icons.css", "js/jquery-3.7.1.min.js",
+                "js/radio_link.js", "js/radio_session.js")
+
+
+FUNNEL_NAME = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
+
+
+def funnel_name():
+    """The radio's name on the internet, <name>.<tailnet>.ts.net, as x6100-tailscale had it from tailscaled; "" while
+    there is none (Tailscale off, or not up yet at boot)"""
+    name = tailscale_status().get("name", "").rstrip(".").lower()
+    return name if FUNNEL_NAME.fullmatch(name) else ""
+
+
+def funnel_render(out_dir, name=""):
+    """The two pages with funnel=True (funnel_base.html: no menu, no callsign, nothing of the configurator; their
+    sockets at wss://<name>/ws/remote and /ws/tci, which their Content-Security-Policy names when name is known),
+    and the files, written whole into a new folder that then takes out_dir's place: a page of an older start never
+    mixes with files of this one. A page that loads a file tailscaled does not serve is said in the log.
+    Each file's time is 0 (1970), which tailscaled's file server (Go's) takes for none: no Last-Modified, which told
+    anyone on the internet, paired or not, when the radio last started (it writes them then), and no 304 for a page
+    a browser kept from an older version (#58). So a browser loads them whole at each visit, over the radio's own
+    connection. A time fixed per version would keep the 304s, but none comes with the package (the updater writes
+    its files at the install), and with any fixed time a browser keeps a page unasked for a tenth of its age (its
+    heuristic freshness), past an update too"""
+    tmp = out_dir + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    for sub in ("css", "js"):
+        os.makedirs(os.path.join(tmp, "static", sub), mode=0o755)
+    for view in ("panel", "remote"):
+        html = bottle.template(view, funnel=True, funnel_host=name if FUNNEL_NAME.fullmatch(name) else "")
+        loads = set(re.findall(r'(?:src|href)="/static/([^"?]+)', html))
+        if loads - set(FUNNEL_FILES):
+            raise ValueError(f"{view}.html loads {', '.join(sorted(loads - set(FUNNEL_FILES)))}, which Funnel does not "
+                             "serve: add it to FUNNEL_FILES here and in x6100-tailscale")
+        with open(os.path.join(tmp, view + ".html"), "w") as f:
+            f.write(html)
+    for name in FUNNEL_FILES:
+        shutil.copyfile(os.path.join(PACKAGE_DIR, "static", name), os.path.join(tmp, "static", name))
+    for dirpath, _, files in os.walk(tmp):
+        os.chmod(dirpath, 0o755)
+        for name in files:
+            os.chmod(os.path.join(dirpath, name), 0o644)
+            os.utime(os.path.join(dirpath, name), (0, 0))
+    old = out_dir + ".old"
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.isdir(out_dir):
+        os.replace(out_dir, old)
+    os.replace(tmp, out_dir)
+    shutil.rmtree(old, ignore_errors=True)
 
 
 @app.get('/api/remote')
@@ -610,9 +712,11 @@ def tailscale_status():
         pass
     try:
         with open(TAILSCALE_CONF) as f:
-            st["enabled"] = any(line.strip() == "enabled=1" for line in f)
+            lines = [line.strip() for line in f]
+        st["enabled"] = "enabled=1" in lines
+        st["funnel_wanted"] = "funnel=1" in lines   # Funnel (#58): the setting; "funnel" is what the supervisor made of it
     except OSError:
-        st["enabled"] = False
+        st["enabled"] = st["funnel_wanted"] = False
     return st
 
 
@@ -621,25 +725,169 @@ def tailscale_page():
     return bottle.template('tailscale')
 
 
+# The radio's own names (#105). Beyond its addresses, localhost, the hostname, <hostname>.local and its Tailscale
+# names: <hostname>.<domain> for each domain its network gives it (the DHCP domain and search list, which
+# NetworkManager writes to resolv.conf for the connections that are up), and the names the owner lists on the
+# Network page (a name in the owner's own DNS, a reverse proxy's). A site that points a name of its own at the radio
+# (DNS rebinding) has no page at either: the domain is the radio's own network's, the list the owner's. A domain
+# that is a public suffix on its own (nl, co.uk: anyone may register x6100.nl) does not count. The radio's sockets
+# (src/tci_ws.c) and Pat's mailbox (tools/pat, 0001) read the same two files and take the same names
+RESOLV_CONF = "/etc/resolv.conf"        # on the radio a link to NetworkManager's /run/NetworkManager/resolv.conf
+OWN_NAMES_CONF = "/mnt/own_names.conf"  # one name per line, written by the Network page
+OWN_NAMES_MAX = 8
+# Single names routers give their networks that stay out of the public DNS (lan, home and the others are never
+# delegated, internal is ICANN's for private networks): <hostname>.lan counts. Any other single name has a top-level
+# domain's shape (nl, box), and x6100.<it> could be anyone's
+PRIVATE_DOMAINS = ("lan", "home", "localdomain", "internal", "intranet", "corp", "private")
+# A country's second level, where anyone registers names (co.uk, com.au, or.jp): <one of these>.<two letters> is a
+# public suffix alone. The Public Suffix List is not on the radio: these are its common shapes
+REGISTRY_LABELS = ("ac", "co", "com", "edu", "go", "gob", "gouv", "gov", "gv", "ltd", "mil", "ne", "net", "nom", "or",
+                   "org", "plc", "sch")
+# A DNS name in lower case: labels of letters, digits and '-' (not first or last), the last one with a letter (so
+# no address in any of its forms: 10.1, 0x7f.1)
+DNS_NAME_RE = re.compile(r"(?=.{1,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*(?=[a-z0-9-]*[a-z])"
+                         r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+NAMES_FILE_MAX = 4096   # the most read of resolv.conf and own_names.conf, in whole lines (as src/tci_ws.c)
+file_cache = {}
+
+
+def file_lines(path):
+    """The whole lines of a small file, at most NAMES_FILE_MAX bytes (a line cut there is left out, so no word of it
+    is taken cut short), read again only when the file changed (its inode, size or time: NetworkManager and
+    replace_file put a new file in place); [] without it"""
+    try:
+        st = os.stat(path)
+        key = (st.st_ino, st.st_size, st.st_mtime_ns)
+        hit = file_cache.get(path)
+        if hit and hit[0] == key:
+            return hit[1]
+        with open(path, "rb") as f:
+            data = f.read(NAMES_FILE_MAX)
+            if len(data) == NAMES_FILE_MAX and f.read(1):
+                data = data[:data.rfind(b"\n") + 1]
+    except OSError:
+        return []
+    lines = data.decode(errors="replace").split("\n")
+    file_cache[path] = (key, lines)
+    return lines
+
+
+def public_suffix(name):
+    """A name that is a public suffix on its own, under which anyone may register one: a top-level domain's shape
+    (a single name) or a country's second level (co.uk)"""
+    labels = name.split(".")
+    return len(labels) == 1 or (len(labels) == 2 and len(labels[1]) == 2 and labels[0] in REGISTRY_LABELS)
+
+
+def network_domains():
+    """The domains the radio's network gives it, from resolv.conf's search and domain lines, lower case: those that
+    are no public suffix alone, and the private single names (PRIVATE_DOMAINS)"""
+    found = []
+    for line in file_lines(RESOLV_CONF):
+        words = line.split()
+        if words and words[0] in ("search", "domain"):
+            for d in words[1:]:
+                d = d.lower().rstrip(".")
+                if (d in PRIVATE_DOMAINS or (DNS_NAME_RE.fullmatch(d) and not public_suffix(d))) and d not in found:
+                    found.append(d)
+    return found
+
+
+def listed_names():
+    """The names the owner added on the Network page (OWN_NAMES_CONF: a name, the first word, on each line), lower
+    case"""
+    names = []
+    for line in file_lines(OWN_NAMES_CONF):
+        words = line.split()
+        n = words[0].lower().rstrip(".") if words else ""
+        if n and not n.startswith("#") and n not in names:
+            names.append(n)
+    return names
+
+
+def own_names():
+    """The radio's own DNS names but the hostname alone and the Tailscale ones, lower case: <hostname>.local,
+    <hostname>.<domain> for the network's domains, and the listed names"""
+    name = socket.gethostname().lower()
+    names = [name + ".local"] + [f"{name}.{d}" for d in network_domains()]
+    return names + [n for n in listed_names() if n not in names]
+
+
+def request_host():
+    """The name or address the page was opened by (the Host header's), lower case, without port and trailing dot"""
+    return (urllib.parse.urlsplit("//" + (bottle.request.get_header("Host") or "")).hostname or "").rstrip(".")
+
+
 def local_host_ok():
-    """The page opened by an address or by the radio's own name. A page from another site that points its own
-    name at the radio (DNS rebinding) passes the cross-site guard: every change (refuse_other_sites), the Files
-    page and the Backup download, Tailscale's login link (which would put the radio on that site's tailnet) and
-    the list of SSH keys only by these names. Pat's mailbox on port 8080 takes the same names (tools/pat).
-    MagicDNS's short name too, which is the tailnet's name for the radio: x6200-1 while the tailnet still has the
-    machine of an earlier card image as x6200"""
-    host = (urllib.parse.urlsplit("//" + (bottle.request.get_header("Host") or "")).hostname or "").rstrip(".")
+    """The page opened by an address or by one of the radio's own names (own_names). A page from another site that
+    points its own name at the radio (DNS rebinding) passes the cross-site guard: every change (refuse_other_sites),
+    the Files page and the Backup download, Tailscale's login link (which would put the radio on that site's
+    tailnet) and the list of SSH keys only by these names. Pat's mailbox on port 8080 takes the same names
+    (tools/pat). MagicDNS's short name too, which is the tailnet's name for the radio: x6200-1 while the tailnet
+    still has the machine of an earlier card image as x6200. Never a request from the internet through Tailscale
+    Funnel: its name is a *.ts.net name too (#58)"""
+    if via_funnel():
+        return False
+    host = request_host()
     try:
         ipaddress.ip_address(host)
         return True
     except ValueError:
         pass
-    name = socket.gethostname().lower()
-    names = {"localhost", name, name + ".local"}
+    if host in ("localhost", socket.gethostname().lower()) or host.endswith(".ts.net") or host in own_names():
+        return True
     tailnet = tailscale_status().get("name", "").lower()
-    if tailnet:
-        names.add(tailnet.split(".")[0])
-    return host in names or host.endswith(".ts.net")
+    return bool(tailnet) and host == tailnet.split(".")[0]
+
+
+def radio_address():
+    """The radio's address on the network the request came from, "" when not known (a request through a proxy on
+    the radio itself: Tailscale's, the https sockets')"""
+    peer = bottle.request.environ.get("REMOTE_ADDR", "")
+    try:
+        ip = ipaddress.ip_address(peer)
+        if ip.is_loopback:
+            return ""
+        with socket.socket(socket.AF_INET6 if ip.version == 6 else socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((peer, 9))   # sends nothing: the route only, and the address it leaves from
+            return s.getsockname()[0]
+    except (ValueError, OSError):
+        return ""
+
+
+def own_name_error(name):
+    """Why a name (lower case) can't be listed as one of the radio's own, "" when it can"""
+    if "*" in name:
+        return f"{name}: no wildcards, one whole name"
+    try:
+        ipaddress.ip_address(name)
+        return f"{name}: an address, and the radio's addresses count already"
+    except ValueError:
+        pass
+    if not DNS_NAME_RE.fullmatch(name):
+        return f"{name}: not a DNS name (letters, digits, '-' and dots)"
+    if public_suffix(name):
+        return f"{name}: give the whole name with its domain, as x6100.example.nl"
+    return ""
+
+
+def not_own_name(why):
+    """A refusal's text for a page opened by another name (#105): the name it was opened by, the names that work
+    (the Tailscale name only while Tailscale runs) and where to add that name if it is the owner's own. Only then:
+    a site that points a name of its own at the radio can open the radio's own pages by it, this text and all, and
+    then ask the owner to add it"""
+    host = request_host()
+    addr = radio_address()
+    works = [f"its address ({addr})" if addr else "its address"] + own_names()
+    ts = tailscale_status()
+    if ts.get("state") == "running":
+        works.append(f"its Tailscale name ({ts['name'].lower()})" if ts.get("name") else "its Tailscale name")
+    text = (f"This page was opened as {host}, which is not one of the radio's own names" if host else
+            "This page was opened without a name") + f": {why}. Open it by {', '.join(works[:-1])} or {works[-1]}"
+    if host and not own_name_error(host):
+        text += (f". If {host} is a name your own DNS server or reverse proxy gives the radio, add it to Other "
+                 "names on System > Network, opened by one of those: never a name a web site or a message asks for")
+    return text
 
 
 @app.get('/api/tailscale')
@@ -647,16 +895,22 @@ def get_tailscale():
     st = tailscale_status()
     if not local_host_ok():
         st.pop("url", None)
+        st.pop("funnel_url", None)   # the admin console's link that allows Funnel: the login's kind of link
     return st
+
+
+# The actions, as the helper's arguments: Funnel (#58) only writes its setting, the supervisor follows it
+TAILSCALE_ACTIONS = {"on": ["on"], "off": ["off"], "logout": ["logout"], "funnel_on": ["funnel", "on"],
+                     "funnel_off": ["funnel", "off"]}
 
 
 @app.post('/api/tailscale')
 def set_tailscale():
     action = (bottle.request.json or {}).get("action")
-    if action not in ("on", "off", "logout"):
-        return api_error(400, "action: on, off or logout")
+    if action not in TAILSCALE_ACTIONS:
+        return api_error(400, "action: on, off, logout, funnel_on or funnel_off")
     try:
-        r = subprocess.run([TAILSCALE_CMD, action], capture_output=True, text=True, timeout=30)
+        r = subprocess.run([TAILSCALE_CMD] + TAILSCALE_ACTIONS[action], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as e:
         return api_error(500, f"Tailscale: {e}")
     if r.returncode != 0:
@@ -665,22 +919,31 @@ def set_tailscale():
     return tailscale_status()
 
 
-# Winlink (rootfs/usr/sbin/x6100-winlink): Pat and ardopcf under a supervisor that keeps a status file. The page
-# writes the settings (/mnt/winlink.conf), hands a new password to the helper on stdin (it goes to the root
-# filesystem, where these pages never read it back) and runs the helper to apply them and to turn it on or off
+# Winlink (rootfs/usr/sbin/x6100-winlink): Pat and the modem (ardopcf, Mercury's x6x00-mercury or XARA) under a
+# supervisor that keeps a status file. The page writes the settings (/mnt/winlink.conf), hands a new password to the
+# helper on stdin (it goes to the root filesystem, where these pages never read it back) and runs the helper to apply
+# them and to turn it on or off
 WINLINK_CMD = "/usr/sbin/x6100-winlink"
 WINLINK_STATUS = "/run/winlink/status"
+WINLINK_RADIO = "/run/winlink/radio"                  # the GUI's (src/winlink.c), while a modem is on its socket
+WINLINK_RADIO_FRESH = 15                              # s: older is from a GUI that is gone
 WINLINK_CONF = "/mnt/winlink.conf"
 WINLINK_PASSWORD = "/var/lib/winlink/password"
 WINLINK_PROGRAMS = ("/usr/bin/pat", "/usr/bin/ardopcf")
+WINLINK_XARA = "/usr/bin/xara"                        # not on a radio updated from before it
 WINLINK_PORT = 8080                                   # Pat's mailbox
 WINLINK_CALL_RE = re.compile(r"[A-Z0-9]{3,12}(-[0-9]{1,2})?")   # as x6100-winlink checks them
 WINLINK_LOCATOR_RE = re.compile(r"[A-R]{2}[0-9]{2}([A-X]{2})?", re.I)
+WINLINK_BANDWIDTHS = (200, 500, 1000, 2000)           # ARDOP's, the widest Pat may use (as x6100-winlink's)
+WINLINK_MODEMS = ("ardop", "mercury", "xara")         # the modem= choice (as x6100-winlink's), ardop the default
+WINLINK_MERCURY_BANDWIDTHS = (500, 2300, 2750)        # Mercury's, VARA's three (as x6100-winlink's), 2300 the default
+WINLINK_XARA_BANDWIDTHS = (500, 2300, 2750)           # XARA's, VARA HF's own three, 2300 the default
 winlink_lock = threading.Lock()                       # one change at a time: Off may take 20 s
 
 
 def winlink_conf():
-    conf = {"enabled": "0", "mycall": "", "locator": "", "bandwidth": "500"}
+    conf = {"enabled": "0", "mycall": "", "locator": "", "bandwidth": "500", "modem": "ardop",
+            "mercury_bandwidth": "2300", "xara_bandwidth": "2300", "vara_licence": "0"}
     try:
         with open(WINLINK_CONF) as f:
             for line in f:
@@ -693,8 +956,11 @@ def winlink_conf():
 
 
 def winlink_state():
-    """The settings, the supervisor's status and the defaults; whether a password is set, never the password"""
-    st = {"state": "off", "text": "Off", "pat": "off", "ardop": "off"}
+    """The settings, the supervisor's status and the defaults; where a password is set, never the password: on this
+    page (password_set), in Pat's own Settings (the supervisor's password=pat, #80) or nowhere. The modem chosen is
+    modem_choice: the status's modem is how the one that runs is doing. vara_licence: the user's own word that they
+    hold a VARA HF licence (XARA's full speed), which nothing checks"""
+    st = {"state": "off", "text": "Off", "pat": "off", "ardop": "off", "mercury": "off", "xara": "off"}
     try:
         with open(WINLINK_STATUS) as f:
             for line in f:
@@ -709,11 +975,44 @@ def winlink_state():
     except OSError:
         password_set = False
     st.update(enabled=conf["enabled"] == "1", mycall=conf["mycall"], locator=conf["locator"],
-              bandwidth=2000 if conf["bandwidth"] == "2000" else 500, password_set=password_set,
+              bandwidth=int(conf["bandwidth"]) if conf["bandwidth"] in [str(b) for b in WINLINK_BANDWIDTHS] else 500,
+              modem_choice=conf["modem"] if conf["modem"] in WINLINK_MODEMS else "ardop",
+              mercury_bandwidth=int(conf["mercury_bandwidth"])
+              if conf["mercury_bandwidth"] in [str(b) for b in WINLINK_MERCURY_BANDWIDTHS] else 2300,
+              xara_bandwidth=int(conf["xara_bandwidth"])
+              if conf["xara_bandwidth"] in [str(b) for b in WINLINK_XARA_BANDWIDTHS] else 2300,
+              vara_licence=conf["vara_licence"] == "1", xara_installed=os.access(WINLINK_XARA, os.X_OK),
+              password_set=password_set,
+              password="page" if password_set else "pat" if st.get("password") == "pat" else "none",
               radio_mycall=max(read_callsign().upper().split("/"), key=len),   # ON6URE of ON6URE/P
               radio_locator=read_param("qth"), installed=all(os.access(p, os.X_OK) for p in WINLINK_PROGRAMS),
-              host_ok=local_host_ok(), port=WINLINK_PORT)
+              host_ok=local_host_ok(), port=WINLINK_PORT, radio=winlink_radio())
+    if not st["host_ok"]:   # the page's note: which names work, and where another one is added (#105)
+        st["name_refused"] = not_own_name("by another name a page from another site could change Winlink through "
+                                          "your browser, and the mailbox opens only by the radio's own names too")
     return st
+
+
+def winlink_radio():
+    """The radio's state as the GUI writes it for Winlink: frequencies, mode, the simplex check, filters, power, the
+    app open, the SWR hold, the last refusal and QSY (with how many seconds ago); {} when not written lately"""
+    try:
+        with open(WINLINK_RADIO) as f:
+            if time.time() - os.fstat(f.fileno()).st_mtime > WINLINK_RADIO_FRESH:
+                return {}
+            radio = dict(line.rstrip("\n").split("=", 1) for line in f if "=" in line)
+    except OSError:
+        return {}
+    for k, v in radio.items():
+        if re.fullmatch(r"-?\d+", v):
+            radio[k] = int(v)
+        elif re.fullmatch(r"-?\d+\.\d+", v):
+            radio[k] = float(v)
+    now = int(time.time())
+    for k in ("refused", "qsy"):
+        at = radio.get(k + "_at")
+        radio[k + "_age"] = now - at if isinstance(at, int) and at > 0 else None
+    return radio
 
 
 def winlink_run(args, stdin=None):
@@ -738,10 +1037,27 @@ def get_winlink():
     return winlink_state()
 
 
+@app.get('/api/winlink/logs')
+def winlink_logs():
+    """Pat's, the modem's and the radio's logs as one text file for a bug report; the helper masks the passwords"""
+    try:
+        r = subprocess.run([WINLINK_CMD, "logs"], capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return api_error(500, f"Winlink: {e}")
+    if r.returncode != 0:
+        msg = (r.stderr.decode(errors="replace").strip().splitlines() or [f"exit code {r.returncode}"])[-1]
+        return api_error(500, "Winlink: " + (msg[6:] if msg.startswith("error ") else msg))
+    bottle.response.content_type = "text/plain; charset=utf-8"
+    bottle.response.set_header("Content-Disposition",
+                               f'attachment; filename="winlink-logs-{time.strftime("%Y%m%d-%H%M")}.txt"')
+    return r.stdout
+
+
 @app.post('/api/winlink')
 def set_winlink():
-    """Any of enabled, mycall, locator, bandwidth and password; what is not sent stays. An empty callsign or
-    locator is the radio's own, an empty password keeps the one set"""
+    """Any of enabled, mycall, locator, bandwidth, modem_choice (ardop, mercury or xara), mercury_bandwidth,
+    xara_bandwidth, vara_licence and password; what is not sent stays. An empty callsign or locator is the radio's own,
+    an empty password keeps the one set"""
     try:
         data = bottle.request.json
     except ValueError:
@@ -767,9 +1083,27 @@ def set_winlink():
                 return api_error(400, "Locator: 4 or 6 characters (JO20 or JO20ab); empty for the radio's QTH")
             new["locator"] = loc[:4].upper() + loc[4:].lower()
         if "bandwidth" in data:
-            if data["bandwidth"] not in (500, 2000) or isinstance(data["bandwidth"], bool):
-                return api_error(400, "Bandwidth: 500 or 2000")
+            if data["bandwidth"] not in WINLINK_BANDWIDTHS or isinstance(data["bandwidth"], bool):
+                return api_error(400, "Bandwidth: 200, 500, 1000 or 2000")
             new["bandwidth"] = str(data["bandwidth"])
+        if "modem_choice" in data:
+            if data["modem_choice"] not in WINLINK_MODEMS:
+                return api_error(400, "Modem: ARDOP, Mercury or XARA")
+            new["modem"] = data["modem_choice"]
+        if "mercury_bandwidth" in data:
+            mbw = data["mercury_bandwidth"]
+            if mbw not in WINLINK_MERCURY_BANDWIDTHS or isinstance(mbw, bool):
+                return api_error(400, "Mercury bandwidth: 500, 2300 or 2750")
+            new["mercury_bandwidth"] = str(mbw)
+        if "xara_bandwidth" in data:
+            xbw = data["xara_bandwidth"]
+            if xbw not in WINLINK_XARA_BANDWIDTHS or isinstance(xbw, bool):
+                return api_error(400, "XARA bandwidth: 500, 2300 or 2750")
+            new["xara_bandwidth"] = str(xbw)
+        if "vara_licence" in data:
+            if not isinstance(data["vara_licence"], bool):
+                return api_error(400, "VARA HF licence: true or false")
+            new["vara_licence"] = "1" if data["vara_licence"] else "0"
         password = data.get("password", "")
         password = password.strip() if isinstance(password, str) else None
         if password is None or len(password) > 64 or any(ord(c) < 32 or ord(c) == 127 for c in password):
@@ -778,7 +1112,8 @@ def set_winlink():
             err = winlink_run(["set-password"], password)
             if err:
                 return api_error(500, "Winlink: " + err)
-        keys = ["enabled", "mycall", "locator", "bandwidth"]
+        keys = ["enabled", "mycall", "locator", "bandwidth", "modem", "mercury_bandwidth", "xara_bandwidth",
+                "vara_licence"]
         if new != conf:
             try:
                 replace_file(WINLINK_CONF, lambda f: f.write(
@@ -788,7 +1123,8 @@ def set_winlink():
         err = None
         if new["enabled"] == "1":
             if password or any(new[k] != conf[k] for k in keys[1:]):
-                err = winlink_run(["apply"])          # Pat restarts with them
+                err = winlink_run(["apply"])          # Pat restarts with them, the modem when another is chosen
+                                                      # and XARA when its own settings changed
             err = err or winlink_run(["on"])
         elif conf["enabled"] == "1" or "enabled" in data:
             err = winlink_run(["off"])
@@ -937,8 +1273,8 @@ def ssh_write(lines):
 def ssh_request():
     """The request's JSON object, or the error to answer with: also for a page opened by another site's name"""
     if not local_host_ok():
-        return None, api_error(403, f"Open this page by the radio's address or {socket.gethostname()}.local "
-                                    "to see or change the SSH keys")
+        return None, api_error(403, not_own_name("by another name a page from another site could add a key "
+                                                 "through your browser, so the keys are not shown or changed"))
     try:
         data = bottle.request.json if bottle.request.method != "GET" else {}
     except ValueError:
@@ -1041,7 +1377,7 @@ def set_tci():
 
 field_lock = threading.Lock()
 field_update = {"running": False, "result": ""}
-field_refs_counts = (None, {})   # (mtime, size), {"P": parks, "S": summits, "B": bunkers, "H": HOTA, "F": WWFF, "T": towers, "C": castles, "M": mills, "L": lights}
+field_refs_counts = (None, {})   # (mtime, size), {"P": parks, "S": summits, "B": bunkers, "H": HOTA, "F": WWFF, "T": towers, "C": castles, "M": mills, "L": lights, "K": lakes}
 
 
 def field_path(*names):
@@ -1125,7 +1461,7 @@ def field_refs():
     return {"date": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)), "size": fmt_size(st.st_size),
             "parks": c.get(b"P", 0), "summits": c.get(b"S", 0), "bunkers": c.get(b"B", 0), "hota": c.get(b"H", 0),
             "wwff": c.get(b"F", 0), "towers": c.get(b"T", 0), "castles": c.get(b"C", 0), "mills": c.get(b"M", 0),
-            "lights": c.get(b"L", 0)}
+            "lights": c.get(b"L", 0), "lakes": c.get(b"K", 0)}
 
 
 def field_logs():
@@ -1259,6 +1595,11 @@ def field_log_file(name):
 
 WAVELOG_KEYS = ("enabled", "url", "key", "station_id", "station_name", "verify_tls", "since")
 WAVELOG_URL = r"https?://[^\s<>\"'=]{3,200}"
+# Wavelog 3.1 and later make two kinds: API keys ("Legacy API Keys (API v1)", wl and 13 hex, cl... from Cloudlog)
+# and API tokens ("API Tokens (API v2)", wl2_ and 40 hex). x6100-wavelog speaks API v1 (the key in the request),
+# which answers a token "missing or invalid api key", 401: Test connection said only "key refused" (#73)
+WAVELOG_V2_TOKEN = ("That is a Wavelog API token (wl2_..., API v2), which the radio can't use yet: on Wavelog's API "
+                    "page, under Legacy API Keys (API v1), Create a read & write key, and type that key (wl...)")
 
 
 def wavelog_read():
@@ -1317,6 +1658,11 @@ def wavelog_run(cmd, form=None, timeout=330):
         r = subprocess.run([settings.WAVELOG_CMD, cmd], capture_output=True, text=True, timeout=timeout, env=env)
         lines = r.stdout.strip().splitlines()
         return lines[-1] if lines else f"error exit code {r.returncode}"
+    except subprocess.TimeoutExpired:
+        # The helper's own timeouts leave out the name lookup: a name the network's DNS never answers holds it
+        # past them. The page said "Wavelog: Command '['/usr/sbin/x6100-wavelog', 'test']' timed out after 40
+        # seconds" (#73)
+        return f"error no answer in {timeout} s: check the URL, and that the radio can reach that address"
     except (OSError, subprocess.SubprocessError) as e:
         return f"error {e}"
 
@@ -1341,6 +1687,8 @@ def wavelog_form(body, saved=None):
         return None, "The URL starts with http:// or https://, no spaces"
     if key and not re.fullmatch(r"[!-~]{1,128}", key):
         return None, "A key is 1-128 printable characters, no spaces"
+    if key.lower().startswith("wl2_"):
+        return None, WAVELOG_V2_TOKEN
     saved = wavelog_read() if saved is None else saved
     if url and not key and saved.get("key") and wavelog_origin(url) != wavelog_origin(saved.get("url", "")):
         return None, "Another server: type its API key too (the saved key goes only to the server it was saved with)"
@@ -1487,14 +1835,14 @@ SOTA_REF = r'[A-Z0-9]{1,4}/[A-Z]{2}-[0-9]{3}'     # I/LO-123 ([0-9]: \d takes an
 POTA_REF = r'[A-Z0-9]{1,4}-[0-9]{4,5}'            # IT-1234
 # The ADIF SIG of each programme but SOTA (SOTA_REF), by the letter ref_prog gives
 REF_SIG = {"P": "POTA", "B": "WWBOTA", "H": "HOTA", "F": "WWFF", "T": "TOTA", "C": "WCA", "M": "MOTA", "L": "ARLHS",
-           "G": "TILES"}
+           "G": "TILES", "K": "LLOTA"}
 TILE = r'[A-R]{2}[0-9]{2}[A-X]{2}'                # a Tiles tile, JO20ab (the references come here in capitals)
 
 
 def ref_prog(ref):
     """The programme of a reference by its shape, as the radio tells it (src/field/flog.c field_ref_prog): S SOTA,
-    P POTA, B WWBOTA, H HOTA, F WWFF, T TOTA, C WCA, M MOTA, L a lighthouse (BEL 002), G a Tiles tile (JO20ab); ""
-    when it is none of them"""
+    P POTA, B WWBOTA, H HOTA, F WWFF, T TOTA, C WCA, M MOTA, L a lighthouse (BEL 002), G a Tiles tile (JO20ab),
+    K an LLOTA lake (LLPL-0001); "" when it is none of them"""
     if re.fullmatch(r'X[0-9]{5}', ref):                                # X42018
         return "M"
     if re.fullmatch(TILE, ref.upper()):                                # JO20ab
@@ -1512,6 +1860,8 @@ def ref_prog(ref):
         return "H"
     if len(pre) >= 3 and pre.endswith("FF"):                           # DLFF-0123
         return "F"
+    if re.fullmatch(r'LL[A-Z]{2}-[0-9]{4,5}', ref):                    # LLPL-0001, before the towers (LLAR-0001)
+        return "K"
     if 3 <= len(pre) <= 5 and pre.endswith("R") and re.fullmatch(r'[0-9]{4}', num):  # OKR-0150
         return "T"
     if 1 <= len(pre) <= 3 and re.fullmatch(r'[0-9]{5}', num) and (num[0] == "0" or pre == "I"):   # DL-01156
@@ -1689,7 +2039,7 @@ def get_logs():
     for log in field_logs():
         for n, rec in enumerate(log_records(log["name"])):
             q = adif_fields(rec)
-            if q.get("submode"):   # MFSK with SUBMODE FT4, JS8, FT2: the submode names it
+            if q.get("submode"):   # MFSK with SUBMODE FT4, JS8, FT2, JTTY, PSK with PSK31: the submode names it
                 q["mode"] = q["submode"]
             qsos.append(dict(q, file=log["name"], n=n, id=rec_id(rec)))
     return {"qsos": qsos, "active": field_active_log()}
@@ -1702,8 +2052,10 @@ LOG_FIELDS = {"call": r'[A-Z0-9/]{3,15}', "qso_date": r'\d{8}', "time_on": r'\d{
               "qth": r'[^<>]{0,40}', "gridsquare": r'([A-R]{2}\d{2}([A-X]{2})?)?', "comment": r'[^<>]{0,80}',
               "sota_ref": r'(%s)?' % SOTA_REF, "pota_ref": r'(%s)?' % POTA_REF,
               "ref": r'[A-Z0-9/ -]{0,15}'}   # the other station's reference, any programme (BEL 002): set_ref
-# The modes ADIF files as a SUBMODE of MFSK (the radio logs FT4, JS8 and FT2 that way)
-SUBMODE_OF = {"FT4": "MFSK", "JS8": "MFSK", "FT2": "MFSK", "FST4": "MFSK", "FST4W": "MFSK", "Q65": "MFSK", "MSK144": "MFSK"}
+# The modes ADIF files as a SUBMODE (the radio logs FT4, JS8, FT2 and JTTY under MFSK, PSK31 and PSK63 under PSK).
+# MSK144 is a MODE of its own in ADIF, as FT8 is
+SUBMODE_OF = {"FT4": "MFSK", "JS8": "MFSK", "FT2": "MFSK", "JTTY": "MFSK", "FST4": "MFSK", "FST4W": "MFSK",
+              "Q65": "MFSK", "PSK31": "PSK", "PSK63": "PSK"}
 
 
 def log_unchanged(q, k, v):
@@ -1764,9 +2116,23 @@ def put_log_qso(name, n):
                 else:
                     rec = adif_del(adif_set(rec, "MODE", v) if v else adif_del(rec, "MODE"), "SUBMODE")
             else:
+                # A band as the radio writes it, 40m: the page sends it in capitals (#174)
+                v = v.lower() if k == "band" else v
                 rec = adif_set(rec, k.upper(), v) if v else adif_del(rec, k.upper())
         return rec
     return edit_qso(name, n, change, bottle.request.query.get("id", "")) or {"status": "OK"}
+
+
+def adif_header(title):
+    """The header of an ADIF file the radio writes, as the GUI's logs have it (src/field/flog.c field_adif_header):
+    title as its first line, ADIF 3.1.8, the program and its version (left out when it can't be read)."""
+    try:
+        with open(settings.APP_VERSION) as f:
+            ver = f.read().strip().encode()
+    except OSError:
+        ver = b""
+    prog = b" <PROGRAMVERSION:%d>%s" % (len(ver), ver) if ver else b""
+    return title.encode() + b"\n<ADIF_VER:5>3.1.8 <PROGRAMID:9>OpenX6X00" + prog + b" <eoh>\n"
 
 
 @app.post('/logs/export')
@@ -1780,7 +2146,8 @@ def export_logs():
     recs = [rec for name in sorted(want) for rec in log_records(name) if rec_id(rec) in want[name]]
     stamp = time.strftime("%Y%m%d-%H%M")
     if bottle.request.forms.get("fmt") == "csv":
-        cols = ["qso_date", "time_on", "call", "band", "freq", "mode", "rst_sent", "rst_rcvd", "name", "qth",
+        # SUBMODE beside MODE: PSK31 and PSK63 are both MODE PSK, FT4, JS8 and JTTY all MFSK
+        cols = ["qso_date", "time_on", "call", "band", "freq", "mode", "submode", "rst_sent", "rst_rcvd", "name", "qth",
                 "gridsquare", "sota_ref", "pota_ref", "sig", "sig_info", "my_sota_ref", "my_pota_ref", "my_sig",
                 "my_sig_info", "comment"]
         out = io.StringIO()
@@ -1791,12 +2158,70 @@ def export_logs():
             w.writerow([f.get(c, "") for c in cols])
         body, ext, mime = out.getvalue(), "csv", "text/csv"
     else:
-        body = b"OpenX6X00 log export\n<adif_ver:5>3.1.4 <programid:9>OpenX6X00 <eoh>\n" + \
-               b"".join(rec.strip() + b" <eor>\n" for rec in recs)   # the records' bytes: their lengths hold
+        # The records' bytes, their lengths hold: an FT8 QSO as ft_log.adi has it too (#174)
+        body = adif_header("OpenX6X00 log export") + b"".join(rec.strip() + b" <eor>\n" for rec in recs)
         ext, mime = "adi", "text/plain"
     bottle.response.content_type = mime + "; charset=utf-8"
     bottle.response.set_header("Content-Disposition", f'attachment; filename="x6100-log-{stamp}.{ext}"')
     return body
+
+
+# The keyboard modes' text log (src/digi_textlog.c, #55): <TEXTLOG_DIR>/YYYY-MM-DD.txt, a line for each line PSK31,
+# PSK63, Olivia and JTTY received or sent and RTTY received, one file a UTC day; the GUI keeps the folder within the
+# size limit of Settings > General > TEXT LOG. Listed on the Logs page, read in the browser, downloaded, deleted.
+TEXTLOG_NAME = re.compile(r"\d{4}-\d{2}-\d{2}\.txt")
+
+
+def textlog_files():
+    try:
+        names = os.listdir(settings.TEXTLOG_DIR)
+    except OSError:
+        return []
+    files = []
+    for name in names:
+        path = os.path.join(settings.TEXTLOG_DIR, name)
+        try:   # the GUI may delete the oldest day (the size limit) while the list is made
+            if not TEXTLOG_NAME.fullmatch(name) or not os.path.isfile(path):
+                continue
+            n = os.stat(path).st_size
+        except OSError:
+            continue
+        files.append({"name": name, "day": name[:10], "bytes": n, "size": fmt_size(n)})
+    return sorted(files, key=lambda f: f["name"], reverse=True)
+
+
+@app.get('/api/textlog')
+def get_textlog():
+    files = textlog_files()
+    return {"files": files, "total": fmt_size(sum(f["bytes"] for f in files))}
+
+
+@app.get('/textlog/<name>')
+def textlog_file(name):
+    """A day's text in the browser, or with ?dl=1 as a download. Plain text that is never sniffed into a page: the
+    text is what came over the air, and anyone on the band can send "<script>". Never kept by the browser either
+    (as Files and the Gallery): today's file grows, and a copy the browser took for fresh by its age (it has a
+    Last-Modified and no Cache-Control) would be shown again without the lines that came since"""
+    if not TEXTLOG_NAME.fullmatch(name):
+        raise bottle.HTTPError(404, "Not found")
+    r = bottle.static_file(name, root=settings.TEXTLOG_DIR, mimetype="text/plain",
+                           download=name if bottle.request.query.get("dl") else False)
+    r.set_header("X-Content-Type-Options", "nosniff")
+    r.set_header("Cache-Control", "private, no-cache, no-store")
+    return r
+
+
+@app.delete('/api/textlog/<name>')
+def delete_textlog(name):
+    if not TEXTLOG_NAME.fullmatch(name):
+        return api_error(400, "Not a day of the text log")
+    try:
+        os.remove(os.path.join(settings.TEXTLOG_DIR, name))
+    except FileNotFoundError:
+        return api_error(404, "Not found")
+    except OSError as e:
+        return api_error(500, f"Can't delete: {e}")
+    return get_textlog()
 
 
 # The GUI's local configurator socket (src/cfg_socket.cpp): one JSON object per line, one answer line
@@ -1814,23 +2239,50 @@ def cfg_connect(timeout):
 
 
 # Memories: MEM button slots (params.db, table `memory`) and named channels
-# (channels.json, same format as the radio GUI, src/channels.c)
+# (channels.json, same format as the radio GUI, src/channel_list.c)
 # Names and enum values are x6100_mode_t / x6100_agc_t from x6100_control
 MODES = ["LSB", "LSB-D", "USB", "USB-D", "CW", "CWR", "AM", "NFM", "SAM", "WFM"]
 AGCS = ["OFF", "SLOW", "FAST", "AUTO"]
 MEM_SLOTS = range(1, 10)  # MEM_HKEY_MAX_ID in src/main_screen.h; 10 is the GUI's backup slot
-FREQ_MIN, FREQ_MAX = 100000, 56000000  # the GUI HF range (HF_MIN_FREQ)
 CHANNELS_MAX = 100
 CHANNEL_NAME_RE = re.compile(r"[ -~]{0,31}")
+# Where the radio tunes a MEM slot or a channel, Hz: both go through cp_fg_freq, which takes any other frequency to
+# the nearest edge (clamp_to_valid_hw_freq, src/cfg/settings_manager.h). HF, and 70-500 MHz through a transverter;
+# the X6200 also FM broadcast and the airband and the WR12's 54 MHz-1 GHz, so all of 0.1-1000 MHz. The model's,
+# whatever is on now: a slot or a channel for a transverter or the WR12 stays good while it is off
+TUNE_RANGES = {"x6100": ((100_000, 55_000_000), (70_000_000, 500_000_000)),
+               "x6200": ((100_000, 1_000_000_000),)}
 
 
-def parse_entry(data, named):
-    """Validated slot/channel dict from request JSON; ValueError with a message."""
+def radio_model():
+    """x6100 or x6200, from the device tree, as x6100-update tells them apart"""
+    try:
+        with open(settings.DEVICE_TREE, "rb") as f:
+            return "x6200" if b"xiegu,x6200" in f.read() else "x6100"
+    except OSError:
+        return "x6100"
+
+
+def tune_ranges():
+    return TUNE_RANGES[radio_model()]
+
+
+def parse_entry(data, named, shown=None):
+    """Validated slot/channel dict from request JSON; ValueError with a message. shown: the channel as the page
+    showed it; a field the request leaves as shown is not checked and not in the dict, so the entry keeps it as the
+    file has it (a name or a frequency the page would not take, a fraction of a hertz)"""
     if not isinstance(data, dict):
         raise ValueError("Invalid request")
+    shown = shown or {}
+
+    def same(key):
+        return key in shown and type(data.get(key)) is type(shown[key]) and data.get(key) == shown[key]
     freq = data.get("frequency")
-    if isinstance(freq, bool) or not isinstance(freq, int) or not FREQ_MIN <= freq <= FREQ_MAX:
-        raise ValueError("Frequency must be between 0.5 and 56 MHz")
+    ranges = tune_ranges()
+    if not same("frequency") and (isinstance(freq, bool) or not isinstance(freq, int)
+                                  or not any(lo <= freq <= hi for lo, hi in ranges)):
+        raise ValueError("Frequency must be " + " or ".join(f"{lo / 1e6:g}-{hi / 1e6:g}" for lo, hi in ranges)
+                         + " MHz")
     if data.get("mode") not in MODES:
         raise ValueError("Invalid mode")
     if data.get("agc") not in AGCS:
@@ -1841,10 +2293,10 @@ def parse_entry(data, named):
     entry = {"frequency": freq, "mode": data["mode"], "agc": data["agc"], "pre": data["pre"], "att": data["att"]}
     if named:
         name = data.get("name")
-        if not isinstance(name, str) or not CHANNEL_NAME_RE.fullmatch(name):
+        if not same("name") and (not isinstance(name, str) or not CHANNEL_NAME_RE.fullmatch(name)):
             raise ValueError("Invalid name: up to 31 printable ASCII characters")
         entry = {"name": name, **entry}
-    return entry
+    return {k: v for k, v in entry.items() if not same(k)}
 
 
 def api_error(status, msg):
@@ -1854,7 +2306,8 @@ def api_error(status, msg):
 
 @app.route('/memories')
 def memories():
-    return bottle.template('memories')
+    ranges = tune_ranges()
+    return bottle.template('memories', mhz=(ranges[0][0] / 1e6, ranges[-1][1] / 1e6))
 
 
 def read_slots(dbcon):
@@ -1967,6 +2420,124 @@ def display_set():
     return {"status": "OK"}
 
 
+# Boot picture (#101): the owner's own picture for the start, on the Display page. Kept on the DATA partition
+# (settings.BOOT_PICTURE), which updates leave as it is; bootanim/bootanim.c shows it in place of ours, and ours when
+# it can't read it. Checked here before it is kept, so the start doesn't fall back to ours unexplained
+
+BOOT_PICTURE_MAX = 2 * 1024 * 1024
+BOOT_PICTURE_SIZE = (800, 480)   # the screen, landscape (W and H in bootanim.c)
+PNG_DEPTHS = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}   # colour type: bit depths
+# The radio's libpng (1.6.39) reads the picture at boot as root, with its simplified API. A boot picture needs
+# none of these, and each is a way to make that libpng write or read out of bounds, or allocate far past the file:
+# an interlaced picture decoded to 8 bits a channel (a heap overflow before 1.6.51), a palette with transparency
+# (an out-of-bounds read before 1.6.52), and the chunks that carry compressed text or a colour profile (a 2 MB
+# file of them unpacks to more than a gigabyte). zTXt/iTXt/iCCP are kept to a handful: a photo has one or two
+PNG_COMPRESSED_CHUNKS = (b"zTXt", b"iTXt", b"iCCP")
+BOOT_PICTURE_MAX_COMPRESSED_CHUNKS = 4
+
+
+def boot_picture_error(data):
+    """Why data is no picture the radio can start with, None when it is one: a PNG of the screen's size, every
+    chunk whole with its checksum up to IEND (an upload cut short, a damaged file), and none of the shapes that
+    the radio's libpng mishandles at boot (interlaced, a palette with transparency, a wall of compressed chunks).
+    The size cap is the caller's"""
+    if len(data) < 33 or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "Not a PNG picture"
+    if data[8:16] != b"\0\0\0\x0dIHDR":
+        return "Not a PNG picture: its header is missing"
+    w, h = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if (w, h) != BOOT_PICTURE_SIZE:
+        return f"The picture is {w}x{h} pixels: the radio needs 800x480, the screen's size"
+    depth, colour, compression, filtering, interlace = data[24:29]
+    if depth not in PNG_DEPTHS.get(colour, ()) or compression or filtering:
+        return "Not a PNG picture the radio can read: an unknown kind of PNG"
+    if interlace:
+        return "The picture is interlaced: save it without interlacing (Adam7 off)"
+    at, kinds, compressed = 8, set(), 0
+    while b"IEND" not in kinds:
+        n = int.from_bytes(data[at:at + 4], "big")
+        if at + 12 + n > len(data):
+            return "The file is cut short: upload it again"
+        if binascii.crc32(data[at + 4:at + 8 + n]) != int.from_bytes(data[at + 8 + n:at + 12 + n], "big"):
+            return "The file is damaged: a checksum in it is wrong"
+        kind = data[at + 4:at + 8]
+        kinds.add(kind)
+        compressed += kind in PNG_COMPRESSED_CHUNKS
+        at += 12 + n
+    if b"IDAT" not in kinds:
+        return "Not a PNG picture: it has no picture data"
+    if compressed > BOOT_PICTURE_MAX_COMPRESSED_CHUNKS:
+        return "The picture carries too much embedded text or colour-profile data: save a plain PNG"
+    if colour == 3 and b"tRNS" in kinds:
+        return "The picture is a palette with transparency: save it as a plain RGB or RGBA PNG"
+    return None
+
+
+def boot_picture_state():
+    """own: a picture of the owner's is kept, with its size, date and why the radio can't show it ("": it can)"""
+    try:
+        with open(settings.BOOT_PICTURE, "rb") as f:
+            data = f.read(BOOT_PICTURE_MAX + 1)
+            when = os.fstat(f.fileno()).st_mtime
+    except FileNotFoundError:
+        return {"own": False}
+    except OSError as e:
+        return {"own": True, "size": "", "date": "", "error": f"It can't be read: {e.strerror}"}
+    whole = len(data) <= BOOT_PICTURE_MAX   # one over 2 MB put there by hand is not checked
+    return {"own": True, "size": fmt_size(len(data)) if whole else "over 2 MB",
+            "date": datetime.fromtimestamp(when).strftime("%Y-%m-%d %H:%M"),
+            "error": (boot_picture_error(data) or "") if whole else ""}
+
+
+@app.get('/api/boot_picture')
+def get_boot_picture():
+    return boot_picture_state()
+
+
+@app.get('/api/boot_picture/png')
+def boot_picture_png():
+    """The picture on the Display page: the owner's when there is one, else ours"""
+    path = settings.BOOT_PICTURE if os.path.isfile(settings.BOOT_PICTURE) else settings.BOOT_PICTURE_BUILTIN
+    response = bottle.static_file(os.path.basename(path), root=os.path.dirname(path), mimetype="image/png")
+    response.set_header("Cache-Control", "private, no-cache, no-store")
+    return response
+
+
+@app.post('/api/boot_picture')
+def set_boot_picture():
+    """A PNG (multipart field "file") kept as the own boot picture, once boot_picture_error finds nothing"""
+    if bottle.request.content_length > BOOT_PICTURE_MAX + 65536:
+        return api_error(413, "Larger than 2 MB")
+    upload = bottle.request.files.get("file")
+    if upload is None:
+        return api_error(400, "No file")
+    data = upload.file.read(BOOT_PICTURE_MAX + 1)
+    if len(data) > BOOT_PICTURE_MAX:
+        return api_error(413, "Larger than 2 MB")
+    err = boot_picture_error(data)
+    if err:
+        return api_error(400, err)
+    try:
+        replace_file(settings.BOOT_PICTURE, lambda f: f.buffer.write(data))   # bytes, through the text file's buffer
+        os.sync()   # the radio is often switched off at once, to see the picture
+    except OSError as e:
+        return api_error(500, f"Can't save the picture: {e}")
+    return dict(boot_picture_state(), status="OK")
+
+
+@app.delete('/api/boot_picture')
+def delete_boot_picture():
+    """Default: the own picture removed, the radio starts with ours again"""
+    try:
+        os.remove(settings.BOOT_PICTURE)
+        os.sync()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        return api_error(500, f"Can't remove the picture: {e}")
+    return dict(boot_picture_state(), status="OK")
+
+
 # Ethernet: the USB adapter's address, as Settings > Wireless > Ethernet. Read and applied through the
 # GUI socket (eth_get / eth_set, src/cfg_socket.cpp); the GUI checks the values as its own page does
 
@@ -2012,6 +2583,61 @@ def hostname_set():
     if r.returncode != 0:
         return api_error(409, r.stderr.strip() or "Name not set")
     return hostname_state()
+
+
+# The radio's own names (#105, local_host_ok): the ones it has from its network, and the ones its owner adds. Not in
+# the Backup, as the network name is not: they are this radio's names on this network, and a second radio that took
+# them from a backup would answer to the first one's
+OWN_NAMES_REFUSED = ("by another name a page from another site could add its own name here through your browser, so "
+                     "this list changes only by one of the radio's own names")
+
+
+def own_names_state():
+    name = socket.gethostname().lower()
+    st = {"names": [name + ".local"] + [f"{name}.{d}" for d in network_domains()], "listed": listed_names(),
+          "max": OWN_NAMES_MAX, "host": request_host(), "host_ok": local_host_ok(), "address": radio_address()}
+    ts = tailscale_status()
+    if ts.get("state") == "running" and ts.get("name"):
+        st["tailscale"] = ts["name"].lower()
+    if not st["host_ok"]:
+        st["refused"] = not_own_name(OWN_NAMES_REFUSED)
+    return st
+
+
+@app.get('/api/own_names')
+def own_names_get():
+    return own_names_state()
+
+
+@app.post('/api/own_names')
+def own_names_set():
+    """The list replaced whole. Only by one of the radio's own names, which refuse_other_sites asks of every change
+    already: a page from another site must never add the name it reached the radio by"""
+    if not local_host_ok():
+        return api_error(403, not_own_name(OWN_NAMES_REFUSED))
+    try:
+        data = bottle.request.json
+    except ValueError:
+        data = None
+    names = data.get("names") if isinstance(data, dict) else None
+    if not isinstance(names, list) or len(names) > 4 * OWN_NAMES_MAX or not all(isinstance(n, str) for n in names):
+        return api_error(400, "Invalid list")
+    clean = []
+    for n in names:
+        n = n.strip().lower().rstrip(".")
+        if n and n not in clean:
+            err = own_name_error(n)
+            if err:
+                return api_error(400, err)
+            clean.append(n)
+    if len(clean) > OWN_NAMES_MAX:
+        return api_error(400, f"Up to {OWN_NAMES_MAX} names")
+    try:
+        replace_file(OWN_NAMES_CONF, lambda f: f.write("".join(n + "\n" for n in clean)))
+    except OSError as e:
+        return api_error(503, f"Can't save the names: {e}")
+    file_cache.pop(OWN_NAMES_CONF, None)   # FAT's times are 2 s apart: read anew whatever the file's
+    return own_names_state()
 
 
 @app.get('/api/network')
@@ -2266,46 +2892,209 @@ def set_js8_texts():
     return read_js8_texts()
 
 
-def read_channels():
-    """Valid channels from channels.json; invalid ones are skipped like the GUI does."""
+CJSON_NESTING_LIMIT = 1000   # src/cJSON.h: lists and objects within each other, at most
+# A \u escape of half a UTF-16 pair (1: high, 2: the low after it, 3: a low alone), or any other escape
+SURROGATE_ESCAPE_RE = re.compile(r"\\(?:u([dD][89abAB][0-9a-fA-F]{2})(?:\\u([dD][c-fC-F][0-9a-fA-F]{2}))?"
+                                 r"|u[dD][c-fC-F][0-9a-fA-F]{2}()|.)", re.S)
+
+
+def nesting(doc):
+    deepest, todo = 0, [(doc, 1)]
+    while todo:
+        x, depth = todo.pop()
+        if isinstance(x, (dict, list)):
+            deepest = max(deepest, depth)
+            todo.extend((v, depth + 1) for v in (x.values() if isinstance(x, dict) else x))
+    return deepest
+
+
+def cjson_loads(data, finite=True):
+    """JSON bytes read as the GUI's cJSON_Parse reads them (src/cJSON.c): up to the first NUL byte (a C string), a
+    UTF-8 BOM and bytes 1-32 before the value and anything after it ignored, control characters in a string taken
+    and its bytes as they are (UTF-8 or not, kept by surrogateescape), the first value of a key given twice; no NaN
+    or Infinity, no \\u escape of half a UTF-16 pair, at most 1000 lists and objects deep. ValueError for what it
+    can't read, and with finite for a number too big for a double (1e400): cJSON takes it as infinite, which can't
+    be written back as JSON"""
+    def first(pairs):
+        obj = {}
+        for k, v in pairs:
+            obj.setdefault(k, v)
+        return obj
+
+    def constant(name):
+        raise ValueError(f"{name} is not JSON")
+
+    def number(text):
+        x = float(text)
+        if finite and abs(x) == float("inf"):
+            raise ValueError(f"{text} is too big a number")
+        return x
+    head, nul, _ = data.partition(b"\0")
+    text = head.decode("utf-8", "surrogateescape")
+    text = text[1:] if text.startswith("\ufeff") else text
+    text = text.lstrip("".join(map(chr, range(1, 33))))
+    dec = json.JSONDecoder(object_pairs_hook=first, parse_constant=constant, parse_float=number, strict=False)
     try:
-        with open(settings.CHANNELS_FILE) as f:
-            items = json.load(f)["channels"]
-        items = [parse_entry(x, True) for x in items if isinstance(x, dict)] if isinstance(items, list) else []
-    except (OSError, ValueError, KeyError, TypeError):
-        return []
-    return items[:CHANNELS_MAX]
+        doc, end = dec.raw_decode(text)
+    except RecursionError:
+        raise ValueError("lists or objects nested too deep") from None
+    except ValueError as ex:
+        raise ValueError(f"{ex}; the radio reads up to the NUL byte at byte {len(head)}" if nul else str(ex)) \
+            from None
+    for m in SURROGATE_ESCAPE_RE.finditer(text, 0, end):
+        if (m.group(1) and not m.group(2)) or m.group(3) is not None:
+            raise ValueError(f"{m.group(0)[:6]} is half a UTF-16 pair")
+    if nesting(doc) > CJSON_NESTING_LIMIT:
+        raise ValueError(f"lists or objects more than {CJSON_NESTING_LIMIT} deep")
+    return doc
 
 
-def write_channels(channels):
+def gui_channel(x):
+    """The channel the GUI makes of an entry of channels.json (parse_entry in src/channel_list.c), None for one it
+    leaves out: a name, a frequency of 1 Hz to 4294967295 Hz (a fraction cut off), a mode and an AGC it knows, PRE
+    and ATT true or false, each string as the GUI holds it, up to a NUL; the name at most 31 bytes"""
+    if not isinstance(x, dict):
+        return None
+    name, freq, mode, agc, pre, att = (x.get(k).partition("\0")[0] if isinstance(x.get(k), str) else x.get(k)
+                                       for k in ("name", "frequency", "mode", "agc", "pre", "att"))
+    if not isinstance(name, str) or isinstance(freq, bool) or not isinstance(freq, (int, float)) \
+            or not isinstance(pre, bool) or not isinstance(att, bool):
+        return None
+    if not 0 < freq <= 0xFFFFFFFF or mode not in MODES or agc not in AGCS:
+        return None
+    name = name.encode("utf-8", "surrogateescape")[:31].decode("utf-8", "surrogateescape")
+    return {"name": name, "frequency": int(freq), "mode": mode, "agc": agc, "pre": pre, "att": att}
+
+
+def channels_read():
+    """channels.json's bytes, None for no file"""
+    try:
+        with open(settings.CHANNELS_FILE, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def channels_load(data, finite=True):
+    """channels.json as the GUI reads it (channels_load in src/channel_list.c), from its bytes: the file's object,
+    and each entry of its "channels" list the GUI keeps, the first 100, as (its place in the list, the channel). An
+    entry the GUI leaves out is left out alone. None, no file: no channels. ValueError for a file the GUI can't
+    read either: the radio keeps the list it has then, and the page must not write over the file (and, with
+    finite, for one with a number too big, which the page can't write back)"""
+    if data is None:
+        return {"version": 1, "channels": []}, []
+    doc = cjson_loads(data, finite)
+    if not isinstance(doc, dict) or not isinstance(doc.get("channels"), list):
+        raise ValueError("no list of channels in it")
+    kept = []
+    for place, x in enumerate(doc["channels"]):
+        c = gui_channel(x)
+        if c and len(kept) < CHANNELS_MAX:
+            kept.append((place, c))
+    return doc, kept
+
+
+def channels_unreadable(ex):
+    return f"channels.json can't be read ({ex}): the page leaves it as it is. A change in APP → Channels on the " \
+           "radio writes it anew"
+
+
+def write_channels(doc, ready):
+    """The file whole again, the bytes of each string as they were read: an entry left as it was means to the GUI
+    what it meant (a name not in UTF-8 too). No NaN or Infinity, which the GUI can't read. ready: replace_file's.
+    The GUI sees a change of the file by its time (channels_reload_if_changed), which FAT keeps to 2 s: a second
+    write within those left it the same, and the radio on the list before until APP > Channels was opened. So the
+    new file's time is later than the one it replaces"""
     def write(f):
-        json.dump({"version": 1, "channels": channels}, f, indent="\t")
+        json.dump(doc, f, indent="\t", ensure_ascii=False, allow_nan=False)
         f.write("\n")
-    replace_file(settings.CHANNELS_FILE, write)
+    before = []
+
+    def check():
+        ready()
+        try:
+            before.append(os.stat(settings.CHANNELS_FILE).st_mtime_ns)
+        except FileNotFoundError:
+            pass
+    replace_file(settings.CHANNELS_FILE, write, ready=check, encoding="utf-8", errors="surrogateescape")
+    try:
+        st = os.stat(settings.CHANNELS_FILE)
+        if before and st.st_mtime_ns <= before[0]:
+            os.utime(settings.CHANNELS_FILE, ns=(st.st_atime_ns, before[0] + 2_000_000_000))
+    except OSError:
+        pass   # saved all the same
 
 
 def channels_state():
-    return {"channels": read_channels(), "max": CHANNELS_MAX}
+    try:
+        return {"channels": [c for _, c in channels_load(channels_read())[1]], "max": CHANNELS_MAX}
+    except (OSError, ValueError) as ex:
+        return {"channels": [], "max": CHANNELS_MAX, "error": channels_unreadable(ex)}
+
+
+class ChannelsChanged(Exception):
+    """The channel a change names is not the one the page showed: the list changed since"""
+
+
+CHANNELS_CHANGED = "The channel list changed since the page showed it, on the radio or in another tab: nothing was " \
+                   "changed, and the page shows the radio's list now"
+
+
+class ChannelsWritten(Exception):
+    """channels.json is no longer what the page read: the GUI saved its list meanwhile"""
 
 
 def channels_edit(change):
-    """Read, change (raises ValueError), write, return the new list."""
+    """Read, change (raises ValueError or ChannelsChanged), write, return the new list and what change() returns.
+    change(entries, kept) changes the file's "channels" list itself; kept[i] is (where channel i of the page is in
+    it, the channel). Every other entry goes back into the file as it was, also one the GUI leaves out: the page
+    never drops what it doesn't show. ChannelsChanged: 409 with the list as it is, and nothing written.
+    A save of the GUI's that lands between the read and the write is not written over: the change is made again
+    on the GUI's list, once; a second one is a 409 too"""
+    def unchanged():
+        if channels_read() != data:
+            raise ChannelsWritten()
     with config_lock:
-        channels = read_channels()
-        try:
-            change(channels)
-        except ValueError as ex:
-            return api_error(400, str(ex))
-        try:
-            write_channels(channels)
-        except OSError as ex:
-            return api_error(500, f"Can't save: {ex}")
-    return channels_state()
+        for last in (False, True):
+            try:
+                data = channels_read()
+                doc, kept = channels_load(data)
+            except (OSError, ValueError) as ex:
+                return api_error(500, channels_unreadable(ex))
+            try:
+                more = change(doc["channels"], kept)
+            except ChannelsChanged:
+                return dict(api_error(409, CHANNELS_CHANGED), channels=[c for _, c in kept], max=CHANNELS_MAX)
+            except ValueError as ex:
+                return api_error(400, str(ex))
+            try:
+                write_channels(doc, unchanged)
+                break
+            except ChannelsWritten:
+                if last:
+                    return dict(api_error(409, CHANNELS_CHANGED), **channels_state())
+            except (OSError, ValueError) as ex:
+                return api_error(500, f"Can't save: {ex}")
+            except RecursionError:   # json.dump, on a file this Python reads but can't write back
+                return api_error(500, "Can't save: channels.json is nested too deep for the page")
+    return dict(channels_state(), **(more or {}))
 
 
-def check_index(channels, i):
-    if not 0 <= i < len(channels):
-        raise ValueError("No such channel")
+def shown_place(kept, i, was):
+    """Where channel i of the page is in the file, when it is still the channel the page showed there (was, as
+    GET gave it): else ChannelsChanged. By its place alone a change hit another channel once the list had changed
+    under the page: one deleted or moved on the radio or in another tab. The page's own changes go one at a time,
+    each made with the places the answer before gave"""
+    if not 0 <= i < len(kept) or not isinstance(was, dict) or any(was.get(k) != v for k, v in kept[i][1].items()):
+        raise ChannelsChanged()
+    return kept[i][0]
+
+
+def channel_request():
+    data = bottle.request.json
+    if not isinstance(data, dict):
+        raise ValueError("Invalid request")
+    return data
 
 
 @app.get('/api/channels')
@@ -2315,37 +3104,68 @@ def get_channels():
 
 @app.post('/api/channels')
 def add_channel():
-    def change(channels):
-        if len(channels) >= CHANNELS_MAX:
+    def change(entries, kept):
+        if len(kept) >= CHANNELS_MAX:
             raise ValueError(f"At most {CHANNELS_MAX} channels")
-        channels.append(parse_entry(bottle.request.json, True))
+        entries.append(parse_entry(bottle.request.json, True))
     return channels_edit(change)
 
 
+# A change to channel i says which channel it means: "was", the channel as the page showed it
 @app.put('/api/channels/<i:int>')
 def set_channel(i):
-    def change(channels):
-        check_index(channels, i)
-        channels[i] = parse_entry(bottle.request.json, True)
+    def change(entries, kept):
+        data = channel_request()
+        place = shown_place(kept, i, data.get("was"))
+        # Into the entry: what the page left as it showed it stays as the file has it, the entry's other keys too
+        entries[place] = {**entries[place], **parse_entry(data, True, kept[i][1])}
     return channels_edit(change)
 
 
 @app.delete('/api/channels/<i:int>')
 def delete_channel(i):
-    def change(channels):
-        check_index(channels, i)
-        del channels[i]
+    def change(entries, kept):
+        place = shown_place(kept, i, channel_request().get("was"))
+        # For Undo: the entry as the file had it, as JSON text the page hands back as it is (/restore)
+        return {"deleted": {"entry": json.dumps(entries.pop(place), ensure_ascii=False), "place": place}}
     return channels_edit(change)
 
 
+# Undo of a delete: the entry its answer gave, put back at its place in the file as it was, a name or a frequency
+# the page would not take too, and its other keys. Any entry the GUI keeps, as there is room for 100
+@app.post('/api/channels/restore')
+def restore_channel():
+    def change(entries, kept):
+        data = channel_request()
+        place, text = data.get("place"), data.get("entry")
+        try:
+            entry = cjson_loads(text.encode("utf-8", "surrogateescape"))
+        except (AttributeError, ValueError):
+            entry = None
+        if gui_channel(entry) is None or isinstance(place, bool) or not isinstance(place, int):
+            raise ValueError("Invalid request")
+        if len(kept) >= CHANNELS_MAX:
+            raise ValueError(f"At most {CHANNELS_MAX} channels")
+        entries.insert(min(max(place, 0), len(entries)), entry)
+    return channels_edit(change)
+
+
+# The body: to, the place it goes to; was; past, the channel the page showed at place to
 @app.post('/api/channels/<i:int>/move')
 def move_channel(i):
-    def change(channels):
-        check_index(channels, i)
-        to = (bottle.request.json or {}).get("to")
-        if isinstance(to, bool) or not isinstance(to, int) or not 0 <= to < len(channels):
+    def change(entries, kept):
+        data = channel_request()
+        to = data.get("to")
+        if isinstance(to, bool) or not isinstance(to, int):
             raise ValueError("Invalid position")
-        channels.insert(to, channels.pop(i))
+        shown_place(kept, i, data.get("was"))
+        shown_place(kept, to, data.get("past"))
+        # The channels change places among themselves; an entry the GUI leaves out stays where it is
+        places = [p for p, _ in kept]
+        moved = [entries[p] for p in places]
+        moved.insert(to, moved.pop(i))
+        for p, x in zip(places, moved):
+            entries[p] = x
     return channels_edit(change)
 
 
@@ -2432,11 +3252,12 @@ def cluster_alert_input(data):
     if not isinstance(bands, list):
         return None, cluster_error(400, "Invalid bands")
     try:
-        bands = sorted({int(b) for b in bands}, reverse=True)
+        bands = {int(b) for b in bands}
     except (TypeError, ValueError):
         return None, cluster_error(400, "Invalid bands")
     if any(b not in CLUSTER_BANDS for b in bands):
         return None, cluster_error(400, "Invalid bands")
+    bands = [b for b in CLUSTER_BANDS if b in bands]   # 20,17 as before; 2,70 (70 cm) after 6
     mode = str(data.get("mode", "")).strip().upper()
     if mode not in ("", "CW", "SSB", "DIG"):
         return None, cluster_error(400, "Invalid mode")
@@ -2796,11 +3617,16 @@ def upload_tx_pic(kind):
 
 BACKUP_MAX_BYTES = 50 * 1024 * 1024   # upload size and total unpacked size
 BACKUP_MAX_MEMBERS = 200
-BACKUP_TEXT_MAX = 1024 * 1024         # any member that is not a .db or .mp3
+BACKUP_TEXT_MAX = 1024 * 1024         # any member that is not a .db, an .mp3 or the boot picture (BOOT_PICTURE_MAX)
 BACKUP_NAME = r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}"
 BACKUP_DIRS = (("voice", "msg/", re.compile("msg/" + BACKUP_NAME + r"\.mp3")),
                ("wifi", "wifi/", re.compile("wifi/" + BACKUP_NAME + r"\.nmconnection")))
 BACKUP_GUI_PARTS = ("settings", "memories", "qso", "cw")   # files the GUI owns: restore with it stopped
+# NetworkManager reads its profile files again, the restored WiFi networks among them: the D-Bus call that
+# `nmcli connection reload` makes. The radios have no nmcli, and no D-Bus module for Python; dbus-send comes with D-Bus
+NM_RELOAD = ["dbus-send", "--system", "--print-reply", "--dest=org.freedesktop.NetworkManager",
+             "/org/freedesktop/NetworkManager/Settings", "org.freedesktop.NetworkManager.Settings.ReloadConnections"]
+NM_RELOAD_DELAY = 2   # s after the restore's answer, see nm_reload_later
 TAR_ERRORS = (tarfile.TarError, EOFError, OSError) + ((zlib.error,) if zlib else ())
 
 backup_lock = threading.Lock()
@@ -2818,7 +3644,8 @@ def backup_files():
             "cluster.conf": ("cluster", settings.CLUSTER_CONF),
             "tci.conf": ("tci", settings.TCI_CONF),
             "qso_log.db": ("qso", settings.QSO_LOG_DB),
-            "cw_trainer.json": ("cw", settings.CW_TRAINER_FILE)}
+            "cw_trainer.json": ("cw", settings.CW_TRAINER_FILE),
+            "bootlogo.png": ("bootpic", settings.BOOT_PICTURE)}
 
 
 def backup_member(name):
@@ -2888,9 +3715,9 @@ def describe_backup(files, date=None):
         if "channels.json" in files or "memory_slots.json" in files:
             slots = len({r[0] for r in memory_rows(files["memory_slots.json"]) if r[1] == "vfoa_freq" and r[0] in MEM_SLOTS}) \
                 if "memory_slots.json" in files else 0
-            try:
-                with open(files["channels.json"]) as f:
-                    chans = len(json.load(f)["channels"])
+            try:   # the channels the radio takes from it, as the Memories page lists them
+                with open(files["channels.json"], "rb") as f:
+                    chans = len(channels_load(f.read(), finite=False)[1])
             except (KeyError, OSError, ValueError, TypeError):
                 chans = 0
             out["memories"] = f"{plural(slots, 'slot')}, {plural(chans, 'channel')}"
@@ -2913,6 +3740,8 @@ def describe_backup(files, date=None):
         wifi = [n for n in files if n.startswith("wifi/")]
         if wifi:
             out["wifi"] = plural(len(wifi), "network")
+        if "bootlogo.png" in files:
+            out["bootpic"] = "your own, " + fmt_size(os.path.getsize(files["bootlogo.png"]))
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         pass   # a part that can't be read just has no summary
     return out
@@ -2946,13 +3775,17 @@ def check_member(name, path):
                     isinstance(r, list) and len(r) == 3 and isinstance(r[0], int) and isinstance(r[1], str) and len(r[1]) <= 32
                     and isinstance(r[2], (int, float)) and not isinstance(r[2], bool) for r in rows):
                 raise ValueError
-        elif name == "channels.json":
-            with open(path) as f:
-                if not isinstance(json.load(f)["channels"], list):
-                    raise ValueError
+        elif name == "channels.json":   # one the radio reads, as the Memories page reads it
+            with open(path, "rb") as f:
+                channels_load(f.read(), finite=False)
         elif name == "cw_trainer.json":
             with open(path) as f:
                 json.load(f)
+        elif name == "bootlogo.png":   # as the Display page takes one: else the radio would start with ours
+            with open(path, "rb") as f:
+                why = boot_picture_error(f.read(BOOT_PICTURE_MAX + 1))
+            if why:
+                raise BackupError(f"The boot picture in the file: {why}")
         elif name.endswith((".conf", ".nmconnection")):
             with open(path, "rb") as f:
                 data = f.read()
@@ -2979,7 +3812,8 @@ def unpack_backup(archive, stage):
                 if m.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or m.name in seen:
                     raise BackupError(f"Unexpected item in the file: {m.name[:60]!r}")
                 total += m.size
-                if total > BACKUP_MAX_BYTES or (m.size > BACKUP_TEXT_MAX and not m.name.endswith((".db", ".mp3"))):
+                limit = BOOT_PICTURE_MAX if m.name == "bootlogo.png" else BACKUP_TEXT_MAX
+                if total > BACKUP_MAX_BYTES or (m.size > limit and not m.name.endswith((".db", ".mp3"))):
                     raise BackupError("The file is too large")
                 seen.add(m.name)
                 dst = os.path.join(stage, m.name)
@@ -3219,6 +4053,22 @@ def gui_stop_for_restore():
     return f"The radio screen did not stop (exit {rc}): nothing was replaced"
 
 
+def nm_reload_later():
+    """NetworkManager reads the restored networks a moment after the restore's answer has gone out. A restored
+    file that replaces the network the radio is on with another profile (another radio's, a new UUID) makes it
+    leave that network and join the restored one: the browser's link drops meanwhile, and with another radio's
+    static Ethernet address the radio moves to that address. A reload that fails leaves them to the next start"""
+    def reload():
+        try:
+            subprocess.run(NM_RELOAD, capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    t = threading.Timer(NM_RELOAD_DELAY, reload)
+    t.daemon = True
+    t.start()
+
+
 @app.post('/api/backup/restore')
 def restore_backup():
     body = bottle.request.json or {}
@@ -3271,11 +4121,6 @@ def restore_backup():
                 except (OSError, sqlite3.Error, ValueError, KeyError) as e:
                     failed[part] = str(e)
             os.sync()
-            if "wifi" in restored:
-                try:
-                    subprocess.run(["nmcli", "connection", "reload"], capture_output=True, timeout=20)
-                except (OSError, subprocess.SubprocessError):
-                    pass
         finally:
             if gui:
                 try:
@@ -3286,6 +4131,8 @@ def restore_backup():
                 except (OSError, subprocess.SubprocessError) as e:
                     failed["gui"] = f"Can't start the radio screen: {e}"
             stage_clear()
+        if "wifi" in restored:
+            nm_reload_later()
         restored = [p for p in restored if p not in failed]
         return {"restored": restored, "failed": failed, "gui_restarted": gui_up}
     finally:

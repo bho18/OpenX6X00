@@ -43,9 +43,16 @@ typedef enum {
                                      * base fades its RF out about a second into a TX the host is silent in */
     HW_CAP_TX_NO_ALC    = 1 << 15,  /* the ALC does not follow the drive (the X6200: about 0 from 0.03 to 5 W): digital
                                      * drive held once the power reaches the setting */
+    /* CW as the base receives it. Without these the X6100's way: in CW and CW-R the spectrum is centred on the
+     * oscillator the tone is heard from, the key tone below the dial in CW and above it in CW-R, and CW's tone
+     * falls as the dial goes up. A station on the dial sounds at the key tone on both radios (#115) */
+    HW_CAP_CW_SPECTRUM_ON_DIAL = 1 << 16,   /* the spectrum centred on the dial in CW and CW-R too (the X6200) */
+    HW_CAP_CW_TONE_RISES       = 1 << 17,   /* CW's tone rises as the dial goes up, as CW-R's does (the X6200) */
 } hw_cap_t;
 
-/* The hand mic's keys as the base reports them (mic_keys.c) */
+/* The hand mic's keys as the base reports them (mic_keys.c): the X6100 mic's codes. The X6200's library has the
+ * same ones; its H-22 mic sends them for 1, 2, F1, F2, the arrows, HOME (CE), # (F-INP), MODE and V/M, and the
+ * RADIO_HKEY_H22_* below for its other keys (#56) */
 #define RADIO_HKEY_SPCH     0xC1
 #define RADIO_HKEY_TUNER    0xC2
 #define RADIO_HKEY_XFC      0xC4
@@ -71,6 +78,24 @@ typedef enum {
 #define RADIO_HKEY_FIL      0x68
 #define RADIO_HKEY_GENE     0xA8
 #define RADIO_HKEY_FINP     0x28
+
+/* The H-22's own codes, read off an X6200 with base 1.0.8, with what Xiegu's app (1.0.8) does with each (#56).
+ * BAND UP and BAND DOWN are Xiegu's app's: the base was never seen sending them (the side keys send nothing) */
+#define RADIO_HKEY_H22_0          0x17
+#define RADIO_HKEY_H22_3          0x18
+#define RADIO_HKEY_H22_4          0x19
+#define RADIO_HKEY_H22_5          0x1A
+#define RADIO_HKEY_H22_6          0x1B
+#define RADIO_HKEY_H22_7          0x1C
+#define RADIO_HKEY_H22_8          0x1D
+#define RADIO_HKEY_H22_9          0x1E
+#define RADIO_HKEY_H22_DOT        0x1F    /* the * key */
+#define RADIO_HKEY_H22_F3         0x13
+#define RADIO_HKEY_H22_VOL_UP     0x14    /* Xiegu's app: the RX volume +1 */
+#define RADIO_HKEY_H22_VOL_DOWN   0x15
+#define RADIO_HKEY_H22_AB         0x16    /* Xiegu's app: as XFC */
+#define RADIO_HKEY_H22_BAND_UP    0x12
+#define RADIO_HKEY_H22_BAND_DOWN  0x11
 
 typedef enum {
     RADIO_VFO_A = 0,

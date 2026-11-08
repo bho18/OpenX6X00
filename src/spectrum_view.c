@@ -23,7 +23,9 @@
 #include "recorder.h"
 #include "rtty.h"
 #include "scheduler.h"
+#include "screen_light.h"
 #include "gui_styles.h"
+#include "lcd_panel.h"
 #include "theme.h"
 #include "util.h"
 #include "waterfall_view.h"
@@ -35,7 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define POINTS      800         /* points of the trace, one a pixel across the screen */
+#define POINTS      BOARD_DISP_W         /* points of the trace, one a pixel across the screen */
 #define SPAN_HZ     100000      /* shown at zoom 1 */
 #define TX_MIN      S4          /* the scale in TX, and the automatic one before the DSP sets it */
 #define TX_MAX      S9_20
@@ -62,6 +64,7 @@ static float            level_max = TX_MAX;
  * nothing. GUI thread; NAN: nothing */
 static float            kept_db[POINTS];
 static int32_t          kept_view;          /* the view's centre (Hz) they are points of; 0: none */
+static double           kept_at;            /* the centre (Hz) their points are at: kept_view to half a point */
 static uint8_t          kept_zoom;
 static bool             kept_new;           /* a settled trace not kept yet (data_mux) */
 static uint8_t          kept_wait;          /* traces to come before one is settled (data_mux) */
@@ -71,7 +74,8 @@ static int32_t          pass_lo;            /* filter edges, Hz from the VFO, LS
 static int32_t          pass_hi = 3000;
 static int32_t          vfo_hz;
 static int32_t          rit_hz;
-static int32_t          lo_offset;
+static int32_t          lo_offset;          /* where the base's spectrum is centred, Hz from the dial */
+static int32_t          bfo;                /* CW and CW-R: the oscillator the tone is heard from, Hz from the dial */
 static int32_t          if_shift;
 static int32_t          notch_on;
 static int32_t          notch_hz;           /* with the sideband's sign */
@@ -85,7 +89,7 @@ static bool             vfo_line_on = true;
 static bool             direct;
 static uint32_t        *strip;
 static int32_t          strip_h;
-static int32_t          drawn_markers[12];
+static int32_t          drawn_markers[13];
 
 /* Pixels from the centre of a view w wide for hz, rounded either way from 0 (half up, a VFO
  * tuned below the centre of the Fixed view had its trace a pixel to the right) */
@@ -95,8 +99,15 @@ static lv_coord_t hz_px(int32_t hz, lv_coord_t w) {
     return (v + (v < 0 ? -SPAN_HZ / 2 : SPAN_HZ / 2)) / SPAN_HZ;
 }
 
-/* Where the VFO is: the markers follow it (and the fixed waterfall view) */
+/* Where the VFO is: the markers follow it (and the fixed waterfall view). In CW and CW-R from the oscillator the
+ * tone is heard from: the passband's edges and the notch are tones. The X6100's spectrum is centred on it, the
+ * X6200's on the dial (#115) */
 static lv_coord_t markers_px(lv_coord_t w) {
+    return hz_px(bfo + if_shift + waterfall_view_shift(), w);
+}
+
+/* Where the base's spectrum is centred, with no lag */
+static lv_coord_t lo_px(lv_coord_t w) {
     return hz_px(lo_offset + if_shift + waterfall_view_shift(), w);
 }
 
@@ -107,7 +118,7 @@ static lv_coord_t trace_px(lv_coord_t w) {
     int16_t lag = 0;
 
     if (data_tx) {
-        return markers_px(w);
+        return lo_px(w);
     }
     if (base_lo_hz) {
         lag = base_lo_hz - (vfo_hz + lo_offset - if_shift + rit_hz);
@@ -118,16 +129,34 @@ static lv_coord_t trace_px(lv_coord_t w) {
 static void levels(float *min, float *max) {
     *min = data_tx ? TX_MIN : level_min;
     *max = data_tx ? TX_MAX : level_max;
+    if (theme_amber && !data_tx) lcd_panel_levels(min, max);   /* Amber Trey: its short strip */
 }
 
-/* Fixed mode: a new trace into kept_db at the points it is drawn on; another view, another
- * zoom or Centered mode: none kept. Before each refresh */
+/* Fixed mode: a new trace into kept_db at the points it is drawn on. The view moved on by less
+ * than its span (a jump back, or Jump to Scroll at each step, #10): they move with it by whole
+ * points, so each stays at its frequency, as the waterfall's picture does; with them all cleared
+ * the side tuned away from had nothing while the view scrolled along. Another zoom, a band or
+ * Centered mode: none kept. Before each refresh */
 static void keep_trace(void) {
     int32_t view = param_i_get(cfg_wf_mode) ? vfo_hz - if_shift - waterfall_view_shift() : 0;
+    int32_t span = SPAN_HZ / zoom;
 
-    if (view != kept_view || zoom != kept_zoom) {
+    if (view != kept_view && view && kept_view && zoom == kept_zoom && abs(view - kept_view) < span) {
+        int32_t n = LV_CLAMP(-POINTS, lround((view - kept_at) * POINTS / span), POINTS);
+
+        if (n > 0) {
+            memmove(kept_db, kept_db + n, (POINTS - n) * sizeof(float));
+            for (int i = POINTS - n; i < POINTS; i++) kept_db[i] = NAN;
+        } else if (n < 0) {
+            memmove(kept_db - n, kept_db, (POINTS + n) * sizeof(float));
+            for (int i = 0; i < -n; i++) kept_db[i] = NAN;
+        }
+        kept_at += (double) n * span / POINTS;
+        kept_view = view;
+    } else if (view != kept_view || zoom != kept_zoom) {
         kept_view = view;
         kept_zoom = zoom;
+        kept_at = view;
         for (int i = 0; i < POINTS; i++) {
             kept_db[i] = NAN;
         }
@@ -342,6 +371,13 @@ void spectrum_draw_cb(lv_event_t *e) {
     lv_draw_line_dsc_t line;
     lv_draw_rect_dsc_t band;
 
+    /* Spectrum off (main_screen parks this under the top chrome at OPA_TRANSP): do not
+     * paint — LVGL still runs DRAW_MAIN_END, and a translucent S-meter would show the
+     * trace behind it. Same gate as direct_render(). */
+    if (lv_obj_get_style_opa(o, 0) < LV_OPA_MIN) {
+        return;
+    }
+
     lv_draw_line_dsc_init(&line);
     line.color = fill_color();
     line.width = 1;
@@ -498,12 +534,14 @@ static void polyline(const float *db, int from, int to, float min, float max, lv
     }
 }
 
-/* The markers drawn by LVGL: redrawn only when one of them changes */
+/* The markers drawn by LVGL: redrawn only when one of them changes, or the zoom that places them (#59: on
+ * a new zoom the passband kept its old width, but where something over it happened to be redrawn) */
 static void markers_check(void) {
     int32_t now[sizeof(drawn_markers) / sizeof(drawn_markers[0])] = {
         markers_px(POINTS), pass_lo, pass_hi, notch_on, notch_hz, notch_half,
         rtty_get_state(), params.rtty_center, params.rtty_shift,
-        dialog_navtex_is_active() | dialog_wefax_is_active() << 1, vfo_line_on, recorder_is_on()
+        dialog_navtex_is_active() | dialog_wefax_is_active() << 1, vfo_line_on, recorder_is_on(),
+        zoom
     };
 
     if (memcmp(now, drawn_markers, sizeof(now))) {
@@ -580,6 +618,7 @@ static void direct_render(void) {
         polyline(kept_db, from, to, min, max, 0, theme_shape.mono ? line : kept_color(trace_color(), TC(panel)).full,
                  true);
     }
+    lcd_panel_squeeze(strip, h, POINTS, lv_obj_get_width(obj), bg);   /* Amber Trey, CW: half wide */
 
 #if USE_DRM
     drm_wf_present(strip, obj->coords.y1, h);
@@ -591,6 +630,12 @@ static void spectrum_refresh(void *data) {
         return;
     }
     keep_trace();
+    if (lv_obj_get_style_opa(obj, 0) < LV_OPA_MIN) {
+        return;     /* parked under the top chrome while Settings > Display > Spectrum is off */
+    }
+    if (!backlight_seen()) {
+        return;     /* the screen dark or under the screensaver: no picture, the data goes on */
+    }
     if (!direct) {
         lv_obj_invalidate(obj);
     } else if (lv_obj_get_screen(obj) == lv_scr_act()) {    /* not under the walkie screen */
@@ -605,9 +650,9 @@ static void on_zoom_changed(Subject *subj, void *user_data) {
     spectrum_clear();
 }
 
-/* The modes that listen below the VFO */
+/* The modes that listen below the VFO: CW-R, and CW where its tone rises as the dial goes up (the X6200) */
 static bool below(radio_mode_t mode) {
-    return mode == radio_mode_lsb || mode == radio_mode_lsb_dig || mode == radio_mode_cwr;
+    return mode == radio_mode_lsb || mode == radio_mode_lsb_dig || radio_cw_tone_dir(mode) > 0;
 }
 
 static void on_filter_change(Subject *subj, void *user_data) {
@@ -654,6 +699,10 @@ static void on_mode_change(Subject *subj, void *user_data) {
 static void on_lo_offset_change(Subject *subj, void *user_data) {
     lo_offset = freedv_mode_profile() ? 0 : subject_i_get((SubjectInt *)cfg_mode_lo_offset);
     kept_settle();
+}
+
+static void on_bfo_change(Subject *subj, void *user_data) {
+    bfo = radio_cw_tone_dir(subject_i_get((SubjectInt *)cfg_cur_mode)) * param_i_get(cfg_key_tone);
 }
 
 static void on_if_shift_change(Subject *subj, void *user_data) {
@@ -715,6 +764,8 @@ lv_obj_t *spectrum_init(lv_obj_t *parent) {
     subject_subscribe_and_notify((Subject *)cfg_cur_mode, on_filter_change, NULL);
     subject_subscribe_and_notify((Subject *)cfg_cur_mode, on_mode_change, NULL);
     subject_subscribe_and_notify((Subject *)cfg_mode_lo_offset, on_lo_offset_change, NULL);
+    subject_subscribe((Subject *)cfg_cur_mode, on_bfo_change, NULL);
+    subject_subscribe_and_notify((Subject *)cfg_key_tone, on_bfo_change, NULL);
     subject_subscribe_and_notify((Subject *)cfg_band_if_shift, on_if_shift_change, NULL);
     subject_subscribe((Subject *)cfg_auto_level_enabled, on_levels_change, NULL);
     subject_subscribe((Subject *)cfg_band_grid_min, on_levels_change, NULL);
@@ -788,7 +839,7 @@ void spectrum_data(float *db, uint16_t size, bool tx, uint32_t base_freq, uint8_
 }
 
 int32_t spectrum_span(float *vfo_at) {
-    *vfo_at = 0.5f + (float)markers_px(POINTS) / POINTS;
+    *vfo_at = 0.5f + (float)lo_px(POINTS) / POINTS;
     return SPAN_HZ / zoom;
 }
 
@@ -811,6 +862,10 @@ void spectrum_update_max(float db) {
 
 void spectrum_update_min(float db) {
     auto_level(&level_min, db);
+}
+
+void spectrum_redraw() {
+    scheduler_put_coalesced(spectrum_refresh);
 }
 
 void spectrum_clear() {

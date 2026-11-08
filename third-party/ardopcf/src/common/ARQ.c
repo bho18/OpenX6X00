@@ -410,7 +410,7 @@ BOOL GetNextARQFrame()
 			displayCall(0x20, "");
 			wg_send_rcall(0, "");
 
-			if (!stationid_ok(&ARQStationRemote))
+			if (stationid_ok(&ARQStationRemote))
 			{
 				ZF_LOGI("[STATUS: CONNECT TO %s FAILED]", ARQStationRemote.str);
 				snprintf(HostCmd, sizeof(HostCmd), "STATUS CONNECT TO %s FAILED!", ARQStationRemote.str);
@@ -2479,6 +2479,8 @@ BOOL SendARQConnectRequest(const StationId* mycall, const StationId* target)
 	blnEnbARQRpt = TRUE;
 
 	Mod4FSKDataAndPlay(bytEncodedBytes[0], &bytEncodedBytes[0], EncLen, LeaderLength);  // only returns when all sent
+	tmrFinalID = 0;
+	LastIDFrameTime = 0;  // ConReq frame also satisfies legal ID requirements
 
 	// Update the main form menu status lable
 	// Dim stcStatus As Status = Nothing

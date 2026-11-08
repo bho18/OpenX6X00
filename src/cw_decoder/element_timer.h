@@ -19,10 +19,12 @@ namespace cw {
 constexpr size_t SLOTS   = 300;
 constexpr float  SLOT_MS = STEP_MS / 2.0f;
 
-/* Speed range: a dot of 24-120 ms (50-10 WPM), 20 WPM to start */
+/* Speed range: a dot of 24-120 ms (50-10 WPM), 20 WPM to start. With the CW
+ * trainer open down to 240 ms, 5 WPM (trainer_range) */
 constexpr float  DOT_START_MS = PARIS_MS / 20.0f;
 constexpr float  DOT_MIN_MS   = PARIS_MS / 50.0f;
 constexpr float  DOT_MAX_MS   = PARIS_MS / 10.0f;
+constexpr float  TRAINER_DOT_MAX_MS = PARIS_MS / 5.0f;
 
 /* Every histogram entry ages by this when a new one comes in */
 constexpr float  AGE = 0.9f;
@@ -44,6 +46,28 @@ class ElementTimer {
     /* The lock moved to another tone: the running mark or gap is not learned
      * (it may have been measured on the old tone), the speed is kept */
     void  new_tone() { unsure_ = true; }
+    /* The running gap is the pause between two senders taking turns (the CW
+     * trainer's group, then the user's answer): no gap of either, not learned.
+     * Learned, the answer's delay went in as a Farnsworth character gap, and
+     * after GAPS_MIN of them the word boundary moved up with it */
+    void  turn() { unsure_ = true; }
+    /* The running mark or gap is our own keying (the CW trainer's, at the
+     * speed it gave: expect): not learned. Right after the lock has found the
+     * tone the first dah can come in pieces, and in a histogram expect() had
+     * just started over a few of them set the speed to 50 WPM */
+    void  ours() { unsure_ = true; }
+    /* Keying at a known speed follows (the CW trainer's own, at the key
+     * speed): a dot more than NEW_SPEED off is taken at once, the histogram
+     * started over, instead of after MIN_ENTRIES and CONFIRM estimates */
+    void  expect(float wpm);
+    /* The CW trainer is open: the speed goes down to 5 WPM, the lowest key
+     * speed, as the trainer keys and a straight key answers it (at 10 WPM a
+     * 5 WPM dit sat on the dit/dah boundary and every element gap was a
+     * character gap); closed, 10 WPM again, a slower speed taken up to it.
+     * Only for the trainer: on the band nothing slower was ever tried, and
+     * the rejection of noise and carriers (lone marks, CARRIER_K, the key
+     * detector's carrier floor after 480 ms down) was set for 10 WPM and up */
+    void  trainer_range(bool on);
 
   private:
     friend struct ElementTimerPeek;   /* tests only */
@@ -80,6 +104,7 @@ class ElementTimer {
     int   gaps_pos_ = 0;
 
     float dot_ms_   = DOT_START_MS;
+    float dot_max_  = DOT_MAX_MS;      /* the slowest speed's dot (trainer_range) */
     float new_dot_  = -1.0f;   /* a different speed, waiting to be confirmed */
     int   new_seen_ = 0;
 

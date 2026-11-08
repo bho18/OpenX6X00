@@ -9,28 +9,16 @@
 #pragma once
 
 #include "freedv/features.h"
+#include "kbd_keymap.h"    /* KEYBOARD_SCRL_LOCK, KEYBOARD_PRINT */
 #include "lvgl/lvgl.h"
 
-/* Keys of the USB keyboard with no character, as LVGL gets them (the X11 keysyms) */
-#define KEYBOARD_F1         (0xFFBE)
-#define KEYBOARD_F2         (0xFFBF)
-#define KEYBOARD_F3         (0xFFC0)
-#define KEYBOARD_F4         (0xFFC1)
-#define KEYBOARD_F5         (0xFFC2)
-#define KEYBOARD_F6         (0xFFC3)
-#define KEYBOARD_F7         (0xFFC4)
-#define KEYBOARD_F8         (0xFFC5)
-#define KEYBOARD_F9         (0xFFC6)
-#define KEYBOARD_F10        (0xFFC7)
-#define KEYBOARD_F11        (0xFFC8)
-#define KEYBOARD_F12        (0xFFC9)
-
-#define KEYBOARD_SCRL_LOCK  (0xFF14)
-#define KEYBOARD_PRINT      (0xFF61)
-#define KEYBOARD_PRINT_SCR  (0xFD1D)
-
-#define KEYBOARD_PGUP       (0xFF55)
-#define KEYBOARD_PGDN       (0xFF56)
+/* FreeDV popups retain their local keyboard softkeys. The ordinary upstream
+ * keyboard still leaves F keys unmapped and uses CapsLock chords. */
+#define KEYBOARD_F1 (0xFFBE)
+#define KEYBOARD_F2 (0xFFBF)
+#define KEYBOARD_F3 (0xFFC0)
+#define KEYBOARD_F4 (0xFFC1)
+#define KEYBOARD_F5 (0xFFC2)
 
 /* The group of the knobs, the buttons and the keyboard: the focused widget gets their keys */
 extern lv_group_t *keyboard_group;
@@ -48,3 +36,6 @@ bool keyboard_diagnostic_reset(void);
 bool keyboard_voice_local_event(lv_indev_t *,unsigned generation);
 #endif
 #endif
+
+/* What CapsLock and a key held together do, a kbd_hyper_action_t (kbd_hyper.h): run once the key's read is over */
+void keyboard_chord(int action);

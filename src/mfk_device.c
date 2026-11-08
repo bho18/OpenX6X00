@@ -44,7 +44,7 @@ static void mfk_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
             knob->diagnostic_generation = ctl_remote_input_generation();
 #endif
         ctl_local_input();
-        backlight_tick();
+        if (backlight_knob_tick()) sum = 0; /* waking the screensaver consumes this turn */
     }
     /* An open dropdown list moves one line a click: the detents of a fast turn, read together,
      * would jump down the list */

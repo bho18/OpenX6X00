@@ -11,11 +11,22 @@ from verify_native_abi import verify as verify_abi
 
 
 def prepare(baseline, gui, package, overlay, variant, revision, sdk, output, build_record,
-            debugfs='debugfs', e2fsck='e2fsck', qemu='qemu-arm'):
+            debugfs='debugfs', e2fsck='e2fsck', qemu='qemu-arm', runtime_package=None):
     baseline,gui,package,overlay,sdk,output=map(lambda p:Path(p).resolve(),(baseline,gui,package,overlay,sdk,output))
     if output.exists(): raise ValueError('output image already exists')
     require_regular(baseline); require_arm_elf(gui)
     metadata=json.loads((package/'package-manifest.json').read_text())
+    runtime_record = None
+    removals = []
+    if runtime_package is not None:
+        from runtime_package import validate_package, overlay_removals
+        runtime_record = validate_package(runtime_package, sdk=sdk)
+        removals = overlay_removals()
+        for destination, expected in runtime_record['files'].items():
+            source = overlay / destination.lstrip('/')
+            require_regular(source)
+            if sha(source) != expected['sha256'] or stat.S_IMODE(source.stat().st_mode) != expected['mode']:
+                raise ValueError('runtime overlay differs from source-bound package: ' + destination)
     if metadata['target']!='x6200-buildroot' or metadata['firmware_commit']!=revision:
         raise ValueError('matching source/SDK benchmark package required')
     for line in (package/'SHA256SUMS').read_text().splitlines():
@@ -41,6 +52,8 @@ def prepare(baseline, gui, package, overlay, variant, revision, sdk, output, bui
             if child.startswith('x6100_webserver'):
                 image.remove_tree(site+'/'+child)
         image.remove_tree('/usr/share/x6100/themes')
+        for destination in removals:
+            image.remove_tree(destination)
         for path in sorted(overlay.rglob('*')):
             if path.is_symlink(): raise ValueError('runtime overlay symlinks require explicit handling')
             if not path.is_file(): continue
@@ -60,7 +73,7 @@ def prepare(baseline, gui, package, overlay, variant, revision, sdk, output, bui
             raise ValueError('signature verification key changed')
         # Verify exact loader/dependency bytes and version requirements against
         # the edited image before creating any deliverable SD-card image.
-        abi=verify_abi(gui,package,sdk,root,temp/'abi',debugfs,qemu)
+        abi=verify_abi(gui,package,sdk,root,temp/'abi',debugfs,qemu,runtime_package=runtime_package)
         record={**build_record,'schema_version':1,'variant':variant,'firmware_commit':revision,
                 'hardware_qualified':False,
                 'ready_for_guided_hardware_tests':build_record.get('ready_for_guided_hardware_tests',False) is True,
@@ -68,6 +81,9 @@ def prepare(baseline, gui, package, overlay, variant, revision, sdk, output, bui
                 'gui_sha256':sha(gui),'package_manifest_sha256':sha(package/'package-manifest.json'),
                 'root_partition_offset':offset,'root_partition_bytes':size,
                 'signature_key_preserved':True,'runtime_assets':files,'abi':abi}
+        if runtime_record:
+            record.update(runtime_package_sha256=sha(Path(runtime_package)/'runtime-manifest.json'),
+                          application_runtime=runtime_record,runtime_removed_paths=removals)
         internal=temp/'build.json'; internal.write_text(json.dumps(record,indent=2)+'\n')
         image.write_file(internal,'/etc/freedv-test-build.json',0o644)
         subprocess.run([str(e2fsck),'-fn',str(root)],check=True,capture_output=True,text=True)
@@ -84,11 +100,13 @@ def main():
         p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--variant',choices=('normal','diagnostic'),required=True)
     p.add_argument('--revision',required=True)
+    p.add_argument('--runtime-package',type=Path)
     p.add_argument('--debugfs',default='debugfs'); p.add_argument('--e2fsck',default='e2fsck'); p.add_argument('--qemu',default='qemu-arm')
     a=p.parse_args(); record=json.loads(a.build_record.read_text())
     if record.get('software_gates_passed') is not True or record.get('firmware_commit')!=a.revision:
         p.error('build record must contain completed gates for this exact source commit')
-    prepare(a.baseline,a.gui,a.package,a.overlay,a.variant,a.revision,a.sdk,a.output,record,a.debugfs,a.e2fsck,a.qemu)
+    prepare(a.baseline,a.gui,a.package,a.overlay,a.variant,a.revision,a.sdk,a.output,record,a.debugfs,a.e2fsck,a.qemu,
+            runtime_package=a.runtime_package)
     print('Created verified spare-card image:',a.output)
 
 

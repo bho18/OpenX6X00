@@ -40,6 +40,20 @@ void main_screen_set_theme(const char *name);
 /* The keyboard to the spectrum; a dialog takes it away while open */
 void main_screen_keys_enable(bool on);
 
+/* The keyboard's keys go to the main screen: no app, dialog, list or text box took them, not in walkie mode */
+bool main_screen_has_keys(void);
+
+/* CapsLock held with a key: the chord's kbd_hyper_action_t (kbd_hyper.h), run once the key's read is over */
+void main_screen_chord(int action);
+
+/* The keyboard open is gone (unplugged, its Bluetooth link lost, another one in its place): a PTT its CapsLock+Space
+ * keyed lets go */
+void main_screen_keyboard_gone(void);
+
+/* A key, or a window opened or closed: the buttons back if Settings > Display > Hide buttons hid them, and hidden
+ * again after its time without a key. True when they were hidden */
+bool main_screen_buttons_wake(void);
+
 /* Apps and the actions a long press or a hand mic F key can be given */
 void main_screen_start_app(press_action_t app);
 void main_screen_close_app(void);
@@ -50,14 +64,23 @@ void main_screen_vol_press(void);
 void main_screen_mfk(int dir);
 void main_screen_agc_next();
 
-/* Locks set by the apps, checked by the web remote */
+/* Locks set by the apps, checked by the web remote. The frequency is locked while an app holds it or the user
+ * locked it (main_screen_freq_locked); the app's hold leaves the user's lock as it was */
 void main_screen_lock_freq(bool lock);
+void main_screen_user_lock_freq(bool lock);
+bool main_screen_freq_user_locked(void);
 void main_screen_lock_band(bool lock);
 void main_screen_lock_mode(bool lock);
 void main_screen_lock_ab(bool lock);
 bool main_screen_freq_locked();
 bool main_screen_band_locked();
 bool main_screen_mode_locked();
+/* The digital app open (FT8, PSK31, Olivia, RTTY...), NULL for none: it holds the radio's frequency, mode and
+ * audio. By the name it has now, as in the frequency strip: FT4 once the FT8 app was switched to it, PSK63. Any
+ * thread (Winlink asks) */
+const char *main_screen_digital_app(void);
+/* The same as its action (ACTION_APP_FT8 ...), ACTION_NONE when none is open */
+press_action_t main_screen_digital_app_action(void);
 
 /* A jump to a frequency: the spectrum starts over */
 void main_screen_set_freq(uint64_t freq);

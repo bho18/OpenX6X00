@@ -105,6 +105,7 @@ void dialog_restore_radio_on_close(void) {
 static void open_window(dialog_t *d, lv_obj_t *parent) {
     int32_t freq, mode;
 
+    main_screen_buttons_wake();     /* the window's buttons seen (Hide buttons) */
     knobs_display(false);
     waterfall_refresh_period_set(2);    /* the waterfall slower under a window */
     main_screen_keys_enable(false);
@@ -147,9 +148,12 @@ static void close_window(dialog_t *d) {
 
     /* Closed by a key (ESC): after the key LVGL sends CANCEL to the focused object. destruct_cb
      * usually takes that object out of the group first, so LVGL cannot see it go and the CANCEL
-     * hit freed memory (closing Modes with VOL crashed) */
+     * hit freed memory (closing Modes with VOL crashed). The reset leaves a press time of 0: a
+     * keyboard key still down was a long press repeating into the spectrum once it had the keys
+     * back (a held ESC flipped VOL), so it counts again only once released */
     if (indev && d->obj) {
         lv_indev_reset(indev, d->obj);
+        lv_indev_wait_release(indev);
     }
     if (d->destruct_cb) {
         d->destruct_cb();
@@ -175,6 +179,7 @@ static void close_window(dialog_t *d) {
         buttons_load_page(d->prev_page);
     }
     main_screen_keys_enable(true);
+    main_screen_buttons_wake();     /* Hide buttons: counted from the close */
 }
 
 void dialog_destruct() {

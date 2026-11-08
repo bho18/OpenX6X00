@@ -16,6 +16,7 @@ from prepare_native_image import prepare
 from usb_test_campaign import validate_campaign
 from test_usb_audio_integration import CASES as USB_CONTROLLER_CASES
 from build_native_development import validate_build_record
+from runtime_package import application_version, validate_package
 
 ROOT=Path(__file__).resolve().parents[2]
 BASELINE_SHA='a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab'
@@ -142,6 +143,8 @@ def main():
         p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--debugfs',default='debugfs');p.add_argument('--e2fsck',default='e2fsck');p.add_argument('--qemu',default='qemu-arm')
     p.add_argument('--pulse-probe',type=Path)
+    p.add_argument('--runtime-package',type=Path,required=True,
+                   help='Exact source-bound upstream helpers and SDK FT8 overlay')
     p.add_argument('--usb-rf',action='store_true',help='Separate USB headset RF development candidate; native guard stays blocked')
     p.add_argument('--usb-voice',action='store_true',help='Operational USB FreeDV Beta with automatic startup readiness')
     a=p.parse_args()
@@ -151,9 +154,17 @@ def main():
     if subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=ROOT,text=True).strip():
         raise ValueError('candidate source must be committed before image assembly')
     verification=json.loads(a.verification.read_text())
+    runtime=validate_package(a.runtime_package,ROOT,a.sdk)
+    runtime_sha=sha(a.runtime_package/'runtime-manifest.json')
+    if verification.get('runtime_package_sha256')!=runtime_sha:
+        raise ValueError('software verification must identify the exact runtime package')
     if a.usb_rf or a.usb_voice:
         verify_usb_integration(verification,4 if a.usb_voice else 3)
         verify_usb_builds(verification,operational=a.usb_voice)
+        for name in ('arm','normal','x6100'):
+            build=verification['build_records'][name]
+            if build.get('runtime_inputs_sha256')!=runtime['runtime_inputs_sha256']:
+                raise ValueError('ARM build did not use packaged runtime dependencies: '+name)
     if verification.get('status')!='PASS' or verification.get('source_commit')!=revision:
         raise ValueError('passing verification for this exact source revision is required')
     # Route and collection corrections need relevant regression/build checks.
@@ -190,6 +201,8 @@ def main():
     if not (package/'fixtures/rade-continuous.raw').is_file():raise ValueError('continuous diagnostic fixture missing')
     model=json.loads((ROOT/'tools/freedv/qualification/reference-sources.json').read_text())['model']['sha256']
     record={'firmware_commit':revision,'source_tree_sha256':verification['source_tree_sha256'],
+            'application_version':application_version(ROOT),'runtime_package_sha256':runtime_sha,
+            'runtime_ft8_commit':runtime['ft8_commit'],
             'build_id':verification.get('build_id','unqualified-development'),
             'software_gates_passed':True,'hardware_qualified':False,'ready_for_guided_hardware_tests':False,
             'candidate_kind':'report-informed native half-duplex development spare-card image',
@@ -224,12 +237,13 @@ def main():
     (package/'package-manifest.json').write_text(json.dumps(metadata,indent=2)+'\n')
     (package/'SHA256SUMS').write_text(''.join(sha(path)+'  '+path.relative_to(package).as_posix()+'\n'
         for path in sorted(package.rglob('*')) if path.is_file()))
-    overlay=current_overlay(work,'0.3.6',a.web_wheel)
+    overlay=current_overlay(work,application_version(ROOT),a.web_wheel,a.runtime_package)
     data=overlay/'usr/share/x6100/freedv';data.mkdir(parents=True,exist_ok=True)
     shutil.copytree(package/'fixtures',data/'fixtures',dirs_exist_ok=True)
     (data/'build-manifest.json').write_text(json.dumps(metadata,indent=2)+'\n')
     image=out/'x6200-native-development.img'
-    result=prepare(a.baseline,a.gui,package,overlay,'diagnostic',revision,a.sdk,image,record,a.debugfs,a.e2fsck,a.qemu)
+    result=prepare(a.baseline,a.gui,package,overlay,'diagnostic',revision,a.sdk,image,record,a.debugfs,a.e2fsck,a.qemu,
+                   runtime_package=a.runtime_package)
     shutil.copy2(a.verification,out/'software-verification.json')
     (out/'candidate-manifest.json').write_text(json.dumps({**record,'image_sha256':result['image_sha256'],
         'signature_key_preserved':result['signature_key_preserved'],'actual_image_abi':result['abi']['status']},indent=2)+'\n')

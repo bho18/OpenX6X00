@@ -34,7 +34,9 @@ ParamInt         *cfg_atu_enabled         = nullptr;
 ParamInt         *cfg_auto_level_enabled  = nullptr;
 ParamFloat       *cfg_auto_level_offset   = nullptr;
 ParamInt         *cfg_knob_info           = nullptr;
+ParamInt         *cfg_buttons_hide        = nullptr;
 ParamInt         *cfg_mode_from_plan      = nullptr;
+ParamInt         *cfg_band_region         = nullptr;
 ParamInt         *cfg_birdie_marks        = nullptr;
 ParamInt         *cfg_spectrum_show       = nullptr;
 ParamInt         *cfg_spectrum_height     = nullptr;
@@ -57,6 +59,9 @@ ParamInt         *cfg_spectrum_fill_gradient = nullptr;
 ParamInt         *cfg_smeter_bar_color = nullptr;
 ParamInt         *cfg_swr_color = nullptr;
 ParamInt         *cfg_swr_protect = nullptr;
+ParamInt         *cfg_tx_outside_bands = nullptr;
+ParamFloat       *cfg_tune_pwr    = nullptr;
+ParamInt         *cfg_tune_time   = nullptr;
 ParamInt         *cfg_smeter_lamp         = nullptr;
 ParamInt         *cfg_broadcast_name      = nullptr;
 ParamInt         *cfg_cluster_column      = nullptr;
@@ -69,7 +74,16 @@ ParamInt         *cfg_smeter_att          = nullptr;
 ParamInt         *cfg_smeter_rfg          = nullptr;
 ParamInt         *cfg_waterfall_speed     = nullptr;
 ParamInt         *cfg_wf_mode             = nullptr;
+ParamInt         *cfg_wf_3d               = nullptr;
+ParamInt         *cfg_wf_3d_colors        = nullptr;
+ParamInt         *cfg_wf_3d_depth         = nullptr;
+ParamInt         *cfg_wf_3d_tilt          = nullptr;
+ParamInt         *cfg_wf_3d_floor         = nullptr;
+ParamInt         *cfg_wf_3d_peak          = nullptr;
+ParamInt         *cfg_wf_3d_glide         = nullptr;
+ParamInt         *cfg_wf_3d_range         = nullptr;
 ParamText        *cfg_encoder_bind        = nullptr;
+ParamInt         *cfg_power_display       = nullptr;
 ParamInt         *cfg_vox_on              = nullptr;
 ParamInt         *cfg_vox_gain            = nullptr;
 ParamInt         *cfg_vox_ag              = nullptr;
@@ -134,6 +148,10 @@ ParamInt         *cfg_tx_filter_low       = nullptr;
 ParamInt         *cfg_tx_filter_high      = nullptr;
 ParamInt         *cfg_cessb_on            = nullptr;
 ParamFloat       *cfg_cessb_power_up      = nullptr;
+ParamInt         *cfg_textlog             = nullptr;
+ParamInt         *cfg_textlog_mb          = nullptr;
+ParamInt         *cfg_wf_fixed_jump       = nullptr;
+ParamInt         *cfg_wf_fixed_after      = nullptr;
 
 // BAND
 ParamInt         *cfg_band_current_vfo    = nullptr;
@@ -168,6 +186,8 @@ ParamInt         *cfg_transverter_0_shift = nullptr;
 ParamInt         *cfg_transverter_1_from  = nullptr;
 ParamInt         *cfg_transverter_1_to    = nullptr;
 ParamInt         *cfg_transverter_1_shift = nullptr;
+ParamFloat       *cfg_transverter_0_pwr   = nullptr;
+ParamFloat       *cfg_transverter_1_pwr   = nullptr;
 
 // COMPUTED (current operating state)
 ComputedParamInt *cfg_fg_freq             = nullptr;
@@ -208,7 +228,9 @@ void cfg_api_init(void (*on_db_error)(const char *)) {
     cfg_auto_level_enabled = &cfg_sm.p_auto_level_enabled;
     cfg_auto_level_offset  = &cfg_sm.p_auto_level_offset;
     cfg_knob_info        = &cfg_sm.p_knob_info;
+    cfg_buttons_hide     = &cfg_sm.p_buttons_hide;
     cfg_mode_from_plan   = &cfg_sm.p_mode_from_plan;
+    cfg_band_region      = &cfg_sm.p_band_region;
     cfg_birdie_marks     = &cfg_sm.p_birdie_marks;
     cfg_spectrum_show    = &cfg_sm.p_spectrum_show;
     cfg_spectrum_height  = &cfg_sm.p_spectrum_height;
@@ -231,6 +253,9 @@ void cfg_api_init(void (*on_db_error)(const char *)) {
     cfg_smeter_bar_color = &cfg_sm.p_smeter_bar_color;
     cfg_swr_color        = &cfg_sm.p_swr_color;
     cfg_swr_protect      = &cfg_sm.p_swr_protect;
+    cfg_tx_outside_bands = &cfg_sm.p_tx_outside_bands;
+    cfg_tune_pwr         = &cfg_sm.p_tune_pwr;
+    cfg_tune_time        = &cfg_sm.p_tune_time;
     cfg_smeter_lamp      = &cfg_sm.p_smeter_lamp;
     cfg_broadcast_name   = &cfg_sm.p_broadcast_name;
     cfg_cluster_column = &cfg_sm.p_cluster_column;
@@ -239,11 +264,24 @@ void cfg_api_init(void (*on_db_error)(const char *)) {
     cfg_waterfall_ref    = &cfg_sm.p_waterfall_ref;
     cfg_smeter_cal       = &cfg_sm.p_band_smeter_cal;
     cfg_smeter_pre       = &cfg_sm.p_smeter_pre;
+#ifdef BOARD_X6200
+    cfg_smeter_att       = &cfg_sm.p_band_smeter_att;   /* the X6200's attenuator: the band's (#125) */
+#else
     cfg_smeter_att       = &cfg_sm.p_smeter_att;
+#endif
     cfg_smeter_rfg       = &cfg_sm.p_smeter_rfg;
     cfg_waterfall_speed  = &cfg_sm.p_waterfall_speed;
     cfg_wf_mode          = &cfg_sm.p_wf_mode;
+    cfg_wf_3d            = &cfg_sm.p_wf_3d;
+    cfg_wf_3d_colors     = &cfg_sm.p_wf_3d_colors;
+    cfg_wf_3d_depth      = &cfg_sm.p_wf_3d_depth;
+    cfg_wf_3d_tilt       = &cfg_sm.p_wf_3d_tilt;
+    cfg_wf_3d_floor      = &cfg_sm.p_wf_3d_floor;
+    cfg_wf_3d_peak       = &cfg_sm.p_wf_3d_peak;
+    cfg_wf_3d_glide      = &cfg_sm.p_wf_3d_glide;
+    cfg_wf_3d_range      = &cfg_sm.p_wf_3d_range;
     cfg_encoder_bind     = &cfg_sm.p_encoder_bind;
+    cfg_power_display    = &cfg_sm.p_power_display;
     cfg_vox_on           = &cfg_sm.p_vox_en;
     cfg_vox_gain         = &cfg_sm.p_vox_gain;
     cfg_vox_ag           = &cfg_sm.p_vox_ag;
@@ -311,6 +349,10 @@ void cfg_api_init(void (*on_db_error)(const char *)) {
     cfg_tx_filter_high   = &cfg_sm.p_tx_filter_high;
     cfg_cessb_on         = &cfg_sm.p_cessb_on;
     cfg_cessb_power_up   = &cfg_sm.p_cessb_power_up;
+    cfg_textlog          = &cfg_sm.p_textlog;
+    cfg_textlog_mb       = &cfg_sm.p_textlog_mb;
+    cfg_wf_fixed_jump    = &cfg_sm.p_wf_fixed_jump;
+    cfg_wf_fixed_after   = &cfg_sm.p_wf_fixed_after;
 
     // BAND
     cfg_band_current_vfo = &cfg_sm.p_band_current_vfo;
@@ -345,6 +387,8 @@ void cfg_api_init(void (*on_db_error)(const char *)) {
     cfg_transverter_1_from  = &cfg_sm.p_transverter_1_from;
     cfg_transverter_1_to    = &cfg_sm.p_transverter_1_to;
     cfg_transverter_1_shift = &cfg_sm.p_transverter_1_shift;
+    cfg_transverter_0_pwr   = &cfg_sm.p_transverter_0_pwr;
+    cfg_transverter_1_pwr   = &cfg_sm.p_transverter_1_pwr;
 
     // COMPUTED (current operating state)
     cfg_fg_freq          = &cfg_sm.cp_fg_freq;

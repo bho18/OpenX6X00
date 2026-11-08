@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "cfg/cfg_api.h"
 #include "radio.h"
+#include "remote_sessions.h"
 #include "scheduler.h"
 #include "screen_light.h"
 #include "screen_main.h"
@@ -56,10 +57,11 @@ void    cfg_pwr_set(float w) { pwr.v = w; fprintf(stderr, "[stub] power %.1f W\n
 static bool ptt, modem;
 bool stub_tx_refused;
 radio_state_t radio_get_state(void) { return ptt || modem ? RADIO_TX : RADIO_RX; }
-void radio_set_ptt(bool tx) {
-    if (tx && stub_tx_refused) return;
+bool radio_set_ptt(bool tx) {
+    if (tx && stub_tx_refused) return false;
     ptt = tx;
     fprintf(stderr, "[stub] ptt %d\n", tx);
+    return true;
 }
 void radio_set_modem(bool tx) {
     if (tx && stub_tx_refused) return;
@@ -109,24 +111,44 @@ int stub_run(int n) {
 }
 bool scheduler_put_urgent(scheduler_fn_t fn, void *arg, size_t arg_size) { return scheduler_put(fn, arg, arg_size); }
 
+/* ---- the browser remote's sessions (Tailscale Funnel, #58): two paired browsers, one that may transmit and
+ * one that may not; the first is revoked while the file TCI_TEST_REVOKED names exists. Funnel pauses after three
+ * wrong keys here (the remote server's own rule is ten in ten minutes) ---- */
+static int funnel_wrong;
+bool remote_server_session_check(const char *token, int *role, bool *tx, char *name, size_t n) {
+    const char *revoked = getenv("TCI_TEST_REVOKED");
+    bool        op      = token && !strcmp(token, "0123456789abcdef0123456789abcdef") && !(revoked && !access(revoked, F_OK));
+    bool        listen  = token && !strcmp(token, "11111111111111111111111111111111");
+
+    if (!op && !listen)
+        return false;
+    *role = 1;
+    *tx   = op;
+    if (name && n)
+        snprintf(name, n, "%s", op ? "Kitchen phone (away)" : "Listener (away)");
+    return true;
+}
+void remote_server_funnel_refused(const char *addr) {
+    funnel_wrong++;
+    fprintf(stderr, "[stub] a wrong key over Funnel from %s (%d)\n", addr, funnel_wrong);
+}
+bool remote_server_funnel_paused(void) { return funnel_wrong >= 3; }
+
 /* ---- the main screen ---- */
 bool backlight_tick(void) { return false; }
 bool main_screen_freq_locked(void) { return false; }
 bool main_screen_mode_locked(void) { return false; }
 void main_screen_set_freq(uint64_t f) { freq.v = (int32_t)f; }
 
-/* ---- the meters: an S-meter that breathes, 50 W out ---- */
+/* ---- the meters: an S-meter that breathes; in TX the 0 before the base's first reading (tx_info_clear) ---- */
 int16_t meter_get_raw_db(void) {
     static int n;
     return (int16_t)(-100 + (n++ % 30));
 }
-void tx_info_get(float *p, float *s) { *p = 5.0f; *s = 1.3f; }
-bool tx_info_refresh(uint8_t *seen, float *alc, float *p, float *s) {
-    (*seen)++;
-    if (alc) *alc = 0.4f;
-    if (p) *p = 5.0f;
-    if (s) *s = 1.3f;
-    return true;
+void tx_info_get(float *p, float *s) { *p = 0.0f; *s = 0.0f; }
+float tx_info_get_alc(bool *greyed) {
+    if (greyed) *greyed = false;
+    return 0.0f;
 }
 
 /* ---- the audio out: what each transmission played, counted, and kept in the file

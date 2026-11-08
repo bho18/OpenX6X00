@@ -8,7 +8,8 @@
 
 #include <stdlib.h>
 
-bool bat_watch_reading(bat_watch_t *w, uint8_t vbat, uint8_t vext, bool vext_flag, bool charging, uint64_t now_ms) {
+bool bat_watch_reading(bat_watch_t *w, uint8_t vbat, uint8_t vext, bool vext_flag, bool charging, bool bat_missing,
+                       bool tx, uint64_t now_ms) {
     bool measured = vbat >= BAT_NONE || vext >= BAT_NONE;
 
     /* External power: the flag alone is not enough, charging an empty battery it stayed clear with
@@ -18,17 +19,45 @@ bool bat_watch_reading(bat_watch_t *w, uint8_t vbat, uint8_t vext, bool vext_fla
         w->settle_at = now_ms + BAT_SETTLE_MS;
     }
     w->counts = measured && w->settle_at && now_ms >= w->settle_at;
+    if (w->ext || !w->counts) {
+        w->cap_vbat = 0;    /* the voltage's % from the next reading on battery as it is (bat_watch_cap) */
+    }
 
-    /* Only on a change, with hysteresis: around 6.0 V the 30 s power-off timer was started and
+    /* External power that holds the battery up: on the X6200 only DC IN at BOARD_BAT_EXT_MIN and more (board.h),
+     * under it the battery ran the radio down to the base's cut with the flags saying external power. With
+     * hysteresis: DC IN comes in 0.1 V steps, and taken from each reading a supply close to 12.0 V started the
+     * power-off and called it off again over and over, or with every other reading at 12.0 V never started it.
+     * Held after BAT_HELD_MS of readings in a row at BOARD_BAT_EXT_MIN and more, at once from 0.2 V over; no longer
+     * after BAT_LOW_READS receive readings in a row under it, at once with no supply at all. The readings on TX
+     * don't take it down: the supply sags under the TX current (the DCIN TOO LOW blink) */
+#ifdef BOARD_BAT_EXT_MIN
+    if (vext >= BOARD_BAT_EXT_MIN) {
+        w->under_reads = 0;
+        if (!w->over_since) w->over_since = now_ms;
+        if (vext >= BOARD_BAT_EXT_MIN + BAT_HYSTERESIS || now_ms - w->over_since >= BAT_HELD_MS) w->held = true;
+    } else {
+        w->over_since = 0;
+        if (!tx && w->under_reads < BAT_LOW_READS) w->under_reads++;
+        if (w->under_reads >= BAT_LOW_READS || vext < BAT_NONE) w->held = false;
+    }
+    bool held = w->held;
+#else
+    (void)tx;
+    bool held = w->ext;
+#endif
+
+    /* Only on a change, with hysteresis: around BAT_LOW the 30 s power-off timer was started and
      * stopped over and over. Low only after 3 readings in a row: one of the base's first packets
      * (0 V on both) alone started "Low battery!" with a full battery on the charger. And only on a
-     * battery that is there and measured: under 3 V there is none, or no reading yet */
-    bool battery_low = w->counts && !w->ext && vbat >= BAT_NONE && vbat <= BAT_LOW;
+     * battery that is there and measured: under 3 V there is none, or no reading yet. Nor when the base finds none
+     * (the X6200's says so): a supply under BOARD_BAT_EXT_MIN does not stop it there, and what vbat says with no
+     * pack has not been seen (clock.c takes the two apart); a radio on its stock charger without one stays on */
+    bool battery_low = w->counts && !held && !bat_missing && vbat >= BAT_NONE && vbat <= BAT_LOW;
 
     w->low_reads = battery_low ? (w->low_reads < BAT_LOW_READS ? w->low_reads + 1 : BAT_LOW_READS) : 0;
 
     bool enter = w->low_reads >= BAT_LOW_READS;
-    bool leave = w->ext || vbat >= BAT_HIGH;
+    bool leave = held || bat_missing || vbat >= BAT_HIGH;
 
     if ((!w->low && enter) || (w->low && leave)) {
         w->low = !w->low;
@@ -47,10 +76,22 @@ uint8_t bat_cap_of_volts(uint8_t vbat) {
 }
 
 uint8_t bat_watch_cap(bat_watch_t *w, uint8_t vbat, uint8_t batcap) {
-    uint8_t v = bat_cap_of_volts(vbat);
+    /* Back up a step only once the battery stays there: after a TX, which radio.c holds the % over for 30 s, it
+     * can still be coming back */
+    w->up_reads = vbat > w->cap_vbat && w->up_reads < BAT_CAP_UP_READS ? w->up_reads + 1 : 0;
+    if (!w->cap_vbat || vbat < w->cap_vbat || vbat > w->cap_vbat + 1 || w->up_reads >= BAT_CAP_UP_READS) {
+        w->cap_vbat = vbat;
+        w->up_reads = 0;
+    }
+
+    uint8_t v = bat_cap_of_volts(w->cap_vbat);
     int     apart = abs((int)batcap - v);
 
-    if (apart > BAT_CAP_APART) w->by_volts = true;
-    else if (apart <= BAT_CAP_MET) w->by_volts = false;
+    /* #49's base (1.1.9) said 0-3 % from 8.2 V down. Back to it at the voltage's 9 % (7.2 V), the radio said
+     * 0 % and "connect power" every minute for the 35 to 42 minutes the pack still had. Switched on at 7.3 or
+     * 7.2 V, the two were never 25 apart and it said that from the first reading: a base at 0 % there has lost
+     * count */
+    if (apart > BAT_CAP_APART || (batcap == 0 && v >= BAT_CAP_AT_ZERO)) w->by_volts = true;
+    else if (apart <= BAT_CAP_MET && v >= BAT_CAP_STEEP) w->by_volts = false;
     return w->by_volts ? v : batcap;
 }

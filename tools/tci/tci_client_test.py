@@ -2,7 +2,8 @@
 """A TCI client of the plainest kind, for the host test of src/tci_server.c (see Makefile):
 a raw WebSocket on 127.0.0.1:50001 (TCI_TEST_PORT) that walks through what the VFO-Knob does
 on a connection, what the browser pages ask for, the audio formats, then what WSJT-X's TCI
-client does when it opens, hears and transmits. Standard library only."""
+client does when it opens, hears and transmits, and commands in capitals and mixed case.
+Standard library only."""
 import base64
 import hashlib
 import math
@@ -50,8 +51,9 @@ def played():
 
 
 class WS:
-    def __init__(self, rcvbuf=None):
-        self.binary, self.pongs = [], []
+    def __init__(self, rcvbuf=None, headers=""):
+        """headers: more request headers, "Name: value\\r\\n" lines (a browser's, Tailscale's proxy's)"""
+        self.binary, self.pongs, self.texts = [], [], []
         self.rate = None    # bytes a second read at most (a slow link), None: as fast as they come
         if rcvbuf:          # set before connect: the window is offered from it
             self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -62,7 +64,7 @@ class WS:
             self.s = socket.create_connection((HOST, PORT), timeout=5)
         key = base64.b64encode(os.urandom(16)).decode()
         self.s.sendall((f"GET / HTTP/1.1\r\nHost: {HOST}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+                        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n{headers}\r\n").encode())
         resp = b""
         while b"\r\n\r\n" not in resp:
             chunk = self.s.recv(1024)
@@ -133,6 +135,7 @@ class WS:
             op, p = self.frame()
             if op == 1:
                 line = p.decode()
+                self.texts.append(line)
                 if line.startswith(prefix):
                     return line
             elif op == 2:
@@ -167,6 +170,7 @@ def main():
     assert any(g.startswith("vfo:0,0,") for g in greeting)
     assert any(g.startswith("modulation:0,") for g in greeting)
     assert any(g.startswith("rx_filter_band:0,") for g in greeting)
+    assert "vfo_limits:100000,55000000;" in greeting, "vfo_limits: BOARD_HF_MIN_HZ to BOARD_HF_MAX_HZ (#189)"
 
     ws.text("vfo:0,0,14074000;")
     print(ws.wait_text("vfo:0,0,14074000;"))
@@ -188,13 +192,22 @@ def main():
     print(ws.wait_text("rit_offset:0,120;"))
     ws.text("rit_enable:0,false;")
     print(ws.wait_text("rit_offset:0,0;"))
+    ws.text("rit_offset:0,2000;")                     # clamped to BOARD_RIT_MAX (#189)
+    print(ws.wait_text("rit_offset:0,1500;"))
+    ws.text("rit_offset:0,-2000;")
+    print(ws.wait_text("rit_offset:0,-1500;"))
+    ws.text("rit_enable:0,false;")
+    print(ws.wait_text("rit_offset:0,0;"))
     ws.text("drive:0,50;")
     print(ws.wait_text("drive:0,50;"))
 
     ws.text("trx:0,true;")
     print(ws.wait_text("trx:0,true;"))
     ws.text("tx_sensors_enable:true;")
-    print(ws.wait_text("tx_sensors:0,"))
+    sens = ws.wait_text("tx_sensors:0,")
+    print(sens)
+    # before the radio's first reading (#53): 0 W and ALC 0, the SWR 1.0 and never under it
+    assert sens == "tx_sensors:0,-20.0,0.0,0.0,1.00,0.0;", sens
     ws.text("trx:0,false;")
     print(ws.wait_text("trx:0,false;"))
 
@@ -274,7 +287,220 @@ def main():
     formats()
     wsjtx_open()
     wsjtx_slow_link()
+    capitals()
+    funnel()
     print("ALL OK")
+
+
+# What Tailscale's proxy adds to a request from the internet through Funnel (tailscaled sets the first itself)
+FUNNEL = "Tailscale-Funnel-Request: ?1\r\nX-Forwarded-For: 203.0.113.7\r\nX-Forwarded-Proto: https\r\n"
+
+
+REVOKED = os.environ.get("TCI_TEST_REVOKED")  # while it exists, the stub's paired browser is revoked
+TOKEN, LISTENER = "0123456789abcdef0123456789abcdef", "11111111111111111111111111111111"
+
+
+def nothing_for(ws, seconds):
+    """No frame at all for seconds: a close counts as none; what came if anything"""
+    got, end = [], time.time() + seconds
+    ws.s.settimeout(0.05)
+    try:
+        while time.time() < end:
+            try:
+                op, p = ws.frame()
+                got.append((op, p[:40]))
+            except (socket.timeout, TimeoutError):
+                pass
+    except RuntimeError:
+        pass
+    ws.s.settimeout(5)
+    return got
+
+
+def closed_within(ws, seconds):
+    end = time.time() + seconds
+    ws.s.settimeout(0.05)
+    try:
+        while time.time() < end:
+            try:
+                ws.frame()
+            except (socket.timeout, TimeoutError):
+                pass
+    except (RuntimeError, OSError):
+        return True
+    finally:
+        try:
+            ws.s.settimeout(5)
+        except OSError:
+            pass
+    return False
+
+
+def funnel_refused(addr="203.0.113.7"):
+    try:
+        WS(headers=FUNNEL.replace("203.0.113.7", addr))
+    except (RuntimeError, OSError):
+        return True
+    return False
+
+
+def funnel():
+    """Issue #58: a funnel made by hand ("tailscale funnel 50001") put TCI, which has no login, on the
+    internet. Over Funnel (tailscaled's header) only the browser Panel's own sound and microphone go:
+    nothing before "auth TOKEN" of a browser paired at home, within 5 s; then the audio commands and a
+    key with its audio for a session that may transmit; one at a time, the same browser's key taking
+    the place of its connection left silent (a phone gone from the WiFi to its mobile data); closed
+    when its session is revoked; wrong keys pause Funnel. A request from the tailnet (Tailscale's
+    proxy, no Funnel header) is taken as before"""
+    ws = WS(headers=FUNNEL)
+    t0 = time.time()
+    got = nothing_for(ws, 2)
+    assert not got, f"over Funnel before a key: {got}"
+    assert closed_within(ws, 4.5), "over Funnel without a key: not closed"
+    print(f"funnel: nothing before a key, closed after {time.time() - t0:.1f} s")
+
+    ws = WS(headers=FUNNEL)
+    ws.text("audio_start:0;")
+    assert closed_within(ws, 1) and not ws.binary, "over Funnel, a command first: not closed"
+    print("funnel: a command before the key: closed, unanswered")
+
+    ws = WS(headers=FUNNEL)
+    ws.text("auth:" + TOKEN + ";")
+    greeting = []
+    while not greeting or greeting[-1] != "ready;":
+        op, p = ws.frame()
+        if op == 1:
+            greeting.append(p.decode())
+    print(f"funnel: the key of a browser paired at home: the greeting ({len(greeting)} lines)")
+    assert funnel_refused("198.51.100.2"), "a second over Funnel was taken"
+    print("funnel: a second one over Funnel refused")
+    # Its page sends nothing while it only listens, but answers the radio's pings (a browser does so itself, also
+    # in a background tab): heard from, it keeps the sound past the 6 s after which a page may be gone, and the
+    # other tab of the same browser (the Panel and the Screen page share its key) is refused at the handshake
+    pings, end = 0, time.time() + 7
+    ws.s.settimeout(0.05)
+    while time.time() < end:
+        try:
+            op, p = ws.frame()
+        except (socket.timeout, TimeoutError):
+            continue
+        if op == 9:
+            ws.send(10, p)
+            pings += 1
+    ws.s.settimeout(5)
+    assert pings >= 2, f"over Funnel, silent 7 s: {pings} pings from the radio"
+    assert funnel_refused("198.51.100.3"), "its page answering the radio's pings 7 s: another connection taken"
+    print(f"funnel: its page answering the radio's pings ({pings} in 7 s): another one still refused")
+    ws.text("vfo:0,0,14250000;modulation:0,cw;drive:0,100;")
+    ws.text("VFO:0,0,14250000;Modulation:0,CW;DRIVE:0,100;")
+    got = nothing_for(ws, 0.6)
+    assert not [p for op, p in got if op == 1 and p.startswith((b"vfo:", b"modulation:", b"drive:"))], got
+    print("funnel: tuning, mode and drive, also in capitals, left unanswered and undone")
+    ws.text("audio_samplerate:24000;audio_stream_sample_type:int16;audio_stream_channels:1;"
+            "audio_stream_samples:512;audio_start:0;")
+    print("funnel:", ws.wait_text("audio_start:0;"), "- RX audio frames:", len(rx_frames(ws, 0.5)))
+    ws.text("trx:0,true;")
+    print("funnel: the radio's own microphone:", ws.wait_text("trx:0,false;"), end=" ")
+    ws.text("TRX:0,TRUE;")
+    print("in capitals:", ws.wait_text("trx:0,false;"))
+    ws.text("trx:0,true,tci;")
+    print("funnel: keyed with the page's audio:", ws.wait_text("trx:0,true;"))
+    for _ in range(5):
+        ws.wait_chrono()
+        ws.send(2, struct.pack("<8I", 0, 24000, 0, 0, 0, 512, 2, 1) + bytes(32) + bytes(1024))
+    ws.text("trx:0,false;")
+    print("funnel: unkeyed:", ws.wait_text("trx:0,false;"))
+    time.sleep(6.5)     # its page gone without a word: nothing from it, the radio's pings unanswered
+    ws2 = WS(headers=FUNNEL.replace("203.0.113.7", "198.51.100.3"))
+    ws2.text("auth " + LISTENER)
+    assert closed_within(ws2, 1), "another browser's key, the first one silent: not closed"
+    print("funnel: the first one silent 6 s, another browser's key: closed")
+    ws2 = WS(headers=FUNNEL.replace("203.0.113.7", "198.51.100.3"))
+    ws2.text("auth:" + TOKEN + ";")
+    ws2.wait_text("ready;")
+    assert closed_within(ws, 2), "the same browser from another network: its connection from before not closed"
+    print("funnel: the same browser from another network: greeted, its connection from before closed")
+    ws = ws2
+    open(REVOKED, "w").close()
+    t0 = time.time()
+    assert closed_within(ws, 3.5), "over Funnel, its session revoked: not closed"
+    os.remove(REVOKED)
+    print(f"funnel: its session revoked at home: closed after {time.time() - t0:.1f} s")
+
+    ws = WS(headers=FUNNEL)
+    ws.text("auth " + LISTENER)
+    ws.wait_text("ready;")
+    ws.text("trx:0,true,tci;")
+    print("funnel: a session that may not transmit, keying:", ws.wait_text("trx:0,false;"))
+    ws.send(8, struct.pack(">H", 1000))
+
+    for i in range(3):
+        ws = WS(headers=FUNNEL.replace("203.0.113.7", f"198.51.100.{10 + i}"))
+        ws.text("auth:" + "%032x" % (i + 7) + ";")
+        assert closed_within(ws, 1), "a wrong key over Funnel: not closed"
+    assert funnel_refused("198.51.100.20"), "Funnel taken after wrong keys"
+    print("funnel: three wrong keys (the stub's rule): Funnel refused")
+    ws = WS(headers="X-Forwarded-For: 100.101.102.104\r\nTailscale-User-Login: op@example.com\r\n")
+    print("tailnet through the proxy:", ws.wait_text("protocol:"))
+    ws.send(8, struct.pack(">H", 1000))
+    ws = WS()
+    print("the LAN:", ws.wait_text("protocol:"))
+    ws.send(8, struct.pack(">H", 1000))
+
+
+def capitals():
+    """TCI says the case of the letters does not matter (TCI 2.1, 3.1): Hamlib's TCI backend sends its
+    commands in capitals (VFO:, MODULATION:, TRX:0,true,Vac;), fldigi's TCI build keys with TRX:, and the
+    words (USB, TRUE, TCI, INT16) may come in any case. Each is taken as its lower case is, and every
+    answer is in lower case"""
+    ws = WS()
+    ws.wait_text("ready;")
+    ws.text("RX_SENSORS_ENABLE:true,200;TX_SENSORS_ENABLE:FALSE,200;")
+    print("capitals:", ws.wait_text("rx_sensors_enable:true;"), ws.wait_text("tx_sensors_enable:false;"))
+    ws.text("DDS:0,10136000;VFO:0,0,10136000;")    # Hamlib's set_freq: the receiver's centre, then the frequency
+    print("capitals:", ws.wait_text("dds:0,"), ws.wait_text("vfo:0,0,10136000;"), end=" ")
+    ws.text("DDS:0;")
+    print(ws.wait_text("dds:0,10136000;"), end=" ")
+    ws.text("VFO:0,0;")
+    ws.wait_text("vfo:0,0,10136000;")
+    ws.text("MODULATION:0,CW;")
+    print(ws.wait_text("modulation:0,cw;"), end=" ")
+    ws.text("AGC_MODE:0,SLOW;")
+    print(ws.wait_text("agc_mode:0,slow;"), end=" ")
+    ws.text("DRIVE:0,40;")
+    print(ws.wait_text("drive:0,40;"), end=" ")
+    ws.text("SPLIT_ENABLE:0;")
+    print(ws.wait_text("split_enable:0,false;"))
+    ws.text("Modulation:0,DigU;")
+    print("mixed case:", ws.wait_text("modulation:0,digu;"))
+    ws.text("TRX:0;")
+    ws.wait_text("trx:0,false;")
+    ws.text("TRX:0,true,Vac;")              # Hamlib's PTT with data: the radio's own PTT
+    print("capitals, keyed:", ws.wait_text("trx:0,true;"), end=" ")
+    ws.text("TRX:0,FALSE;")
+    print("unkeyed:", ws.wait_text("trx:0,false;"))
+    ws.text("Audio_SampleRate:24000;AUDIO_STREAM_SAMPLE_TYPE:INT16;Audio_Stream_Channels:1;AUDIO_STREAM_SAMPLES:512;")
+    print("mixed case:", ws.wait_text("audio_samplerate:24000;"), ws.wait_text("audio_stream_sample_type:int16;"),
+          ws.wait_text("audio_stream_channels:1;"), ws.wait_text("audio_stream_samples:512;"))
+    time.sleep(0.2)
+    ws.text("TRX:0,true,tci;")              # fldigi's TCI build keying
+    print("capitals, keyed with TCI audio:", ws.wait_text("trx:0,true;"), end=" ")
+    for _ in range(5):
+        ws.wait_chrono()
+        ws.send(2, struct.pack("<8I", 0, 24000, 0, 0, 0, 512, 2, 1) + bytes(32) + bytes(1024))
+    ws.text("Trx:0,False;")
+    print("unkeyed:", ws.wait_text("trx:0,false;"))
+    ws.text("AUDIO_START:0;")
+    ws.wait_text("audio_start:0;")
+    rx = rx_frames(ws, 0.5)
+    hdr = struct.unpack("<8I", rx[0][:32])
+    assert len(rx[0]) == 64 + 1024 and hdr[1:3] == (24000, 0) and hdr[5:8] == (512, 1, 1), hdr
+    ws.text("Audio_Stop:0;")
+    ws.wait_text("audio_stop:0;")
+    names = {t.split(":", 1)[0].split(";", 1)[0] for t in ws.texts}
+    assert all(n == n.lower() for n in names), sorted(names)
+    print(f"capitals: RX audio in int16 at 24 kHz, {len(ws.texts)} answers, every name in lower case")
+    ws.send(8, struct.pack(">H", 1000))
 
 
 def rx_frames(ws, seconds):
@@ -431,9 +657,8 @@ def wsjtx_open():
     rest = tone_check("wsjtx RX, float32 48 kHz stereo", left[:48000], 1000, 48000, 8000 / 32768, image=23000)
     assert rest < 10 ** (-70 / 20)
 
-    # Keyed as WSJT-X keys (Mode USB: digu is refused for TCI audio), every TX_CHRONO answered
-    ws.text("modulation:0,usb;")
-    collect(1.0, lambda: st["mode"] == "usb")
+    # Keyed as WSJT-X keys, in the digu its Mode Data/Pkt set (#17), every TX_CHRONO answered
+    assert st["mode"] == "digu", st["mode"]
     ws.text("trx:0,true,tci;")
     collect(1.2)
     assert st["trx"] is True, "WSJT-X: TCI failed to set ptt"

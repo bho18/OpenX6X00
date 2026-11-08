@@ -5,7 +5,8 @@
  *  locator and the mode on the right; over the locator the TX audio offset of
  *  FT8/FT4/WSPR (the big digits stay on the dial, as WSJT-X). Always shown; the app dialogs start
  *  below it. A line under the digit the tuning step changes, and NR NB DNF (RIT XIT when set)
- *  over the locator, as upstream v1.0.0's step marker and indicators row.
+ *  over the locator, as upstream v1.0.0's step marker and indicators row. LOCK in front of the frequency while
+ *  the user's frequency lock is on.
  */
 
 #include <stdbool.h>
@@ -55,11 +56,20 @@ int freq_strip_step_char(const char *text, int32_t step, bool *big) {
 static char      app[16];
 static lv_obj_t *strip, *band_label, *freq_label, *mode_label, *qth_dot, *qth_label, *tx_label;
 static lv_obj_t *nr_label, *nb_label, *dnf_label, *rit_label, *xit_label;
+static lv_obj_t *wr12_label;        /* WR12 while the X6200's WR12 is in use, kept over a new strip */
+static bool      wr12_shown;
 static lv_obj_t *freq_small, *other_label, *vfo_badge;   /* deck: the 10 Hz digits, the other VFO, A or B */
 static lv_obj_t *mid, *col;
 static bool      bc_tagged;         /* VISION: the band label is the broadcast tag */
+static lv_obj_t *lock_tag;          /* LOCK: the user's frequency lock (an app's hold shows by the app's name) */
+static bool      user_locked;
+static lv_coord_t lock_w;           /* its width, left of the frequency */
+static bool      dialog_open;       /* deck: an app window over the strip's lower half, the frequency smaller */
+
+#define LOCK_GAP 12
 
 static void vision_fit(void);
+static void lock_place(void);
 static char      bc[260];           /* the broadcast on air on the VFO, "" none */
 static int32_t   bc_freq = -1;
 static time_t    bc_minute = -1;
@@ -162,6 +172,11 @@ static void bc_lookup(int32_t f) {
     else snprintf(bc, sizeof(bc), "%s", m[best].station);
 }
 
+/* What the LOCK tag takes in front of the frequency: none while it is off, or placed elsewhere (deck, VISION) */
+static lv_coord_t lock_room(void) {
+    return user_locked && !theme_shape.deck && !theme_shape.vision ? lock_w + LOCK_GAP : 0;
+}
+
 /* A broadcast station in a tag, "BC" in front, so it is not read as a band or a memory */
 static void bc_tag(bool on) {
     lv_obj_set_style_border_width(band_label, on ? 1 : 0, 0);
@@ -187,6 +202,39 @@ static void bc_fit(lv_coord_t w) {
     lv_label_set_text_fmt(band_label, "#%06x BC#  %s", theme_hex(TC_info), s + 4);
 }
 
+/* The other themes (not VISION, not deck): the band, an open app's name in front (or a memory's name), cut with
+ * dots where it would run into LOCK in front of the frequency, or into the frequency. In a split with an app or
+ * Settings open, LOCK covered the band. Cut here, as bc_fit(), not by the label's own dots, which break on the
+ * app's colour tag */
+static void band_fit(const char *band) {
+    const lv_font_t *font = lv_obj_get_style_text_font(band_label, 0);
+    lv_coord_t       ls = lv_obj_get_style_text_letter_space(band_label, 0);
+    char             t[sizeof(app) + sizeof(bc) + 1], s[sizeof(t) + 4];
+    size_t           a = strlen(app), len, n;
+
+    lv_obj_update_layout(strip);
+
+    lv_coord_t room = lv_obj_get_x(mid) - lv_obj_get_x(band_label) - 12 - lock_room();
+
+    if (lv_obj_get_width(band_label) <= room) return;
+    snprintf(t, sizeof(t), "%s%s%s", app, a ? " " : "", band);
+    len = n = strlen(t);
+    for (;;) {
+        snprintf(s, sizeof(s), "%.*s...", (int)n, t);
+        if (!n || lv_txt_get_width(s, strlen(s), font, ls, LV_TEXT_FLAG_NONE) <= room) break;
+        do n--; while (n && (t[n] & 0xc0) == 0x80);   /* whole UTF-8 letters */
+    }
+    if (a && n <= a && lv_txt_get_width(app, a, font, ls, LV_TEXT_FLAG_NONE) <= room) {
+        lv_label_set_text_fmt(band_label, "#%06x %s#", theme_hex(TC_accent), app);   /* the app whole, no band */
+    } else if (!n || !a) {     /* no colour tag to keep */
+        lv_label_set_text(band_label, s);
+    } else if (n > a) {
+        lv_label_set_text_fmt(band_label, "#%06x %s#%.*s...", theme_hex(TC_accent), app, (int)(n - a), t + a);
+    } else {
+        lv_label_set_text_fmt(band_label, "#%06x %.*s#...", theme_hex(TC_accent), (int)n, t);
+    }
+}
+
 /* VISION's big type: the frequency and the mode move left of the column on the right when it
  * grows (NR NB DNF RIT XIT, the TX offset of the apps), a long note (NAVTEX, a memory) or
  * station ends in dots before them */
@@ -202,7 +250,7 @@ static void vision_fit(void) {
         lv_obj_update_layout(strip);
     }
 
-    lv_coord_t room = lv_obj_get_x(mid) - lv_obj_get_x(band_label) - 12;
+    lv_coord_t room = lv_obj_get_x(mid) - lv_obj_get_x(band_label) - 12 - lock_room();
 
     if (bc_tagged) {
         bc_fit(room);
@@ -273,7 +321,7 @@ static void update_cb(Subject *subj, void *user_data) {
         bc_tag(true);
         lv_obj_set_size(band_label, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         lv_obj_update_layout(strip);
-        bc_fit(theme_shape.deck ? 300 : lv_obj_get_x(mid) - lv_obj_get_x(band_label) - 12);
+        bc_fit(theme_shape.deck ? 300 : lv_obj_get_x(mid) - lv_obj_get_x(band_label) - 12 - lock_room());
     } else {
         bc_tag(false);
         lv_obj_set_size(band_label, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -287,7 +335,58 @@ static void update_cb(Subject *subj, void *user_data) {
         lv_obj_add_flag(tx_label, LV_OBJ_FLAG_HIDDEN);
     }
     bc_tagged = band == bc;
+    if (!theme_shape.deck && !theme_shape.vision && !bc_tagged) band_fit(band);
     vision_fit();
+    if (lock_tag) lock_place();
+}
+
+static void lock_show(void) {
+    if (user_locked) lv_obj_clear_flag(lock_tag, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(lock_tag, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* Deck: on the right between the other VFO and the badge; under an app window, where the right column holds the
+ * app's TX offset and the window covers the badge, left of the smaller frequency, which moves as it changes */
+static void lock_place(void) {
+    if (!theme_shape.deck || !user_locked) return;
+    if (dialog_open) lv_obj_align_to(lock_tag, mid, LV_ALIGN_OUT_LEFT_MID, -LOCK_GAP, 0);
+    else lv_obj_align(lock_tag, LV_ALIGN_RIGHT_MID, -12, 0);
+}
+
+/* mid's redraws reach the tag out on its left: the frequency moves it (a split, a wider mode) */
+static void lock_ext_draw_cb(lv_event_t *e) {
+    lv_event_set_ext_draw_size(e, lock_w + LOCK_GAP);
+}
+
+/* LOCK, in the padlock's colour: left of the frequency and out of the centring of mid (the frequency does not
+ * move when it comes and goes). In deck themes on the right, between the other VFO and the A/B badge, where the
+ * meter is on the left; in VISION in front of the locator (right: its row), where the big digits leave no room
+ * on their left once an app's name or a split is there */
+static void lock_create(lv_obj_t *right) {
+    const lv_font_t *font = theme_shape.vision ? &sony_28 : theme_shape.deck ? &sony_24 : &sony_20;
+
+    lock_tag = lv_label_create(theme_shape.deck ? strip : theme_shape.vision ? right : mid);
+    lv_label_set_text(lock_tag, "LOCK");
+    lv_obj_set_style_text_font(lock_tag, font, 0);
+    lv_obj_set_style_text_color(lock_tag, TC(bg), 0);
+    lv_obj_set_style_bg_color(lock_tag, TC(lock), 0);
+    lv_obj_set_style_bg_opa(lock_tag, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(lock_tag, 3, 0);
+    lv_obj_set_style_pad_hor(lock_tag, 5, 0);
+    if (theme_shape.deck) {
+        lock_place();
+    } else if (theme_shape.vision) {
+        lv_obj_move_to_index(lock_tag, 0);
+    } else {
+        lock_w = lv_txt_get_width("LOCK", 4, font, 0, LV_TEXT_FLAG_NONE) + 2 * 5;
+        lv_obj_add_flag(lock_tag, LV_OBJ_FLAG_FLOATING);
+        lv_obj_add_flag(mid, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+        lv_obj_clear_flag(mid, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(lock_tag, LV_ALIGN_LEFT_MID, -(lock_w + LOCK_GAP), 0);
+        lv_obj_add_event_cb(mid, lock_ext_draw_cb, LV_EVENT_REFR_EXT_DRAW_SIZE, NULL);
+        lv_obj_refresh_ext_draw_size(mid);
+    }
+    lock_show();
 }
 
 /* Settings: the name on or off now */
@@ -321,6 +420,9 @@ static lv_obj_t *make_label(lv_obj_t *parent, lv_align_t align, lv_coord_t x, co
 
 lv_obj_t *freq_strip_init(lv_obj_t *parent) {
     bool again = strip != NULL;   /* a theme change: the timer stays */
+
+    lock_tag    = NULL;
+    dialog_open = false;          /* the frequency in its full size again */
 
     strip = lv_obj_create(parent);
     lv_obj_remove_style_all(strip);
@@ -378,6 +480,11 @@ lv_obj_t *freq_strip_init(lv_obj_t *parent) {
     lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(top, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(top, 3, 0);
+    wr12_label = ind_create(top, "WR12");
+    lv_obj_set_style_text_color(wr12_label, TC(bg), 0);     /* as the deck's A/B badge */
+    lv_obj_set_style_bg_color(wr12_label, TC(info), 0);
+    lv_obj_set_style_bg_opa(wr12_label, LV_OPA_COVER, 0);
+    if (!wr12_shown) lv_obj_add_flag(wr12_label, LV_OBJ_FLAG_HIDDEN);   /* fitted with the others below */
     nr_label = ind_create(top, "NR");
     nb_label = ind_create(top, "NB");
     dnf_label = ind_create(top, "DNF");
@@ -399,6 +506,11 @@ lv_obj_t *freq_strip_init(lv_obj_t *parent) {
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(right, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(right, 6, 0);
+    /* a little lower: under NR NB DNF the 28 of the locator touched them (VISION's strip has the room).
+     * 2 px, not 4: the column counts the shift in its height and is centred again, so with 4 the
+     * locator's box reached the strip's bottom border, and its descenders (the J of JN, a GPS
+     * locator's "pg") sat on it in DejaVu and Roboto, on Outdoor's 2 px border */
+    if (!v) lv_obj_set_style_translate_y(right, 2, 0);
 
     qth_dot = lv_obj_create(right);
     lv_obj_remove_style_all(qth_dot);
@@ -441,10 +553,12 @@ lv_obj_t *freq_strip_init(lv_obj_t *parent) {
     subject_subscribe_delayed((Subject *)cfg_bg_freq, update_cb, NULL);
     subject_subscribe_delayed((Subject *)cfg_band_split, update_cb, NULL);
     subject_subscribe_delayed((Subject *)cfg_band_tx_shift, update_cb, NULL);   /* deck: after the other VFO */
+    subject_subscribe_delayed((Subject *)cfg_tx_outside_bands, update_cb, NULL);    /* its colour (#121) */
     subject_subscribe_delayed((Subject *)cfg_cur_mode, update_cb, NULL);
     subject_subscribe_delayed((Subject *)cfg_broadcast_name, bc_setting_cb, NULL);
     subject_subscribe_delayed((Subject *)cfg_mode_freq_step, step_change_cb, NULL);
     lv_obj_add_event_cb(freq_label, step_mark_draw_cb, LV_EVENT_DRAW_POST, NULL);
+    lock_create(right);
     update_cb(NULL, NULL);
     qth_update_cb(NULL);
     if (!again) lv_timer_create(qth_update_cb, QTH_POLL_MS, NULL);
@@ -466,16 +580,37 @@ void freq_strip_set_dialog(bool open) {
     extern const lv_font_t rcond_freq_88, rcond_freq_54;
 
     if (!strip || !theme_shape.deck) return;
+    dialog_open = open;
     lv_obj_set_style_text_font(freq_label, open ? &rcond_freq_54 : &rcond_freq_88, 0);
     lv_obj_set_style_text_font(freq_small, open ? &sony_32 : &rcond_freq_54, 0);
     lv_obj_align(lv_obj_get_parent(freq_label), LV_ALIGN_CENTER, 100, open ? -14 : 10);
     if (open) lv_obj_add_flag(vfo_badge, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_clear_flag(vfo_badge, LV_OBJ_FLAG_HIDDEN);
+    lock_place();
+}
+
+/* The tag, and the step mark, which goes while the frequency is locked by either */
+void freq_strip_set_lock(bool user_lock) {
+    user_locked = user_lock;
+    if (!strip) return;
+    lock_show();
+    update_cb(NULL, NULL);
 }
 
 void freq_strip_set_offset(int32_t offset_hz) {
     tx_offset = offset_hz;
     if (strip) update_cb(NULL, NULL);
+}
+
+void freq_strip_set_wr12(bool in_use) {
+    if (in_use == wr12_shown) {
+        return;     /* each word of the WR12's driver comes here: VISION refits only on a change */
+    }
+    wr12_shown = in_use;
+    if (!wr12_label) return;
+    if (in_use) lv_obj_clear_flag(wr12_label, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(wr12_label, LV_OBJ_FLAG_HIDDEN);
+    vision_fit();
 }
 
 #endif

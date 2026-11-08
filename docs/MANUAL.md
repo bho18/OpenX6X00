@@ -9,25 +9,25 @@ Settings. Button and option names are written as the radio shows them.
 
 ## Contents
 
-- [Getting started](#getting-started): [first steps](#first-steps), [buttons and knobs](#buttons-and-knobs)
+- [Getting started](#getting-started): [first steps](#first-steps), [buttons and knobs](#buttons-and-knobs), [hand mic](#hand-mic), [keyboard](#keyboard) ([quick QSO log](#quick-qso-log))
 - [Updating the firmware](#updating-the-firmware)
-- [Main screen](#main-screen): [band keys](#band-keys), [receiving outside the ham bands](#receiving-outside-the-ham-bands), [WR12 receiver](#wr12-receiver-x6200), [low battery](#low-battery), [battery time](#battery-time), [status bar](#status-bar), [S-meter](#s-meter), [waterfall](#waterfall), [screen recording](#screen-recording), [Walkie Talkie](#walkie-talkie-mode)
-- [Settings](#settings): [General](#general-tab), [Display](#display-tab), [Audio](#audio-tab), [Wireless](#wireless-tab), [Bluetooth](#bluetooth-tab), [Keys](#keys-tab), [Cluster](#cluster-tab), [TX Cal](#tx-cal-tab), [Info](#info-tab), [Walkie](#walkie-tab)
-- [Transmitting](#transmitting): [TX shift](#tx-shift), [SWR scan and the tuner](#swr-scan-and-the-tuner), [digital-mode TX level](#digital-mode-tx-level), [recording voice messages](#recording-voice-messages), [ALC in CW](#alc-in-cw)
-- [Digital modes](#digital-modes): [opening a mode](#opening-a-mode), [FT8 and FT4](#ft8-and-ft4), [JS8](#js8), [WSPR](#wspr), [SSTV, WeFax and NavTex](#sstv-wefax-and-navtex), [PSK31, PSK63 and Olivia](#psk31-psk63-and-olivia), [JTTY](#jtty), [RTTY and WeFax TX](#rtty-and-wefax-tx)
-- [CW](#cw): [CW decoder](#cw-decoder), [CW from the keyboard](#cw-from-the-keyboard), [CW Keyboard](#cw-keyboard), [USB paddle](#usb-paddle), [CW messages](#cw-messages), [CW Trainer](#cw-trainer)
-- [Apps](#apps): [DX Cluster](#dx-cluster), [Field Ops (SOTA / POTA)](#field-ops-sota--pota), [Bands](#bands), [Channels](#channels)
-- [Bluetooth](#bluetooth): [headphones](#bluetooth-headphones), [CAT](#bluetooth-cat)
+- [Main screen](#main-screen): [band keys](#band-keys), [receiving outside the ham bands](#receiving-outside-the-ham-bands), [WR12 receiver](#wr12-receiver-x6200), [low battery](#low-battery), [battery time](#battery-time), [status bar](#status-bar), [S-meter](#s-meter), [waterfall](#waterfall), [band plan](#band-plan), [screen recording](#screen-recording), [Walkie Talkie](#walkie-talkie-mode)
+- [Settings](#settings): [General](#general-tab), [Display](#display-tab) ([screensaver](#screensaver)), [Audio](#audio-tab), [Wireless](#wireless-tab), [Bluetooth](#bluetooth-tab), [Keys](#keys-tab), [Cluster](#cluster-tab), [TX Cal](#tx-cal-tab), [Info](#info-tab), [Walkie](#walkie-tab)
+- [Transmitting](#transmitting): [amateur bands only](#amateur-bands-only), [no TX without data from the base](#no-tx-without-data-from-the-base), [TX shift](#tx-shift), [transverter TX power limit](#transverter-tx-power-limit), [SWR scan and the tuner](#swr-scan-and-the-tuner), [TUNE for an external tuner](#tune-for-an-external-tuner), [digital-mode TX level](#digital-mode-tx-level), [recording voice messages](#recording-voice-messages), [ALC in CW](#alc-in-cw), [PA bias](#pa-bias-x6200), [register 32](#register-32-x6200)
+- [Digital modes](#digital-modes): [opening a mode](#opening-a-mode), [FT8 and FT4](#ft8-and-ft4), [JS8](#js8), [WSPR](#wspr), [SSTV, WeFax and NavTex](#sstv-wefax-and-navtex), [PSK31, PSK63 and Olivia](#psk31-psk63-and-olivia), [JTTY](#jtty), [text log of the keyboard modes](#text-log-of-the-keyboard-modes), [RTTY and WeFax TX](#rtty-and-wefax-tx)
+- [CW](#cw): [CW decoder](#cw-decoder), [CW from the keyboard](#cw-from-the-keyboard), [CW Keyboard](#cw-keyboard), [USB paddle](#usb-paddle), [CW messages](#cw-messages) ([beacon](#cw-beacon), [QRSS3](#qrss3)), [CW Trainer](#cw-trainer)
+- [Apps](#apps): [DX Cluster](#dx-cluster), [Field Ops (SOTA / POTA)](#field-ops-sota--pota), [Bands](#bands), [Propagation](#propagation), [Channels](#channels), [Scanner](#scanner)
+- [Bluetooth](#bluetooth): [headphones](#bluetooth-headphones), [CAT](#bluetooth-cat), [a PC on Bluetooth](#a-pc-on-bluetooth)
 - [Themes](#themes)
 - [Web configurator](#web-configurator)
 - [Wavelog](#wavelog)
-- [Winlink](#winlink)
+- [Winlink](#winlink): [Mercury](#mercury-experimental), [XARA](#xara-experimental)
 - [Browser panel](#browser-panel)
 - [Browser remote](#browser-remote)
 - [TCI server](#tci-server)
-- [Network name](#network-name)
-- [SSH](#ssh)
-- [Tailscale](#tailscale)
+- [Network name](#network-name): [the radio's own names](#the-radios-own-names)
+- [SSH](#ssh): [a key on Windows](#a-key-on-windows), [on a Mac or on Linux](#a-key-on-a-mac-or-on-linux), [in PuTTY](#a-key-in-putty), [adding the key on the radio](#adding-the-key-on-the-radio), [the first login](#the-first-login), [after a new card image](#after-a-new-card-image), [when SSH does not let you in](#when-ssh-does-not-let-you-in)
+- [Tailscale](#tailscale): [Tailscale Funnel](#tailscale-funnel)
 - [Ethernet](#ethernet): [USB tethering](#usb-tethering)
 - [Troubleshooting and FAQ](#troubleshooting-and-faq)
 - [Reference](#reference): [Bluetooth CAT connection](#bluetooth-cat-connection), [CI-V commands](#supported-ci-v-commands), [btcat-ctl](#btcat-ctl), [btaudio-ctl](#btaudio-ctl), [files on /mnt](#files-on-mnt)
@@ -52,19 +52,20 @@ Settings. Button and option names are written as the radio shows them.
 
 ### Buttons and knobs
 
-The APP button opens three pages of apps and tools:
+The APP button opens four pages of apps and tools:
 
 | Page | Buttons |
 |---|---|
-| APP 1:3 | Modes, Cluster, SWR Scan, RX Recorder |
-| APP 2:3 | Settings, CW Trainer, Field Ops, Channels |
-| APP 3:3 | Bands, GPS, Screen rec, CW Keyboard |
+| APP 1:4 | Modes, Cluster, SWR Scan, RX Recorder |
+| APP 2:4 | Settings, CW Trainer, Field Ops, Channels |
+| APP 3:4 | Bands, GPS, Screen rec, CW Keyboard |
+| APP 4:4 | Propagation, Scanner |
 
 With Icon menus on (Settings > Display > INTERFACE, on by default) APP also
 opens the same apps as a grid of tiles over these pages, with Walkie and
 Birdie Cal besides: the MFK chooses a tile, a press opens it, APP or ESC
 closes the grid. "APP > CW Keyboard" in this manual is the tile, or the
-button on APP 3:3.
+button on APP 3:4.
 
 - Each app has its own button pages, named like `(JS8 1:7)`. The first
   button goes to the next page.
@@ -74,24 +75,273 @@ button on APP 3:3.
   nothing; on the main screen it still works as ESC. Held, it is still one
   press.
 
+Knobs. On the main screen the main knob tunes, and VOL and the MFK each turn
+one control of their own list. The two lines over the buttons say which
+control and its value (Settings > Display > INTERFACE > Knob info; with it
+off, or while Hide buttons has hidden them, the value shows on the message
+line).
+- A press of the knob switches it between changing the value and choosing
+  the control: while it chooses, a turn goes to the next control on its list
+  (the name lit), and the next press changes that one again.
+- X6200: the MFK has an inner ring. The inner ring chooses the MFK's control,
+  the next one or the one before on its list, and the outer ring changes its
+  value, with no press. The X6100's MFK has no inner ring: it uses the press.
+- A keyboard (USB or Bluetooth) on the main screen: the left and right
+  arrows turn the MFK and Enter is its press (while the CW line is open,
+  Enter sends it); { and } choose VOL's control, [ and ] turn it (in CW
+  they are the paddle).
+- What is on each list is yours to choose. Hold a value button (TX power, RF
+  gain, Squelch, the filter edges, RIT, XIT, Spectrum Zoom, WF ref, AGC,
+  Comp, IF shift, VOX, PRE, ATT, ATU, Step, NB, NR, DNF, the KEY and CW
+  values...): each hold steps it from no knob to VOL ("Added to VOL
+  encoder"), then to the MFK ("Moved to MFK encoder"), then off again
+  ("Removed from MFK encoder"). A mark on the left of the button shows which
+  knob it is on, in another colour while that knob turns it.
+- A press of a value button puts it on a knob at once: VOL for Volume,
+  Squelch, RF gain, TX power, Moni level and the filter, the MFK for the
+  others. A press of an on/off button (NB, NR, DNF, VOX, PRE, ATT, ATU)
+  switches it; a press of AGC takes it to the next of Off, Slow, Fast, Auto.
+- AGC is on the MFK 2:4 page, PRE, ATT and ATU on VOL 2:2, Step (the tuning
+  step, as FST) on the DFL page. On a knob, a turn steps AGC and Step forward
+  or back, stopping at Off and Auto, 10 Hz and 5 kHz (the AGC and FST keys go
+  round), and switches PRE, ATT and ATU. Up to v0.3.7 AGC, PRE and ATT could not
+  go on a knob, and there was no ATU or Step button.
+- At first VOL has Volume, RF gain, the filter edges and TX power, and the MFK
+  Spectrum Zoom and DNF. Volume never leaves VOL.
+
+Hide buttons. With Settings > Display > INTERFACE > Hide buttons at After
+3 s, After 5 s or After 10 s (Off by default), the five buttons and the two
+knob lines over them hide on the main screen once that long has gone by
+without a key, and the waterfall shows down to the bottom of the screen.
+- Any key brings them back: a front key, a hand mic key, a keyboard key. It
+  also does its usual job (GEN goes to its next page, ATU switches the
+  tuner), except F1-F5: their press only brings the buttons back, so a
+  button you can't see is never pressed. Press it again to use it. F1-F5
+  from a browser (the Panel's Keys tab, the Screen page) are the same: the
+  first press only brings the radio's buttons back.
+- The main knob tunes and the buttons stay hidden. VOL and the MFK, turned
+  or pressed, leave them hidden too: their control and value show on the
+  message line, as with Knob info off. While the buttons show, a turn or a
+  press of VOL or the MFK keeps them a while longer, the main knob does not.
+  A keyboard's keys for the knobs (- and =, [ ] { }, the left and right
+  arrows, Enter, ESC) count as the knobs.
+- Only on the main screen: an app (FT8, RTTY, CW Trainer...), Settings and
+  the APP grid keep their buttons, and the walkie screen always shows them.
+  After an app closes they hide again once the time has gone by.
+
 Long press. Each button group (GEN, APP, KEY, MSG, DFN, DFL) has a
-long-press action.
+long-press action, and so has FST, the tuning step key: a press steps up,
+held it steps down until you give it another action (Frequency lock on/off,
+as on the stock firmware, say).
 Where: Settings > Keys > FRONT KEYS, LONG PRESS.
 
 | Kind | Actions |
 |---|---|
-| Quick | none, screenshot, RX recorder on/off, screen rec on/off, mute, WF mode, ATT on/off, PRE on/off, tuner on/off, tuner tune (transmits a carrier) |
+| Quick | none, screenshot, RX recorder on/off, screen rec on/off, mute, frequency lock on/off, step up, step down, WF mode, WF 3D on/off, ATT on/off, PRE on/off, tuner on/off, tuner tune (transmits a carrier), TUNE ext. tuner on/off (a carrier for a tuner at the antenna, see [TUNE for an external tuner](#tune-for-an-external-tuner)) |
 | Digital modes | RTTY, FT8, WSPR, JS8, SSTV, WeFax, NavTex |
-| Tools | Cluster, CW Trainer, CW Keyboard, Field Ops, Bands, Channels, RX recorder, SWR Scan, GPS, QTH grid, Settings |
+| Tools | Cluster, CW Trainer, CW Keyboard, Field Ops, Bands, Propagation, Channels, Scanner, RX recorder, SWR Scan, GPS, QTH grid, Settings |
 
-The hand mic F1 and F2 keys (short and long press) are set in the same tab.
+The hand mic F1 and F2 keys (and the H-22's F3 on the X6200), short and long
+press, are set in the same tab, from the quick actions (all but the
+screenshot), NR and NB.
 Where: Settings > Keys > HAND MIC KEYS.
-The hand mic MODE key steps LSB, USB, CW, CW-R, AM, NFM; a long press turns
-DIG on or off in SSB, like a long press of the front SSB key.
-The hand mic FIL key works as the front DFL key: the filter pages, and the
-DFL long press action.
-The hand mic V/M key opens the [CHANNELS](#channels) window; UP and DOWN
-step through the channels (a long press changes band).
+The other hand mic keys: see [Hand mic](#hand-mic).
+
+Two keys at once. Each key counts on its own: a key pressed while PTT is
+held does what it always does, its long press too, and the radio goes back
+to receive the moment PTT is let go. Up to v0.3.8 a key let go while PTT
+was held (the PTT key on the side or the browser's PTT), a tap say, kept
+the radio on the air after PTT was let go, until PTT was pressed again,
+and a key held while another one was pressed lost its long press.
+
+Frequency lock. The LOCK key (X6100), the X6100 mic's SPCH key, a
+keyboard's Scroll Lock or CapsLock+K, the browser panel's LOCK and any key
+given "Frequency lock on/off" in Settings > Keys (a long press of GEN, APP,
+KEY, MSG, DFN, DFL or FST, a hand mic F key) turn it on and off. The X6200
+has no LOCK key: give it to FST's long press, as on the stock firmware, or
+to another of those. Each turn says "Dial locked" or "Dial unlocked" on the
+screen.
+Held, the X6100's LOCK key restarts the radio's base board instead, a way
+out when the base stops answering: after the long press the screen counts
+down "Keep holding LOCK to restart: 4 s", and the restart comes 5 s after
+the press; let go before and nothing happens ("LOCK let go: no restart"). On battery
+the restart switches the radio off (switch it on again).
+While it is on, LOCK shows in the frequency strip, the main knob and F-INP
+do not tune, the step mark under the frequency goes and the frequency scale
+greys out, and the browser panel, TCI programs, Pat's QSY (Winlink) and Field
+Ops' band tune are refused, and so are channels (the CHANNELS window and
+the hand mic's UP/DOWN). The band keys, memories, cluster spots and CAT
+still tune.
+- LOCK is left of the frequency; in VISION in front of the locator; in Black
+  Metal and Total Black on the right, between the other VFO and the A/B
+  badge, and left of the frequency while an app window is open. On the
+  Walkie Talkie screen it follows the mode ("USB - LOCK").
+- FT8, FT4, JS8, PSK, Olivia, JTTY and WSPR hold the frequency the same way
+  while they are open. Their own knobs and buttons keep working (in FT8 the
+  MFK still picks a station and the main knob moves the TX offset).
+- SSTV holds the frequency, the band and the mode while it transmits a
+  picture, from "Preparing ... TX" to the end or Halt TX.
+- Your lock is apart from the apps' hold: set before an app opened, it is
+  still on after the app closes, and an app never turns it on. Up to v0.3.7
+  closing the app turned it off.
+
+### Hand mic
+
+The X6100's hand mic and the X6200's H-22 have keys of their own. They work
+on the main screen and with an app open, not in walkie mode. A long press is
+one second.
+
+| Key | Mic | Press | Long press |
+|---|---|---|---|
+| 1-9, 0 | both | the band printed on the key (not while an app holds the band). The X6100 mic, on either radio: 1 = 160 m, 2 = 80 m, 3 = 40 m, 4 = 30 m, 5 = 20 m, 6 = 17 m, 7 = 15 m, 8 = 12 m, 9 = 10 m, 0 = 6 m. H-22: 1 = 160 m, 2 = 80 m, 3 = 60 m, 4 = 40 m, 5 = 30 m, 6 = 20 m, 7 = 17 m, 8 = 15 m, 9 = 12 m, 0 = 6 m | memory 1-9 |
+| the dot | H-22 | 10 m (printed 28) | |
+| F-INP (H-22: the red F-INP/ENT) | both | the frequency box, see below | |
+| F1, F2 | both | the action set in Settings > Keys > HAND MIC KEYS: F1 steps up, F2 does nothing until it has one | F1 steps down, F2 as set |
+| F3 | H-22 | as F2, with its own action (X6200: Settings > Keys > HAND MIC KEYS) | as set |
+| UP, DOWN (H-22: the arrow keys) | both | the [channel](#channels) before or after the last one tuned, its name shown (not while LOCK is on or an app holds the frequency or the mode) | band up or down |
+| MODE | both | the next mode: LSB, USB, CW, CW-R, AM, NFM (and SAM, WFM on the X6200) | DIG on or off in SSB, like a long press of the front SSB key |
+| V/M | both | the [CHANNELS](#channels) window (not over an app that has the screen) | |
+| VOL+, VOL- | H-22 | the RX volume one step up or down, shown like the VOL knob's | held: on by itself from 0.4 s, before the long press, about ten steps a second until let go |
+| A/B | H-22 | VFO A/B, like the front A/B key (not while an app holds the VFOs) | this VFO copied to the other one |
+| FIL | X6100 | the filter pages, like the front DFL key | the DFL long press action |
+| XFC | X6100 | VFO A/B (not while an app holds the VFOs) | |
+| SPCH | X6100 | frequency lock on or off | |
+| TUNER | X6100 | the tuner on or off | a tuning cycle (it transmits) |
+| GENE | X6100 | the SWL panel; again: the next station | |
+| NW | X6100 | the station shown in the SWL panel saved as a channel | |
+
+- The frequency box: F-INP (the H-22's red F-INP/ENT) opens it, not while the frequency
+  is locked. Type the frequency in MHz with the digits and the dot (the
+  H-22's dot key), 7.074 for 7074 kHz; CE (the H-22's HOME) deletes the last
+  character. F-INP again tunes to it and closes the box; with nothing typed
+  it only closes it.
+- In a list or a text box (the WiFi password) the digits, the dot and CE type
+  instead.
+- The H-22's UP and DOWN keys on its side change band like the BAND keys.
+- The X6100's hand mic works on the X6200 too, its keys as in this table: the
+  digits go to the bands printed on them (3 = 40 m) and its dot to none. The
+  radio tells it from the H-22 by the codes the keys send.
+- Each key pressed goes into the log as `hand mic: key 0x18 (3)`: its code
+  and the key the radio took it for, or "unknown". Not while a text box is
+  open, where the digits can be a WiFi password. A key of another mic that
+  does nothing: send the log lines of its keys in an issue.
+
+### Keyboard
+
+A USB keyboard, or a Bluetooth one paired in Settings > Bluetooth > DEVICES,
+types in the text boxes and the apps. On the main screen it has the keys for
+the knobs (see [Buttons and knobs](#buttons-and-knobs)), `f` for the
+frequency box and, in CW, the [CW line](#cw-from-the-keyboard). Scroll Lock
+turns the [frequency lock](#buttons-and-knobs) on and off and Print Screen
+takes a screenshot, both on the main screen only.
+
+CapsLock is the keyboard's shortcut key: held, the key pressed with it does
+something on the radio instead of typing. Every keyboard has it, small and
+Bluetooth ones too, which often have no F keys, or only with Fn.
+
+| CapsLock + | Does | Where |
+|---|---|---|
+| L | Log a QSO: in CW the line typed in the [CW line](#cw-from-the-keyboard), not sent; else the [quick QSO log](#quick-qso-log)'s box opens | main screen |
+| K | The [frequency lock](#buttons-and-knobs) on or off, as Scroll Lock | main screen |
+| P | A screenshot, as Print Screen | everywhere |
+| S | Settings | main screen |
+| F | The frequency box, as `f`, also in CW, where `f` goes into the CW line | main screen |
+| 1 to 5 | In CW, the MSG > CW messages 1 to 5, keyed from the [CW line](#cw-from-the-keyboard) | main screen |
+| 1 to 8 | [JTTY](#jtty)'s macros F1 to F8, as their buttons | JTTY |
+| Up, Down | The next band up or down, as the [BAND keys](#band-keys) | main screen |
+| Space | PTT on, and at the next press off (below) | on: main screen; off: everywhere |
+
+- Main screen: no app, Settings, list or text box open, not in [Walkie
+  Talkie mode](#walkie-talkie-mode). Elsewhere these chords do nothing, and
+  type nothing: in walkie mode CapsLock+Space keys nothing (it still lets go).
+  RTTY receives on the main screen, with no window of its own: there the
+  chords work, and CapsLock+L logs the QSO as RTTY.
+- The keys count by their place on a US keyboard, as the radio types. The
+  letters are in the same place on AZERTY and QWERTZ keyboards; on an AZERTY
+  one CapsLock+1 is the key marked & and 1.
+- A chord's key is never typed, in the CW line, the quick log's box or a
+  text box neither, and Caps Lock stays as it was, on or off. The
+  keyboard's Caps Lock light can come on while CapsLock is held, and goes
+  back when the other key goes down.
+- A chord acts once a press: held, it does not repeat (one band a press).
+- CapsLock tapped alone, nothing pressed with it, is Caps Lock as before:
+  it turns when you let it go. Shift, Ctrl and Alt work with it as usual.
+- A key with no chord (A, Q, 9, Enter) pressed while CapsLock is still
+  down, as the first key, is fast typing: Caps Lock turns and the key
+  types. A chord's key typed that fast is the chord: let CapsLock go first.
+- The keyboard's keys keep the screen lit, as the radio's own do. On a
+  dark screen (Settings > Display > BACKLIGHT > Screen off) or the
+  [screensaver](#screensaver) the first chord only brings the screen back,
+  press it again; a key typed on a dark screen types as usual, on the
+  screensaver it only brings the screen back (held, it does not repeat).
+
+PTT from the keyboard. CapsLock+Space keys the radio as its PTT key does,
+with the same refusals where the radio may not transmit, the 0 W hold, the
+SWR protection and the stuck TX watch; in CW it keys the carrier, as the
+PTT key does. The screen says `PTT on: CapsLock+Space for off` and shows TX
+as for any transmission (the TX panel, or the power and SWR in the S-meter
+box). CapsLock+Space again lets go, from any screen: a window opened while
+on the air does not keep the radio there. While it is on the screen stays
+lit.
+
+- It follows the radio. Let go another way (the PTT key, the SWR
+  protection, CAT), the next CapsLock+Space keys again: the screen says
+  `PTT off: CapsLock+Space for on`, after the SWR protection's or the band
+  stop's own message.
+- A press where the radio may not transmit keys nothing ("No TX on ...").
+  A key that has not got the radio on the air after 2 s, or a radio back on
+  receive by itself, is let go: `PTT off: not on the air`.
+- The keyboard unplugged, or its Bluetooth link lost, lets go: `PTT off:
+  keyboard gone`. A Bluetooth link can take some seconds to count as
+  lost. A wireless keyboard whose USB receiver stays plugged in is not
+  seen as gone when the keyboard itself goes quiet (a flat battery, out of
+  range): the three minutes below end it then.
+- No data from the base for 3 s while it is on lets go: `PTT off: no data
+  from the base`. Without it the radio has no SWR protection and no power
+  reading.
+- As the PTT key does, it gives control to the radio's operator: a browser
+  or a TCI client neither keys nor takes control while it is on.
+- It lets go three minutes after it keyed, as the browser's PTT does:
+  `PTT off: three minutes on the air`. CapsLock+Space keys again for three
+  more.
+
+Up to v0.3.8 the keyboard's F keys did some of this: F1-F5 keyed the CW
+messages in CW, F10 logged the CW line, F9 opened Settings, F1-F8 sent
+JTTY's macros, and F4 was Start in the CW Trainer and Edit in MSG > CW
+(Enter still does both). They do nothing now, and neither do PgUp and PgDn.
+Up to v0.3.8 this Manual had PgUp and PgDn for the band and Scroll Lock for
+the lock, and the code Print Screen for a screenshot, but none of the four
+did anything on the radio.
+
+On the bench X6200 (5 Nov) the CapsLock chords and the PTT toggle worked,
+with a USB keyboard; checked in the host tests (`tools/keyboard`) and on
+the PC build too. Not tried on an X6100 yet, nor the Caps Lock light and a
+Bluetooth keyboard's link lost.
+
+#### Quick QSO log
+
+A QSO logged from the main screen in any mode, the waterfall and the spots
+on it still in view: CapsLock+L, or the Log QSO button (KEY until the page
+reads CW 1:2, then F5), opens a one-line box near the top,
+`Call [sent [rcvd]]:`.
+
+- Type the call, then the report you sent and the one you received, and
+  press Enter: `F4ABC 59 57`. A report left out is 59, 599 in CW. Esc
+  closes the box without logging. Field Ops' Log QSO takes the same order.
+- In CW with the decoder's text on the screen (and in RTTY) the call it
+  confirmed last is in the box already. Not in SSB after CW: the call heard
+  in CW stays out.
+- The radio says `QSO logged: F4ABC 59 57 SSB`. The QSO goes into the day's
+  log, `/mnt/field/logs/YYYYMMDD.adi` (a file a UTC day), with the time, the
+  radio's frequency and its mode (SSB in USB and LSB), never into a Field
+  Ops activation's log. The web configurator's Logs page lists it, and
+  [Wavelog](#wavelog) gets it when it is set up.
+- With a keyboard no on-screen keyboard opens. Without one the on-screen
+  keyboard does (the Log QSO button).
+- In CW, with a line typed in the [CW line](#cw-from-the-keyboard),
+  CapsLock+L logs that line the same way instead of sending it, and the box
+  does not open. With nothing typed it opens the box. Up to v0.3.8 F10 logged
+  the line.
 
 ## Updating the firmware
 
@@ -99,11 +349,12 @@ The radio updates itself: Settings > Info > Update, or the Update page of the
 web configurator (System > Update).
 
 - Check asks GitHub for the latest release. Install downloads its update
-  bundle (the GUI, the web pages, the helpers and their data, about 10 MB),
+  bundle (the GUI and its FT8 library, the web pages, the helpers and their
+  data, about 14 MB),
   checks every file against the project's signature, puts the files in place
   with the previous ones kept, and restarts the radio software: the screen
   goes dark for a few seconds. Settings, logs and everything on the DATA
-  partition stay as they are.
+  partition stay as they are, your own [boot picture](#boot-picture) too.
 - The new version is "pending" until it has run a minute; then it is
   confirmed. If it does not stay up for a minute three times in a row, the
   start loop puts the previous version back by itself. A power cut during the
@@ -111,6 +362,32 @@ web configurator (System > Update).
 - The web page can also take a bundle file (`OpenX6X00-x6100-vX.Y.Z-update.tar.gz` or `OpenX6X00-x6200-vX.Y.Z-update.tar.gz`
   from the releases page) for a radio without internet, and has a button to go
   back to the previous version by hand.
+- Going back from v0.3.7 to v0.3.6 (that button, or v0.3.6's bundle): the
+  radio first turns [Tailscale Funnel](#tailscale-funnel) off and takes its
+  funnel, and any set up by hand, out of tailscaled. v0.3.6 knows nothing of
+  Funnel: tailscaled would keep the funnel, and v0.3.6's TCI and browser
+  remote would take connections from the internet without a key.
+  - When it cannot make sure of that within half a minute (tailscaled not
+    answering, or not connected: no internet, or waiting for a login, when
+    it keeps the funnel for when it connects), it does not go back, and the
+    page says why: turn Funnel off, or Tailscale itself, wait until it says
+    Off, and try again.
+  - Funnel is then off when you come back to v0.3.7: turn it on again there.
+  - The step back the radio takes by itself after three failed starts tries
+    the same for a few seconds, and goes back whatever came of it.
+  - This was checked against a stand-in of tailscaled, not on a real
+    tailnet.
+- The FT8 library (`/usr/lib/libft8.so`) comes with the update since v0.3.9.
+  Before, an X6200 kept the one of its card image (ft8_lib 117022b on the
+  images up to v0.3.8), with which a CQ with a compound or long call (see
+  [FT8 and FT4](#ft8-and-ft4)) went out as free text or as a hash
+  (`CQ <...>`), or not at all. Going back to v0.3.8 with the button puts the
+  card's library back; v0.3.8's bundle leaves the new one, which v0.3.8 runs
+  with as the X6100 always has (the two have the same interface).
+- Every paired browser pairs again on v0.3.6, since v0.3.7 keeps only a hash
+  of each browser's key: Forget all (Settings > General > BROWSER REMOTE), on
+  either version, before pairing, so that the first browser paired is the
+  admin again.
 - The bundle is signed; a bundle not made by the project is refused. (For
   building your own: `tools/update/mkbundle.py`, the key in
   `rootfs/usr/share/x6100/update.pub`; a radio with `/mnt/update/allow-unsigned`
@@ -125,7 +402,10 @@ web configurator (System > Update).
     "New card image for this version: ..." until the new image is on the card,
     and the radio says it once at the first start of each version.
   - Writing a new image keeps the settings and logs on the DATA partition (see
-    [Install](#getting-started)); download the Backup first all the same.
+    [Install](#getting-started)), and leaves alone one that went bad when it
+    finds what is left of it (see
+    [no DATA drive](#on-a-pc-the-card-has-no-data-drive-only-an-unknown-partition));
+    download the Backup first all the same.
   - How it knows: every card image carries its level for its radio in
     `/etc/openx6x00-image`, which no update touches, and each version lists the
     level it wants in `/usr/share/x6100/image-required`. Images up to v0.3.3
@@ -135,17 +415,20 @@ web configurator (System > Update).
 
 ### Band keys
 
-The BAND keys (and the hand mic's long UP/DOWN, the keyboard's PgUp/PgDn, the
-Walkie Talkie's Band buttons, the browser panel) step through the active bands
-of the band list, from the frequency up or down.
+The BAND keys (and the hand mic's long UP/DOWN, a keyboard's CapsLock+Up and
+Down, the Walkie Talkie's Band buttons, the browser panel) step through the
+active bands of the band list, from the frequency up or down.
 
-- They skip a band the radio cannot tune: 4 m (70 MHz), and on the X6200 2 m
-  and 70 cm, unless a transverter (Settings > General > TRANSVERTERS) or, on
+- They skip a band the radio cannot tune: 4 m (70 MHz), 2 m and 70 cm,
+  unless a transverter that is on (Settings > General > TRANSVERTERS) or, on
   the X6200, the WR12 covers it (see [WR12 receiver](#wr12-receiver-x6200)).
   The band plan strip, Birdie Cal and the browser panel's band list leave them
   out the same way.
-- 2 m and 70 cm on the X6100 are transverter bands (Settings > General >
-  TRANSVERTERS): they stay on the band keys while a transverter covers them.
+- Both transverters are off by default, on the X6100 too: up to v0.3.8 the
+  X6100's two were on, and 2 m and 70 cm were on its band keys (see
+  [Amateur bands only](#amateur-bands-only)). An X6100 left on 2 m or 70 cm
+  whose transverter is now off starts on the band below that it can tune (6 m
+  with the default band list).
 - 60 m (5351.5-5366.5 kHz, WRC-15) is on the band keys, between 80 m and
   40 m. It opens at 5.360 MHz in USB, the sideband used there. A radio
   updated from an older version gets it too, unless a band of its own already
@@ -155,6 +438,35 @@ of the band list, from the frequency up or down.
 - A band with no mode saved opens in LSB under 10 MHz and USB above, USB on
   60 m; on the X6200 wide FM on FM broadcast, AM on the airband and NFM in
   what only the WR12 receives.
+- A band opens on the frequency last used there. One saved there that lies
+  outside the band (VFO A tuned by CAT while VFO B was in use, or the band's
+  edges moved by another band plan region) opens at the band's start. Up to
+  v0.3.8 the radio went to that frequency: 40m chosen put the dial on 20m,
+  and the next key went on from there, so the BAND keys and the browser's
+  BAND buttons could step between 20m and 30m only, until the other bands
+  were tuned by hand (#168). With Independent VFOs, VFO B on a band it had
+  not been on yet did the same (see below).
+- Tuned into another band (the knob from 7.040 in 40m SSB to 7.039 in 40m
+  CW, or a frequency from CAT, TCI, a spot or an app), the radio is on that
+  band: the VFO you tune keeps its frequency and takes the mode, ATT, PRE and
+  AGC last used there; the other VFO stays as it was. Where that band has
+  split on, the other VFO, the one the radio transmits on, comes from the
+  band, as with the band keys. Up to v0.3.6 the other VFO always came from
+  the new band: tuning A across 7.040 moved B.
+- With Independent VFOs on (Settings > General > STATION) a band key moves
+  the VFO you are on only: the other one stays on its own band, frequency
+  and mode, where the VFO key takes it back, after a restart too. Into a
+  band left in split the other VFO, the one the radio transmits on, comes
+  from that band. Split turned on while the other VFO is on another band
+  transmits on that band; the strip shows where. Up to v0.3.7 a band key
+  brought both VFOs of the new band (B on 40m showed 15m's B after A went
+  to 15m), and the VFO key back to B then lost A's frequency.
+  VFO B on a band it has no frequency of its own on yet (a band key, the VFO
+  key or a restart) starts where VFO A has that band, or at the band's start,
+  in A's mode there, and keeps that as its own. Up to v0.3.8 it kept A's
+  frequency from another band: B on 30m for the first time stayed on 14.326
+  with "20m" on the screen, and the VFO key from A on 6m brought it up on
+  50.000.
 
 ### Receiving outside the ham bands
 
@@ -165,64 +477,204 @@ of the band list, from the frequency up or down.
 - The X6200 also receives FM broadcast (87.5-108 MHz, wide FM) and the airband
   (118-137 MHz, AM), as its specification has it: two bands, FM broadcast and
   Airband, after 6 m on the band keys. They are receive only: PTT, the digital
-  apps, CW from the keyboard, the tuner and the SWR scan are refused there,
-  with "No TX on 100.000 MHz: receive only".
+  apps, CW from the keyboard, the tuner and the SWR scan are refused there:
+  "No TX on 100.000 MHz", then "Receive only there".
 - The same refusal holds anywhere the radio does not transmit: above 55 MHz
   without a transverter, and what the WR12 receives unless a transverter with
   a shift covers it (the transverter wins, see
   [WR12 receiver](#wr12-receiver-x6200)). In split it is the other VFO's
-  frequency, the one the radio would transmit on, that counts.
+  frequency, the one the radio would transmit on, that counts. While the
+  X6200 receives through its WR12, nothing transmits at all, in split on HF
+  neither.
+- On HF outside the amateur bands (CB, the broadcast bands, marine) the radio
+  does not transmit either, by default: "No TX on 27.185 MHz", then "Out of
+  band: Settings > TX Cal". See [Amateur bands only](#amateur-bands-only).
 - PRE and ATT are on the VOL 2:2 button page (F1 from the main screen), per
-  band. The X6200 has no PRE key, and its receiver is specified with the
+  band, and can go on a knob (see [Buttons and knobs](#buttons-and-knobs)).
+  The X6200 has no PRE key, and its receiver is specified with the
   preamplifier on: turn PRE on when the band sounds quiet.
 
 ### WR12 receiver (X6200)
 
 Xiegu's WR12 is a receiver for the X6200's HOST port: 54 MHz to 1 GHz,
-receive only. The radio cannot tell yet that it is plugged in, so a switch
-says so. Where: Settings > General > WR12 RECEIVER > WR12 on HOST (also on
-the web Display page, Receiver card). Off by default.
+receive only. It sits between the antenna and the radio. In its bypass the
+antenna goes straight through to the radio; out of it the WR12 receives, and
+the radio listens to it on the WR12's IF. A switch says that a WR12 is
+there: Settings > General > WR12 RECEIVER > WR12 on HOST (also on the web
+Display page, Receiver card). Off by default. New to the WR12? [The WR12,
+step by step](WR12.md) explains connecting it, listening and what the screen
+says, in plain words.
 
 - On: the bands of the band list between 54 MHz and 1 GHz come onto the band
   keys and the band plan (4 m, 2 m, 70 cm with the default list), and the
   knob and the keypad go up to 1 GHz. They open in NFM. Everything there is
   receive only (PTT, the apps, CW, the tuner and the SWR scan are refused with
   a message), unless a transverter with a shift covers it: the transverter
-  wins and transmits on its IF. Set its shift to 0 to leave that range to the
-  WR12.
+  wins and transmits on its IF, and the WR12 stays in its bypass there. Set
+  its shift to 0 to leave that range to the WR12.
 - Off again while on one of those bands: the radio goes to the band below
   (the airband from 2 m).
-- Not tested yet: whether the base tunes through the WR12 by itself when it is
-  given a frequency above 137 MHz, as this switch assumes. Reports are
-  welcome, with the log of the run (`/mnt/app_logs/`): at every start the
-  radio writes there what is on the HOST port ("USB on HOST: ..."), what it
-  would need to detect the WR12 by itself.
+- On, the radio looks for the WR12 on USB by its id (0483:5740), sets it up
+  (AT+INIT, its gains and AGCs) and puts it in its bypass, as the WR12
+  starts up. The screen says "WR12 found on HOST", and "WR12 unplugged",
+  "WR12 not answering" or "WR12: ERROR to AT+..." when that happens, each
+  once, not at every try. A WR12 that takes the set-up but stops answering,
+  again and again, is said once until it is unplugged or the switch turned,
+  and set up again 2 s after, then twice as long each time, up to 30 s;
+  after 10 minutes of working, a new trouble is said again. Off, the radio
+  puts it back in its bypass and lets it go.
+- Receiving through it: with the dial from 54 MHz up, the radio tunes the
+  WR12 to the dial (AT+FREQ), takes it out of its bypass (AT+BYPASS=0) and
+  puts its own receiver on the WR12's IF, 5.06 MHz, with I and Q swapped.
+  FM broadcast and the airband go through the WR12 too, as does 54-55 MHz,
+  which the radio otherwise receives itself. The screen, the S-meter's band
+  settings, CAT and TCI keep the dial's frequency; only the radio's receiver
+  is on the IF. Below 54 MHz or with the switch off, the WR12 goes back to
+  its bypass and the radio back to the dial; with the WR12 unplugged or not
+  answering, the radio goes back to the dial at once. The VFO not in use
+  keeps its own frequency: the WR12 follows the VFO in use. Birdie Cal runs
+  on the radio's own receiver, the WR12 in its bypass meanwhile.
+- While the WR12 is out of its bypass, or may be, nothing transmits, on any
+  frequency, in split on HF too: PTT, the apps, CW (the CW Trainer's key
+  too), TUNE, the tuner and the SWR scan are refused ("No TX on 98.000 MHz",
+  then "WR12 receiving: no TX", or after a move below 54 MHz "WR12 not in
+  bypass: no TX"). What the base keys by itself (the hand mic's PTT, VOX,
+  the KEY jack) is held at 0 W with VOX off and KEY Train on, as outside the
+  amateur bands, and the WR12 does not leave its bypass while the radio is
+  in TX. That holds until the WR12 answers that it is back in its bypass
+  (and 50 ms more, for its relay), or has been unplugged for 3 s (back
+  sooner, after a reset on USB, it is set up again first); a WR12 that stops
+  answering keeps it held. For just as long the base itself is told to key
+  nothing outside its own band table (160 to 6 m, as Xiegu's firmware always
+  has it), before the radio's receiver goes onto the IF, so the hand mic's
+  PTT does not even close its TX relay. It is told the way back once TX goes
+  free where the radio transmits, half a second after the dial stops, or
+  before the radio keys if that comes sooner: WR12 on HOST switched off or
+  the WR12 unplugged on 2 m leaves it as it is, as the radio is receive only
+  there. Kept in the base's memory only, back as before at every start; see
+  [Amateur bands only](#amateur-bands-only) for the rest, and for what the
+  screen says should the base not take it. A GUI that is stopped (a restart,
+  an update or its Rollback, a shutdown) puts the WR12 back in its bypass on
+  its way out, without waiting for the answer; after a GUI that ended another
+  way (a crash), the radio's start loop does, and says so at the end of that
+  run's log ("x6100-wr12-bypass: ttyACM0: AT+BYPASS=1 sent"). A GUI started
+  while a WR12 is out of its bypass, or may be (after an update, or a crash),
+  holds the same way until it has set the WR12 up again. Versions before this
+  one know nothing of the WR12: to go back to one (Rollback, or an older
+  bundle), first turn the dial below 54 MHz or WR12 on HOST off.
+- A WR12 tag in the frequency strip, left of NR NB DNF, in the theme's info
+  colour, says the WR12 is in use: WR12 on HOST on and the WR12 found and
+  set up. In Black Metal and Total Black it stands under the other VFO;
+  Amber Trey's display covers the strip, so it does not show there.
+- Unplug the WR12 with the dial below 54 MHz or the switch off: unplugged
+  while it receives, the radio cannot put it back in its bypass, and whether
+  a WR12 without power passes the antenna through is not known yet.
+- The S-meter reads what the radio gets from the WR12, its gain included;
+  Per band S-meter cal (Settings > General > CONTROLS) sets it for each band.
+- Tried on two X6200s with a WR12 (base 1.0.8). ea4iln received 2 m and FM
+  broadcast through it (-98 dBm on 95.9 MHz). On our bench USB and LSB come
+  out the right way round, the image about 34 dB down. RIT and the CW offset
+  do not yet: through the WR12 they come out the wrong way (RIT -500 acts as
+  +500, +500 does about nothing; CW and CW-R give the same tone, on the
+  wrong side). On our bench, with an external wattmeter on a dummy load
+  (6 Nov): the hand mic's PTT keyed nothing on 2 m, with the WR12
+  receiving, switched off on HOST or unplugged, nor on 5.060 MHz; 40 m,
+  5.300 MHz, 8 m and 2200 m went out from the front PTT and the hand mic,
+  and from a key 0.1 s after leaving a frequency where TX is refused; the
+  knob ran smoothly over 14.350 MHz, one write of the base's table each way;
+  Birdie Cal set the table and opened it again after; a GUI killed with the
+  WR12 out of its bypass started again with the table set and the PA bias
+  line in the base log; and the calibration block was the same afterwards
+  but byte 280. Reports are welcome, with the log of the run
+  (`/mnt/app_logs/`): at every start the radio writes there what is on the
+  HOST port ("USB on HOST: ..."), and each answer of the WR12 when it
+  changes ("wr12: AT+BYPASS=0: OK").
+- gpsd leaves the WR12 alone. The WR12 is a USB serial port (USB id
+  0483:5740, `/dev/ttyACM0` when it is the only one), and plugged in at boot
+  it was handed to gpsd as a GPS, which then read what it said. A USB GPS
+  works as before, at boot and plugged in later, but for one with STM's
+  stock USB id 0483:5740, the WR12's: an X6200 leaves that one alone at
+  boot too, whatever WR12 on HOST says (plugged in later, gpsd never took
+  that id).
 - The X6200's two transverters (2 m and 70 cm, 28 MHz IF) are off by default,
-  so that 2 m and 70 cm are the WR12's. Older versions had them always on:
-  "145.500" was tuned and transmitted on 29.500 MHz, on 10 m. A transverter
-  set up in Settings before the update keeps its shift. The three that
-  gdyuldin's X6200 firmware saves (4 m, 2 m and 70 cm through a 28 MHz IF)
-  are not taken for yours when they are exactly its values and nothing else
-  is set: they are removed, and the transverters are off. To use one, set
-  its shift in Settings > General > TRANSVERTERS (0 is off).
+  as the X6100's, so that 2 m and 70 cm are the WR12's. Older versions had
+  them always on: "145.500" was tuned and transmitted on 29.500 MHz, on 10 m.
+  A transverter set up in Settings before the update keeps its shift. The
+  three that gdyuldin's X6200 firmware saves (4 m, 2 m and 70 cm through a
+  28 MHz IF) are not taken for yours when they are exactly its values and
+  nothing else is set: they are removed, and the transverters are off. To
+  use one, set its shift in Settings > General > TRANSVERTERS (0 is off).
 
 ### Low battery
 
 On battery, at 10% or less the radio shows a message every minute: "Battery
-8%: about 15 min left" (the minutes when it knows them), and from 5%
-"Battery 5%: connect power". At 6.0 V it shows "Low battery! Turning off in
-30s" and switches itself off to protect the battery. As a guide, on my radio
-receiving with WiFi and Bluetooth on, 10% left about 22 minutes and 5% about
-12.
+8%: about 15 min left" (the minutes when it knows them), and from 5% "Battery
+5%: connect power". At 6.0 V (the X6200: 6.8 V) it shows "Low battery! Turning
+off in 30s", and 30 seconds later it sets the charger back On (see
+[Charger](#general-tab)), saves and switches itself off to protect the
+battery. As a guide, on my radio receiving with WiFi and Bluetooth on, 10%
+left about 22 minutes and 5% about 12.
+
+The X6200's base (1.0.8) cuts the power by itself at about 6.4 to 6.6 V, at
+once and without a word: nothing is saved, this run's log does not reach
+app_logs, and with Charger Off or Shadow the charger is not set back On, so
+the flat radio does not charge on the supply while it is off. Up to v0.3.8 the
+radio's own power-off came at 6.0 V on the X6200 too, so the base always came
+first (issue #160). In that issue, on receive with WiFi and Bluetooth on, the
+first 6.8 V came 4 to 5 minutes before the base's cut and 6.7 V about 2.5
+minutes before, so the warning, the 30 s, the charger and the save are done
+minutes before the cut, also when a transmission at the end brings it nearer.
+6.8 V is also where the % from the voltage (below) reaches 0. The X6100 keeps
+6.0 V. The battery sags under the TX current, so with a few % left a long
+transmission can bring the warning; back at 7.0 V (the X6100: 6.2 V) before
+the 30 s are over, or on a supply (on the X6200 one the radio reads at 12.0 V
+or more, see below), the power-off is called off.
+
+On the X6200 a supply the radio reads under 12.0 V does not stop the
+power-off: External in the POWER box of the [Info tab](#info-tab), or the
+supply's voltage at the top right with Power display at Volts (see [battery
+time](#battery-time)). Xiegu's 12 V 1 A charger reads 11.7 to 11.8 V there, so
+it counts as under. In issue #160 a charger at 11.6 to 11.8 V did not
+hold a flat battery up: with the radio on it fell from 6.9 to 6.4 V in 2
+minutes and the base cut the power again, while the radio took the charger for
+external power. With the battery at 7.7 to 7.8 V the stock charger did run the
+radio (issue #33, see [Charger](#general-tab)); it is a flat battery it does
+not hold. Without a battery that charger did not start the radio at all, and
+with one a restart over SSH ended with the base switching off (0 of 3), where
+a 13.5 V supply did both every time. So there the radio says "Low battery, DC IN under 12 V! Turning off
+in 30s." and switches off as on battery. With a flat battery, charge it with
+the radio off for a while first, or use a supply that reads 12.0 V or more on
+the radio (the X6200's manual asks for 12 to 13.8 V on DC IN for charging).
+When the base reports no battery (the red cross at the top right) there is
+none to protect, and the power-off never starts, on any supply. On the X6100
+any supply stops it, as before.
+
+The supply's voltage comes in 0.1 V steps, so on the X6200 one close to 12.0 V
+reads on both sides of it. The radio takes it for 12.0 V or more once it has
+read so for 5 seconds in a row (at once from 12.2 V), and for under once it
+reads under 12.0 V three times in a row on receive (about a second), or at once
+when it is gone. So such a supply starts the power-off once and the radio
+switches off, or it does not start it. A supply that dips under 12.0 V only
+while transmitting (as with "DCIN TOO LOW!", below) still counts as 12.0 V or
+more.
 
 Right after power-on the base may not have measured the battery yet: one
 X6100 reported nothing for about 3 seconds, then a charge that climbed to the
 real one over about 7 more. The radio does not take those first readings: the
 box at the top right stays empty, and the battery's readings count from about
 15 seconds after the base's first reading with a voltage, some 15 to 20 seconds
-after the screen comes up. The warnings and the power-off at 6.0 V work from
-then on. The GUI log (app_logs) lists what the base sent until then, as
+after the screen comes up. The warnings and the power-off work from then on.
+The GUI log (app_logs) lists what the base sent until then, as
 "battery: start-up reading" lines.
+
+The X6200's base also warns of a battery too hot or too cold, a PA too hot
+and a DC input too low. The radio shows these in the words of Xiegu's own
+firmware: "BATTERY HIGH TEMP!", "BATTERY LOW TEMP!", "PA HIGH TEMP!", "DCIN
+TOO LOW!", several in one message, when one comes on and again every 30
+seconds while any lasts. One that comes and goes (the DC input dipping under
+the TX current) is shown again only after those 30 seconds. Like the battery
+warnings they work once the readings count. The X6100's base does not report
+them.
 
 
 ### Battery time
@@ -231,20 +683,62 @@ then on. The GUI log (app_logs) lists what the base sent until then, as
 > learns it by itself from how you use it, and it gets more precise over time.
 > A "~" in front of the time means it is still learning.
 
-At the top right the radio shows the charge and the time left:
+At the top right the radio shows the charge and the time left (with Power
+display at % + time, the default; the other choices are below):
 - On battery: "45%  2h07", that is 45% of charge and about 2 hours and 7
   minutes before the battery is empty, if you keep using the radio the way you
   are using it now. While the radio is still learning, the time has a "~" in
   front: "~4h28".
 - Charging: the lightning sign with "66%  ~3h05", the time still needed to
   reach a full charge.
-- Charged and still on the external supply: "99%" with the power sign.
-- External supply only, no battery fitted: the external voltage, "12.1v".
+- On the external supply and not charging: the plug sign with the charge,
+  "100%" once charged, or with [Charger](#general-tab) set to Off or Shadow on
+  the X6200. (Up to v0.3.6 a charged battery showed the power sign after the
+  %, and the X6200 showed the lightning sign and a time to full whatever the
+  Charger setting, issue #33. Up to v0.3.7 an X6100 with Charger Off showed
+  them for its first minute on the supply, issue #108.)
+- External supply only, no battery fitted: the plug sign and the external
+  voltage, "12.1v". When the X6200's base reports no battery, a red cross in
+  place of the battery.
 - Just after power-on: nothing, for 15 to 20 seconds, while the base's first
   readings settle (see [low battery](#low-battery)).
 
+Power display. Where: Settings > Display > MAIN SCREEN (also on the web
+configurator's Display page). What the box shows (issues #108 and #119):
+- % + time (the default): the charge and the time, as above.
+- Volts: the battery's level sign and its voltage, "7.9v"; on the external
+  supply also the lightning sign (charging) or the plug, and the supply's
+  voltage: "7.9v  13.8v".
+- Alternate: the two in turn, 5 seconds each.
+- % + V: on the external supply the battery's level sign and the charge,
+  then the lightning sign (charging) or the plug and the supply's voltage:
+  "85%  13.6v". The time to full is not shown in this choice. On battery
+  alone the same as % + time: "45%  2h07".
+
+On battery when low the voltage turns red, as the % does. With no battery
+fitted the box shows the supply's voltage whatever the choice.
+
 The "~" stays until the radio has seen at least 2 hours of discharge or 2 full
 charges. Until then take the time as a rough guess.
+
+The % is the base's own count, and a base can lose it: one that never saw the
+charge (a pack charged with the radio off) said 3 % at 8.2 V, in Xiegu's own
+firmware too (issue #49). So on battery, while receiving, the radio checks it
+against what the voltage says (measured on an X6100: 8.2 V 98 %, 7.8 V 80 %,
+7.5 V 56 %, 7.4 V 42 %, 7.3 V 24 %, 7.2 V 9 %, 7.1 V 3 %, 6.9 V 1 %, 6.8 V
+0 %). When the two are
+more than 25 points apart it shows the voltage's, until they agree within 10
+again, but not from 7.3 V down: on its way to 0 there the voltage's agrees with
+a base stuck at 0 % too. A base at 0 % with the pack at 7.2 V or more has lost
+count as well: the radio shows the voltage's then too, also when it is switched
+on that low. (In v0.3.7 the radio went back to such a base's 0 % at 7.2 V, or
+showed it from the start when switched on at 7.3 or 7.2 V, and said "connect
+power" every minute while the pack still had half an hour or more.) The
+voltage comes in 0.1 V steps and goes back and forth on a step, so the % from
+the voltage goes down at once and back up a step only after about a minute
+there, or at once for 0.2 V more (up to v0.3.8 it went 24 % and 9 % in turn at
+7.3 and 7.2 V, issue #160). The time left and the 10 % warning follow the %
+shown; the battery log keeps the base's.
 
 <!-- IMG battery_estimate_main.png: top right, "45%  2h07" -->
 
@@ -275,9 +769,8 @@ Limits:
 - A battery that is getting old loses capacity. The radio follows the change
   after a few discharges, not at once.
 
-The voltage is no longer at the top: read it in the POWER box of the
-[Info tab](#info-tab). The battery log stays on the radio's microSD and is not
-sent anywhere.
+The voltages are also in the POWER box of the [Info tab](#info-tab). The
+battery log stays on the radio's microSD and is not sent anywhere.
 
 ### Status bar
 
@@ -286,7 +779,7 @@ the connections on the second.
 
 | Item | Meaning |
 |---|---|
-| VFO-A / VFO-B | the VFO in use; SPL-A / SPL-B when split is on; with a [TX shift](#tx-shift) the shift ("-600k") or REV; red in split when the radio cannot transmit on the other VFO |
+| VFO-A / VFO-B | the VFO in use; SPL-A / SPL-B when split is on; with a [TX shift](#tx-shift) the shift ("-600k") or REV; red in split when the radio cannot or may not transmit on the other VFO (receive only, or outside the [amateur bands](#amateur-bands-only); not for the X6200's dial) |
 | USB-D, LSB, CW... | the mode |
 | AUTO, FAST, SLOW, OFF | the AGC |
 | PRE, ATT, ATU | highlighted when the preamp, the attenuator or the tuner is on |
@@ -304,7 +797,8 @@ yet, in colour when working:
 | DX | green DX cluster connected; grey connecting or retrying; dark stopped |
 
 In the middle is the [S-meter](#s-meter). On the right: the local time and the
-charge with the time left (see [battery time](#battery-time)).
+charge with the time left, the voltages, or the charge with the supply's
+voltage (see [battery time](#battery-time)).
 
 ### S-meter
 
@@ -321,17 +815,75 @@ Display page).
 
 The VISION theme always uses bars.
 
+While transmitting. The receiver gives no reading while the radio transmits,
+on both radios, and the S-meter box is framed red. With the TX panel on
+(Settings > Display > INTERFACE > Popups Freq/Info/TX, the TX switch, on by
+default; see the [Display tab](#display-tab)) the panel shows the power, SWR
+and ALC big, and the S-meter stays at rest with "TX" in red in place of its
+value (Black Metal and Total Black: their scales at rest). It does the same
+under a digital app's TX strip, which shows the power and the SWR, and during
+a [TUNE for an external tuner](#tune-for-an-external-tuner), which always
+brings up the panel. With the TX panel off, the S-meter box shows the
+transmitter instead: PWR (0-10 W), SWR (1-5, yellow from 2, red from 3) and
+ALC (0-10, grey in CW, see [ALC in CW](#alc-in-cw)), each with its bar and
+its value. VISION shows the three values side by side, big, without bars.
+Black Metal and Total Black light their own scales: the S row becomes PO, 0
+to 10 W, and the SWR and ALC rows get their bars. Back on receive the
+S-meter starts again from the next reading. Up to v0.3.8 the TX panel came
+up whatever that switch, and the box never showed the readings (issue
+#166).
+
+Each transmission's power, SWR and ALC start from 0, on the radio, on the
+browser panel, over TCI and over CAT, until the radio's first reading of it.
+TCI sends that SWR as 1.0, the least an SWR can be. Up to v0.3.8 a
+transmission could start with the last one's readings: a
+1 W transmission right after an 8 W one read 7.9 W over TCI as it keyed,
+before any of its audio went out (issue #53).
+
 Per band S-meter calibration. Each band has its own correction, -40 to
-+40 dB in 1 dB steps; the value shown is the one of the band the radio is on.
++40 dB in 1 dB steps (the CW and SSB parts of 40 m and 20 m share one,
+below); the value shown is the one of the band the radio is on.
 Where: Settings > General > CONTROLS > Per band S-meter cal.
 
 - When you start editing it, a panel "S-METER CALIBRATION" says for 5 s:
   "For this band only. Feed -73 dBm and set the reading to S9 on each band you
-  use. -22 dB matches an IC-7300."
+  use." On 40 m and 20 m it names both parts (below): "For 40m CW and 40m SSB
+  only. ..."
 - Change it only while reading a known signal: -73 dBm (S9) from a generator,
   or the same signal on a calibrated radio.
-- A band never calibrated starts at -22 dB, or at the single S-meter cal value
-  set before.
+- A band never calibrated starts at -22 dB on both radios, or at the single
+  S-meter cal value set before. On the X6100, -22 dB matched another
+  calibrated transceiver on our bench. A band you calibrated keeps its own
+  value.
+- The X6200 starts at -22 dB like the X6100. At -22 dB it reads an S9
+  carrier about 30 to 35 dB low, S3: two X6200s calibrated band by band with
+  a generator wanted +7 to +14 dB at S9 on ten bands from 160 m to 10 m. But
+  calibrating at S9 lifts the whole scale, the floor too: at +11 dB an X6200
+  with no antenna, or into a dummy load, reads about -85 dBm (S7) on every
+  band, where at -22 dB it reads about -120. The X6200's meter isn't linear
+  enough for one value to make both S9 and the floor right. Calibrate at S9
+  on the bands where you read signals, and lower the value there if the
+  floor reads too high for you.
+- On the X6200, calibrate a band before you press Measure on it (Settings >
+  TX Cal > S-METER): Measure wants the meter to read about S9 to S9+20.
+- 40m CW and 40m SSB are two bands of the band list, and so are 20m CW and
+  20m SSB, but each pair shares one calibration, and on the X6200 one
+  attenuator figure too (Settings > TX Cal > S-METER): the receiver is the
+  same in both parts. Set on one part, the calibration with its slider or
+  the attenuator with its slider or Measure, it is set on the other part
+  too, and a part never set takes the other part's value before the start
+  above. Nothing else is shared: each part
+  keeps its own VFOs, mode, PRE and ATT, and the frequency picks the part,
+  not the mode (CW on 7.100 MHz is 40m SSB).
+- Which bands share goes by frequency, not by name: the bands whose middle
+  lies from 7.000 to 7.300 MHz share one value, and those from 14.000 to
+  14.350 MHz another. A part renamed, or moved on the web page within those
+  ranges, still shares (40m SSB to 7.300 MHz in Region 2 does), one moved
+  out of them keeps its own, and a band you add within them shares too.
+  Broadcast 41m (7.200 to 7.500 MHz) keeps its own.
+- Where the two parts already hold different values, set on an earlier
+  version, each keeps its own until you set one of them: then both take
+  that one.
 
 ### Waterfall
 
@@ -340,38 +892,96 @@ Where: Settings > Display > WATERFALL.
 | Option | What it does |
 |---|---|
 | Mode | Centered keeps the VFO in the middle; Fixed keeps the span (below) |
+| Jump at, Jump to | shown with Fixed: when the view moves on, and where the VFO line goes then (below) |
 | Auto level, offset | the levels follow the noise floor; the offset makes it darker or brighter |
 | Min / max | the manual levels, used when auto level is off |
 | Line, zoom | a line on the VFO; zoom with the waterfall instead of the span |
 | Smooth scroll | scrolls by pixels instead of lines |
 | Speed | 3 = 15 lines/s (default), 4 = 20, 5 = 30; 2 = 7.5 and 1 = 5 average the frames into a line: less noise and less CPU |
+| 3D | the last 6 seconds as traces one behind the other, the newest in front (below); on by default, off for the flat waterfall; off and greyed under Amber Trey, which draws no 3D |
+| 3D colours | shown with 3D: Strength (blue, green, yellow, red as the signal grows), Waterfall (the waterfall's colours), Blue |
+| 3D depth, tilt, floor | shown with 3D: the traces (8-64, every third line), the view from the front (0) to from above (10), how much above the noise floor is cut away |
+| 3D range | shown with 3D: the dB above the noise floor at a trace's full height (20-60, 40 by default); less makes weak signals taller |
+| 3D peaks | shown with 3D: the newest trace's peaks held a moment |
+| 3D glide | shown with 3D: the traces move back smoothly, 30 pictures a second (on by default); off, a step at each new line: less CPU |
+
+With 3D on, the waterfall area shows the spectrum in perspective, as on
+some other makers' radios: the newest trace at the bottom, every third line
+before it a little higher up and narrower, the oldest (about 6 seconds back
+at 32 traces, 3D depth) at the top. They narrow towards the VFO line, which
+stays straight through them all, and move back smoothly, a little at every
+picture (30 a second), not a step at each new line (3D glide off: a step at
+each line, for less CPU).
+The noise floor is cut away (3D floor sets how much above it goes too): only
+signals stand up, and a trace shows only where it rises above those in front
+of it. Each point has the colour of its height on the 3D colours scale
+(Strength: from blue at the floor through green and yellow to red for the
+strongest), the ridges lighter, the older traces darker. The newest trace is
+drawn over it all as a line of its own (red; white with Waterfall or Blue),
+along the front edge where there is no signal, its peaks held a moment above it
+(3D peaks). The floor has a grid, the back and side walls a line at each
+quarter of the level scale, and the reference frequencies of the scale above
+run back to the VFO line, labelled at the front edge. 3D tilt goes from the
+front (0: tall traces, little depth) to from above (10). A trace's height is
+its dB above the noise floor, the full height 3D range dB: on a quiet wire
+antenna, where signals stand 10 or 15 dB out of the noise, 20 dB shows them
+tall; with S9 signals 40 dB keeps them on the screen. In the 1bit theme it
+is a line drawing; Amber Trey's display covers the waterfall, so there it is
+not drawn, and Settings and the web configurator's Display page show 3D off
+and greyed (the radio keeps the setting for the other themes). Each trace
+stays at the frequency it was received on, so a retune or a new zoom moves
+them as it moves the waterfall, and a drifting signal leaves a slanted
+trail. Speed sets how far back the stack goes.
+Switched on and off live, also from the web configurator's Display page, the
+MFK 4:4 page (3D on/off, and Depth, Tilt and Floor on the knob), or a front
+key's long press or a hand mic F key set to "WF 3D on/off" (Settings > Keys).
+3D is on by default: a radio updated from v0.3.8, which had no 3D, starts
+with it. Once switched off it stays off, over later updates too.
 
 In Fixed mode the span stays still and the VFO line moves across it. The
-spectrum comes in only for the span around the VFO, so the side you tune
-away from gets nothing new: there the waterfall goes on with the last
-picture received at those frequencies, and the spectrum shows its last line
-there, dimmed: the last one received after the dial had been still for half a
-second. When what is received is a quarter of the spectrum's span from the
-centre (25 kHz at zoom 1, 12.5 kHz at zoom 2), or the VFO 40% of it, the
-view jumps back and centres on what is received: the VFO, less any IF shift
-(with Smooth scroll on, the waterfall slides there).
+spectrum comes in only for the span around where the radio listens (the
+screen's span, on both radios), so the side you tune away from gets nothing
+new: there the waterfall goes on with the last picture received at those
+frequencies, and the spectrum shows its last line there, dimmed: the last one
+received after the dial had been still for half a second. With the line at an
+edge, about half the screen is that last picture.
+
+Jump at: when the view moves on.
+
+- 40% (the default): when the VFO, or what is received, is 40% of the
+  spectrum's span from the centre (40 kHz at zoom 1, 20 kHz at zoom 2). The
+  line goes most of the way to the edge first; v0.3.7 jumped at a quarter.
+- Passband: when the edge of the receive filter's passband (or the line
+  itself, beside a USB or LSB passband) comes within 100 Hz of the screen's
+  edge: the whole passband stays on the screen. A passband wider than the
+  screen counts as Line.
+- Line: when the VFO line comes within 100 Hz of the screen's edge.
+
+Jump to: where the line goes then.
+
+- Center (the default): the view centres on what is received, the VFO less
+  any IF shift.
+- Other edge: the line goes to the edge it came from (tuning up, the left
+  one), as far in as Jump at allows, and you tune on across the whole screen.
+  Right after the jump the part more than half a span ahead of the line has
+  nothing received yet: noise in the waterfall, no line in the spectrum, until
+  the line comes nearer.
+- Scroll: no jump. The line stays at the edge it reached and the view scrolls
+  along with each step, as in Centered mode; tuned back, the line moves across
+  the screen again.
+
+A move of more than a screen past the edge (a frequency typed in, another
+band), or a new zoom or filter that leaves the line out, centres the view,
+whatever Jump to is. With Smooth scroll on, the
+picture slides to its new place; the line still moves a step at a time (#10).
 
 Over the waterfall. Where: Settings > Display > MAIN SCREEN.
 
 | Option | What it does |
 |---|---|
-| Band plan | the band segments in a strip at the top |
+| Band plan | the band plan's segments in a strip at the top (which plan: see [Band plan](#band-plan)) |
 | Cluster spots | the DX cluster calls at their frequencies (see [DX Cluster](#dx-cluster)) |
 | Cluster column | the spot list in a box on the right |
-
-The band plan strip shows the IARU Region 1 segments (160 m to 6 m, 60 m as
-WRC-15). A band of the band list the IARU plan does not cover (one added on
-the web configurator's Bands page, the top of 6 m, 4 m, 2 m) gets a strip
-too, typed from its name: CW in the name makes a CW segment, DIG, FT8, FT4 or
-DATA a digital one, BCN a beacon one, anything else all modes. "60m CW" at
-5.2585 MHz is a CW segment, so the main screen's
-[CW line](#cw-from-the-keyboard) works there. Broadcast and CB
-get none. A band changed on the web page shows at the next band change.
 
 Zoom and step per mode. Where: Settings > Display > MAIN SCREEN (also on the
 web configurator's Display page).
@@ -411,12 +1021,104 @@ Colours, on the web configurator's Display page:
 | Trace colour | Theme, or your own |
 | Fill colour | As trace, or your own (the trace is then drawn over it) |
 
+### Band plan
+
+The strip at the top of the waterfall (Settings > Display > MAIN SCREEN >
+Band plan shows or hides it) has the segments of one plan, 160 m to 10 m,
+60 m and 6 m: CW, DIG (narrow band and digital modes, no phone), ALL MODES /
+SSB (phone allowed) and BCN (beacons). Which plan: Settings > General >
+STATION > Band plan (also on the web configurator's Display page, Plan).
+
+| Band plan | What the strip shows |
+|---|---|
+| Auto (the default) | IARU Region 1, 2 or 3, from where the radio is (below) |
+| Region 1 | the IARU Region 1 HF plan (effective 16 October 2020, 60 m as WRC-15), 6 m from its VHF plan |
+| Region 2 | the IARU Region 2 plan (September 2020): 75 m phone up to 4.0 MHz, 40 m up to 7.3 MHz |
+| Region 3 | the IARU Region 3 plan (R3-004 Rev. 2, November 2024): 80 m up to 3.9 MHz, 40 m up to 7.2 MHz, 500 Hz either side of the beacons |
+| US Extra, US Advanced, US General, US Technician | the US sub-bands of 47 CFR Part 97 for that licence class (Technician stands for Novice too), as of October 2026 |
+
+Auto takes the region from the first of these that it has: a GPS fix less
+than 10 s old, the QTH locator, the country of the callsign (from cty.dat,
+looked up once, a moment after the start). With none of them (the GPS fix
+lost, or not there yet after a start) it keeps the region the radio had
+last, from one of them or from a plan chosen by hand: the one the band list
+is on (below), so the strip and the band list agree. Region 1 only when it
+never had another. The dropdown's first entry says what Auto takes, "Auto
+(Region 2)", and the web page from what: "Auto: Region 2 from the locator
+FN31", or "Region 2, the last one it had". Auto looks again when the locator
+or the callsign is saved, at each band change, and every 10 s for the GPS.
+The regions are the ITU's (Radio Regulations, Article 5), with the countries
+it puts whole in one region (Russia, Kazakhstan, Mongolia, Turkey, the
+Caucasus and Central Asia in Region 1, all of Iran in Region 3). A
+4-character locator is a square of 2 by 1 degrees: where a border runs
+through one (the Bering Strait, the Amur, around Iran, Turkmenistan and
+Oman's Musandam) its centre can be on the other side. A 6-character locator,
+the GPS or a plan chosen by hand settles it. Auto never takes a US plan: it
+cannot know your licence class.
+
+The US plans: what your class may use shows as in the IARU plans, the parts
+without phone split into CW, DIG and BCN as the ARRL band plan uses them;
+what it may not use is a grey NOT YOUR CLASS (OUT where that does not fit).
+A Technician's segments on 80, 40 and 15 m are CW, as the rules have it.
+60 m is the 5351.5-5366.5 kHz band and the four channels around 5332, 5348,
+5373 and 5405 kHz (since January 2026). 40 m phone at 7.075-7.100 MHz shows
+only where it is allowed: west of 130 W or south of 20 N (Alaska, Hawaii, Puerto
+Rico, the Virgin Islands), known from the GPS, the locator or the callsign
+(KH6, KL7, KP4). In the US choose US and your class, not Region 2: the IARU
+Region 2 plan shows phone where the FCC allows none (7.050-7.125 MHz on the
+mainland, 14.112-14.150 and 21.151-21.200 MHz), and 75 m phone from 3.6 MHz,
+which is Extra and Advanced only.
+
+The plan is guidance only: the key, the paddle and the microphone work
+wherever the radio transmits, and your licence and your country's rules are
+what count. What follows it:
+
+- the strip, and the browser panel's strip (sent again when the plan
+  changes);
+- Mode from band plan (Settings > General > STATION): CW in a CW segment,
+  the band's sideband in an ALL MODES segment; DIG, BCN and NOT YOUR CLASS
+  change nothing. Region 3 has few CW-only parts (80 m 3500-3535 and 40 m
+  7000-7030 kHz): tuning up past them in CW turns the radio to LSB, though
+  the plan allows CW there too. Turn Mode from band plan off if that is in
+  the way;
+- the main screen's [CW line](#cw-from-the-keyboard), which keys only in a
+  CW segment: not in NOT YOUR CLASS, and in Region 3 not above 3535 and
+  7030 kHz on 80 and 40 m (the [CW Keyboard](#cw-keyboard) app keys in
+  any segment);
+- the band list: its 160m, 80m, 40m SSB and 6m take the region's edges (80m
+  to 4.0 MHz and 40m SSB to 7.3 MHz in Region 2 and the US, 80m to 3.9 MHz
+  in Region 3, 160m from 1.8 MHz and 6m to 54 MHz outside Region 1), unless
+  they were changed on the web configurator's Bands page or a band of your
+  own lies where they would go (75m at 3.8-3.9 MHz keeps 80m at 3.8);
+  another region later moves them on. Before, a radio in Region 2 tuned to
+  7.2-7.3 or 3.9-4.0 MHz was on "Broadcast 41m" or "Broadcast 75m", in AM.
+  A radio updated from an older version is on Auto: in Region 2 or 3 its
+  list moves by itself at the first start, as soon as Auto knows the
+  region. Auto with nothing to go by takes the band list's region, so it
+  leaves the list as it is;
+- the typical frequencies of Field Ops and the Bands app: in Region 2 and
+  the US phone on 80 m at 3.860 and on 40 m at 7.200 MHz, and outside
+  Region 1 CW on 6 m at 50.090 MHz (50.060 is among the beacons there).
+
+A band of the band list the plan does not cover (one added on the web
+configurator's Bands page, the top of 6 m in Region 1, 4 m, 2 m) gets a strip
+too, typed from its name: CW in the name makes a CW segment, DIG, FT8, FT4 or
+DATA a digital one, BCN a beacon one, anything else all modes. "60m CW" at
+5.2585 MHz is a CW segment, so the main screen's
+[CW line](#cw-from-the-keyboard) works there. Broadcast and CB get none. A
+band changed on the web page shows at the next band change.
+
+The plans are our own reduction of the documents to the segment edges and a
+type each: the IARU Region 1, 2 and 3 band plans (iaru-r1.org, iaru-r2.org,
+iaru-r3.org), 47 CFR Part 97 of the FCC (ecfr.gov) and the ARRL band plan
+(arrl.org/band-plan). Thanks to the IARU and the ARRL for them.
+
 ### Screen recording
 
 Records the screen and the audio to an AVI file (MJPEG video, 800x480,
 8 frames/s, mono audio).
 
-- Start and stop: APP 3:3 > Screen rec (the button reads Stop rec while
+- Start and stop: APP 3:4 > Screen rec (the button reads Stop rec while
   recording), or a long-press action (screen rec on/off).
 - Files: `/mnt/screenrec/screen-YYYYMMDD-HHMMSS.avi`. The web configurator's
   Gallery lists them and can convert them to MP4.
@@ -426,7 +1128,9 @@ Records the screen and the audio to an AVI file (MJPEG video, 800x480,
   transmission at your own Moni level (0 by default, so it is not recorded).
   The X6200's speaker shares the case with the built-in microphone, and a
   monitor at 30 went round through the microphone into the transmission, a
-  loud ringing on the air (issue #15).
+  loud ringing on the air (issue #15). On the X6100 the raised monitor can do
+  the same while you transmit in SSB with the built-in microphone (issue #72):
+  use a headset or the hand mic away from the speaker while recording.
 - File length: Settings > Audio > SCREEN REC > File length, 1 hour (default),
   45, 30, 15 or 5 minutes. When a file reaches that length it is closed and
   the recording goes on in a new file, named with the time it starts. Stop
@@ -435,6 +1139,9 @@ Records the screen and the audio to an AVI file (MJPEG video, 800x480,
   full"). With less than 10 minutes of space left the radio shows "SD card:
   about N min left", again every minute; at 50 MB it stops by itself and closes the
   file properly ("SD card full, recording saved").
+- While recording, the [screensaver](#screensaver) does not come, and with
+  the panel dark (Screen off, POWER) the screen is still drawn into the
+  file.
 
 
 ### Walkie Talkie mode
@@ -470,7 +1177,7 @@ restart.
 |---|---|
 | WLK 1 | MEM/VFO, Band +, Band -, TX power |
 | WLK 2 | AM/FM, SSB (held: DIG), ATU (held: tune, it transmits), PRE (held: ATT) |
-| WLK 3 | AGC (held: split), A/B (held: copy), Step (held: back), Lock |
+| WLK 3 | AGC (held: split), A/B (held: copy), Step (held: as FST held, the step back down unless Settings > Keys gives it another action), Lock (the [frequency lock](#buttons-and-knobs)) |
 | WLK 4 | Store, Clear (held), Vol Sql RF Pwr (the levels page), Exit (held) |
 
 - GEN, KEY, DFN, DFL and VM open their pages as on the main screen.
@@ -507,12 +1214,13 @@ base is too old.
 
 | Card | Options |
 |---|---|
-| STATION | callsign, QTH locator, Mode from band plan (the knob turned into another band plan segment sets its mode: CW in a CW segment, the band's sideband in a phone segment; SSB and CW only), Independent VFOs (VFO A and VFO B each keep their own band, frequency and mode: the VFO key brings the other one's band back, A=B copies everything to the other VFO; off, both VFOs live in the current band) |
+| STATION | callsign (an empty field clears it), QTH locator, Band plan (Auto, Region 1, 2 or 3, US Extra, Advanced, General or Technician: see [Band plan](#band-plan)), Mode from band plan (the knob turned into another band plan segment sets its mode: CW in a CW segment, the band's sideband in a phone segment; SSB and CW only), Independent VFOs (VFO A and VFO B each keep their own band, frequency and mode: a band key moves the VFO you are on only, the VFO key brings the other one's band back, A=B copies everything to the other VFO; off, a band key brings both VFOs of that band, and a VFO tuned into another band leaves the other as it was, see [Band keys](#band-keys)) |
 | DATE / TIME | date, time, time zone |
 | CONTROLS | Freq acceleration, Accel. onset, Charger (Off, On, Shadow), Per band S-meter cal, TX shift of the band the radio is on (see [TX shift](#tx-shift)), Walkie Talkie (see [Walkie Talkie mode](#walkie-talkie-mode)) |
-| TRANSVERTERS | two transverters: from, to, shift in MHz; a shift of 0 is off (the X6200's default, see [WR12 receiver](#wr12-receiver-x6200)) |
+| TRANSVERTERS | two transverters: from, to, shift in MHz; a shift of 0 is off, the default on both radios (see [Amateur bands only](#amateur-bands-only) and [WR12 receiver](#wr12-receiver-x6200)); TX power limit, W: Off, or 0.1 W up to the radio's top (see [Transverter TX power limit](#transverter-tx-power-limit)) |
 | WR12 RECEIVER | the X6200 only: WR12 on HOST (see [WR12 receiver](#wr12-receiver-x6200)) |
 | TCI SERVER | on/off, port and status, connected client, Clients (Operate or Listen only, see [TCI server](#tci-server)) |
+| TEXT LOG | Keyboard modes (on by default), Size limit (1-100 MB, 10 MB by default): what PSK, Olivia, Contestia and JTTY receive and send, and what RTTY receives, on the card (see [Text log of the keyboard modes](#text-log-of-the-keyboard-modes)) |
 
 Main knob acceleration. Where: Settings > General > CONTROLS > Freq
 acceleration.
@@ -540,10 +1248,17 @@ Whether the base charges: External on the [Info tab](#info-tab), for example
 "12.1 V  charging".
 
 The X6200 with base 1.0.8 goes on reporting "charging" while the radio is on
-and a supply is connected, whatever the setting, so External says "charging"
-then (#33). The setting works all the same: measured by a user with the stock
-charger and the radio on, with Off the battery stayed at 7.8 V and 65 % for 42
-minutes, with On it went from 57 to 64 % in 45 minutes.
+and a supply is connected, whatever the setting (#33). The setting works all
+the same: measured by a user with the stock charger and the radio on, with Off
+the battery stayed at 7.8 V and 65 % for 42 minutes, with On it went from 57 to
+64 % in 45 minutes. So on the X6200 the radio takes the base's "charging" only
+with Charger On, as Xiegu's own firmware does: with Off or Shadow, External
+says "12.1 V" and the top right shows the plug sign with no time to full (up
+to v0.3.6 they said "charging" and showed the lightning sign). The X6100 shows
+what its base reports: with Charger Off the plug sign from the moment the
+supply is in. (Up to v0.3.7 an X6100 with Charger Off showed the lightning
+sign and a time to full for its first minute on the supply, then the plug,
+issue #108.)
 
 Zone. Where: Settings > General > DATE / TIME > Zone. The change applies at
 once; summer time follows by itself where the zone has it. 24 zones, UTC then
@@ -564,29 +1279,128 @@ Per band S-meter cal: see [S-meter](#s-meter). TCI SERVER: see
 
 | Card | Options |
 |---|---|
-| BACKLIGHT | timeout and brightness, buttons brightness (Always Off, Always On, Temporarily On), Screen off (min) (minutes without a key or knob, 0 never; the key that wakes it does nothing else), Screen always off (the screen stays dark for a radio run from the VFO-Knob or a browser; POWER shows it for the blank time, a minute at least) |
+| BACKLIGHT | timeout and brightness, buttons brightness (Always Off, Always On, Temporarily On), Screensaver (None, Matrix rain), Screensaver (min) (with a screensaver: 1-120 minutes without use), Screen off (min) (minutes without use, 0 never; the key that wakes it does nothing else), Screen always off (the screen stays dark for a radio run from the VFO-Knob or a browser, no screensaver; POWER shows it for the blank time, a minute at least); see [Screensaver](#screensaver) |
 | SPECTRUM | Spectrum; with it on Fill, Peaks, Fill gradient, Filter colour, Height (see [Waterfall](#waterfall)) |
 | WATERFALL | see [Waterfall](#waterfall) |
-| MAIN SCREEN | Band plan, Cluster spots, Cluster column, Broadcast names, S-meter type, S-meter colours, Needle lamp, Birdies (see [Birdie Cal](#birdie-cal)), Zoom and step per mode (see [Waterfall](#waterfall)) |
-| INTERFACE | Popups Freq/Info/ALC, Icon menus, Knob info, Theme, Font, Decoder text, FT8/FT4 info |
+| MAIN SCREEN | Band plan, Cluster spots, Cluster column, Broadcast names, S-meter type, S-meter colours, Needle lamp, Birdies (see [Birdie Cal](#birdie-cal)), Zoom and step per mode (see [Waterfall](#waterfall)), Power display (% + time, Volts, Alternate, % + V; see [battery time](#battery-time)) |
+| INTERFACE | Popups Freq/Info/TX, Icon menus, Knob info, Hide buttons (Off, After 3 s, After 5 s, After 10 s), Theme, Font, Decoder text, FT8/FT4 info |
 
-- Popups Freq/Info/ALC: a big frequency while tuning, a big value of the
-  control being changed, a big ALC reading while transmitting.
+- Popups Freq/Info/TX (Popups Freq/Info/ALC up to v0.3.8), three switches:
+  - Freq (off by default): the new frequency, big in the middle of the
+    screen, while tuning.
+  - Info (off by default): a short note in the middle of the screen when a
+    key switches the VFO, split, the AGC, PRE, ATT or the ATU.
+  - TX (on by default): the TX panel while transmitting, under the
+    frequency strip: the power, SWR and ALC big with their bars, the mode,
+    the TX frequency and the time on the air; the S-meter rests with "TX"
+    (Black Metal and Total Black: their scales at rest). Off, the panel
+    does not come up and the S-meter box shows the power, SWR and ALC
+    instead (see [S-meter](#s-meter)), except for a
+    [TUNE for an external tuner](#tune-for-an-external-tuner): it always
+    brings up the panel, for its seconds against the limit. The digital apps
+    keep their TX strip (power and SWR) either way, the S-meter at rest.
 - Icon menus (on by default): the APP grid (see
   [Buttons and knobs](#buttons-and-knobs)), APP > Modes as tiles and icons on
   the Settings tabs; off, APP shows its button pages only, Modes a list and
   the tabs their numbers. It shows the next time they open.
 - Knob info: the value shown while a knob turns.
+- Hide buttons (Off by default): on the main screen the buttons and the knob
+  lines hide after 3, 5 or 10 s without a key, and the next key brings them
+  back (see [Buttons and knobs](#buttons-and-knobs)).
 - Theme: see [Themes](#themes). A new theme applies at once, without a restart.
 - Font: Sony Sketch, Roboto or DejaVu (default). A new font applies at once.
-  Themes with their own font (Black Metal, Total Black, 1bit, a theme file that
-  sets one) keep it.
+  Themes with their own font (Classic, Black Metal, Total Black, 1bit,
+  Amber Trey, a theme file that sets one) keep it.
 - Broadcast names (from v0.127): tuned to a broadcast station on the air,
   the frequency strip shows "BC <station name>" in a light blue box instead
   of the band name. The names come from the broadcast list (see the
   [Info tab](#info-tab)).
 
 All these options are also on the web configurator's Display page.
+
+#### Screensaver
+
+Where: Settings > Display > BACKLIGHT (also on the web configurator's
+Display page).
+
+Left alone, the radio shows a screensaver, so that the screen does not
+stand still for hours: Matrix rain, columns of characters falling, each at
+its own speed, a pale head and a trail that fades at its end, the
+characters mirrored as in the film (the rain of the VFO-Knob's screensaver).
+It comes after Screensaver (min) minutes without use and stays until the
+radio is used. With Screen off (min) set, the screen goes dark at that time,
+counted from the last key or knob as before, with the screensaver before it.
+
+| Setting | |
+|---|---|
+| Screensaver | None, or Matrix rain (the default) |
+| Screensaver (min) | minutes without use before it comes, 1 to 120, 5 by default; shown with a screensaver |
+| Screen off (min) | minutes without use before the screen goes dark, 0 never (the default); a screensaver shows until then. One that is not later than the screensaver's comes first, with no screensaver |
+| Screen always off | the screen stays dark: no screensaver, as before (above); POWER shows it for Screen off minutes, one when that is 0 |
+
+So the choice is the screensaver alone (Screen off 0), or the screensaver
+and then dark (Screensaver 5, Screen off 30: the screensaver after 5
+minutes, the screen dark after 30).
+
+- What counts as use: a key or a knob of the radio, a hand mic key, a
+  keyboard, tuning from the browser panel, the remote screen's keys and
+  knobs, a new frequency from a TCI client or from Pat (Winlink). Each
+  starts the minutes again, the screensaver's and Screen off's.
+- Any TX ends the screensaver at once, whatever keyed it: the PTT key, the
+  hand mic, an app, CAT, TCI, the browser, the tuner, the SWR scan (seen
+  within a second). No screensaver comes while the radio is on the air;
+  its minutes start again when it is back on receive. The radio never
+  transmits behind the screensaver. Screen off keeps its time all the
+  same, as before: FT8 on auto or a beacon do not keep the screen lit, it
+  goes dark Screen off minutes after the last key or knob, on the air or
+  not.
+- The low battery's warning ("Turning off in 30s") ends the screensaver
+  too, so it is read; a dark screen stays dark, as before.
+- The first key, knob turn or hand mic key on the screensaver only brings
+  the screen back: it does not tune, key or change anything, and the rest
+  of that turn of a knob, for half a second, only brings it back too. The
+  next one does. A keyboard key held to wake it does not repeat into the
+  radio either. In CW a keyboard's paddle keys (`[`, `]`) key as always:
+  the TX then ends the screensaver. On a screen dark by Screen off the
+  first key only lights it, as before; a knob turned lights it and turns.
+- The POWER key on the screensaver brings the screen back, as any key; on
+  the lit screen it turns it dark, as before.
+- Under the screensaver the radio works as it does with the screen lit: it
+  receives, the apps decode, the cluster comes in, the browser panel and TCI
+  get the spectrum and the waterfall. Only the drawing stops: the waterfall,
+  the 3D band scope and the spectrum are not drawn while covered. On the
+  bench X6200 the GUI took about a quarter of one core with the rain up,
+  half of what it takes lit in 3D (an eighth dark); on the X6100 with FT8
+  open, 55 % of a core with the rain against 68 % lit in 3D.
+- Someone watching the screen from a browser (Remote > Screen) sees the
+  radio's screen, not the screensaver: it waits while they watch, and comes
+  when they close the page. Screen off still darkens the panel at its time.
+  A screen recording (APP > Screen rec) is watched in the same way: no
+  screensaver in the file, and while the panel is dark the GUI, the
+  waterfall and the spectrum still go into it.
+- The screen that comes back shows the radio at once: the GUI is drawn as
+  the screensaver goes dark, and the waterfall and the spectrum draw again
+  as soon as they are seen, not at their next line.
+- The colours come from the theme: green on black in most themes, amber in
+  Amber Trey, the paper on the ink in 1bit (the end of the trail dotted).
+  A theme file can set them (`saver_bg`, `saver`, `saver_head`, see
+  [docs/THEMES.md](THEMES.md)).
+- With None the screen off is as before: dark after Screen off minutes
+  without a key or a knob, 0 never, and TX does not keep it lit.
+
+Updating from an earlier version. Screen off was 5 minutes by default; now
+the screensaver comes after 5 minutes and the screen never goes dark, until
+set. A radio where Screen off was never changed takes these defaults. A
+radio where it was changed keeps going dark at its time, with the
+screensaver before it: at 5 minutes, or a minute before the dark when that
+comes at 5 minutes or sooner (Screen off 3: the screensaver at 2, dark at
+3). Screen off 1 leaves no room for it: the screensaver is None there, the
+screen as before. Screen off 0 (never dark): the screensaver after 5
+minutes, never dark; set Screensaver to None for the screen always in view.
+A radio with Screen always off on and Screen off never changed keeps Screen
+off 5: POWER shows the screen 5 minutes, as before (0 would be one), and
+with Screen always off cleared later it goes dark at 5 with the screensaver
+at 4, as it would have.
 
 ### Audio tab
 
@@ -616,16 +1430,18 @@ Line-in and Play / Rec gain are separate settings:
   A Line-in you set on its own slider afterwards stays as it is.
 
 Compressor on the X6200: its base has three levels, so the ratio chosen (Comp
-on the MFK 2:3 page) goes to the nearest of them: 2:1 and 3:1 as 2:1, 4:1 to
+on the MFK 2:4 page) goes to the nearest of them: 2:1 and 3:1 as 2:1, 4:1 to
 7:1 as 4:1, 8:1 as 8:1; 1:1 (Off) is off. It is off by default on the X6200.
 
-TX monitor: Moni level (VOL 2:2 page, F1) plays your own transmission on the
-speaker. It is 30 by default on the X6100 and 0 on the X6200. The X6200's
-speaker and built-in microphone share the case: at 30 the microphone picked
-the monitor up and fed it back into the transmission, a loud ringing from the
-moment PTT was pressed in SSB (issue #15). A radio whose Moni level was never
-changed gets the new default with the update; a level you set stays. On the
-X6200 a screen recording does not raise it (see
+TX monitor: Moni level (VOL 2:2 page, F2) plays your own transmission on the
+speaker. It is 0 by default on both radios. At 30, the default in earlier
+releases, the microphone picked the monitor up and fed it back into the
+transmission: on the X6200, whose speaker and built-in microphone share the
+case, a loud ringing from the moment PTT was pressed in SSB (issue #15); on
+the X6100 a feedback loop on PTT and while an app sent its tones (issue #72).
+A radio whose Moni level was never changed gets the new default with the
+update; a level you set stays. To hear yourself again, turn it up there. On
+the X6200 a screen recording does not raise it (see
 [Screen recording](#screen-recording)).
 
 ### Wireless tab
@@ -633,8 +1449,8 @@ X6200 a screen recording does not raise it (see
 | Card | Options |
 |---|---|
 | WIFI | power, status, IP, networks |
-| NETWORK NAME | the radio's name on the LAN, `x6100` by default: reachable as `<name>.local` (see [Network name](#network-name)) |
-| TAILSCALE | on/off, status, the radio's name and address on your tailnet, the login as a code to scan, Log out (see [Tailscale](#tailscale)) |
+| NETWORK NAME | the radio's name on the LAN, `x6100` by default (`x6200` on an X6200): reachable as `<name>.local` (see [Network name](#network-name)) |
+| TAILSCALE | on/off, status, the radio's name and address on your tailnet, Funnel on/off with Public (the Panel's address on the internet, or what Funnel waits for), the login or the link that allows Funnel as a code to scan, Log out (see [Tailscale](#tailscale) and [Tailscale Funnel](#tailscale-funnel)) |
 | ETHERNET | a USB Ethernet adapter: DHCP or a static address (see [Ethernet](#ethernet)) |
 
 WiFi/BT power switches the WiFi and Bluetooth chip (one chip for both): with
@@ -744,21 +1560,21 @@ by itself. The 20 MHz and channel 12 and 13 settings in `x6100-wifi.conf` are
   it the device has to be paired again.
 - One pair of headphones at a time: connecting one disconnects the others. A
   keyboard and a CAT phone stay connected.
-- Details: [Bluetooth headphones](#bluetooth-headphones), [Bluetooth CAT](#bluetooth-cat).
+- Details: [Bluetooth headphones](#bluetooth-headphones), [Bluetooth CAT](#bluetooth-cat), [a PC on Bluetooth](#a-pc-on-bluetooth).
 
 ### Keys tab
 
 | Card | Options |
 |---|---|
-| FRONT KEYS, LONG PRESS | the long-press action of GEN, APP, KEY, MSG, DFN, DFL (see [Buttons and knobs](#buttons-and-knobs)) |
-| HAND MIC KEYS | F1, F2, F1 long, F2 long |
+| FRONT KEYS, LONG PRESS | the long-press action of GEN, APP, KEY, MSG, DFN, DFL and FST (see [Buttons and knobs](#buttons-and-knobs)) |
+| HAND MIC KEYS | F1, F2, F1 long, F2 long; on the X6200 F3 and F3 long too, for the H-22's F3 (see [Hand mic](#hand-mic)) |
 | PADDLE | USB paddles: Connected, the dit/dah of each kind, Learn dit and dah, Swap dit and dah, Serial port (see [USB paddle](#usb-paddle)) |
 
 ### Cluster tab
 
 | Card | Options |
 |---|---|
-| CLUSTER FILTERS | Modes (CW, SSB, DIG, AM/FM), Bands (160-6 m), Activity (POTA, SOTA, WWBOTA, HOTA; none lit = all spots) |
+| CLUSTER FILTERS | Modes (CW, SSB, DIG, AM/FM), Bands (160 m to 6 m, 4 m, 2 m, 70 cm), Activity (POTA, SOTA, WWBOTA, HOTA; none lit = all spots) |
 | CLUSTER VIEW | Newest first, All bands, Spot snap hold, Spot snap speed |
 | PSK REPORTER | Report decodes (on by default) |
 
@@ -770,7 +1586,8 @@ What they do: see [DX Cluster](#dx-cluster).
 |---|---|
 | TX CALIBRATION | IQ offsets, band output gain, codec gain |
 | CESSB | on, level |
-| TX PROTECTION | SWR protection |
+| TX PROTECTION | SWR protection, TX outside ham bands (see [Amateur bands only](#amateur-bands-only)) |
+| EXTERNAL TUNER | TUNE power, W; TUNE time limit, s (see [TUNE for an external tuner](#tune-for-an-external-tuner)) |
 | S-METER | Preamp, Attenuator, RF gain a step, Measure |
 
 S-meter front end. Where: Settings > TX Cal > S-METER.
@@ -782,21 +1599,76 @@ are settings, with the figures measured on one radio as defaults.
 
 | Setting | Range | Default |
 |---|---|---|
-| Preamp | 0 to 40 dB | 19 dB |
-| Attenuator | 0 to 40 dB | 15 dB |
+| Preamp | 0 to 40 dB | 19 dB (X6200: 16 dB) |
+| Attenuator | 0 to 40 dB (X6200: 0 to 70 dB, one for each band) | 15 dB (X6200: by band, below) |
 | RF gain, a step | 0.00 to 2.00 dB | 0.60 dB |
+
+On the X6200 the attenuator takes much more off, and how much depends on the
+band and on the radio: one radio showed 59 dB on 160 m, 39 to 51 dB on 80 m
+and 24 to 30 dB from 60 m to 10 m, another 40 to about 62 dB on 80 m and
+about 40 dB on 40, 20 and 10 m. So there the row is "Attenuator on this
+band": each band keeps its own value, and the slider and Measure set the
+band the radio is on. Those are the bands of the band list, but for the CW
+and SSB parts of 40 m and 20 m, which share one figure as they share their
+calibration (see [S-meter](#s-meter)). A broadcast band is one of its own,
+so Measure on a broadcast carrier at 7.3 MHz sets Broadcast 41m, not 40 m.
+When it is done, Measure names the band it set, or both parts, and then
+leaves the RF gain to its slider for the line to fit: "Done on 40m CW and
+40m SSB: PRE 16 dB, ATT 34 dB." A band never set starts from these figures:
+on 160 m one radio's, on 80 m one in the middle of the four seen there, and
+from 5 MHz up one between the two radios:
+
+| X6200 bands | Attenuator |
+|---|---|
+| 160 m (under 2.5 MHz) | 59 dB |
+| 80 m, the 75 m and 60 m broadcast bands (2.5 to 5 MHz) | 51 dB |
+| 60 m and up, the 49 m broadcast band and up (over 5 MHz) | 34 dB |
+
+Outside the bands (medium wave, the 120 m and 90 m broadcast bands, the gaps
+between the bands) all frequencies share one value, which starts at 34 dB, as
+on 40 m.
+
+On the X6200 the one attenuator value of v0.3.8 and before (15 dB, or what
+the slider or Measure set) is not used any more: it fit one band at most.
+Every band starts from the table above until you set it or press Measure on
+it. From then on it keeps its own value, also when a later version changes
+the table, and also when Measure came out at the table's figure. That old
+value stays stored as it was, so an older version finds it again if you go
+back. The X6100 keeps its one value. The preamp is one value for every band,
+on both radios, and a preamp value set before stays.
+
+The meter on the screen, the browser Panel and TCI's `rx_smeter` show the
+same reading, with these corrections in.
+
+With ATT on, a weak signal, or none, sinks into the radio's own noise, and
+the meter shows that noise as it would be at the antenna: on the X6200,
+with 24 to 60 dB of attenuator, that can be higher than with ATT off. Those
+bars stay grey, as noise.
 
 Measure sets them for your radio, since preamps differ a little. Feed a
 steady carrier, from a signal generator (around -73 dBm, S9) or a strong
-broadcast station, so the meter reads between S5 and S9+20, and press
-Measure. For about 12 s the radio reads its meter with everything off, then
-with PRE on, with ATT on, and with the RF gain at 40, a second and a half
-each, and moves the three settings by what was left over. PRE, ATT and the
-RF gain go back as they were, also when you press Stop, leave the tab or
-transmit. A reading that wanders more than 3 dB during a step, or a carrier
-outside S5 to S9+20, stops the measurement and changes nothing. A band
-change stops it too ("Stopped: band changed"): PRE and ATT belong to the
-band, so check them on the band you left.
+broadcast station, so the meter reads between S5 and S9+20 (on the X6200
+from about S9 to S9+20: feed about -55 dBm, S9+18, from a generator. With
+its 24 to 60 dB of attenuator on, a weaker carrier comes close to the
+radio's own noise and the reading can wander: "Not steady"), and press
+Measure.
+For about 12 s the radio reads its meter with everything off, then with PRE
+on, with ATT on, and with the RF gain at 40, a second and a half each, and
+moves the three settings by what was left over. PRE, ATT and the RF gain go
+back as they were, also when you press Stop, leave the tab, transmit or
+switch the radio off. A
+reading that wanders more than 3 dB during a step, a carrier outside that
+range, or ATT taking the reading down to S1 (the attenuator value far too
+low: raise it, or feed a stronger carrier) stops the measurement and
+changes nothing. A band change stops it too ("Stopped: band changed"): PRE
+and ATT belong to the band, so check them on the band you left.
+
+The attenuator value stops at its top, 70 dB on the X6200 and 40 dB on the
+X6100. When Measure comes out there it says so, and leaves the RF gain to
+its slider for the line to fit:
+"Done on 80m: PRE 16 dB, ATT 70, the top, so 70 or more." The attenuator
+then takes that much off or more, and with ATT on the meter reads low by
+whatever it takes off over the top.
 
 The per band S-meter calibration (Settings > General > CONTROLS) is a
 separate correction, for the band's level with everything off.
@@ -807,7 +1679,12 @@ SWR protection. Where: Settings > TX Cal > TX PROTECTION > SWR protection.
 - When the SWR stays over it for 0.3 s, the transmission stops and the radio
   says "TX stopped: SWR 3.4". Short spikes at key-up don't count.
 - Not while the ATU tunes: the tune carrier sees a high SWR on purpose.
-- Nothing stays locked: the next PTT or transmission goes out again.
+- Nor during a [TUNE for an external tuner](#tune-for-an-external-tuner),
+  for the readings of the tune's own power and within its time limit: its
+  tuner shows a high SWR on purpose too while it matches. Up to v0.3.7 such a
+  tuner was stopped by it ("TX stopped: SWR 3.4", #84).
+- Nothing stays locked: the next PTT or transmission goes out again. Only
+  Winlink waits, 5 minutes on that band (see [Winlink](#winlink)).
 - It stops what the radio keys itself: CAT PTT, the PTT button, CW messages
   and the CW keyboard, voice messages, the digital apps and the keyboard
   paddle (it keys again after both paddles are let go). A PTT held on the
@@ -833,11 +1710,24 @@ keyed. The radio watches for it; there is nothing to set.
   - "base silent for N ms, battery 8.2 V, external 13.8 V": the base sent
     nothing for more than 0.3 s. Not in the first 10 s after start, at most
     one line every 10 s.
+  - "no data from the base for N ms: said on the screen", or "no data from
+    the base for N ms, none since the start: said on the screen" when none
+    came at all, then "data from the base again after N ms" once it comes
+    back: see
+    [The waterfall stays black](#the-waterfall-stays-black-and-the-s-meter-does-not-move).
+  - "TX: no data from the base for N ms, back to RX": the data stopped during
+    a transmission, PTT, the apps and the CW key have let go, and the
+    register block gets through (its last try wrote no "register block not
+    sent"). N is 3000 or more for one the radio keyed, 30000 or more for one
+    the hand mic's PTT, VOX or the KEY jack keyed.
+  - "SWR scan: no data from the base for N ms, stopped".
 
 ### Info tab
 
 The FIRMWARE card: the project, where its source is, the firmware version and
-the baseband version, then the broadcast list and the factory reset (below).
+the baseband version, on the X6200 the PA bias in use and where it came from
+("3326 / 3843, the radio's own", see [PA bias](#pa-bias-x6200)), then the
+broadcast list and the factory reset (below).
 
 Broadcast list, Update: the timetable of the broadcast stations (EiBi,
 eibispace.de) for the current season: A from the end of March to the end of
@@ -892,6 +1782,279 @@ POWER, below Factory reset, has three lines:
 
 ## Transmitting
 
+TX power (PWR) goes from 0.1 W to 10 W on the X6100, and to 8 W on the X6200:
+its rating on an external supply. The Power knob control, TX power on WLK 1,
+the browser panel's PWR, TCI's `drive` (100 % is the radio's top: 10 W, or 8 W on the X6200) and CAT stop there.
+Up to v0.3.6 the X6200 also went up to 10 W and asked its base for that
+(issue #53). A setting saved above 8 W comes back as 8 W. The TX meter keeps
+its 0-10 W scale on both radios, so it shows what the radio measures.
+
+On battery the X6200 stops at 5 W, as Xiegu's own firmware (1.0.8) does. The
+radio follows the supply once it has been steady for 5 seconds (and once the
+battery readings count after power-on, see [low battery](#low-battery)). With
+PWR above 5 W when the supply goes, PWR comes down to 5 W and the radio says
+"TX power 5 W on battery". When the supply comes back PWR stays at 5 W: the
+top goes back to 8 W, turn it up yourself. On battery every way of setting
+PWR stops at 5 W: TCI's `drive` from 62 % up gives 5 W, and the browser panel's
+PWR goes back to 5 W. The X6100 has no battery limit.
+
+### Amateur bands only
+
+By default the radio transmits only inside the amateur bands and on the range
+of a transverter you turned on, and never on the X6200's receive-only ranges
+(#121). Up to v0.3.8 it transmitted anywhere from 0.1 to 55 MHz.
+
+| Band | From | To |
+|---|---|---|
+| 2200 m | 135.7 kHz | 137.8 kHz |
+| 630 m | 472 kHz | 479 kHz |
+| 160 m | 1.800 MHz | 2.000 MHz |
+| 80 m | 3.500 MHz | 4.000 MHz |
+| Alaska emergency channel | 5.167 MHz | 5.168 MHz (its carrier, 5167.5 kHz USB) |
+| 60 m | 5.250 MHz | 5.450 MHz |
+| 40 m | 7.000 MHz | 7.300 MHz |
+| 30 m | 10.100 MHz | 10.150 MHz |
+| 20 m | 14.000 MHz | 14.350 MHz |
+| 17 m | 18.068 MHz | 18.168 MHz |
+| 15 m | 21.000 MHz | 21.450 MHz |
+| 12 m | 24.890 MHz | 24.990 MHz |
+| 10 m | 28.000 MHz | 29.700 MHz |
+| 8 m | 40.000 MHz | 45.000 MHz |
+| 6 m | 50.000 MHz | 54.000 MHz |
+
+- One table for every country: the amateur bands of ITU Regions 1, 2 and 3
+  together, and the national bands wider than those (60 m as some countries
+  have it, 8 m as Ireland's band plan; the other countries' 8 m slots,
+  40.66-40.70 MHz, are inside). Your licence decides inside it: 1.85-2.0,
+  3.8-4.0 and 7.2-7.3 MHz, 52-54 MHz and 60 m outside your country's
+  channels are amateur bands somewhere, maybe not where you are. The radio
+  stops only clear out-of-band TX: CB, marine, broadcast, MARS and other
+  channels outside the bands, cordless phones.
+- Not in the table, the switch below covers them: Ireland's blocks at 30-40,
+  45-49 and 54-55 MHz (Irish operators turn it on for those), Somalia's
+  5.060-5.250 MHz, Japan's 4.630 MHz emergency channel.
+
+TX outside ham bands. Where: Settings > TX Cal > TX PROTECTION > TX outside
+ham bands (also on the web Display page, Transmitter card). Off by default,
+and off on every radio after the update to this version, whatever it was
+before; a backup restored afterwards brings its own. Turn it on only if you
+are licensed to transmit outside the amateur bands (MARS, CAP and the like):
+the radio then transmits wherever it can, 0.1 to 55 MHz. The receive-only
+ranges stay receive only.
+
+What is checked: the frequency the radio transmits on, the dial, in split
+the other VFO, with a [TX shift](#tx-shift) the shifted one. On the X6200
+in split the dial too, for PTT, CW and what the base keys by itself: its
+base keys the VFO you listen on whatever split says. The apps, TUNE and the
+SWR scan move that VFO to the TX frequency first and are checked there. On
+either radio the dial turned while they transmit in split is checked too:
+that VFO then sends them there. Not the signal's width, nor XIT, nor
+where an app's tone lands: LSB keyed at 7.000 MHz, a dial at 14.3495 MHz
+with +1.5 kHz of XIT, or an FT8 tone near the edge go outside the band.
+Keep the signal inside the band yourself.
+
+Refused there. The screen says "No TX on 27.185 MHz" and then, in a line
+of its own, "Out of band: Settings > TX Cal" ("Receive only there" where
+the radio cannot transmit at all). The browser Panel and Winlink's page
+give the frequency and the reason in one line, "... outside the amateur
+bands (Settings > TX Cal)". What is refused:
+
+- PTT: the PTT key, the walkie screen, CAT (it answers NG, see
+  [CI-V commands](#supported-ci-v-commands)), TCI, the browser Panel and
+  remote sessions (the page shows the reason, see
+  [Transmitting from the browser](#transmitting-from-the-browser)).
+- The digital apps (FT8, FT4, FT2, JS8, WSPR, PSK, Olivia, JTTY, RTTY, SSTV,
+  WeFax), the voice messages, Winlink with ARDOP, Mercury or XARA (its page
+  says why, see [Winlink](#winlink)).
+- CW: the CW messages and beacons (not started there; one moved out stops),
+  QRSS3, the CW keyboard, the USB paddle, the PTT key in CW, Field Ops' test
+  beacon.
+- The radio's tuner (in split checked on both VFOs, at its start and while
+  it tunes: which one its carrier goes out on cannot be told), TUNE for an
+  external tuner, the SWR scan (its sweep stays inside the band, see
+  [SWR scan](#swr-scan-and-the-tuner)).
+- In split the VFO on the status bar turns red when the other VFO is
+  outside the bands. The X6200's dial outside them does not turn it red:
+  only the words name it.
+- A transmission under way that comes onto such a frequency (a band key, a
+  QSY from CAT, TCI or the Panel while PTT is held, an app's slot, a CW
+  message, the switch turned off) is stopped: "TX stopped on 27.185 MHz",
+  then why. The power is at 0 W until it stops; the tuner gives up
+  ("Tuner stopped"), the SWR scan stops as its Stop does.
+- The [CW Trainer](#cw-trainer) keeps working on any frequency the radio can
+  transmit on: its key sounds the sidetone at 0 W, its PTT does nothing
+  there. KEY Train outside the trainer (the key, the paddle, a message) is
+  refused as any CW is. On the X6200 the base's own band table stays open
+  for the trainer there (below).
+
+What the radio's base keys by itself, the hand mic's PTT, VOX and the KEY
+jack, the radio cannot refuse. Outside the amateur bands it holds the base
+instead:
+
+- The TX power at 0 W, whatever asks for more.
+- VOX off. Your VOX setting stays as it is and comes back in the bands;
+  nothing on the screen says it is off meanwhile.
+- KEY Train on. On the X6100 a paddle in the KEY jack in Auto-L or Auto-R
+  should then only sound the sidetone (not checked on the bench yet); the
+  X6200's base goes into TX at 0 W with Train (#127).
+- On the X6200 the base's own band table too (#176): the base itself then
+  keys nothing outside it (160 to 6 m, 60 m only from 5.332 to 5.405 MHz),
+  as Xiegu's firmware always has it. ea4iln found where: byte 280 of the
+  base's calibration block, which the radio software sets open at every
+  start. The radio sets it wherever it refuses TX for what the base keys by
+  itself, receive only and the WR12 included, and while Birdie Cal runs;
+  open everywhere else. The base's table is narrower than the radio's (no
+  2200 m, 630 m, Alaska channel or 8 m), and set there the base would send
+  nothing, PTT and the apps neither: so it stays open with TX outside ham
+  bands on, and on a transverter's IF past 29.7 MHz (145.7 to 146 MHz
+  through a 28 MHz IF). Kept in the base's memory only; the radio looks at
+  it at every start.
+- When: before the radio's receiver goes onto the WR12's IF, at once.
+  Anywhere else half a second after the dial stops: each change takes the
+  radio about 0.2 s, and one at every step of the knob over a band's edge
+  stalled the knob. The hold at 0 W covers that half second. Should the
+  radio key within it (PTT, an app, CW, the tuner, the SWR scan), the way
+  back goes first and the key about 0.2 s later: a band the base's table
+  lacks would otherwise go out at nothing, in split an app's TX frequency
+  there too. Never while the base is in TX, by itself too (the hand mic's
+  PTT held at 0 W), nor while the radio keys it or within 3 s of its CW
+  key: what the base does with its calibration written in the middle of a
+  TX is not known. It goes once the base is back in receive, and a CW key
+  pressed while one is on its way waits for it.
+- While the CW Trainer is open, outside the bands where the radio can
+  transmit, the base's table stays open: the X6200's base sounds KEY
+  Train's sidetone by going into TX at 0 W (#127), which with its table set
+  it might not do there. On our bench (6 Nov, a wattmeter on a dummy
+  load) the trainer's sidetone sounded on 9.500 MHz with the table open,
+  and nothing went out. Receive only (FM broadcast, the airband, the WR12)
+  it is set all the same, and there the trainer's key is refused anyway
+  ("No TX").
+- Each change is a line in the base log (`/mnt/base_i2c.log`): "open TX 0:
+  shut", "open TX 1: opened", at the start "open TX 1: open already". The
+  radio writes the base's calibration block back only when two reads of it
+  are the same, it holds a PA bias the radio knows (the one sent, or the
+  one at the start, see [PA bias](#pa-bias-x6200)), and the rest of it, the
+  factory calibration, is as at the start (but byte 0, which a base changed
+  by itself). It reads it back after, and writes it once more if it did not
+  come back so. A factory calibration not as at the start is left alone,
+  and the bytes go into the log; found the same way again at the next try,
+  and no write of the radio's in doubt, it is taken as the base's own. After
+  a write of the radio's that failed or did not come back as sent, it is the
+  radio's to put right: the next try writes it back as at the start ("open
+  TX 0: shut: the calibration put back as at the start, ..."), twice at
+  most, and then leaves the block alone ("not shut: the calibration not as
+  at the start ..., after a write in doubt, put back 2 times").
+  Anything else that goes wrong is in that log too ("open TX 0: not shut:
+  two reads differ at byte 100 (1 in all)"); the radio tries again 5 s
+  later, then twice as long each time up to a minute, never while the base
+  is in TX, and the screen says it once, until one goes through: "Base's
+  band table not set: TX held at 0 W only", or "Base still keys only inside
+  its own band table" when the way back did not go (nothing transmits
+  outside the base's table then). Switching the radio off and on brings the
+  base's own calibration back, battery in and supply connected too: ea4iln
+  read the whole block back as at a cold start (#173, base 1.0.8; see the
+  [PA bias](#pa-bias-x6200)).
+- The first time the base keys while held the radio says "0 W on 27.185
+  MHz", then "Out of band: Settings > TX Cal". On the X6200, once the base's
+  table is set, the hand mic's PTT, VOX and the KEY jack key nothing there
+  and nothing is said: the radio learns of them only when the base goes
+  into TX.
+- The hold comes before the base moves: a band key or a QSY from CAT with the
+  hand mic's PTT held does not send PWR outside the bands meanwhile. It goes
+  once the radio is back in a band.
+- Birdie Cal holds the base the same way for its whole run (it tunes the CB
+  bands of the band list too), until both VFOs are back where you tuned
+  them.
+
+Left uncovered:
+
+- The hand mic's PTT and a straight key in the KEY jack in Manual still put
+  the base into TX, at 0 W; on the X6200 only inside its own band table,
+  and in the half second before it is set. The hold alone let a little RF
+  out on the X6200 (base 1.0.8, an external meter on a dummy load): 0.3 W
+  from the hand mic on 2 m with the WR12 receiving, NFM and USB, where the
+  radio's own meter read 0.0 or 0.1 W, and under 0.1 W but not nothing on
+  5.060 MHz without the WR12. What the X6100 puts out at 0 W has not been
+  measured yet.
+- On the X6200 the hand mic's PTT, VOX or the KEY jack within half a second
+  of tuning from where TX is refused to a band of the radio's that the
+  base's table lacks (2200 m, 630 m, the Alaska channel, 60 m outside 5.332
+  to 5.405 MHz, 8 m): the base sends nothing until it is let go, as the way
+  back waits for receive. After a way back that failed, any TX there until
+  the radio has tried again, after the TX ("Base still keys only inside its
+  own band table" on the screen).
+- The radio's tuner carrier is the base's own, at a power the radio does not
+  set: a tune is refused at its start, and one whose dial is moved out is
+  given up, but what goes out in between is the base's.
+- What the X6100's base itself permits or refuses there is not known.
+
+Transverters: a transverter's range transmits as you set it up. Both are off
+by default (a shift of 0), on the X6100 too. Up to v0.3.8 the X6100's two
+were on from the start (2 m and 70 cm through a 28 MHz IF): with nothing
+connected, transmitting on 2 m or 70 cm (PTT, an app, CW) sent that IF, 28
+to 34 MHz, into the antenna, 29.7 to 34 MHz of it outside 10 m. An X6100
+updated from then keeps a transverter you set up (from, to, shift or TX
+power limit changed) with its shift; one never changed is off. The two that
+gdyuldin's X6100 firmware saves (144-150 MHz with a shift of 116 MHz,
+432-438 MHz with 404 MHz) are not taken for yours when they are exactly its
+values and nothing else is set: both are off. If you used one as it came,
+set its shift again in Settings > General > TRANSVERTERS: 116 MHz for 2 m,
+404 MHz for 70 cm (a 28 MHz IF).
+
+Tried on the bench X6200 into a dummy load with an external wattmeter (4 to
+6 Nov): the refusals, the 0 W hold and the base's own band table. Not on the
+air, and not on an X6100 yet.
+
+### No TX without data from the base
+
+The radio does not transmit what it keys itself while its base, the board
+that receives and transmits, sends it no data: none for 3 s, or none yet
+since the start (issue #152). The SWR protection, the power and SWR
+readings and TX on the screen all come from that data; without it a
+transmission would go out unwatched. While the data comes nothing changes:
+it comes many times a second (on the X6200 every 35 ms), and the 3 s count
+from the last of it.
+
+When it refuses, the screen says "No TX: no data from the base" and then,
+in a line of its own, "Baseband: Settings > Info". What is refused is what
+the [amateur bands](#amateur-bands-only) refuse outside them:
+
+- PTT: the PTT key, the walkie screen, CAT (it answers NG, see
+  [CI-V commands](#supported-ci-v-commands)), TCI, the browser Panel and
+  remote sessions (the page shows the reason, "no data from the base", see
+  [Transmitting from the browser](#transmitting-from-the-browser)).
+- The digital apps (FT8, FT4, FT2, JS8, WSPR, PSK, Olivia, JTTY, RTTY, SSTV,
+  WeFax), the voice messages, Winlink with ARDOP, Mercury or XARA.
+- CW: the CW messages and beacons, QRSS3, the CW keyboard, the USB paddle,
+  the PTT key in CW, Field Ops' test beacon. A message, a beacon and QRSS3
+  are not started. The test beacon says "Test beacon on 20m: no data from
+  the base" at the first press, and "Test beacon stopped: no data from the
+  base" if the data stops before the second press sends. Each element is a
+  key of its own: one under way stops at its next element once the data has
+  been gone for 3 s.
+- The radio's tuner, the SWR scan, TUNE for an external tuner ("No tune: no
+  data from the base"; the Panel's TUNE gives the same reason).
+- The [CW Trainer](#cw-trainer) keeps sounding its sidetone at 0 W; its PTT
+  does nothing, as outside the bands.
+
+At a start the first data can take a while: an X6200 on base 1.0.8 sent its
+first 16 s after the start (issue #47). A transmission asked before it is
+refused with the same words; once the waterfall moves, ask again.
+
+Not cut by this: a transmission on the air when the data stops (PTT held, an
+app's slot, a voice message). The radio goes back to receive once it is let
+go and the data has been gone for 3 s, and a tune or an SWR scan is given up
+3 s after the last data (see
+[The waterfall stays black](#the-waterfall-stays-black-and-the-s-meter-does-not-move)).
+
+What the base keys by itself, the hand mic's PTT, VOX and the KEY jack, the
+radio cannot refuse: those still go out without data, with no SWR
+protection and no power reading. Don't transmit that way into an antenna
+you don't know.
+
+Not tried on the radio yet: checked on the PC build and in the host test
+(`tools/base_guard`).
+
 ### TX shift
 
 A band can transmit at a fixed distance from where it listens: an FM
@@ -920,14 +2083,17 @@ column. 0 is off; up to 10 MHz up or down (9999 kHz in Settings).
 - While the shift is on, VFO B is the shift's: a frequency or a mode written
   to B (CAT, A=B) goes back to A + the shift in A's mode (on REV the other
   way round).
-- The radio transmits only where it can (HF, a transverter that is on). Where
-  the shift takes B off it (below 0 Hz too, where B itself stops at 100 kHz),
-  the VFO on the status bar turns red (in Black Metal and Total Black the
-  other VFO's frequency), and PTT, the apps, CW, the tuner and the SWR scan
-  are refused with "No TX on ... MHz". The web Bands page saves a shift only
-  where the whole band, shifted, can transmit (6 m with +5000 kHz, 55-58.9
-  MHz, is refused); the Settings row takes any shift, and B is then red and
-  refused where it cannot.
+- The radio transmits only where it can and may (the
+  [amateur bands](#amateur-bands-only), a transverter that is on). Where
+  the shift takes B off them (below 0 Hz too, where B itself stops at 100
+  kHz), the VFO on the status bar turns red (in Black Metal and Total Black
+  the other VFO's frequency), and PTT, the apps, CW, the tuner and the SWR
+  scan are refused with "No TX on ... MHz" and the reason. The web Bands
+  page checks a shift against what the hardware can do, not the amateur
+  bands: it saves one only where the whole band, shifted, can transmit (6 m
+  with +5000 kHz, 55-58.9 MHz, is refused), so a shift it saves can still
+  take B outside the amateur bands, red and refused there as above. The
+  Settings row takes any shift.
 - The digital apps (FT8, FT4, JS8, WSPR, RTTY, SSTV...), the SWR scan, the
   voice messages and TCI's audio go out on the TX frequency, so they work in
   split and with a shift: for each transmission the VFO you listen on moves
@@ -956,21 +2122,111 @@ Two examples:
 
 Not tried on the air yet. The hand mic's PTT and the paddle go to the base
 directly, without the GUI's check: what the base does with a VFO B it cannot
-transmit on is its own TX permit.
+transmit on is its own TX permit. Outside the amateur bands the radio holds
+the base at 0 W for them (see [Amateur bands only](#amateur-bands-only)).
+
+### Transverter TX power limit
+
+A transverter that takes 0.1 to 1 W of drive can have a TX power limit of its
+own, so that it never gets the radio's full PWR by mistake (#104). Where:
+Settings > General > TRANSVERTERS > 1: TX power limit, W (and 2: for the
+second), under the transverter's from, to and shift: Off, the default, or
+0.1 W up to the radio's top (10 W on the X6100, 8 W on the X6200) in steps of
+0.1 W. Transverters set up before this version have no limit.
+
+- While the radio is tuned through that transverter (the dial in its range,
+  or the frequency it transmits on: split's other VFO, a TX shift), nothing
+  goes out above the limit. PWR stops there whichever way it is set (the
+  Power knob control, TX power on WLK 1, the digital apps' Power button, the
+  browser panel's PWR, TCI's `drive`, CAT), and the base is held to it
+  whatever asks for more: the digital apps, WSPR's own power, TUNE for an
+  external tuner, TCI's audio, Winlink, CW, the voice messages, the SWR scan.
+  The hand mic's PTT and the paddle key the base directly, at the power the
+  radio has set it to: the limit. A band key, a memory or a frequency from
+  CAT while the radio transmits: the limit reaches the base before the
+  transverter's frequency does, and PWR goes back up only once the base is
+  off it.
+- With PWR above the limit as the radio comes onto that band, PWR comes down
+  to it and the radio says "TX power 0.5 W: transverter 2m" (the band list's
+  name for the band, or the transverter's number). Off it again (a band key,
+  the knob, a memory, CAT, the transverter's shift to 0), PWR goes back to
+  what it was and the radio says "TX power back to 10.0 W", also after a
+  restart on the transverter. A PWR already under the limit is left as it
+  is, and so is one turned down on the transverter: the PWR from before
+  comes back all the same when you leave it.
+- The limit set to Off while the radio is on its band (Off is the step
+  below 0.1 W), or a move onto a transverter without a limit, leaves PWR
+  where it is: the PWR from before comes back once the radio is off the
+  transverters.
+- PWR held at the limit follows a new one: another transverter's (2 m at
+  0.5 W, then 70 cm at 1 W: PWR 1.0 W there), or the limit stepped up in
+  Settings while on its band, up to the PWR from before.
+- With both VFOs on transverters with a limit (split from 2 m to 70 cm), the
+  lower limit holds.
+- WSPR's beacon goes out at the limit when its own Power is higher, and
+  reports its own Power all the same. Through a transverter the power to
+  report is what the transverter puts out: set WSPR's Power to that (its
+  steps go up to 5 W), and the radio still drives the transverter at the
+  limit at most.
+- The radio's own tuner does not tune there (the ATU key held, the "tuner
+  tune" action): its carrier is the base's own, at a power the radio does
+  not set. It says "No tuner: 0.5 W transverter". TUNE for an external
+  tuner tunes, at its TUNE power or the limit, whichever is lower.
+- On the X6200 on battery the 5 W top stays: off the transverter PWR comes
+  back to 5 W at most.
+- The Winlink page's Power row says when the limit is what holds Winlink.
+
+Not tried on a radio with a transverter yet: checked on the PC build.
 
 ### SWR scan and the tuner
 
-SWR scan: APP 1:3 > SWR Scan. It transmits a carrier (AM, 1 W, or less when
-PWR is set lower) and sweeps it across the span around the frequency the
-radio transmits on (the other VFO in split), drawing the SWR as it goes.
+SWR scan: APP 1:4 > SWR Scan. It transmits a carrier (AM on the X6100, FM on
+the X6200; 1 W, or less when PWR is set lower) and sweeps it across the span
+around the frequency the radio transmits on (the other VFO in split), drawing
+the SWR as it goes.
 
 - Run starts the sweep and the button turns into Stop. Stop, or closing the
   window, ends it and puts the VFO and the mode back.
-- Span: 50, 100, 200 or 500 kHz (not while scanning). Scale: Log or Linear.
+- The carrier stays at 1 W while the scan runs, also when PWR is changed
+  meanwhile (by a TCI program, the browser Panel, or the X6200 going onto its
+  battery).
+- On the X6200 each reading waits until the power is up. Its base (1.0.8)
+  reports no SWR in its own sweep mode, so the radio keys a plain FM carrier,
+  the way the digital apps key (the microphones stay out), and after each step
+  the base brings the power up from 0 in about a second. A sweep of 50 points
+  takes about a minute, one of 100 points (1000 kHz and up) about two; on the
+  X6100 a sweep takes a few seconds. Up to v0.3.8 the X6200's curve stayed at
+  1.0 whatever the antenna.
+- Span: 50, 100, 200, 500, 1000, 1500, 2000 or 2500 kHz (not while scanning).
+  Scale: Log or Linear. A sweep takes 50 readings across the span, 100 from
+  1000 kHz up (one every 25 kHz at 2500 kHz), so a wide one takes twice as
+  long.
+- The sweep stays inside the amateur band (see
+  [Amateur bands only](#amateur-bands-only)): 2500 kHz on 40 m sweeps 7.000
+  to 7.300 MHz, 30 m 50 kHz at most. The frequencies on the plot show the
+  sweep, the Span button the span asked; the readings follow the sweep's
+  width (100 from 1000 kHz of it). Up to v0.3.8 a wide span sent the carrier
+  outside the band, as the stock firmware's sweep does; with TX outside ham
+  bands on it still does.
+- The sweep stays where the radio transmits. Near the edge of HF (0.1 and
+  55 MHz), of a transverter's range or of the amateur band the span moves
+  inside it, with the VFO's line off the middle, and a range narrower than
+  the span is swept whole. Up to v0.3.7 the radio refused the points
+  outside, and the curve showed there the SWR of the last frequency it could
+  take.
+- The dial moved outside the bands during a scan (a band key, the knob, CAT)
+  stops it as Stop does, the VFO and the mode back as before the scan: "Scan
+  stopped on 26.055 MHz", then "Out of band: Settings > TX Cal".
 - It starts only from receive. While the radio transmits or the tuner is
   tuning, Run says "SWR scan: not while transmitting or tuning" and nothing
-  moves. On a frequency the radio cannot transmit on, it says "No TX on ...
-  MHz".
+  moves. On a frequency the radio may not transmit on, it says "No TX on ...
+  MHz" and why; while the base sends no data, "No TX: no data from the base"
+  (see [No TX without data from the base](#no-tx-without-data-from-the-base)).
+- The sweep steps on the base's readings. If the data stops during a scan,
+  the scan stops as Stop does 3 s after the last data and the radio says
+  "SWR scan: no data from the base" (see
+  [The waterfall stays black](#the-waterfall-stays-black-and-the-s-meter-does-not-move)).
+  Up to v0.3.8 its carrier stayed on until Stop, the sweep standing still.
 
 The tuner (the ATU key held, or the "tuner tune" action) transmits a carrier
 until it has found a match. The radio now gives up a tune that does not end
@@ -980,16 +2236,143 @@ normally:
   radio says "Tuner did not start".
 - If the base goes back to receive without reporting a match, the radio
   waits 1 s and then says "Tuner: no match".
-- In both cases the tune is switched off and the radio is back in receive.
-  Before, it stayed in its tuning state: a new tune and the SWR scan did
-  nothing, and CAT and TCI reported TX until a restart. That is the likely
+- A tune asked while the base sends no data (none for 3 s, or none yet
+  since the start) is refused: "No TX: no data from the base" (see
+  [No TX without data from the base](#no-tx-without-data-from-the-base)).
+  If the data stops during a tune, or less than 3 s before it was asked,
+  the radio switches it off 3 s after the last data and says "Tuner: no
+  data from the base" (the waterfall and the S-meter stand still, see
+  [The waterfall stays black](#the-waterfall-stays-black-and-the-s-meter-does-not-move)).
+  On the X6100 the short key at 0.1 W (50 ms) that ends every tune, which
+  brings back the base's sound inputs from the GUI and the USB sound card,
+  then waits for the data to come back; none if the base is transmitting
+  by itself then.
+  Up to v0.3.8 the radio stayed in its tuning state, without a word, and
+  refused every transmission of the digital apps until a restart (found
+  while looking into issue #152).
+- In all these cases the tune is switched off and the radio is back in
+  receive. Before, it stayed in its tuning state: a new tune and the SWR scan
+  did nothing, and CAT and TCI reported TX until a restart. That is the likely
   cause of issue #25, no SWR scan after a tune on 10 m and 15 m.
 - Each case goes into the base log (`/mnt/base_i2c.log`) with what the base
   reported, for example "ATU: Tuner: no match (tx 0, atu_status 0,
-  atu_params 00000000)".
+  atu_params 00000000)". Without data it says for how long instead: "ATU:
+  Tuner: no data from the base for 3120 ms".
 
 Not tried on the radio yet: what the X6200's base reports at the end of a
 tune with no match.
+
+### TUNE for an external tuner
+
+TUNE sends a steady low-power carrier for a tuner of its own at the antenna
+(an LDG, an SGC, a MAT) to match on, from any mode and from inside the
+digital apps, without leaving the app or changing the frequency or the mode
+(#85). It is not the radio's own ATU, which tunes itself (the ATU key held,
+see [SWR scan and the tuner](#swr-scan-and-the-tuner)): TUNE works with the
+ATU off, and above 1 W switches it off itself (below).
+
+Starting and stopping it:
+
+- A key: give "TUNE ext. tuner on/off" to a front key's long press or to a
+  hand mic F key (Settings > Keys). It works with an app open.
+- The Ext tune button of the digital apps: FT8/FT4/FT2 page 5, JS8 page 7,
+  WSPR page 2, SSTV page 3, PSK31/PSK63 and Olivia page 6, JTTY page 5. It
+  shows the TUNE power, and Stop while it tunes.
+- The browser Panel's TUNE button (see
+  [Transmitting from the browser](#transmitting-from-the-browser)).
+- The same key or button again stops it at once, faded out ("TUNE
+  stopped"). So does a change of frequency, band or TX shift ("TUNE stopped:
+  tuned away"), of mode ("TUNE stopped: mode changed"), of VFO or split
+  ("TUNE stopped: VFO changed"), the ATU switched on during a tune above
+  1 W ("TUNE stopped: ATU on", below), and the time limit ("TUNE over: 15 s
+  limit").
+
+What goes on the air:
+
+- Outside the apps a carrier on the frequency the radio transmits on: the
+  dial, in split the other VFO, with a [TX shift](#tx-shift) the shifted one;
+  in SSB, CW, AM and FM alike. The base sends it in USB-D for the tune and
+  goes back to the mode after.
+- In a digital app a single tone at the app's TX offset, so it lands where
+  the app transmits: FT8 on 14.074 MHz with its TX at 1500 Hz tunes on
+  14.075.500. JS8, WSPR, PSK, Olivia and JTTY at their TX frequency, SSTV at
+  1900 Hz, the middle of its picture. An app used in LSB (SSTV on 40 m)
+  sends below the dial, and so does the tune: 7.169.100 for SSTV on 7.171
+  LSB.
+- At the TUNE power, 1.0 W by default, whatever PWR is set to, higher or
+  lower; while it tunes the power never goes above it, PWR turned up
+  meanwhile included. Where: Settings > TX Cal > EXTERNAL TUNER > TUNE power,
+  W: 0.1 W up to the radio's PWR top, 10 W on the X6100 and 8 W on the X6200,
+  for a tuner that needs about 9 W to match (#87). In a digital app too:
+  the apps' 7 W cap is for their own transmissions, not for the tune. The
+  X6200 on battery stops at its 5 W as always, a tune under way too once the
+  radio has gone onto its battery (unplugged, after the 5 s it waits for the
+  supply to settle), and on a transverter's band at its
+  [TX power limit](#transverter-tx-power-limit).
+- Above 1 W the radio's own ATU goes off first, on both radios, so the tuner
+  at the antenna matches alone. The screen says so ("TUNE 5.0 W, 15 s, ATU
+  off"), and the ATU stays off after the tune: a press of the ATU key (or the
+  "tuner on/off" action) puts it back on. Pressed during the tune, it stops
+  the tune: one above 1 W does not go on through the ATU. At 1 W and less, or
+  held to 1 W or less by a transverter's limit, the ATU is left as it is, and
+  may be switched on while it tunes.
+- For at most the TUNE time limit, 15 s by default. Where: Settings > TX Cal >
+  EXTERNAL TUNER > TUNE time limit, s: 5 to 30 s.
+- The TX panel (in an app the TX strip) shows TUNE, EXTERNAL TUNE and the
+  frequency, the power, the SWR and the seconds against the limit ("4 / 15
+  s"), also with the TX panel switched off (Popups Freq/Info/TX, see the
+  [Display tab](#display-tab)). Stop it when the tuner's lights say it has
+  matched: nothing tells the radio that it has, so a low SWR does not stop
+  it.
+
+After it everything is as it was: the frequency, the mode, the VFOs and
+split, PWR, the app and its TX offset, the band memories. It writes no
+setting but the ATU's off above 1 W, and the TX level the digital apps share
+is left alone.
+
+The SWR protection stands aside during the tune, as it does while the ATU
+tunes, but only within the tune's own limits:
+
+- For the readings of the tune's power: up to twice it and 0.2 W (the base
+  overshoots for a moment as it keys, the reading is in 0.1 W steps). A
+  reading over that is protected as any transmission ("TX stopped: SWR 3.4").
+  From a TUNE power of about 5 W that is more than the radio gives, so the
+  protection then stands aside for the whole tune, up to its time limit.
+- Until its time limit, and a second after while it unkeys.
+- Everything else keeps the protection as set: PTT, the apps, CW, TCI.
+- The base keeps its own protection: the X6100's base cuts its power back
+  from about SWR 2.5 whatever the radio's setting (#87), so a tuner that
+  needs several watts to match may not get them there.
+
+Not where the radio may not transmit; the screen (and the Panel) says why:
+
+- "No tune on 27.185 MHz", then "Out of band: Settings > TX Cal" or
+  "Receive only there" (the Panel: "no TX on 27.185 MHz: outside the
+  amateur bands (Settings > TX Cal)", or "...: receive only"): a frequency
+  the radio may not transmit on (outside the
+  [amateur bands](#amateur-bands-only), a band it only receives, split's
+  other VFO or a TX shift there).
+- "No tune: no data from the base", then "Baseband: Settings > Info" (the
+  Panel: "no data from the base"): the base sends no data (see
+  [No TX without data from the base](#no-tx-without-data-from-the-base)).
+  The radio's ATU is left as it is.
+- "No tune: on the air": something else transmits (PTT, an app's slot, TCI,
+  Winlink, the ATU, the SWR scan). An app's slot that comes during a tune is
+  not sent.
+- "No tune: Winlink in session": a Winlink connection is under way (Pat's
+  last QSY or the modem's last key less than a minute ago).
+- From the Panel also: a browser that only watches, a session without TX,
+  control held elsewhere.
+- LOCK does not refuse it: TUNE does not change the frequency that LOCK
+  holds (the digital apps that hold the frequency while open have the button
+  too).
+
+With an amplifier after the radio, put it in bypass (standby) while the
+tuner matches, and set the TUNE power for the tuner, not for the
+amplifier's drive.
+
+On the bench X6100 into a dummy load: about 0.9 W at the default 1 W from USB, FT8 and CW, and about 10.9 W at
+10 W with the radio's ATU switched off first. Not tried yet on the X6200, or with a real tuner on an antenna.
 
 ### Digital-mode TX level
 
@@ -1001,11 +2384,25 @@ WeFax) set their audio level by themselves.
 - In the first second or so of a transmission nothing changes. Then, while
   the ALC reads under 1, the level goes up slowly and stops there; when the
   ALC goes over 3 or the power is well over the setting, it comes down.
+- Silence in a transmission changes nothing either: no power then is not a
+  level too low. [XARA](#xara-experimental) keeps the radio keyed and silent
+  for about 3 s while it waits out the other station's CW ID. The readings
+  count again about 0.75 s after the audio is back.
 - The level found is kept for the next transmission. Not from a WSPR beacon,
   which has its own power (0.2 W by default): its level would pull the one
   FT8 starts from down.
 - On the X6200 the ALC reading does not follow the audio level, so the level
-  goes up until the power reaches the setting and stays there.
+  goes up until the power reaches the setting and stays there. The ALC it
+  reads changes nothing. After the key the X6200's power comes up from 0 by
+  itself; while it is still coming up the level waits. Steps up that bring
+  no more power go back, judged a few together: the power reading moves in
+  0.1 W steps and wobbles, and taken one by one it let the level creep up a
+  little each transmission where the power reads around or under the
+  setting.
+- The level never goes so high that the audio would be clipped. Up to
+  v0.3.8 the X6200's could climb there over many transmissions (seen:
+  33.4 dB, the audio a square wave 14 dB over the default); since then every
+  X6200 starts once from the default level (0 dB) and learns it again.
 - A transmission that reads 0 W from its first second to its end says so:
   "TX 0 W: level -38 dB, Line-in 10". Not at a 0.1 W setting, where the
   power reading (in whole tenths of a watt) can show 0.0 all along. The log
@@ -1015,6 +2412,10 @@ WeFax) set their audio level by themselves.
   Line-in of 0 is the other known cause: see [Audio tab](#audio-tab).
 - At start the log has a line with the base's version, Line-in, Line-out,
   Play and Rec gain and the level kept.
+- Each transmission that moved the level kept adds a line to the log: the
+  level before and after, the windows (half a second each) that decided it,
+  and the blocks of silence in it ("tx_player: level -6.50 -> -5.75 dB,
+  3 windows decided in 122 blocks, 64 of them silent").
 
 While the AF volume is 0, or the speaker is muted (the mute action, Bluetooth
 headphones with Mute speaker, a TCI client transmitting), the TX monitor is
@@ -1025,6 +2426,9 @@ TX power while a digital app is open:
 
 - The power is capped at 7 W. With a higher setting the app says so
   ("Power is limited to 7W"), and the setting comes back when you close it.
+  A TUNE in the app (its Ext tune button, the key) is not held to it: it
+  goes at its own TUNE power, up to the radio's PWR top (see
+  [TUNE for an external tuner](#tune-for-an-external-tuner)).
 - The Power button in the apps sets the power: 0.1, 0.2, 0.5, 1, 2, 3, 5,
   7 W. WSPR's Power button is its own and leaves the radio's power alone (see
   [WSPR](#wspr)).
@@ -1032,10 +2436,10 @@ TX power while a digital app is open:
 
 ### ALC in CW
 
-In CW and CW-R the ALC bar of the TX panel is grey. In CW the base makes the
-carrier itself and its own ALC brings it down to the power set, so the bar
-only shows how much it turned it down. Readings around 5 on a dummy load are
-normal; there is nothing to adjust.
+In CW and CW-R the ALC bar of the TX panel and of the S-meter box is grey.
+In CW the base makes the carrier itself and its own ALC brings it down to
+the power set, so the bar only shows how much it turned it down. Readings
+around 5 on a dummy load are normal; there is nothing to adjust.
 
 
 ### Recording voice messages
@@ -1053,12 +2457,70 @@ receiving and turns it on only when transmitting.
 - The recording keeps 250-3000 Hz, what SSB sends, without the radio's own
   hum and whistles.
 
+### PA bias (X6200)
+
+Each X6200's base has its own PA bias from the factory, one value for the
+driver and one for the final, in its calibration block. Xiegu's firmware
+reads them at the start and sends them to the base. The X6200 now does the
+same: at each start it reads the block before it sends anything to the base,
+and sends those values. Versions 0.3.4 to 0.3.8 sent 3360 / 3820 to every
+X6200, the values of another radio (issue #173). The X6100 sends its 450 /
+650 as before. There is no setting for it.
+
+Where to see it: Settings > Info > FIRMWARE > PA bias, and one line in the
+base log (`/mnt/base_i2c.log`) at each start:
+
+- "3326 / 3843, the radio's own" (log: "PA bias 3326/3843 (drive/final):
+  this radio's own, from the base's calibration block"). The numbers are
+  your radio's.
+- "3360 / 3820, own or an old version's" (log: "PA bias 3360/3820: either
+  this radio's own or left by an older version until the base loses
+  power"). The base keeps in the block the bias last sent to it, until it
+  loses power. After an older version ran, or Aether Radio's X6200 GUI, or
+  a start of this one on the fixed 3360 / 3820 (the two "fixed" lines
+  below), the block shows 3360 / 3820 until then, and a radio whose own
+  values are those reads the same. Switching the radio off and on once is
+  enough: a normal power-off, battery in and supply connected, gives the
+  base its whole block back as at a cold start (ea4iln, #173, base 1.0.8),
+  and at the next start the radio reads its own.
+- "3360 / 3820, fixed (base: N / M)" (log: "PA bias N/M in the base's
+  calibration block is out of range (drive 3024-3696, final 3438-4095): the
+  fixed 3360/3820 instead"). A value is taken from the block only within
+  10 % of 3360 (driver) and 3820 (final), and under 4096; the two X6200s
+  known are 1 % apart. If either is out, both go back to 3360 / 3820. The
+  X6100's 450 / 650, which versions before 0.3.4 sent to the X6200, land
+  here at the first start after such a version.
+- "3360 / 3820, fixed (not read)" (log: "PA bias: the base's calibration
+  block could not be read: the fixed 3360/3820 instead"). The radio tries
+  the read three times before it gives up.
+
+After a start on either "fixed" line the base keeps the 3360 / 3820 it was
+sent, so every later start shows "own or an old version's" until the base
+loses power.
+
+The bias goes to the base once at the start. The radio sends its whole
+register block to the base every second and after a write error, the bias
+in it, so it stays until the radio software stops.
+
+### Register 32 (X6200)
+
+At each start the X6200 sets its base's register 32 to 0x0a, as Xiegu's
+firmware does; up to v0.3.8 it stayed at 0, the control library's value.
+What the register does is not known, a TX timing value maybe. It is set for
+the short RF pulse the X6200 sends at the start of each transmission, well
+above the steady level at low power (issue #53); whether it changes that
+pulse is not known yet. It goes to the base once, after the base's register
+block at the start, and the block the radio sends every second carries it
+from then on. The GUI log (app_logs) has one line for it at each start:
+"base: register 32 = 0x0a, as Xiegu's firmware". There is no setting for
+it, and the X6100 is not changed.
+
 ## Digital modes
 
 ### Opening a mode
 
-APP (page 1) > Modes opens a menu: RTTY, PSK31, PSK63, FT8, FT4, FT2, WSPR, Olivia,
-JTTY, JS8, SSTV, WeFax, NavTex. Turn the MFK to choose, press to open; the last used mode is marked.
+APP (page 1) > Modes opens a menu: RTTY, PSK31, PSK63, FT8, FT4, FT2, WSPR, Olivia
+(Contestia too, from the Olivia window's Mode), JTTY, JS8, SSTV, WeFax, NavTex. Turn the MFK to choose, press to open; the last used mode is marked.
 Pressing Modes again closes the menu.
 
 - Callsign and QTH: Settings > General > STATION.
@@ -1080,6 +2542,7 @@ Buttons:
 | 2 | Hold Freq, Auto, Force QSO save, Power |
 | 3 | CQ Modifier, Time Sync, Log Map, Live Map |
 | 4 | Freq: Preset / 14.091, Hound: Off / On, Retries, For you |
+| 5 | Ext tune (see [TUNE for an external tuner](#tune-for-an-external-tuner)) |
 
 - Show: CQ shows the CQs and the messages to you; All shows all traffic.
 - TX CQ calls CQ. A band key, Freq or Mode ends the CQ: TX CQ goes to
@@ -1087,13 +2550,27 @@ Buttons:
   CQ to call on this frequency"), and one press calls again there. A reply,
   yours or Auto's, takes the CQ's place and turns it off too. TX Call allows
   or stops transmitting; stopping cuts a transmission in progress.
+- An FT8 or FT4 transmission starts 0.5 s into its slot, as WSJT-X sends.
+  One that can only start later (a press up to 1.5 s into the slot, 1.0 s
+  in FT4; an answer after a long last decode) leaves out the part already
+  past, so the rest of the message is where it belongs. One so late that
+  more than a fifth of it would be left out (2.5 s of FT8, 1.0 s of FT4; the
+  clock set while FT8 is open) is not sent: the radio says "TX not sent: too
+  late into the slot", and the message goes in your next slot, its retry not
+  used up. FT2 starts as soon as it can (see FT2 below).
+- Your grid in a CQ, an answer or a Hound call is the QTH's square in
+  capitals: jo21cv goes as JO21. A QTH of 2 characters (JO) sends none.
 - Hold Freq: your TX offset does not move to the station you answer.
 - Auto: the next message of the QSO is sent by itself, and a station that
   calls you gets an answer, also while you call CQ (what other programs call
   "Res"). It never calls a CQ on its own. If several stations call you in the
-  same slot and one is a POTA activator, that one is answered first.
+  same slot and one is a POTA activator, that one is answered first. Once
+  your RR73 or 73 has gone out, the next station that calls you is answered
+  at once; if the other station sends again in that slot (it missed your
+  RR73 or 73), it gets that message again first.
 - Retries: how many times a message goes out with no answer before the QSO is
-  dropped. Each press steps 3, 4, 5, 6, 8, 10, 12, 15 and back to 3; 6 by default.
+  dropped (its late RR73 still logs it, see Log). Each press steps 3, 4, 5, 6,
+  8, 10, 12, 15 and back to 3; 6 by default.
 - Time Sync: for a clock off by a few seconds with no WiFi or GPS to set
   it. Press it as a slot starts (the signals start, or a clock you trust
   shows :00, :15, :30, :45): the clock moves to the nearest slot start (15 s
@@ -1142,9 +2619,67 @@ list, so they do not scroll away.
 - The strip has no title: a line in the "to you" colour sits on top of it.
   It is hidden when empty.
 
-Log. A QSO is logged by itself when the other station sends R+report or
-RR73 and both reports are known; "Force QSO save" logs by hand. The log is
-`/mnt/ft_log.adi`; the radio says "Saved QSO de ...".
+Log. A QSO is logged by itself once both reports are known, when the other
+station sends R+report (you called CQ), RR73, RRR or 73. It is logged once:
+the same messages again, or a new call from that station soon after, make no
+second entry.
+
+- Moving on before the last message comes does not lose the QSO. Answer
+  another station (a row, the For you strip, the browser's reply), press TX
+  CQ, turn Hound on or off, or let the retries run out, and a QSO whose
+  report has gone out, or that is logged already, is kept aside for 4 slots
+  (a minute in FT8), counted again at each message of its station. Its late
+  RR73, RRR or 73, or its R+report when you called CQ, still logs it, with
+  its report and the last of yours that went out (not one made since that
+  never went). Up to 4 QSOs wait like this.
+- While another QSO is in progress, a late message gets no answer: the QSO
+  you went on to carries on. With none in progress (you pressed TX CQ, the
+  retries ran out, or the QSO you went on to has ended: logged, and your RR73
+  or 73 gone out), a late R+report makes its QSO the one in progress
+  again, and with Auto it gets your RR73, so that the other station can log
+  the QSO too; that ends the CQ, as any answer of Auto's does. In Hound mode
+  no late message is answered, and the Fox's QSO is logged by Hound alone.
+- A call from that station, or a press on its row, takes the same QSO up
+  again, and it goes on as any QSO does.
+- A band key, Freq or Mode change drops them, as the station is no longer
+  heard there. A QSO that the last decodes from before the change complete
+  is still logged with the old dial frequency and mode.
+- "Force QSO save" logs the QSO in progress by hand, once both reports are
+  known. The TX message and the sequence go on as they were: with Auto the
+  station's RR73 gets your 73, and a station that calls you is answered once
+  the other one has been quiet for a slot of yours.
+
+The log is `/mnt/ft_log.adi`; the radio says "Saved QSO de ...". The QSO
+also goes into the day's log, which the web configurator's Logs page lists
+and exports, as the same ADIF record: the time to the second, the band as
+ADIF writes it (`40m`), the frequency in MHz to the Hz, no empty fields.
+While an activation runs it goes into the activation's log instead, with
+the same call, date, time to the second, band, frequency and mode, and the
+activation's fields besides: its reference (MY_SOTA_REF, MY_POTA_REF or
+MY_SIG and MY_SIG_INFO) and, in Tiles, the tile as MY_GRIDSQUARE. For LoTW,
+upload one of the two (see [Where are my logs?](#where-are-my-logs)).
+
+A compound or long callsign. FT8 packs a base call, with /P or /R at most
+(ON6URE, ON6URE/P), together with a grid or a report. Any other call of
+yours (PA/ON6URE, ON6URE/MM, KF0QGT/6Y, OT4ABCD, up to 11 characters; the
+callsign setting says "Callsign is long, QTH will be omitted") goes the way
+WSJT-X sends it: in full in the messages without a report, `<W1ABC>
+PA/ON6URE` to a CQ and `<W1ABC> PA/ON6URE RR73` or `73` at the end, the
+other station's call as a hash; in the reports as a hash (`W1ABC
+<PA/ON6URE> R-10` on the air), which the other station knows from your
+first message. So a station that has not heard you before can answer you,
+and a call to you (`<PA/ON6URE> W1ABC -05`) decodes from the first slot
+on, also after a long pause. These QSOs carry no grid. Your CQ is
+`CQ PA/ON6URE`, with no room for the QTH or a CQ Modifier: TX CQ says
+"Next TX: CQ PA/ON6URE (no QTH or modifier with this call)". A CQ that does
+not encode at all (a callsign too long for FT8) is refused at TX CQ, "No
+CQ: callsign ... does not fit FT8", and CQ stays off. An X6200 does this
+since v0.3.9, whose update brings the FT8 library: up to v0.3.8 it kept its
+card image's older one, with which such a CQ went out as free text or as a
+hash (`CQ <...>`), or not at all. The other way round,
+a station with such a call answers your CQ with `<ON6URE> PA/W1ABC`, no
+grid: that is a call to you, answered (by Auto, or pressed) with your
+report `PA/W1ABC ON6URE -07`, its call as a hash on the air.
 
 Log Map. Page 3 > Log Map shows the logged stations on a world map centred on you:
 great-circle paths, a dot and the callsign for each station. Calls and dots
@@ -1169,7 +2704,7 @@ carries the call, its grid when the message had one, dial + audio frequency,
 SNR and mode. Your own transmissions are never reported. With no network the
 batch is dropped quietly; nothing waits on it, the decoding goes on. Search
 your call on pskreporter.info to see the spots after a few minutes.
-In PSK31, PSK63 and Olivia the text is free, so a station is reported when the
+In PSK31, PSK63, Olivia and Contestia the text is free, so a station is reported when the
 decoder reads "DE <call>" (as in "CQ CQ DE IK1ABC"), with no grid and 0 dB SNR,
 because these modes give no S/N figure.
 
@@ -1212,6 +2747,9 @@ and the WSJT-X team, GPL v3):
   and TX stops. Decodes from the second period (other Hounds) are ignored.
 - TX CQ and Hold Freq do nothing in Hound mode. The RX rows show the state,
   e.g. "Hound: calling H49A". Hound is off each time the app opens.
+- A compound or long callsign of yours (PA/ON6URE; see above) goes to the
+  Fox only as a hash, not in full as in the other QSOs: a Fox that has not
+  heard it in full reads "H49A <...> JO21" and cannot work you.
 
 The multi-stream messages are now decoded in any FT8 session (ft8_lib left
 them out); the Fox's call shows as `<...>` until its CQ has been heard.
@@ -1256,7 +2794,7 @@ Buttons (the first one of each row turns the page, hold to go back):
 | 4 | AUTO, HB, HB ACK, Settings... (INFO, STATUS, Relay, Groups) |
 | 5 | APRS >, Log QSO, Activ.: Off / POTA / SOTA, Log prompt |
 | 6 | Alerts >, Speed, Decode: All speeds / My speed, Freq: JS8 / GhostNet / kHz |
-| 7 | Power, Map |
+| 7 | Power, Map, Ext tune |
 
 What it does:
 
@@ -1311,7 +2849,9 @@ or NTP).
   the TX next button reads Stop TX. A press takes the beacon off the air at
   once and turns TX % to 0 and TX next off. The rest of that cycle is idle;
   the next cycles receive until you press TX % or TX next again. Closing WSPR
-  (ESC) also stops a beacon.
+  (ESC) also stops a beacon and turns TX % to 0.
+- WSPR always opens with TX % at 0, also after a power-off with WSPR open:
+  no beacon goes out until you press TX % or TX next.
 - Power (page 2) is WSPR's own: 0.1, 0.2, 0.5, 1, 2 or 5 W, 0.2 W by
   default. The radio's power setting is not changed: the radio goes to
   WSPR's power for each beacon and back to its own after it. These steps
@@ -1328,7 +2868,9 @@ or NTP).
 - The main knob moves the TX audio offset (1410-1590 Hz).
 - Upload: the spots of each cycle go to WSPRnet (plain HTTP over WiFi). The
   status line counts what was sent and what failed.
-- Page 2: Power and TX %, the same 0, 10, 20, 33, 50 steps as on page 1.
+- Page 2: Power and TX %, the same 0, 10, 20, 33, 50 steps as on page 1,
+  and Ext tune: a carrier at the TX offset for an external tuner, at the
+  TUNE power, not WSPR's (see [TUNE for an external tuner](#tune-for-an-external-tuner)).
 
 ### SSTV, WeFax and NavTex
 
@@ -1347,9 +2889,18 @@ frequency and the receiver state. Leaving the app gives the VFO back.
   proposed mode and frequency. Distress rows are red, with the position and
   the time it was valid. A `?` marks a call whose error check failed. Save
   (page 2) writes the calls to the Files page.
-- WeFax: DWD, Northwood and Athens stations. View (page 2) chooses Big
-  (default), Full (the whole fax) or Small, the old low panel that keeps the
-  main waterfall visible above it.
+- WeFax: the DWD (Germany), Northwood (UK) and Athens (Greece) stations and
+  NOAA's Boston, New Orleans, Pt. Reyes, Kodiak and Honolulu (US). Your own
+  stations come after them, under Channels: every [channel](#channels) whose
+  name starts with WEFAX (upper or lower case). The list and the header show
+  the rest of its name. A channel holds the dial, and the app listens 1.5 kHz
+  above it: for a station on 7795.0 kHz, tune 7793.5 kHz USB on the main
+  screen (not in the app: it gives the VFO back when it closes), APP >
+  Channels > Add, then Edit for the name (WEFAX JMH); or on the web
+  configurator's Memories page, frequency 7.7935. A channel on one of the
+  stations above (the WEFAX channels a new radio starts with) is not listed
+  twice. View (page 2) chooses Big (default), Full (the whole fax) or Small,
+  the old low panel that keeps the main waterfall visible above it.
 - SSTV: calling frequencies, LSB on 80 and 40 m (3.735, 3.845, 7.165,
   7.171 MHz) and USB above (14.230, 14.233, 18.160, 21.340, 24.975, 28.680,
   50.510 MHz). The picture is on the left, the decoder state on the right,
@@ -1371,7 +2922,7 @@ SSTV buttons:
 |---|---|
 | 1 | Start Auto RX, Start Manual RX, RX Mode (Manual RX), TX |
 | 2 | Freq., RX Pics Browser, Delete picture, Auto RX Restart (on: a new VIS during a picture starts a new one) |
-| 3 | Power, Denoise (ON/OFF), Close (ESC also closes) |
+| 3 | Ext tune, Power, Denoise (ON/OFF), Close (ESC also closes) |
 
 Denoise. SSTV 3:3 > Denoise, on by default. When a picture is complete the
 radio saves it as it came off the air (`sstv-20261016-143205.png`), cleans
@@ -1401,6 +2952,10 @@ and its colours; the next press transmits.
 
 - TX Mode chooses Martin, Scottie or Robot. Cancel TX goes back. Halt TX
   stops on the air.
+- While a picture goes out the main knob, the band and mode keys and A/B
+  leave the frequency, band and mode as they are, as in FT8. Freq. (page 2)
+  is off from TX setup to the end of TX: choose the calling frequency
+  before TX.
 - TX goes through the same player as FT8 and WSPR: power at most 7 W, level
   set from the ALC and the power.
 - Pictures are in `/mnt/sstv/tx_pics`, text templates in
@@ -1411,7 +2966,8 @@ and its colours; the next press transmits.
 ### PSK31, PSK63 and Olivia
 
 Keyboard-to-keyboard modes, ported from SP2KMO's OpenX6100 PSK31 and Olivia
-work (randal007's merge). APP > Modes > PSK31, PSK63 or Olivia. The radio
+work (randal007's merge). APP > Modes > PSK31, PSK63 or Olivia; Contestia is
+in the Olivia window, from its Mode button. The radio
 goes to the nearest standard dial frequency in USB-D (PSK 14.070, 7.040,
 3.580...; Olivia 14.071, 7.071, 3.5815...); the BAND keys step through the
 others. Frequency and mode come back when the app closes.
@@ -1424,8 +2980,15 @@ others. Frequency and mode come back when the app closes.
 - Received text in the panel under the waterfall, sent text in the TX
   colour; the size follows Settings > Display > Decoder text, as RTTY and CW.
 - Mode (page 1): PSK31 (31.25 Bd) or PSK63 (62.5 Bd), same Varicode; Olivia
-  8/250 (default), 16/500 or 32/1000. The status button shows the audio
-  frequency and the lock quality; press resyncs, hold clears the text.
+  8/250 (default), 16/500 or 32/1000, then Contestia (CT on the button) 4/250,
+  8/250, 4/500, 8/500, 16/500, 8/1000, 16/1000 or 32/1000. Contestia is Olivia
+  with a block half as long: about twice the speed, for about 2 dB of
+  sensitivity at the same tones and bandwidth (in the host test, 75% copy at
+  -13 dB SNR in 2500 Hz in Contestia 8/250, -15 dB in Olivia 8/250), capitals
+  only, and what it has no character for goes out as `?`. It is made
+  to fldigi's Contestia (the same block, scrambling sequence and alphabet) but
+  has not yet been tried against fldigi on the air. The status button shows the
+  audio frequency and the lock quality; press resyncs, hold clears the text.
 - PSK squelch (page 2, SQL): text is shown only while the decoder's quality
   (how tightly the symbols sit on 0 and 180 degrees, the Q on the button)
   is at the threshold or above, and for 1.5 s after it drops. Noise alone
@@ -1439,13 +3002,20 @@ others. Frequency and mode come back when the app closes.
 - DX call and RST (page 2): the DX call is taken from "DE <call>" in the
   received text, or typed in; hold clears it.
 - TX: Free Text, or the macros (pages 3-5: press sends, hold edits; an empty
-  text deletes). Tokens `<MYCALL>`, `<CALL>`, `<RST>`, `<RSTR>`. Stop TX ends
-  with a short carrier tail (PSK) or after the current block (Olivia). Nothing is sent on
+  text deletes). Page 6: Ext tune, a carrier at the TX frequency for an
+  external tuner. Tokens `<MYCALL>`, `<CALL>`, `<RST>`, `<RSTR>`. Stop TX ends
+  with a short carrier tail (PSK) or after the current block (Olivia, Contestia). Nothing is sent on
   opening. TX goes through the same path as FT8: power capped at 7 W, ALC
   levelling, SWR protection, the TX strip.
 - Files: `/mnt/psk_macros.txt`, `/mnt/olivia_macros.txt`, `/mnt/psk.conf`
   (squelch).
 - The macros can also be edited on the web configurator's Macros page.
+- What is received and sent is kept on the card, a file a day (see
+  [Text log of the keyboard modes](#text-log-of-the-keyboard-modes)).
+- The apps don't log QSOs themselves yet. A QSO logged from the browser
+  panel's Log tab while one is open goes into the log in its mode: PSK31 or
+  PSK63 (ADIF mode PSK with that submode), OLIVIA or CONTESTI (see
+  [Browser panel](#browser-panel)).
 
 ### JTTY
 
@@ -1455,11 +3025,61 @@ frequency of the band in USB-D (14.090 on 20 m). The layout is the same as
 RTTY and PSK: received text in the panel under the waterfall, sent text in
 the TX colour. F1-F8 (pages 2 and 3) are macros: press sends, hold edits
 the name and then the text (an empty text deletes, the ones after move up).
+With a keyboard CapsLock+1 to CapsLock+8 send them too (up to v0.3.8 its F1
+to F8 did).
 By default they are the WSJT-X contest keys. In the text, `%M` is your call,
 `%H` the DX call, `%E` "599" and the serial number, sent as one frame. Up to
 80 characters, kept in `/mnt/jtty_macros.txt`, also on the web configurator's
-Macros page. Decoded stations go to PSK Reporter when it is on. TX goes through the same path as FT8 (7 W cap, ALC, SWR
-protection). I haven't made a QSO with it yet, so reports are welcome.
+Macros page. Page 5: Ext tune, a carrier at the TX frequency for an external
+tuner. Decoded stations go to PSK Reporter when it is on. TX goes through the same path as FT8 (7 W cap, ALC, SWR
+protection). I haven't made a QSO with it yet, so reports are welcome. A
+QSO logged from the browser panel's Log tab while JTTY is open goes into the
+log as JTTY (ADIF 3.1.8: mode MFSK, submode JTTY).
+
+### Text log of the keyboard modes
+
+What PSK31, PSK63, Olivia, Contestia and JTTY receive and send, and what RTTY
+receives, is kept on the card: a line for each line, in `/mnt/digi_text/`, one file a
+UTC day (`2026-10-31.txt`). Leave the radio listening and read later what
+came through; the reports you exchange are in the text.
+
+```
+2026-10-31 14:05:12Z 14.071000 PSK31 RX Q87% CQ CQ DE PA3XYZ PA3XYZ K
+2026-10-31 14:05:40Z 14.071000 PSK31 TX - PA3XYZ DE ON6URE ON6URE KN
+2026-10-31 14:07:02Z 14.090850 JTTY RX -12dB CQ PA3XYZ JO21
+2026-10-31 14:09:30Z 14.072500 OLIVIA-8/250 RX Q64% RYRYRY
+2026-10-31 14:11:05Z 14.072500 CONTESTIA-16/1000 RX Q71% CQ CQ DE PA3XYZ
+```
+
+- Each line: the UTC time the line began, the frequency in MHz where the
+  signal is (the dial plus the decoder's audio frequency in PSK, the centre
+  in Olivia and Contestia, the lowest tone in JTTY, the RTTY centre), the mode, RX or TX,
+  the app's own figure for the signal averaged over the line, and the text.
+  The figure: Q, the decoder's quality as on the PSK and Olivia status
+  button (0-100 %); dB, JTTY's signal-to-noise in 2500 Hz; `-` none (RTTY
+  has no such figure yet, and what is sent).
+- The files are plain ASCII: a character past it (a macro's `é`) is written
+  as `?` for each of its bytes, as PSK and Olivia send it.
+- A received line ends at the decoder's line break, after 10 s without new
+  text, when the frequency moves more than 30 Hz (another station), at 200
+  characters, and when the app closes. A JTTY message is written once,
+  whole, when its last frame is in, or 10 s after its last frame. JTTY
+  keeps every message it decodes in the passband, the dim ones in the panel
+  too, each at its own frequency.
+- PSK keeps what the panel shows: with the squelch on, what the decoder
+  makes of noise is not kept either.
+- Settings > General > TEXT LOG: Keyboard modes (on by default) and Size
+  limit (1-100 MB, 10 MB by default). Past the limit the oldest day's file
+  goes. The newest day's file is never deleted: when it alone reaches the
+  limit, nothing more is kept until the next UTC day (or a higher limit).
+- The lines go to the card as they end, and the radio has the card write
+  them out at most every 15 s: a power cut loses the last quarter minute
+  or so, and a day of listening costs the card little. Nothing is written
+  while the card's DATA partition is not mounted.
+- The web configurator's Logs page lists the days under the QSOs: read one
+  in the browser, download it, or delete it.
+- These lines are not QSOs: to log a QSO in these modes, use the Log tab of
+  the [browser panel](#browser-panel).
 
 ### RTTY and WeFax TX
 
@@ -1475,15 +3095,38 @@ screen on the radio starts them yet: a control for them is still to come.
 
 ## CW
 
+The keyer's settings are on the KEY button's pages: KEY 1:2 has Speed,
+Volume, Train and Tone, KEY 2:2 Mode, Iambic, QSK time and Ratio. Volume is
+the sidetone's level, 0 to 32 on the X6100 and 0 to 63 on the X6200.
+
+Train is for practice: the key, the paddle, the CW messages and the
+[CW Trainer](#cw-trainer) sound only the sidetone, and nothing goes out.
+
+- While Train is on and the radio is in CW or CW-R (in split, also when
+  the other VFO, the one that transmits, is), the radio holds its TX power
+  at 0 W, in every key mode. In Manual the X6200's base (1.0.8) transmitted
+  at PWR with Train on, from a key or paddle in the KEY jack, up to v0.3.8
+  (issue #127). With Auto-L and Auto-R its keyer already sent nothing.
+- The screen shows ON AIR at 0.0 W while the key is down, and the first
+  time the key goes down it says "KEY Train: sidetone only, 0 W" (not in
+  the CW Trainer).
+- A TUNE for an external tuner keeps its own power, and out of CW and CW-R
+  (voice, the apps) the power is not held. To transmit CW, turn Train off.
+- Outside the amateur bands only the CW Trainer keeps sounding; Train with
+  the key, the paddle or the messages is refused there as any CW is (see
+  [Amateur bands only](#amateur-bands-only)).
+
 ### CW decoder
 
-In CW mode the decoder buttons are on the CW pages (CW 1:2, 2:2): Decoder
-on/off, Tuner (tuning indicator), Dec SNR, CW peak and CW peak Q. Text and
-speed (WPM) appear in the panel over the waterfall.
+In CW mode the decoder buttons are on the CW pages: CW 1:2 has ZAP, CW
+peak, CW peak Q and Log QSO (the [quick QSO log](#quick-qso-log)), CW 2:2 Decoder on/off, Tuner (tuning
+indicator), Dec SNR and Parse. Text and speed (WPM) appear in the panel
+over the waterfall.
 
 - The receiver comes from gdyuldin x6100_gui 1.0.1: a coherent tone tracker
   that follows the station inside the CW filter, a detector with a noise
-  floor, and a time classifier that learns the speed.
+  floor, and a time classifier that learns the speed, 10 to 50 WPM (in the
+  [CW Trainer](#cw-trainer) from 5).
 - On test signals it copies 98-100% from 20 dB down to 0 dB SNR (in 2.5 kHz)
   and still 97-100% at -3 dB; the old decoder stopped at about +5 dB. The WPM
   reading is within about 0.5 WPM.
@@ -1496,6 +3139,20 @@ speed (WPM) appear in the panel over the waterfall.
   nothing is decoded. A key-down longer than 8 dots (tune-up) is ignored.
 - Upstream bugs fixed here: a strong station slightly off tune was never
   decoded, and a dash cut by a retune came out as a dot.
+
+In CW and CW-R a station on the dial sounds at the key tone (KEY > Tone),
+on the X6100 and the X6200 alike, and the waterfall, the spectrum and the
+browser Panel draw it on the VFO line, in the middle of the passband. Up to
+v0.3.8 the X6200 drew it a key tone off the line, below it in CW and above
+it in CW-R, and in CW its ZAP and Tuner went the wrong way (#115).
+
+- ZAP tunes to the station the decoder follows, to 10 Hz: it then sounds at
+  the key tone. The decoder follows keyed signals, not a steady carrier.
+- Tuner: a row of bars under the frequency while the decoder follows a
+  station, the middle one when it sounds at the key tone, one bar further
+  for each 10 Hz off, in green, yellow or red. In CW the lit bar is on the
+  station's side of the dial: turn the dial towards it. In CW-R it is the
+  other way round.
 
 Parse. Where: CW 2:2 > Parse (on by default). The decoder often runs words
 together when the spacing is tight: "CQCQDEON6UREK". With Parse on, each
@@ -1527,8 +3184,13 @@ again when it reconnects.
   same as KEY > Speed), and goes back to its control when the line closes.
 - When everything is sent the line goes away. Out of CW mode or out of the
   CW segment nothing new is sent and the line is cleared.
-- F1 to F5 key the MSG > CW messages 1 to 5 (in list order) as if typed
-  and sent with Enter; Esc stops them. An F key with no message does nothing.
+- CapsLock+1 to CapsLock+5 key the MSG > CW messages 1 to 5 (in list order)
+  as if typed and sent with Enter; Esc stops them. A number with no message
+  does nothing. CapsLock+L logs the line typed instead of sending it (see
+  [Quick QSO log](#quick-qso-log)), and CapsLock+F opens the frequency box,
+  as `f` does outside CW. Like any window (Settings, an app) it drops what
+  waits to be sent and empties the line; a message on the air finishes. Up
+  to v0.3.8 F1 to F5 keyed the messages.
 - In a CW message `{CALL}` is your callsign (Settings > General > STATION),
   also with TX in MSG > CW; with no callsign set it stays as written.
 - Until the line is open, the other keys (- = and so on) work as usual; in
@@ -1544,8 +3206,9 @@ open it too (Settings > Keys > FRONT KEYS, LONG PRESS: APP CW Keyboard).
 
 - It keys in CW or CW-R. In another mode the box on the right reads NOT CW
   and nothing is taken ("Set CW mode to transmit"). Unlike the main screen's
-  line it does not need the CW segment; where the radio may not transmit it
-  says "No TX on ...: receive only" and keys nothing.
+  line it does not need the CW segment; where the radio may not transmit, or
+  while the base sends no data, it says "No TX on ..." or "No TX: no data
+  from the base" and why, and keys nothing.
 - With a USB or Bluetooth keyboard: type the line under the log, Enter keys
   it, lines typed while sending wait in a queue. Backspace corrects; Esc
   stops what is on the air and queued, and with nothing to stop closes the
@@ -1610,7 +3273,8 @@ kinds:
 - USB serial (CH340, FTDI, CP210x, PL2303, CDC ACM): the paddle on the
   modem lines, default CTS = dit, DSR = dah. Off by default: turn on Serial
   port. The first ttyUSB or ttyACM port is read; the radio's own ports are
-  never touched.
+  never touched, nor on an X6200 the WR12's while WR12 on HOST is on (see
+  [WR12 receiver](#wr12-receiver-x6200)).
 
 In CW or CW-R the contacts key the radio; out of CW they do nothing. The
 keyer follows the KEY buttons in CW (mode, iambic A/B, speed, ratio).
@@ -1633,7 +3297,8 @@ do not.
 
 ### CW messages
 
-The MSG > CW messages are sent with TX or as a beacon.
+The MSG > CW messages are sent with TX or as a beacon. Page 1: TX, New,
+Edit; page 2: Beacon, Delete, QRSS3; page 3: Start, Until, Freq.
 
 - Edit them on the radio (MSG > CW) or on the web configurator's CW messages
   page (Operating menu): add, edit, delete, 1-64 characters each. The radio
@@ -1641,27 +3306,165 @@ The MSG > CW messages are sent with TX or as a beacon.
 - While a message or beacon is sent, the break-in delay is raised (one word
   space plus 150 ms, at most 1 s), so the transmitter stays keyed through
   the gaps instead of clicking the relay. It goes back to your setting between
-  beacons and when the message ends.
+  beacons and when the message ends. Not in [QRSS3](#qrss3).
 - `{CALL}` is your callsign and `{HIS}` the other station's: the last call
   the decoder confirmed (the one Log QSO offers), e.g. `{HIS} UR 599 599 BK`.
+- The side panel shows how long the message takes as sent (`{CALL}` filled
+  in), whether the beacon is on, and its start and end.
+
+#### CW beacon
+
+- Page 2, Beacon: Off, or the pause after each send: 10, 30, 60 or 120 s.
+  TX then sends the message again after every pause until you stop it. The
+  radio receives in the pauses, with the CW decoder if it is on. It sends at
+  the radio's power (PWR).
+- Not started where the radio may not transmit ("No TX on ...", see
+  [Amateur bands only](#amateur-bands-only)); one moved there stops at its
+  next element. Nor while the base sends no data ("No TX: no data from the
+  base", see [No TX without data from the base](#no-tx-without-data-from-the-base));
+  one the data stops in stops at its next element once it has been gone for
+  3 s.
+- TX (Stop), the front PTT key, ESC or closing MSG > CW (Close, another menu
+  key, an app) stop it. So does a transmission during a pause or before
+  its start: the mic's PTT, CAT, TCI, the Panel. A beacon only runs while
+  MSG > CW is open.
+- Its start and end, page 3, for scheduled CW lessons, bulletins, or a
+  beacon of a set length:
+  - Start: Now, or a time. Press Start, turn the MFK or VOL (5-minute
+    steps), press the MFK when done.
+  - Until: Stopped (until you stop it), a number of sends (1-99) or a time.
+    Each press of Until goes to the next of the three; the MFK or VOL then
+    sets the number or the time; press the MFK when done.
+  - The times are the screen clock's: the radio's local time in the time
+    zone of Settings > General > DATE / TIME, UTC unless you chose one. The
+    panel says which: "From 20:00 UTC, 10 sends". The radio's clock must be
+    right (NTP over WiFi, GPS, or set by hand).
+- With Beacon on, TX arms it. Before its start the panel says "AT 20:00"
+  and the hint counts down; the radio receives meanwhile. A start time gone
+  by today is tomorrow's; one whose minute the clock shows now starts at
+  once. If the clock is set forward past the start while it waits (NTP when
+  WiFi connects, GPS, by hand), it starts then; past the end time too, it is
+  over without a send.
+- It ends after its sends, or when the next send would start at or after
+  the end time: the send on the air at the end time is finished, not cut
+  off. The screen says "Beacon over: 10 sends" or "Beacon over: 21:00". An
+  end time earlier in the day than the start is the next day's, one at the
+  start's minute 24 hours later: with Start Now and Until 21:00, TX at 21:05
+  runs until 21:00 tomorrow. The page says so ("Now, until 21:00 tomorrow",
+  and in the line at the bottom while it waits and runs), so a day of
+  beacon is never a surprise.
+- With Beacon off, Start and Until do nothing: TX sends once, at once.
+- After a restart Beacon (and QRSS3) are off, so a restart never starts a
+  beacon by itself. The pause, Start, Until and the QRSS3 frequencies are
+  kept.
+
+#### QRSS3
+
+QRSS3 is very slow CW for receivers that draw a long, narrow waterfall (the
+"grabbers" on the web), read by eye: a dot 3 s, a dash 9 s, 3 s between the
+elements of a character, 9 s between characters, 21 s between words. A
+callsign takes about 3 minutes, `CQ CQ DE {CALL} {CALL} K` about 11; the
+hint counts down the send.
+
+- Page 2, QRSS3 On: TX and Beacon send the message in QRSS3 instead of at
+  the keyer's speed. The beacon's pause, start and end work as above.
+- In CW or CW-R, on 30 m or 80 m. TX moves the radio onto the band's QRSS
+  frequency; in CW the carrier goes out on the frequency shown.
+
+  | Band | QRSS window | Default frequency | Grabbers' receivers (USB) |
+  |---|---|---|---|
+  | 30 m | 10.140000-10.140100 MHz | 10.140050 MHz | 10.138700 MHz |
+  | 80 m | 3.569800-3.570000 MHz | 3.569900 MHz | 3.568600 MHz |
+
+- Page 3, Freq: the QRSS frequency of the band the radio is on. Press Freq,
+  turn the MFK or VOL (10 Hz steps), press the MFK when done. Kept for each
+  band. Look at a grabber first and pick a spot in the window that is free.
+- Refused, with a word on the screen: in another mode, on another band,
+  with the frequency locked, in split or with a TX shift, with XIT set (it
+  would move the carrier out of the window: set it to 0), where the radio
+  may not transmit, and while the base sends no data.
+- The radio times every element itself (the base's keyer does not go that
+  slow) and keeps your break-in delay: it receives in every gap (3 s at
+  least), with the CW decoder if it is on.
+- It stops on TX (Stop), ESC or closing MSG > CW, the front PTT key, the
+  SWR protection, any transmission between the elements (the mic's PTT,
+  CAT, TCI, the Panel), and a change of frequency, band, mode, VFO, split,
+  TX shift or XIT (the knob, the band keys, CAT, TCI, the Panel). The screen
+  says why: "QRSS3 stopped: tuned away".
+- Its TX time limit: no key-down may last over 10 s (the longest element is
+  a 9 s dash). Past that the radio lets go of the key and QRSS3 stops ("QRSS3
+  stopped: key held 10 s").
+- Should the radio's program end while the key is down (a crash in the
+  middle of a dash), the key is let go as soon as it has ended, before it
+  starts again.
+- It sends at PWR and keys about half of the time: on a long beacon mind
+  the radio's heat. QRSS is usually sent at low power.
+- QRSS3 only, for now: not QRSS10 or slower, DFCW or FSK-CW.
+
 ### CW Trainer
 
 APP (page 2) > CW Trainer keys with the radio's own keyer, so it follows the
-KEY settings. While it is open the radio is in train mode: sidetone only, no TX.
+KEY settings. While it is open the radio is in train mode: sidetone only, no TX,
+its TX power held at 0 W in every key mode, Manual too (see [CW](#cw)).
 
 - KEY button, page KEY 2:2:
-  - Mode: Manual is a straight key, only one paddle contact works. Auto-L and
-    Auto-R are the iambic keyer for a paddle; L and R swap which side gives
-    dits and dahs.
+  - Mode: Manual is a straight key: the keyer makes no dits and dahs, the
+    contacts key the radio directly. With a paddle in the KEY jack of an
+    X6200 (base 1.0.8) either contact keys, so the paddle works as a
+    sideswiper (issue #109; not checked on the X6100 yet). A USB or Bluetooth
+    paddle keys from its dit contact only. Auto-L and Auto-R are the iambic
+    keyer for a paddle; L and R swap which side gives dits and dahs.
   - Iambic: A or B.
   - QSK time and Ratio are on the same page.
-- With a paddle, set Mode to Auto-L or Auto-R before opening the trainer. On
-  Manual only one side of the paddle keys.
+- With a paddle, set Mode to Auto-L or Auto-R before opening the trainer, for
+  the keyer's dits and dahs. On Manual the paddle is a straight key (on an
+  X6200, from the KEY jack, a sideswiper).
 - Learn (Koch) plays groups of the characters of your level. The level's
   newest character comes up in about one place of three while it is new,
   less and less over its first 20 tries; after that it comes up as often as
   the others. Weak and little tried characters come up more often (Stats
   shows the last 20 tries of each).
+- Learn and Calls check your answer with the CW decoder, which hears the
+  radio's group too. The trainer tells the radio's own characters from
+  yours by their dits and dahs, at any speed, and the decoder starts at the
+  key speed. Let the group end before you answer: a character begun less
+  than two dots after the group's last element runs into it and goes with
+  it (in a group of one "Your turn" stays: key it again). Up to v0.3.8 the
+  end of the radio's last character could be taken for your answer: at
+  13 WPM and slower, at other speeds now and then or after a few dozen groups.
+  It showed OK while you were still keying, and the next group then ran
+  into your answer, which came out as "?" (issue #144). The pause before
+  your answer no longer stretches the decoder's spacing either.
+- Your answer ends with its last character, at a word space, or when no
+  new character comes for 3 s, longer at slow speeds: 30 dots and half a
+  second (from 14 WPM down), with KEY Ratio over 3 more (37.5 dots at
+  4.5), in dots of the key speed or of the speed the decoder hears,
+  whichever is slower (a straight key slower than KEY Speed is waited for
+  too). The decoder gives a character out when the next one starts, the
+  last one about 8 dots after it ends. Up to v0.3.8 it was 3 s at every
+  speed: at 10 WPM, when the group ended in 0 1 9 , or . the answer's last
+  character came out later, the answer was a character short and counted
+  wrong (slower, more of them).
+- The trainer keys at the key speed, 5 to 50 WPM, and the decoder follows
+  it, and a straight key, down to 5 WPM while the trainer is open (on the
+  band it stops at 10). Up to v0.3.8 it stopped at 10 in the trainer too:
+  at 5 WPM it read every group and answer wrong (an M as two Ts). Below
+  10 WPM with KEY Ratio over 3 it also took a long dah for a steady
+  carrier: dahs and the dits after them were lost (a J heard as W, a Z as
+  M).
+- A character of your answer the decoder cannot read (dits and dahs that
+  make no character, or a prosign such as AR) shows as `<?>`, in Learn and
+  Calls, as the CW decoder panel shows it, and is never right; the hint
+  line then says "`<?> = not a character`". A `?` heard as one still shows
+  as `?`. It counts as one place, so the rest of the answer is still
+  checked against the group place by place (the red marks in Calls, Stats
+  in Learn); in Calls the characters after it stand a little to the right.
+  In Learn, when the Sent or Heard line is too long for the screen
+  (several of them in a group of 5, or five long characters such as ?),
+  its dits and dahs stop at the last character that fits.
+  Up to v0.3.8 it showed as "?", which is itself a character (from level
+  32): a garbled answer to a "?" counted right. A prosign took four places,
+  and its letters counted for the group's in Stats.
 
 
 ## Apps
@@ -1695,7 +3498,21 @@ Cluster app (APP > Cluster; pages `(CLUSTER 1:2)` and `(CLUSTER 2:2)`):
 - Turning the MFK browses the list (this stops the VFO following). An MFK
   press or the Tune button tunes to the spot. The mode comes
   from the comment (CW, FT8, SSB, ...) or else from the band plan: CW, USB-D
-  on the FT8/FT4 frequencies, LSB below 10 MHz, USB above.
+  on the FT8/FT4 frequencies, LSB below 10 MHz, USB above; on 4 m, 2 m and
+  70 cm CW at the bottom of the band (below 70.100, 144.100, 432.100), USB-D
+  on 70.154 and 144.174, USB up to 70.250, 144.500 and 432.500, FM above
+  (and on 70 cm below 432.000).
+- 4 m, 2 m and 70 cm (issue #103): their spots are listed like any other,
+  above 100 MHz as `144.300` (no 100 Hz digit). The radio tunes them through
+  the transverter that covers them (Settings > General > TRANSVERTERS; the
+  two cover 144-150 and 432-438 MHz once a shift is set, off by default) or,
+  on the X6200, with the WR12 on, to receive ("DG1SMD 144.300.0 - RX only").
+  A spot no transverter covers (nor the WR12) is grey, and Tune says so
+  ("No transverter: 70.200 MHz", on the X6200 "No transverter/WR12:
+  144.300") and leaves the radio where it is. Up to v0.3.7 those spots were
+  in no band (the band filter hid them, Band showed them only with All), and
+  Tune put the radio on the nearest frequency it could tune instead: 55 MHz
+  for a 4 m spot.
 - Page 1: Band / All switches between the current band and all bands (always
   all when the VFO is outside the amateur bands); the button shows the view
   (`Band / 20m`, `Band / All`). Tune, Mode (All > CW > SSB > DIG, a quick
@@ -1716,21 +3533,30 @@ Filters and alerts. They are saved in `/mnt/cluster.conf`, shared by the
 radio and the web configurator, and apply to the app, the column and the
 waterfall.
 
-- On the radio: modes (CW, SSB, DIG, AM/FM), bands (160-6 m, all on = no
-  filter) and activity (POTA, SOTA, WWBOTA, HOTA, any mix; none lit = all
-  spots). One mode and one band always stay on. A change applies at once.
-  Where: Settings > Cluster > CLUSTER FILTERS.
+- On the radio: modes (CW, SSB, DIG, AM/FM), bands (160 m to 6 m, then
+  4 m, 2 m and 70 cm; all on = no filter) and activity (POTA, SOTA, WWBOTA,
+  HOTA, any mix; none lit = all spots). One mode and one band always stay
+  on. A change applies at once. Where: Settings > Cluster > CLUSTER FILTERS.
+- A band filter set up to v0.3.7 keeps its bands: 4 m, 2 m and 70 cm stay
+  off in it (their spots were hidden by it before too) until you turn them
+  on. With no band filter (all bands on) they are shown, as they were.
+  The bands are kept in `/mnt/cluster.conf` by their number: 2 for 2 m, 70
+  for 70 cm.
 - POTA / SOTA come from the spot comment: the word POTA or SOTA, a park
   reference (`US-1234`, `IT-0123`) or a summit reference (`I/LO-123`,
-  `W7W/KG-001`). WWFF references (`IFF-0123`), TOTA towers (`OKR-0150`) and
-  WCA castles (`DL-01156`) and lighthouses (`USA-1286`) are not taken as POTA.
+  `W7W/KG-001`). WWFF references (`IFF-0123`), TOTA towers (`OKR-0150`),
+  WCA castles (`DL-01156`), lighthouses (`USA-1286`) and LLOTA lakes
+  (`LLPL-0001`) are not taken as POTA.
   WWBOTA: the word WWBOTA (or BOTA) or a bunker (`B/G-0070`); HOTA: the word
   HOTA or a HOTA reference (`RO-H0390`).
 - Besides the cluster, the radio reads the activator spots of pota.app,
-  wwbota.org and cqhota.app once a minute (WiFi needed) and puts them in the
-  same list.
+  wwbota.org, cqhota.app and llota.app once a minute (WiFi needed) and puts
+  them in the same list. A llota.app spot reads `LLOTA LLPL-0123 SSB`, as the
+  radio's own Spot writes it on the DX cluster.
 - On the web configurator (Cluster page): the same modes, bands and activity,
-  plus maximum age and spotters to skip (`*` wildcard).
+  plus maximum age and spotters to skip (`*` wildcard). Up to v0.3.7 the
+  page had no 8 m, and a save there took 8 m out of a filter set on the
+  radio.
 - Heard in (web configurator, Filters card): only the spots whose spotter is
   in one of these countries, typed as prefixes: `PA, ON` for the Netherlands
   and Belgium. Each prefix stands for its whole country by the country list
@@ -1803,8 +3629,8 @@ or a long-press action. GEN or Radio goes back to the normal screen.
 | **Activation** | **Bands** |
 | ![Activation](screenshots/field_activation.png) | ![Band overview](screenshots/field_bands.png) |
 
-Home: a row of twelve tiles, LOG first, then SOTA, POTA, WWBOTA, HOTA, WWFF,
-TOTA, WCA, MOTA, LH, Tiles and Bands. Six and a half fit on the screen (five and a half
+Home: a row of thirteen tiles, LOG first, then SOTA, POTA, WWBOTA, HOTA, WWFF,
+TOTA, WCA, MOTA, LH, Tiles, LLOTA and Bands. Six and a half fit on the screen (five and a half
 with VISION): the row scrolls along as the MFK moves, and Bands is one MFK
 step left of LOG. A press opens. On the PC a drag scrolls the row and a click
 opens a tile.
@@ -1821,12 +3647,12 @@ SOTA / POTA, before the activation:
 - Update list (page 2) downloads the reference lists of all the programmes; then it
   works offline. Also from the web configurator's Field Ops page. The radio
   says "Downloading the reference lists: up to half an hour on a slow WiFi",
-  then each list with its progress, "Updating POTA (1/9): x.x / y.y MB" up
-  to LH (9/9),
+  then each list with its progress, "Updating POTA (1/10): x.x / y.y MB" up
+  to LLOTA (10/10),
   and "reading it..." once it is downloaded. A download that stops goes on
   from where it stopped, up to 5 tries ("retry 2 of 5"). At the end:
   "Lists: N POTA, N SOTA, N WWBOTA, N HOTA, N WWFF, N TOTA, N WCA, N MOTA,
-  N LH". A list
+  N LH, N LLOTA". A list
   that could not be fetched keeps its previous entries and is named after:
   "Not updated, kept as it was: <list>: <reason>". A run that hangs (a
   connection that never answers) ends after 45 minutes with "timed out".
@@ -1844,8 +3670,10 @@ the start and the last call.
   hand mic only (see [recording voice messages](#recording-voice-messages)). It is `CQ SOTA` /
   `CQ POTA` in `/mnt/msg`, so MSG > Voice lists it too. CQ again while it is
   on air stops it.
-- Log QSO: type `CALL`, or `CALL rst_rcvd rst_sent` (default 599 in CW, 59
-  otherwise). Each QSO goes to the SD card at once, in
+- Log QSO: type `CALL`, or `CALL rst_sent rst_rcvd`, the report you sent
+  first, as in the main screen's [quick QSO log](#quick-qso-log) (default 599
+  in CW, 59 otherwise): `F4ABC 59 57` is 59 sent, 57 received. Up to v0.3.8
+  Field Ops took the report received first. Each QSO goes to the SD card at once, in
   `/mnt/field/logs/<date>-<time>_<ref>.adi` with `MY_SOTA_REF` or
   `MY_SIG POTA` / `MY_POTA_REF`. The logs can be downloaded from the web
   configurator's Field Ops page.
@@ -1856,8 +3684,13 @@ the start and the last call.
   back up and rewrite the microSD" or "the microSD could not be written.
   Restart the radio; if it happens again, back up and rewrite the
   microSD". The same goes for the day's log outside Field Ops.
-- The mode logged is FT8 or FT4 when the radio is on an FT8/FT4 frequency,
-  also in USB.
+- The mode logged is the radio's (CW, SSB, AM, FM), and FT8 or FT4 when the
+  radio is on an FT8/FT4 frequency, also in USB. In USB-D or LSB-D anywhere
+  else the radio can't tell the mode: no digital app runs while Field Ops is
+  open, and a program on TCI or the USB audio isn't known. The QSO is then
+  logged without a mode and the radio says so; the screen and the spots say
+  DATA. Set the mode on the web Logs page (PSK31, OLIVIA, RTTY...); until
+  then the QSO doesn't go to Wavelog.
 - Spot: a POTA self-spot on pota.app with the frequency and mode of the radio
   (WiFi needed). The first press shows what will be posted and the button
   reads Spot?; press again within 4 s to post.
@@ -1878,9 +3711,43 @@ Reverse Beacon Network skimmer spots of the last 15 and the skimmers that
 heard you in the last 10 (with the best SNR); the activity as a bar and
 HIGH / GOOD / FAIR / POOR, the best band marked.
 
-- Test beacon sends `TEST DE <call>` in CW (the radio must be in CW), so you
-  can see who hears you.
-- Use band (or a press) tunes a typical activation frequency of the band.
+- Test beacon sends `TEST DE <call> <call> <call>` once in CW on the band
+  chosen (the highlighted row), so you can see who hears you there. The radio must
+  be in CW or CW-R. It takes two presses, so that you listen before you
+  transmit: a band's CW frequency is a calling frequency, and someone may be
+  using it.
+- The first press sends nothing. On the band the radio is on, the radio
+  stays where you are; on another band it goes to that band's CW frequency
+  (the one Use band tunes), in the CW or CW-R it was in. Listen there: the
+  message box shows the band, the frequency and the seconds left. In split
+  it also shows the frequency the test sends on (the other VFO, or the TX
+  shift), where you are not listening.
+- Press Test beacon again within 10 seconds to send the test there. The
+  message box says the band and the frequency it sends on. After a test on
+  another band the radio goes back to where it was before the first press,
+  once the send is over and the radio receives again. The band you tested
+  keeps that frequency, in CW, as after Use band. Your antenna must suit the
+  band: the test transmits at the power set.
+- No second press within the 10 seconds, or tuning, a band key or another
+  mode in that time: nothing is sent, the radio stays where it is now, and
+  the message box says so. Use band in that time sends nothing either, and
+  the radio goes where Use band takes it. Choosing another band and pressing
+  Test beacon in that time listens on that band instead, and the way back is
+  still where the radio was before the first press.
+- Press Test beacon while it sends to stop the test and go back. Tuning, a
+  band key, another mode or Use band during the send also stops it, and the
+  radio stays as you set it.
+- The screen says why nothing is sent when: the test is on another band and
+  the frequency, band or mode is locked; split or a TX shift would put the
+  carrier off that band; the radio does not transmit there; the base sends
+  no data ("no data from the base", see
+  [No TX without data from the base](#no-tx-without-data-from-the-base)); it
+  is already transmitting; or MSG > CW is sending or has a beacon on.
+- Use band (or a press) tunes a typical activation frequency of the band,
+  for the band plan's region (see [Band plan](#band-plan)). In CW or CW-R
+  it is the band's CW frequency, and the radio stays in CW or CW-R; in any
+  other mode it is the band's phone frequency, in its sideband (LSB below
+  10 MHz, USB above and on 60 m).
 - RBN is connected while the screen is open (the first minute fills the
   counts); it needs WiFi and the callsign.
 - The skimmer data comes from the Reverse Beacon Network
@@ -2039,18 +3906,116 @@ activation per tile and UTC day.
   required from 30 QSOs). Download it from the web configurator's Field Ops
   page.
 
+LLOTA (Lakes and Lagoons On The Air, llota.app; Lagos y Lagunas On The Air)
+has its own tile too, a light blue lake with reeds.
+
+- Update list downloads llota.app's list of lakes and lagoons with the
+  others (some 9,200, each with its position); the list heading says LAKE.
+  A lake is `LLPL-0001`: LL, the country's two letters and the number
+  (Ireland's have five digits, `LLIE-10001`).
+- A valid activation: 10 QSOs, within 200 m of the water's edge. The
+  activation screen counts `QSOs / 10`.
+- The log has `MY_SIG LLOTA` and `MY_SIG_INFO LLPL-0001`, where llota.app
+  finds the lake when you upload it. A QSO with another lake (its
+  reference typed after the call) logs theirs as `SIG LLOTA` and
+  `SIG_INFO`, and the log shows LL2LL.
+- Spot posts `LLOTA LLPL-0001 SSB` on the DX cluster. Nothing is spotted by
+  itself. llota.app takes spots only from an activator logged in on the
+  site, so the radio cannot post there: spot yourself on llota.app as well
+  if you want its hunters to see you there.
+- The other way round, the radio reads llota.app's spots once a minute and
+  shows them with the DX cluster's (DX Cluster app, the waterfall), as
+  `LLOTA LLPL-0123 SSB`.
+- The log goes to llota.app (your profile, ADIF upload, within 30 days of
+  the activation). Download it from the web configurator's Field Ops page.
+
 ### Bands
 
 The band overview of Field Ops as an app of its own, in the look of the other
-apps: APP (page 3) > Bands, or a long-press action.
+apps: APP (page 3) > Bands, or a long-press action. For what the sun is doing
+to the bands, and the beacons heard here, see [Propagation](#propagation).
 
 
 - Each band shows its activity bar and word, the cluster / RBN spot counts
-  and who heard you (skimmers, best SNR); the best band is framed.
+  and who heard you (skimmers, best SNR); the best band has a thin frame.
+  The band chosen is the filled row: the MFK moves it, and Test beacon and
+  Use band take it.
 - MFK to choose, a press (or Use band) tunes a typical frequency of the band
-  (CW or phone, as the radio's mode).
-- Test beacon sends `TEST DE <call>` in CW. ESC closes.
+  (CW in CW or CW-R, which stays, else phone in the band's sideband; for the band plan's region, see
+  [Band plan](#band-plan)).
+- Test beacon takes two presses, as in [Field Ops](#field-ops-sota--pota): the
+  first takes the radio to the band chosen to listen and sends nothing, the
+  second within 10 seconds sends `TEST DE <call>` in CW there, and then the
+  radio goes back to where it was. ESC closes. A test that is still sending
+  carries on and comes back by itself; one waiting for its second press keeps
+  its 10 seconds, then sends nothing, and the radio stays where it is.
 - The numbers are the same as in Field Ops.
+
+### Propagation
+
+APP > Propagation (APP 4:4, or a long-press action): how the bands are doing,
+on a map of the world with your QTH in the middle, night shaded and the grey
+line (dawn and dusk, when 80 and 40 m reach furthest) lit. Two views, the
+second button changes between them; ESC closes, and the radio goes back to
+the frequency and mode it had. The bands the beacons were listened to on
+keep their own frequency and mode: the 20 m key goes where it went before.
+
+**Conditions**: N0NBH's solar data and band forecast from
+[hamqsl.com](https://www.hamqsl.com/solar.html), fetched (WiFi or Ethernet)
+when the app opens and every hour while it stays open, never otherwise; once
+an hour at most (**Refresh**: if the last one is 5 minutes old). They are
+kept in `/mnt/conditions.txt`, so the last ones show without a network too
+(the header says how old they are).
+
+- SFI (solar flux) and sunspots: higher opens the higher bands (15, 12 and
+  10 m). A index and K index: geomagnetic unrest, the K of the last three
+  hours in words (quiet, unsettled, active, storm); at 4 and up, noise rises
+  and paths over the poles fade. X-ray: solar flares (an M or X flare can
+  black out the bands on the day side for an hour). Noise: the S-meter level
+  expected from space weather. 6m Es: sporadic E over North America.
+- The forecast by band group, Good, Fair or Poor, by day and by night; the
+  column of the time it is at your QTH is marked.
+- The bottom line says what to try now: the best group for day or night here
+  (the higher band of a tie by day, the lower by night), the K index, and
+  when you are in the grey line.
+- The map marks the point the sun is overhead.
+
+**Beacons**: the 18 beacons of the
+[NCDXF/IARU International Beacon Project](https://www.ncdxf.org/beacon/)
+take turns on 14.100, 18.110, 21.150, 24.930 and 28.200 MHz, 10 s each, a
+round of all 18 every 3 minutes. Each sends its call in CW at 100 W, then
+four 1 s dashes at 100, 10, 1 and 0.1 W. The schedule is fixed by the clock,
+so the radio knows who is calling; it listens in CW and scores each 10 s
+slot from the S-meter: its loud readings over the band's noise. Nothing is
+sent.
+
+- The table: the 18 beacons by 5 bands. A filled cell was heard in the last
+  15 minutes (green 20 dB and more over the noise, amber 10, the accent
+  colour under that); a dark one was listened to and not heard; a faint one
+  not yet listened to. The beacon on the air now is framed.
+- The map: the same for the band the radio is on, a line to the beacon on the
+  air now, and the beacon chosen with the MFK named. The bottom line has the
+  chosen one: where it is, how far, and where it was heard, with the lowest
+  dash that SNR still carries (+26 dB: heard down to 1 W).
+- **Sweep** (the default) stays a whole round on each band in turn: every
+  beacon on every band in 15 minutes. The button changes it to **Band**
+  (stays on one band; the **Band** button steps through them) and **Follow**
+  (goes with the chosen beacon from band to band: when it is not on the air,
+  the radio waits on the last band). A press of the MFK follows the beacon it
+  is on.
+- The clock has to be right to the second: with no NTP time (WiFi) or GPS,
+  the header shows *clock?* and the names may be one slot off.
+- Some beacons are off the air for a while: a beacon never heard on any band
+  may be one of those (ncdxf.org has their status).
+- What was heard stays while the radio is on, from one opening of the app to
+  the next. Retuning by hand drops the slot, the next round takes the band
+  back (in Band too); Sweep, Band, Follow or an MFK press takes it back at
+  once. A TX drops the slot as well, and so do a switch to Conditions and
+  closing the app. Nothing retunes while the radio transmits: the next band,
+  or the beacon frequency taken back, waits for receive.
+- While the Beacons view is open the radio sits on a beacon frequency in CW.
+  The band plans keep 500 Hz either side of it for the beacons: a paddle, a
+  CW macro from a logger or PTT would send right on top of them.
 
 ### Birdie Cal
 
@@ -2085,20 +4050,112 @@ APP Channels, or the V/M key of the hand mic.
   frequency and the mode on the right. A channel with no name shows as
   "CHANNEL n".
 - The MFK moves along the list; a press tunes the channel (frequency, mode,
-  AGC, PRE, ATT) and closes the window.
+  AGC, PRE, ATT) and closes the window. Not while LOCK is on or an app holds
+  the frequency or the mode (FT8, WSPR, SSTV on the air...): "Channel not
+  tuned" says which, and the window stays.
 - Close closes it. Add stores the current VFO (frequency, mode, AGC, PRE, ATT)
   as a new channel at the end of the list. Delete removes the channel under
   the cursor. Edit renames it (the keyboard opens, "Channel name").
 - Drag picks the channel up and the button becomes Drop: the MFK carries the
   channel up and down, Drop saves the new order.
 - Hand mic: V/M opens the window (not over WeFax, NavTex, SSTV, JS8, PSK,
-  Olivia or JTTY); UP and DOWN tune the channel before or after the last one
-  tuned and show its name for a moment, without opening the window.
-- Up to 100 channels. They are the same as on the web configurator's Memories
-  page; a change made there shows on the radio within a few seconds, unless
-  the window is open.
+  Olivia or JTTY); UP and DOWN (the H-22's arrow keys) tune the channel
+  before or after the last one tuned and show its name for a moment, without
+  opening the window. With LOCK on or an app holding the frequency or the
+  mode they do not tune either.
+- Up to 100 channels. They are the same as on the web configurator's
+  Memories page; a change made there shows on the radio within a few
+  seconds, unless the window is open. The window has the list it read when
+  it opened, and a change made in it (Add, Delete, Edit, Drop) writes that
+  list over the file: the page's changes since the window opened are lost. A
+  change the radio saves while the page is writing its own is kept: the page
+  makes its change again on the radio's list. The page lists them all, on
+  any frequency: an entry of `channels.json` that the radio leaves out (a
+  field missing or of the wrong kind, an unknown mode or AGC) is left out
+  there too, alone. A change made on the page (add, save, delete, up, down)
+  leaves every other entry of the file as it was, one the page does not list
+  too (the radio drops that one at its next change of the list). A file the
+  radio cannot read either is left alone, and so is one with a number too
+  big to write back (1e400): the page says so and changes nothing. Up to
+  v0.3.8 one channel above 56 MHz (an X6200's on FM broadcast or the
+  airband, the WR12's, a transverter's) left the page's list empty, and an
+  Add there then replaced all the channels with the new one.
+- A Save, Delete, Up or Down on the page names the channel as the page shows
+  it. When the list changed meanwhile (a channel deleted or moved on the
+  radio or in another tab) it changes nothing: the page says so and shows
+  the radio's list, what was typed kept for another Save. Up to v0.3.8 it
+  hit the channel that had taken that place: a Save wrote over another
+  channel, a Delete took another one.
+- The page's own changes go to the radio one at a time. One clicked while
+  another is still on its way goes out after its answer, to the channel
+  where that answer shows it: Up twice moves a channel two places, a Save
+  then an Up or a Delete before the answer moves or deletes the channel as
+  saved. One on a channel that is no longer in the list (Delete, then Up on
+  it) changes nothing, and the page says so. Up to v0.3.8 a second Up
+  before the first answer undid the first.
+- A channel saved on the Memories page, and a MEM slot there, takes the
+  frequencies the radio tunes: 0.1-55 MHz, and 70-500 MHz for a
+  transverter, on the X6100; 0.1-1000 MHz on the X6200 (FM broadcast, the
+  airband, the WR12, transverters). Whether the transverter or the WR12 is
+  on does not matter: while it is off, the radio tunes such a channel or
+  slot to the nearest frequency it can. Up to v0.3.8 both took 0.1-56 MHz
+  only, so a MEM slot saved on an X6200's FM broadcast or airband could not
+  be saved on the page.
+- A Save on the page changes in the channel what was changed there: a name
+  or a frequency left as the page shows it stays as the file has it, also
+  one the page would not take (a name outside printable ASCII or over 31
+  bytes, which the page shows cut to the radio's 31, a frequency outside
+  those ranges or with a fraction of a hertz), and so do the entry's other
+  keys. A changed name or frequency has to fit. Undo of a delete puts the
+  entry back as the file had it, at its place.
+- A channel whose name starts with WEFAX also shows in the WeFax app's Freq.
+  list ([SSTV, WeFax and NavTex](#sstv-wefax-and-navtex)). Its frequency is
+  the dial, 1.5 kHz below the fax station's: 7793.5 kHz for a station on
+  7795.0 kHz.
 - The first list has NAVTEX MF and HF, SHANNON VOLMET, the DWD RTTY stations
   and the DWD and GYA WeFax stations.
+
+### Scanner
+
+APP > Scanner (APP 4:4, or a long-press action): through a list of
+frequencies, a short look at each, a stop on one where something is on the
+air, and on again when it has been quiet for the hang time, as a scanner
+does. The speaker is quiet while it looks, so there is no burst of noise at
+every step. Receive only; ESC closes, and the radio goes back to the
+frequency and mode it had. The other bands it tuned to keep their own
+frequency and mode: a band key goes where it went before the scan.
+
+| Button | What |
+|---|---|
+| Source | the list: **Channels** (the [Channels](#channels) app's, with their modes; not their AGC, PRE and ATT), **Airband** (118 to 137 MHz, AM, 25 kHz steps; the X6200), **CB** (the 40 channels, AM), **Segment** (the band plan segment the dial is in, in 3 kHz steps in SSB, 500 Hz in CW, 5 kHz in AM) |
+| Start / Pause / Resume | from the channel the dial is on, else the top |
+| Skip | on to the next one, from a stop or a pause |
+| Lock out | leaves the one it is on out until the list changes (a carrier that is always there) |
+| Stop at | **Auto**, S3, S5, S7, S9: what counts as busy |
+| Speed | Fast, Normal, Slow: 120, 250, 500 ms a frequency (Slow for a radio whose S-meter is slow to follow). The first S-meter reading after each step is left out (it may still be of the frequency before), so Fast takes 150 to 200 ms |
+| Hang | 2, 5 or 10 s of quiet before it goes on |
+| Clear | the levels learnt, the lockouts and the list of what was heard |
+
+- Auto stops 10 dB over what each frequency reads when quiet. It learns that
+  as it goes: the first visit of a frequency only learns it (unless enough
+  of the others are known), then it follows the quieter readings and lets up
+  a little each visit, so a band that gets noisier does not stop it
+  everywhere. A frequency that is busy all the time when the scan first gets
+  there is taken for quiet: Clear, or a fixed Stop at, catches it.
+- The right side lists what it stopped on, the latest first: the time, the
+  frequency, the channel name, the strongest level and how long it was busy.
+  Left running for an evening on the airband or the CB channels, it shows
+  what was active and when.
+- Turning the main knob pauses the scan where you tuned; Resume (or Skip)
+  goes on. While paused or stopped, the MFK steps through the list by hand.
+- Keying (the mic's PTT, TCI, a remote session) holds the scan on the
+  frequency it is on, as busy, and the hang time counts from the end of the
+  over, so a reply is heard there. Nothing retunes while the radio
+  transmits: Start, Resume, Skip, Lock out and the MFK wait for receive.
+- The bar is the S-meter, the mark on it the level that stops the scan.
+- Airband has the 25 kHz channels only: in Europe most are 8.33 kHz apart,
+  and two in three of those are not in the list. CB is in AM, where CEPT CB
+  is mostly FM: put FM channels in the Channels app for those.
 
 ## Bluetooth
 
@@ -2121,7 +4178,7 @@ pairing and connection in DEVICES, the audio switches in HEADPHONES.
 | Volume | the headphones sink volume |
 | Mute speaker | AF volume and TX monitor 0 while the headphones are connected, back to the previous values when they disconnect. The AF volume does not change the audio sent to the headphones. |
 
-- Only A2DP is used: HFP/HSP (SCO) gives no audio on this radio and drops the
+- Only A2DP is used: HFP/HSP (SCO) gives no audio on the X6100 and drops the
   WiFi, so PulseAudio has no headset backend
   (`rootfs/etc/pulse/system.pa.d/btaudio.pa`). The same file stops PulseAudio
   from looping a phone or tablet that connects for CAT (it also appears as an
@@ -2172,6 +4229,26 @@ On Linux: `rfcomm connect /dev/rfcomm0
 device exposes an outgoing COM/SPP port. Log files: `/tmp/btcat.log`,
 `/tmp/btcat-setup.log`. Connection details: [reference](#bluetooth-cat-connection).
 
+### A PC on Bluetooth
+
+When a PC (or a phone) pairs with the radio it gets:
+
+- CAT, over the radio's Bluetooth serial port ([Bluetooth CAT](#bluetooth-cat)).
+- An audio output: the radio as a Bluetooth speaker (A2DP). It plays
+  nowhere, on purpose: the radio drops what is sent to it, so the sound of a
+  PC or a phone can't end up in the TX audio (see
+  [Bluetooth headphones](#bluetooth-headphones)). If the PC made the radio
+  its speaker, pick the PC's own speaker again.
+- No audio input. A PC makes a Bluetooth microphone from the headset profile
+  (HFP/HSP), and the radio does not offer it: on the X6100's WiFi/Bluetooth
+  chip, SCO (the link the headset audio goes over) gives no audio and drops
+  the WiFi.
+
+For a program on the PC, use the USB cable (the radio's USB sound card and
+CAT; the CAT settings are in the [reference](#bluetooth-cat-connection)) or
+the [TCI server](#tci-server): CAT and audio both ways over the network, on
+WiFi or better on [Ethernet](#ethernet).
+
 ## Themes
 
 Every colour of the GUI comes from a role (background, button, selected row,
@@ -2185,27 +4262,40 @@ restart.
 | Theme | Look |
 |---|---|
 | RF.Guru | default: near-black surfaces, gold for what is on, electric blue as the second accent |
-| Classic | black, grey keys, IC-7300 style |
+| Classic | black, grey keys, the look of a classic transceiver; Arial, its own font |
 | Outdoor | for the sun: light, black text, grey waterfall, S-meter in one grey gradient |
 | Outdoor-Negative | Outdoor with the lightness inverted: dark, white text, the hues kept |
 | VISION | for weak eyes: big type, white digits on dark grey, orange for what is on, aqua frames; the S-meter on a row of its own, always bars |
-| Black Metal | designed by 2E0JFS: two rows of state on top (ATT PRE, NR NB DNF, AGC, SPL ATU, RIT XIT; mode, filter, BW, IF, STEP, scope span), S/SWR/ALC scales beside a big frequency with the 10 Hz digits smaller, the other VFO and an A/B badge, the span edges in the spectrum, one-line buttons; brushed grey panels, cyan for the tuned digit and the encoder's control, Roboto |
+| Black Metal | designed by 2E0JFS: two rows of state on top (ATT PRE, NR NB DNF, AGC, SPL ATU, RIT XIT; mode, filter, BW, IF, STEP, scope span), S/SWR/ALC scales beside a big frequency with the 10 Hz digits smaller, the other VFO and an A/B badge, the span edges in the spectrum, the buttons in capitals at the state rows' size; brushed grey panels, cyan for the tuned digit and the encoder's control, Roboto |
 | Total Black | designed by 2E0JFS: Black Metal on pure black, the buttons marked by a thin grey line on top |
 | 1bit | black on one white, like a monochrome LCD: every pixel ink or paper, a pixel font, inverted boxes for what is on or selected, the frequency in big pixel digits, the S-meter as segments, the spectrum as black bars, the waterfall as dots (the stronger, the denser); its own font and icons |
+| Amber Trey | designed by OM0WT: an amber segment LCD over everything above the bottom buttons: the bar graph with the S, SWR/CMP and RF/ALC scales and a CW tuning aid, the filter graphic with the notch, the VFO in use in seven segments with VOX, ATU, RIT, XIT, SPLT, AGC, ATT, PRE, NB and NR under it, the other VFO in fourteen segments, the lock, A and B for which is which, TX for the one that sends, and the mode icons. Under it a spectrum strip, shown whatever Settings > Display > Spectrum says, and under that the power, IF, the time in UTC (not the local time the other themes show) and the voltage; in CW, while sending and for 10 s after decoded text, the strip takes the left half and the text runs in fourteen segments on the right. The buttons 36 px high with one line of text (an action's two lines joined with a space), a line between them, no frames; Roboto, its own font |
 | your files | `/mnt/themes/<name>.json`, or a folder `/mnt/themes/<name>/theme.json` with PNG images |
+| in the source, to copy | the source's `themes/` folder ([themes/README.md](../themes/README.md)): Holo and Material 3 (theme files), and two folders designed by Trey (rewtraw): Codec (green phosphor boxes with corner brackets, its own font, the S-meter as a SIGNAL bar) and Ops Room (amber operations-room frames, a 7-segment clock with the battery's time left, a hexagon S-meter, a red TRANSMIT band while sending). Copy one to `/mnt/themes/` |
 
 - A theme file sets only what it changes; the rest comes from its `base`
   theme.
 - A folder theme can draw the background, the buttons (normal, active,
   disabled, page), the top bar, the frequency strip, the app windows and the
   encoder LED with PNG images, 9-sliced to the size of each surface.
-- The RS theme (an RS-BA1 look) no longer comes with the image: it is cut
-  from a screenshot of Icom's RS-BA1. `themes/make_rs.py` in the source still
+- The RS theme (another maker's remote-control look) no longer comes with
+  the image: it is cut from a screenshot of that software. `themes/make_rs.py` in the source still
   makes that folder from such a screenshot, for personal use. A card that has
   `/mnt/themes/RS` from an earlier version keeps it.
 - Legacy is kept in the code but not offered in the menu.
 - File format, images and the list of roles:
   [docs/THEMES.md](THEMES.md).
+
+Button text. Each theme writes the bottom buttons in one text size, on every
+page and in the apps: the page button, an action and a name over its value
+alike. Black Metal and Total Black write them in capitals at the size of their
+state rows, a name and its value on one line where it fits ("VOLUME 30") and
+the name over the value where it does not; a unit after a number keeps its
+case ("2950 Hz"). A text too wide for its button takes the biggest smaller
+size it fits in. Amber Trey writes every text on one line, an action's two
+lines joined with a space. VISION and the walkie screen's buttons fit each text
+to its button instead. A theme file sets the size and the capitals with
+`btn_text_size` and `btn_caps`.
 
 Encoder LED. The bottom buttons show which encoder their control is on. The
 control the encoder adjusts now has a red LED, which follows button presses
@@ -2221,43 +4311,49 @@ A small web server (vendored in [webserver/](../webserver/), Python/bottle) runs
 on the radio on port 80. Open `http://x6100.local/` (or `http://<radio IP>/`)
 from any browser on the same network. The radio picks up changes within a few seconds.
 
-A change is taken only from a page opened by the radio's address, its own name
-(`x6100.local`, `x6200.local`, or the [network name](#network-name) you gave
-it) or its Tailscale name (the full `*.ts.net` one, or the short one on your
-tailnet), and the same goes for the Files page and the Backup download, which
+A change is taken only from a page opened by one of the
+[radio's own names](#the-radios-own-names): its address, `x6100.local`
+(`x6200.local`, or the [network name](#network-name) you gave it), its name
+in your network's domain (`x6100.home.lan`), a name you added on the Network
+page, or its Tailscale name (the full `*.ts.net` one, or the short one on your
+tailnet). The same goes for the Files page and the Backup download, which
 hold the keys and passwords kept on the radio, and for the connections of the
-Panel and the Remote page (the Panel's sound too). Opened by another name (one
-your router gives it, `x6100.fritz.box`), the pages show the settings but do
-not save them, the Panel and the Remote page do not connect, and they say by
-which names they do: a web site can point a name of its own at the radio (DNS
-rebinding), and through your browser it could otherwise change settings,
-download the keys or key the transmitter. Logs > Export and the Gallery's ZIP
-download hold no secret and work by any name; TCI programs, which are not
-browsers, connect by any name as before.
+Panel and the Remote page (the Panel's sound too). Opened by another name, the
+pages show the settings but do not save them, the Panel and the Remote page do
+not connect, and they say by which name the page was opened, by which names it
+works and where to add that name: a web site can point a name of its own at the
+radio (DNS rebinding), and through your browser it could otherwise change
+settings, download the keys or key the transmitter. Logs > Export and the
+Gallery's ZIP download hold no secret and work by any name; TCI programs, which
+are not browsers, connect by any name as before.
 
-The menu has General and four groups:
+The menu has General and five groups:
 
 | Group | Page | Does |
 |---|---|---|
 | | General | index of the pages |
-| Frequencies | Bands | band edges, default modes and TX shifts ([TX shift](#tx-shift)) |
+| Remote | Panel | the radio's own controls in the browser, for a touch screen (see [Browser panel](#browser-panel)) |
+| | Screen | the radio's screen live, its keys and knobs, the audio both ways (see [Browser remote](#browser-remote)) |
+| | Tailscale | Enabled, status, Log in to Tailscale, the radio on your tailnet, Log out, and Funnel (see [Tailscale](#tailscale) and [Tailscale Funnel](#tailscale-funnel)) |
+| Frequencies | Bands | band edges, default modes and TX shifts ([TX shift](#tx-shift)); the band plan the radio uses, whose region 160m, 80m, 40m SSB and 6m follow unless edited ([Band plan](#band-plan)). A band may overlap an inactive broadcast band (80m to 4 MHz over Broadcast 75m): the radio takes the band |
 | | Digital modes | add, edit and delete the FT8/FT4, JS8, WSPR and FT2 frequencies |
-| | Memories | MEM 1-9 slots and the named channel list ([Channels](#channels)) |
+| | Memories | MEM 1-9 slots and the named channel list ([Channels](#channels)), on the frequencies the radio tunes |
 | Operating | Cluster | DX cluster servers, filters and alerts (writes `/mnt/cluster.conf`) |
 | | Field Ops | QRZ Logbook profiles (three callsigns with their API keys, the active one), HOTA key, WWFF key, update the reference lists, download the activation logs |
 | | Wavelog | every logged QSO to your Wavelog: URL, API key, station profile (one, or Automatic by the radio's callsign), connection test, Send now (writes `/mnt/field/wavelog.conf`, see [Wavelog](#wavelog)) |
-| | Winlink | Winlink email over HF with Pat and ARDOP: Enabled, callsign, locator, the Winlink password (write only), ARDOP bandwidth, the status and Open the mailbox (Pat's page on port 8080; writes `/mnt/winlink.conf`, see [Winlink](#winlink)) |
+| | Winlink | Winlink email over HF with Pat and ARDOP, or Mercury or XARA (both experimental): Enabled, callsign, locator, the Winlink password (write only, and where Pat's is set), the modem, ARDOP's, Mercury's or XARA's bandwidth, the VARA HF licence tick box (XARA's full speed; the radio does not check it), the status and Open the mailbox (Pat's page on port 8080), the radio before a connection, the last connection with what to do next, and the logs as a download (writes `/mnt/winlink.conf`, see [Winlink](#winlink)) |
 | | CW messages | the MSG > CW messages: add, edit, delete (1-64 characters) |
 | | Macros | the PSK31, Olivia and JTTY macros (add, edit, move up, delete) and the JS8 INFO and STATUS answers (see below) |
-| | Logs | every QSO on the radio, day by day: edit, delete, export as ADIF or CSV |
+| | Logs | every QSO on the radio, day by day: edit, delete, export as ADIF or CSV; the text of the keyboard modes, a file a day: read, download, delete (see [Text log of the keyboard modes](#text-log-of-the-keyboard-modes)) |
 | Files | Files | browse and download `/mnt` |
 | | Gallery | screen recordings, voice recordings, screenshots, SSTV and WeFax pictures (see below) |
-| | Backup | download settings, memories, cluster, TCI server, QSO log, voice messages (optionally CW trainer and WiFi) as one file, and restore the parts you choose |
-| System | Display | every display option of the radio (see below) |
+| | Backup | download settings, memories, cluster, TCI server, QSO log, voice messages, your own boot picture (optionally CW trainer and WiFi) as one file, and restore the parts you choose (restored WiFi networks are taken a few seconds after, no restart needed; see below) |
+| System | Display | every display option of the radio, a few station options of the other tabs (independent VFOs, the band plan, the WR12, [TX outside ham bands](#amateur-bands-only) in the Transmitter card), and the [boot picture](#boot-picture) (see below) |
 | | Time | local and server time; Sync sets the radio clock from the browser's, in the radio's timezone; NTP sync; timezone |
-| | Ethernet | the USB Ethernet adapter: state, DHCP or static address (see [Ethernet](#ethernet)) |
+| | Network | the radio's [network name](#network-name), its [other names](#the-radios-own-names), and the USB Ethernet adapter: state, DHCP or static address (see [Ethernet](#ethernet)) |
 | | TCI | enable the [TCI server](#tci-server), set its port |
 | | SSH | the keys that may log in over SSH: list, add, remove (passwords are not taken, see [SSH](#ssh)) |
+| | Update | Check and Install the latest release, install a bundle file, go back to the previous version (see [Updating the firmware](#updating-the-firmware)) |
 
 ### Editing, saving, deleting
 
@@ -2326,22 +4422,46 @@ and reopen the window to see the changes.
   are converted to PNG in the browser).
 - Convert AVI to MP4 in the browser (HTTPS page only) or on the radio.
 
-Display page (System > Display): the same options as Settings > Display,
-applied on the radio as you change them.
+Backup page (Files > Backup): the WiFi part holds every saved WiFi network
+and the [Ethernet](#ethernet) setting (the files in
+`/etc/NetworkManager/system-connections`). Restored, they are taken a few
+seconds after the page says Restored, with no restart. A restored one that
+replaces the network the radio is on with another profile of the same name
+(one from another radio, or from before the radio was flashed again and the
+network joined anew) makes the radio leave that network and join the
+restored one: the link to the browser drops for a few seconds. A restored
+Ethernet setting with another radio's static address moves the radio to
+that address; open the web configurator there.
+
+Display page (System > Display): the options of Settings > Display and a
+few station options of the other tabs, applied on the radio as you change
+them.
 
 | Card | Options |
 |---|---|
 | Theme | Theme (the radio's screen restarts with the new one) |
 | S-meter | S-meter type (Bars, Needle), Colours (Theme, Scale, Level), Needle lamp; with a preview |
-| Waterfall | Mode (Centered, Fixed), Speed (1-5), Auto level, Auto level offset (-15 to +15 dB), Center line, Zoom, Smooth scroll |
-| On the waterfall | Band plan, Cluster spots, Cluster column |
-| Backlight | Brightness, Brightness when idle, Idle after (5-120 s), Button lights (Always off, Always on, Temporarily on), Screen off after (0-120 min), Screen always off |
+| Waterfall | Mode (Centered, Fixed), Jump at (40%, Passband, Line) and Jump to (Center, Other edge, Scroll), greyed unless Mode is Fixed (see [Waterfall](#waterfall)), Speed (1-5), Auto level, Auto level offset (-15 to +15 dB), Center line, Zoom, Smooth scroll, 3D, 3D colours (Strength, Waterfall, Blue), 3D depth, tilt, floor, range, peaks, glide (greyed unless 3D is on; under Amber Trey 3D off and greyed with them) |
+| On the waterfall | Band plan, Plan (Auto or a plan, with what Auto takes and from what; see [Band plan](#band-plan)), Cluster spots, Cluster column |
+| Backlight | Brightness, Brightness when idle, Idle after (5-120 s), Button lights (Always off, Always on, Temporarily on), Screensaver (None, Matrix rain), Screensaver after (1-120 min, greyed with None), Screen off after (0-120 min), Screen always off (the screensaver's rows greyed while it is on); see [Screensaver](#screensaver) |
 | Receiver | the X6200 only: WR12 on HOST (see [WR12 receiver](#wr12-receiver-x6200)) |
-| Text and info | Independent VFOs, Birdies (Off, Marks, Marks + notch), Mode from band plan, Zoom and step per mode (see [Waterfall](#waterfall)), Icon menus, Knob info, Decoder text (Large, Compact), Magnify frequency, Magnify info, Magnify ALC |
+| Transmitter | TX outside ham bands (Settings > TX Cal; see [Amateur bands only](#amateur-bands-only)) |
+| Text and info | Independent VFOs, Birdies (Off, Marks, Marks + notch), Mode from band plan, Zoom and step per mode (see [Waterfall](#waterfall)), Power display (% + time, Volts, Alternate, % + V; see [battery time](#battery-time)), Icon menus, Knob info, Hide buttons (Off, 3 s, 5 s, 10 s; see [Buttons and knobs](#buttons-and-knobs)), Decoder text (Large, Compact), Magnify frequency, Magnify info, TX panel (the radio's Popups TX) |
+| Boot picture | the picture the radio starts with, Upload, Default; kept by the web server, not a Settings option, so it works with the radio's screen down too (see [Boot picture](#boot-picture)) |
 
 HTTPS. The server also listens on port 443, with a self-signed certificate
 made on first start (valid 10 years, stored in `/mnt/https/`). The browser
-shows a certificate warning once; accept it. A certificate that is expired or
+warns about it; accept it (Advanced, then Proceed; Accept the Risk and
+Continue in an older Firefox). The browser keeps that for the address it was opened by: by
+another one (`x6100.local`, the IP address, the Tailscale name) it asks once
+more. The https Panel and Screen page open their sockets on the same port
+(`wss://<address>/ws/remote` and `/ws/tci`, which the server hands on to the
+GUI), so the one certificate covers them too. Up to v0.3.7 they used ports
+50003 and 50004, which Firefox wanted accepted on their own: the page said
+"Connection lost" and gave no pairing code
+([#58](https://github.com/Guru-RF/OpenX6X00/issues/58)). Since v0.3.9 those
+two ports are closed: a Panel or Screen page still open from v0.3.7 says
+"Connection lost" until it is loaded again. A certificate that is expired or
 not valid yet by the radio's clock (one made while the clock was wrong) is
 made anew at the next start, and the browser asks once more. While the clock
 is not set (a date before 2026: no network or GPS yet, a clock chip that lost
@@ -2359,20 +4479,56 @@ Server options: `--host`, `--port`, `--https-port` (0 = off), `--cert-dir`,
 |---|---|
 | ![Cluster page](screenshots/web/cluster_desktop.png) | ![Digital modes page](screenshots/web/digital_modes_desktop.png) |
 
+### Boot picture
+
+The picture on the screen while the radio starts, until the main screen
+comes: the built-in logo, which draws itself piece by piece, or a picture
+of your own. Where: web configurator, System > Display, the Boot picture
+card. No SSH needed.
+
+- Your picture: a PNG of 800x480 pixels (the screen's size, landscape), up
+  to 2 MB. Choose it and press Upload; it shows from the next start. The
+  card shows the picture the radio starts with, with its size and date.
+- The page checks the picture before it keeps it and says why when it does
+  not take it: another size ("The picture is 1024x600 pixels: the radio
+  needs 800x480, the screen's size"), not a PNG (a JPEG renamed), or a file
+  cut short or damaged on the way. It also turns down the few kinds of PNG
+  the radio's picture reader cannot show safely at the start: an interlaced
+  one, a palette one with transparency, or one carrying a lot of embedded
+  text or a colour profile. Scale or crop it to 800x480 in any picture
+  editor and save it as a plain PNG (interlacing off; for transparency pick
+  RGBA, not a palette) and it is taken.
+- It fades in as a whole over about 3 seconds, from the colour of its
+  top-left pixel; the built-in logo's steps are made for that logo alone.
+  With the [boot sound](#audio-tab) on it ends with "CQ CQ", as the logo
+  does. What is transparent in it shows black.
+- It is kept on the card's DATA partition (`/mnt/bootlogo.png`), so updates,
+  which put the built-in logo back with the rest of the system, leave it as
+  it is, and so does a new card image that keeps the DATA partition. The
+  [Backup](#web-configurator) takes it along (the Boot picture part) and
+  Restore puts it back.
+- Default removes it: the built-in logo from the next start.
+- A picture the radio can't read gives the built-in logo, never a dark
+  start. One copied to `/mnt/bootlogo.png` by hand (SFTP) is shown as well;
+  if it is of another size or damaged, the card says so, and why. One
+  copied over the system's own `/usr/share/x6100/bootlogo.png`, as was done
+  before this card, is replaced by every update: upload it on the card.
+
 ## Wavelog
 
-Every QSO the radio logs goes to your [Wavelog](https://github.com/wavelog/wavelog) as well, a few seconds after it is logged: FT8, FT4, FT2, JS8, voice and CW (the phone's logger, the CW keyboard) and the Field Ops activations, all that the web Logs page lists. The radio's own logs stay as they are. Where: web configurator, Operating > Wavelog.
+Every QSO the radio logs goes to your [Wavelog](https://github.com/wavelog/wavelog) as well, a few seconds after it is logged: FT8, FT4, FT2, JS8, voice, CW and the keyboard modes (the phone's logger, the CW keyboard) and the Field Ops activations, all that the web Logs page lists. The radio's own logs stay as they are. Where: web configurator, Operating > Wavelog.
 
-- Set up: the Wavelog URL (the address you open Wavelog with), an API key with read and write rights (Wavelog: your account menu, API Keys), then Load, choose the station profile and switch Upload to Wavelog on. Test connection asks Wavelog for its version, with what is typed, before Save. The saved key goes only to the server it was saved with: with the URL of another server (your Wavelog moved), type the key again for Test connection, Load and Save.
+- Set up: the Wavelog URL (the address you open Wavelog with), a read & write API key (Wavelog: your account menu, API Keys, Create a read & write key; in Wavelog 3.1 and later under Legacy API Keys (API v1)), then Load, choose the station profile and switch Upload to Wavelog on. Test connection asks Wavelog for its version and the key's rights, with what is typed, before Save: a read-only key, with which every QSO would be refused, fails the test. Test connection, Load and Send now wait for Wavelog one at a time, their buttons off meanwhile. A Wavelog that doesn't answer gives "no connection" after 20 s; a name lookup the radio's network never answers holds the radio's side longer, and Test connection or Load then says, at 40 s, "no answer in 40 s: check the URL, and that the radio can reach that address". The API tokens of Wavelog's API v2 (wl2_...) don't work yet: the page says so at Test connection, Load and Save. The saved key goes only to the server it was saved with: with the URL of another server (your Wavelog moved), type the key again for Test connection, Load and Save.
 - Station profile Automatic: each QSO goes to the Wavelog profile with the callsign the radio logged it with (Settings > General > STATION). With a profile DF8MH and one DF8MH/P in Wavelog, changing the callsign on the radio is all it takes; when several profiles have the callsign, the one Wavelog marks active. A QSO whose callsign has no profile waits, "Wavelog: no station profile for DF8MH/M, 1 QSO waiting", and the others still go; make the profile in Wavelog, then Send now.
 - From the moment it is switched on: the QSOs logged before are not sent. To send an older log, import its ADIF in Wavelog (Files, Logs page, Export).
 - The display says what happened: "Wavelog: DL1ABC uploaded", "Wavelog: DL1ABC was already there" (Wavelog found it as a duplicate), "Wavelog: no connection, 2 QSOs waiting". A failure is shown once, on the QSO that met it.
 - Each QSO goes once. The radio tells QSOs apart by the other station, the date and time to the second, the band, the mode and your station callsign: two QSOs with DL1ABC in the same minute, or one as ON6URE and one as ON6URE/P, are two, and both go. Wavelog itself takes a second QSO with the same station, band and mode within 15 minutes, under the same callsign of yours, for a duplicate.
+- The mode goes as ADIF 3.1.8 has it: PSK31 and PSK63 as mode PSK with that submode, FT4, FT2, JS8 and JTTY as mode MFSK with theirs, FT8, OLIVIA, CONTESTI, RTTY, CW, SSB, AM and FM as they are. A QSO logged without a mode (by hand in USB-D or LSB-D with no app open, away from FT8 and FT4) waits on the radio: it goes once the Logs page gives it one, so Wavelog never gets it without a mode and then again with one.
 - Without a network, or behind a WiFi login page, the QSOs wait on the SD card (`/mnt/field/wavelog.queue`) and go at the next QSO, a minute after the next start, every 5 minutes while some wait, or with Send now on the web page.
 - A QSO Wavelog refuses (a record it can't take) goes to `/mnt/field/wavelog.failed.adi` and is not sent again unless it is edited on the Logs page. A refused key stops the upload until a new key is saved; the QSOs wait.
 - A QSO edited on the Logs page after it was sent goes again with the next upload. Wavelog adds QSOs and changes none it has. When the QSO's call, date, time, band, mode and own callsign are as they were (a report or a name corrected), Wavelog keeps its own copy, and the display says "Wavelog: DL1ABC was already there, edit it in Wavelog too". An edit of any of those reaches Wavelog as another QSO: it is added ("uploaded"), or, within 15 minutes of the old one with the same call, band and mode, found as a duplicate ("was already there"); either way the old one is to be corrected or deleted in Wavelog by hand. A QSO edited while it waits (no network) goes as it stands then, once; deleted while it waits, it does not go. A QSO deleted on the Logs page after it was sent stays in Wavelog.
 - HTTPS is checked against the radio's root certificates. Check the certificate off only for a Wavelog at home with a self-signed certificate.
-- The key is kept in `/mnt/field/wavelog.conf`. The Wavelog page never shows it again and it is not in the Backup, but like the QRZ, HOTA and WWFF keys it can be downloaded from the Files page by anyone who reaches the web configurator (your LAN, and your tailnet with Tailscale on). The upload uses Wavelog's API (`api/qso`, `api/station_info`, `api/version`); QSOs sent through it are not uploaded on to other services by Wavelog at once and get no callbook lookup there.
+- The key is kept in `/mnt/field/wavelog.conf`. The Wavelog page never shows it again and it is not in the Backup, but like the QRZ, HOTA and WWFF keys it can be downloaded from the Files page by anyone who reaches the web configurator (your LAN, and your tailnet with Tailscale on). The upload uses Wavelog's API v1 (`api/qso`, `api/station_info`, `api/version`, `api/auth`); QSOs sent through it are not uploaded on to other services by Wavelog at once and get no callbook lookup there.
 - By hand: `x6100-wavelog sync`, `x6100-wavelog stations`, `x6100-wavelog test` (one line each, as the other helpers).
 
 ## Winlink
@@ -2382,9 +4538,12 @@ radio alone, with no computer and no internet: [Pat](https://getpat.io) is the
 mail program, and its mailbox is a web page you open on a phone, a tablet or a
 laptop on the radio's network; ARDOP is the HF modem
 ([ardopcf](https://github.com/pflarue/ardop)), working through the radio's own
-audio. Pat calls a Winlink RMS gateway, the radio tunes there and transmits,
-and your mail goes out while the new mail comes in. Where: web configurator,
-Operating > Winlink. Off by default; when it is off, Pat and ARDOP do not run.
+audio, or [Mercury](#mercury-experimental) or [XARA](#xara-experimental), which
+speaks VARA HF (both experimental), in its place. Pat
+calls a Winlink RMS gateway, the radio tunes there and transmits, and your
+mail goes out while the new mail comes in. Where: web configurator,
+Operating > Winlink. Off by default; when it is off, Pat and the modem do not
+run.
 
 Setting it up:
 
@@ -2395,19 +4554,102 @@ Setting it up:
      (Settings > General) without its portable part: ON6URE for ON6URE/P.
    - Locator: sent to the gateway, and Pat's gateway list is sorted by the
      distance from it. Empty takes the radio's QTH.
-   - Winlink password: kept on the radio and never shown again (the page says
-     "set (hidden)"); a field left empty keeps it.
-   - ARDOP bandwidth: the widest ARDOP may use. 500 Hz suits most gateways and
-     a crowded band; 2000 Hz is faster on a good path, with a gateway that
-     runs ARDOP 2000.
-3. Switch Enabled on. Status says "Running as ON6URE" once Pat and ARDOP run.
-   From then on they start with the radio, also after a new card image.
+   - Winlink password: kept on the radio and never shown again; a field left
+     empty keeps it. The row says where the password Pat uses is set: "set
+     here (hidden)", "set in Pat's own Settings (hidden)" or "not set". With
+     Winlink on and none set anywhere, the page says so in red at the top
+     (see the password below); it is a warning only, since a new account's
+     first connection over the air needs none.
+   - Modem: ARDOP (the default), Mercury (experimental, see
+     [Mercury](#mercury-experimental) below) or XARA (experimental,
+     VARA-compatible, see [XARA](#xara-experimental) below). One runs at a
+     time.
+   - ARDOP bandwidth: the widest ARDOP may use, 200, 500 (the default), 1000
+     or 2000 Hz. It counts for every connection, also with a gateway that
+     Pat's gateway list shows wider: see "The ARDOP bandwidth" below. With
+     Mercury chosen, Mercury bandwidth in its place: 500, 2300 (the default)
+     or 2750 Hz. With XARA, XARA bandwidth (500, 2300, the default, or 2750
+     Hz) and VARA HF licence, off by default: tick it only if you hold a
+     VARA HF licence of your own. The radio does not check it; off, XARA runs
+     VARA's free speed levels.
+3. Switch Enabled on. Status says "Running as ON6URE" once Pat and the modem
+   run. From then on they start with the radio, also after a new card image.
+   The Before you connect card shows the radio as Winlink will use it, once
+   the modem is on the radio's audio; what is red keeps Winlink from
+   transmitting, or from being heard well:
+   - Frequency: where the radio listens, and whether it transmits there too
+     ("No TX: split would send on 14.200.000, not 14.105.000", XIT, RIT, a
+     TX shift, outside the amateur bands, "No TX: no data from the base").
+   - Mode: Pat's QSY to a gateway sets USB-D (USB is kept).
+   - Filter: whether the RX filter (and the TX filter, on a base that has
+     one) covers ARDOP's passband at the page's bandwidth: 1250-1750 Hz at
+     500 Hz, 500-2500 Hz at 2000 Hz. Mercury's: 450-2550 Hz at 2300 and
+     2750 Hz, 1200-1800 Hz at 500 Hz. XARA's, VARA HF's carriers: 350-2650
+     Hz at 2300 Hz, 120-2880 Hz at 2750 Hz, 1240-1760 Hz at 500 Hz.
+   - Power: the radio's PWR, at most 7 W for Winlink; 5 W with the X6200 on
+     its battery, or a transverter's TX power limit, which the row says (see
+     [Transmitting](#transmitting)).
+   - Apps: a digital app open (red: close it), or LOCK on (Pat's QSY is not
+     made).
+   - SWR hold: after high SWR stopped a Winlink transmission, the minutes
+     left and where ("4 min left on 30m"); red while the radio is in the
+     hold, not when it is on another band, where Winlink transmits.
+   - Last no TX: the radio's last reason not to key, in the last 10 minutes.
+     It also goes into Pat's log ("OpenX6X00: no TX, FT8 is open, close it.
+     Close the app on the radio, then connect again"), once, and again after
+     a minute; so does a QSY not made.
+
+   The Connections card keeps apart what is often lumped together:
+   - Service: Pat and the modem run.
+   - Modem: ARDOP is on the radio's audio (ardopcf connected to the GUI), or
+     Mercury (x6x00-mercury), or XARA; "Waiting for the radio's audio" until
+     it is. With Mercury or XARA, "Ready, but it fell behind the receiver
+     lately" in red when it could not keep up (see
+     [Mercury](#mercury-experimental)). With XARA, the speed it says it runs
+     at: "VARA's free speed levels", or "full speed (VARA HF licence
+     ticked)".
+   - Session: Idle, Calling a gateway or Connected, as Pat says, and in how
+     many browsers the mailbox is open: Pat asks there what it needs during
+     a connection (go ahead on a busy channel, the password).
+   - Last connection: Calling, Connected (with ARDOP's or XARA's
+     bandwidth, and XARA's speed), Delivered ("Done with DM6TS at 500 Hz: 1
+     sent, 0 received"), Done (nothing to send or receive) or Failed, with
+     what to do next, from Pat's log, ARDOP's or XARA's and Pat's event log
+     (`/run/winlink`):
+
+     | What happened | What to do |
+     |---|---|
+     | No answer from the gateway (Connect timeout) | Check the power, antenna and SWR, and the radio's screen for "Winlink: no TX"; on a weak path choose 500 or 200 Hz; or another gateway or band |
+     | The gateway refused the bandwidth (INCOMPATIBLE BW) | Choose 500 Hz, or the bandwidth the gateway list gives |
+     | The gateway is busy with another station | Try later, or another gateway |
+     | The frequency stayed busy, or Abort was chosen | Try later, another gateway or band |
+     | The password prompt timed out (context deadline exceeded) | Set the password on this page, or keep the mailbox open to type it |
+     | The gateway refused the password (secure login failed) | Check the password; one set before 31 January 2018 is in capitals |
+     | The link dropped during the exchange | What was delivered counts; connect again, narrower on a weak path |
+     | Pat could not tune the radio (Unable to QSY) | The radio's screen says why |
+
+     The same line goes into Pat's log, so the mailbox shows it too.
+   - Logs, Download: Pat's log, its output, ARDOP's, Mercury's, XARA's (and
+     its settings), Pat's event log, the radio's state and the status, as one
+     text file to attach to a bug
+     report. The passwords in them are masked: the Winlink page's, the ones
+     on Pat's Configure page, and the one Pat prints for a new account ("DO
+     NOT LOSE YOUR PASSWORD"). The gateways and the subjects of your mail are
+     in it; like the Files page, it opens only by the radio's own names.
 4. Press Open the mailbox, or open `http://x6100.local:8080/` (`x6200.local`
    on an X6200, or the radio's address): Pat's own page, where you write and
-   read your mail. Its Settings page has the rest of Pat's options. The
-   callsign, the password, the locator and the ARDOP and radio settings are
-   set again by the radio each time Pat starts: change those on the radio's
-   Winlink page, not in Pat.
+   read your mail. Its Configure page (Action > Configure) has the rest of
+   Pat's options. The callsign, the locator and the ARDOP, VARA HF (Mercury,
+   XARA) and radio settings are set again by the radio each time Pat starts,
+   and so is the password once one is set on the radio's Winlink page: change those
+   there, not in Pat. A password typed on Pat's Configure page is kept while
+   the Winlink page has none (up to v0.3.6 it was emptied at Pat's next
+   start, #80). The radio's rig is x6x00 on that page, under Rig Control >
+   Hamlib rigs (TCP, 127.0.0.1:4532, the radio's own rigctld), and it is the
+   Rig of the ARDOP and Vara HF sections. Its values are grey there like
+   Pat's examples, but they are the radio's: leave them as they are. The
+   radio writes them again each time it starts Pat, so an edit saved there
+   lasts only until then.
 
 Connecting to a gateway:
 
@@ -2420,9 +4662,49 @@ Connecting to a gateway:
   after the session. The power is the radio's setting, at most 7 W, as for
   the radio's other digital modes.
 - ARDOP keys the radio the way the radio's own digital modes do, and
-  identifies with your callsign in CW. The radio does not key for Winlink
-  while it is already transmitting, nor for 5 minutes after a high SWR
-  stopped a Winlink transmission; the screen says so.
+  identifies with your callsign in CW. Its call carries your callsign too
+  and counts as an ID: no ID frame keys the radio by itself about 9 minutes
+  after a call nobody answered. The radio does not key for Winlink
+  while it is already transmitting, nor, for 5 minutes after a high SWR
+  stopped a Winlink transmission, on the band where that happened: Pat's
+  and ARDOP's next tries go out there, into the same antenna, and are held.
+  The band is the one the screen names under the frequency (30m, 40m), and
+  the hold also covers 100 kHz either side of where it happened (across a
+  band's edge, and outside the bands). Another band transmits at once: call
+  a gateway on a band where the antenna is fine. The hold is the last trip's:
+  a trip on another band moves it there. A high SWR that stops something
+  else (a PTT, FT8) holds nothing for Winlink. Up to v0.3.8 the hold was on
+  every band, until its 5 minutes were over or the radio's software
+  restarted, and such a stop after a Winlink transmission could start it
+  too (#147). The screen says so as it happens ("TX stopped: SWR 3.2", then
+  "Winlink: no TX on 30m for 5 minutes, check the antenna") and at each
+  refused key with the time left ("Winlink: no TX, high SWR on 30m, the hold
+  ends in 4 min"; outside the bands "near 5.403.500 MHz"); the Winlink
+  page's SWR hold row counts the minutes down and says where, and Pat's log
+  says when it ends ("OpenX6X00: high SWR stopped a Winlink transmission on
+  30m: no TX there for 5 minutes, until 14:32; another band transmits").
+  A tune or an SWR scan does not end the hold: the scan's carrier is 1 W,
+  and the SWR protection watches the transmissions themselves, at their
+  power.
+- Close the radio's digital apps first. While one is open (FT8, FT4, JS8,
+  WSPR, PSK, Olivia, JTTY, RTTY, SSTV, WeFax, NavTex) it holds the radio's
+  frequency, mode and audio: Winlink does not key ("Winlink: no TX, FT8 is
+  open, close it") and Pat's QSY is not made. One opened while Winlink
+  transmits stops that transmission ("Winlink: TX stopped, FT8 is open").
+  Up to v0.3.6 a connection without a QSY could key on the app's frequency,
+  between its slots.
+- When Pat's QSY is not made, the screen says why, where Pat's log only has
+  "Unable to QSY": "Winlink: no QSY to 7.061.500 MHz, FT8 is open, close
+  it", "..., the radio is on the air", "..., the frequency is locked (LOCK)"
+  (the [frequency lock](#buttons-and-knobs): the LOCK key, the browser
+  panel's LOCK, a key given Frequency lock), "..., not a frequency the
+  radio can tune" or "..., the radio was busy, try again".
+- The TX level is the one the radio's digital apps share (see
+  [Digital-mode TX level](#digital-mode-tx-level)). It is first judged about
+  2 s into a frame (1.3 s for the base to settle, then half a second of
+  readings), so a shorter frame leaves it as it is. Up to v0.3.6 ARDOP frames
+  could pull the level down, frame after frame, until the power fell to a few
+  tenths of a watt (#66). One or two FT8 transmissions bring it back.
 - Winlink transmits only on the frequency the radio listens on, which is the
   gateway's once Pat has tuned there. This is checked as each transmission
   begins, on the band Pat's QSY brought (split and the [TX shift](#tx-shift)
@@ -2435,15 +4717,20 @@ Connecting to a gateway:
     set (+500 Hz)" or "Winlink: no TX, RIT is set (+500 Hz)". XIT moves the
     transmission off the gateway's frequency, RIT moves what ARDOP hears. Set
     them to 0.
+  - A frequency the radio may not transmit on (outside the
+    [amateur bands](#amateur-bands-only), receive only): no key, "Winlink:
+    no TX, 27.185.000 MHz: outside the amateur bands (Settings > TX Cal)",
+    on the page's last connection and its line before a connection too.
+    Pat's QSY there is still made.
   - Split turned on, the other VFO chosen, XIT set or the dial turned while
     Winlink transmits: that transmission stops, "Winlink: TX stopped, it left
     14.105.000 MHz".
   - A QSY Pat asks while the radio transmits is made when the transmission
     ends. A frame ARDOP sends right after that transmission goes out after the
     QSY, as a transmission of its own, on Pat's new frequency. If the radio
-    cannot go there (an app holds the frequency): no key, "Winlink: no TX, the
-    radio could not go to Pat's 7.100.000 MHz", until the radio is on that
-    frequency or Pat tunes again.
+    cannot go there (an app or LOCK holds the frequency): no key, "Winlink: no
+    TX, the radio could not go to Pat's 7.100.000 MHz", until the radio is on
+    that frequency or Pat tunes again.
   - A connection keeps its frequency: the one Pat tuned last, or where ARDOP
     last transmitted. Turn the dial or choose the other VFO between two
     transmissions, and Winlink does not key: "Winlink: no TX, the radio left
@@ -2453,11 +4740,55 @@ Connecting to a gateway:
     listen (ARDOP hears that frequency too). Pat's tune-back after a session
     is a QSY too, so retuning right after a session and connecting at once
     without a frequency waits that minute.
+- While the base sends no data (see
+  [No TX without data from the base](#no-tx-without-data-from-the-base)):
+  no key, "Winlink: no TX, no data from the base", on the page's last
+  connection and its line before a connection too.
+- The ARDOP bandwidth: Pat's gateway list fills in each gateway's widest
+  ARDOP bandwidth (2000MAX for a gateway listed as ARDOP 2000), the Connect
+  dialog takes it over and the browser remembers it for the next time. The
+  radio's Pat keeps to the bandwidth on the Winlink page instead: a gateway
+  listed wider is called at that bandwidth, and Pat's log says so ("ARDOP
+  bandwidth 500MAX, the widest set on the radio (Operating > Winlink), not the
+  2000MAX asked"). A gateway that runs 2000 Hz takes a 500 Hz call and the
+  session runs at 500 Hz. Up to v0.3.6 the gateway list's bandwidth won, and
+  the page's only counted for a connection without one.
+  - 500 Hz (the default) is the one to start with. Reported from the air
+    (#18): at the radio's few watts a 200 Hz session connected at once where
+    the gateway list's 2000MAX did not. ARDOP's calls are the same narrow
+    frames whatever the bandwidth, but a 2000 Hz session starts with four
+    carriers and its most robust frame is 500 Hz wide, while a 200 or 500 Hz
+    session can fall back to ARDOP's most robust frame (200 Hz, one carrier);
+    500 Hz is the faster of the two on a good path.
+  - 200 Hz is the most robust, for a weak path, but slower, and a gateway
+    fixed at 500 Hz or wider refuses it ("REJECTED ... INCOMPATIBLE BW" in
+    `ardopcf.log`). 1000 and 2000 Hz are faster on a good path, with a gateway
+    that runs them; a gateway fixed at 1000 or 2000 Hz refuses a narrower call.
+  - Pat's Connect dialog still shows the gateway list's bandwidth; what is
+    sent is the narrower of the two.
 - Pat listens before it calls: on a busy frequency it asks in the mailbox
   whether to go ahead.
+- Keep the mailbox open during a connection, on a phone too (a phone that
+  goes to sleep closes it): Pat asks there what it needs, whether to go
+  ahead on a busy frequency and the password when none is set, and gives up
+  when nobody answers (after a minute for the password). The Connections
+  card says in how many browsers the mailbox is open.
+- Lines in the mailbox's log that start with "OpenX6X00:" are the radio's:
+  what Pat cannot see itself. No password set, a transmission or a QSY the
+  radio refused and why, the SWR hold, and how each connection ended with
+  what to do next.
+- The gateway asks for the password once its welcome is in (the line ending
+  in `>`). With none set, Pat asks for it in the mailbox and gives up after a
+  minute: "Exchange failed: context deadline exceeded", and the connection
+  ends. Set the password on the Winlink page (its Password row says whether
+  Pat has one, and where it was set), or keep the mailbox open during the
+  connection to type it there. A new account's first connection over the air
+  goes without one: the gateway then sends the account's password in a
+  message, and Pat's log shows it ("DO NOT LOSE YOUR PASSWORD"; the logs
+  download masks it).
 - The gateway list: the first time, Pat fetches it from winlink.org when the
   radio has internet, and keeps it on the SD card. Without internet it uses
-  the list built into Pat (April 2026). Updating it needs the internet.
+  the list built into Pat (November 2026). Updating it needs the internet.
 - With the radio on the internet (WiFi, Ethernet), Pat's Telnet transport
   (Connect, Telnet) sends and fetches the mail with no radio at all: a first
   test of the account and the mailbox.
@@ -2468,12 +4799,43 @@ Good to know:
   network, and your tailnet with Tailscale on, can read and send your mail and
   make the radio transmit under your callsign. Turn Winlink off on a network
   you do not trust (a campsite's WiFi, a shared hotspot).
-- The mailbox answers only to the radio's address and its own names
-  (`x6100.local`, the Tailscale name, the short name on your tailnet), and refuses requests from the pages of
+- The mailbox answers only to the radio's address and its
+  [own names](#the-radios-own-names) (`x6100.local`, its name in your network's
+  domain, the names added on the Network page, the Tailscale name, the short
+  name on your tailnet), and refuses requests from the pages of
   other sites, so a web page you happen to visit cannot use it through your
-  browser. The configurator changes Winlink only when opened by those names
+  browser. It never answers a request that came from the internet through
+  Tailscale Funnel. The configurator changes Winlink only when opened by those names
   too. ARDOP and the radio's frequency control for Pat listen on 127.0.0.1,
   which Tailscale (userspace mode) also opens to your tailnet.
+- Anyone can send you a Winlink message (an email to `yourcall@winlink.org`
+  with `//WL2K` in its subject is enough), so the mailbox treats what a
+  message holds as text: the sender and the other addresses, the subject, the
+  attachments' names and the log's lines are shown as they are and never run
+  as part of the page. Up to v0.3.7 that was not so: an attachment named like a
+  piece of a web page ran as a script in the mailbox when its message was
+  opened, and such a script could send mail, connect and transmit (found by a
+  security review on [#105](https://github.com/Guru-RF/OpenX6X00/issues/105)).
+  On v0.3.7 or older, update before you open mail from someone you do not
+  know, or turn Winlink off.
+- An attachment is saved when you click it (under its own name), not opened in
+  a page of the radio's: a `.html` or `.svg` file sent to you opens on your
+  computer, away from the radio, and only if you open it there. A picture
+  (JPEG, PNG, GIF) still opens in a tab of its own. A Winlink form sent to you
+  opens in a tab as before (Pat shows it in a box that cannot reach the
+  mailbox).
+- Reply on a message sent with a Winlink form (an ICS 213, say) opens the
+  form's reply page in a window of its own; its Submit closes that window and
+  puts the reply in the message you are writing, to check and send. On v0.3.7
+  that Submit was refused ("Forbidden: cross-origin request").
+- A form or a template picked with the message's Template... button opens the same
+  way, in a window of its own (Pat 1.0.1 shows it in the same box as a form
+  sent to you), and its Submit puts it in the message you are writing. A
+  text-only template picked for a reply has the message replied to in it.
+- The mailbox's pages run only Pat's own scripts (a Content-Security-Policy
+  that forbids any other), and a page of the mailbox (port 8080) cannot open
+  the radio's TCI or Panel sockets: a script that ever got into it could not
+  key the radio that way.
 - The password is kept on the radio's system partition (`/var/lib/winlink`),
   out of reach of the web pages: never shown again, not in the Backup, not on
   the Files page. A new card image keeps the settings (`/mnt/winlink.conf`)
@@ -2487,17 +4849,228 @@ Good to know:
   every 100 days) and fetches the forms when you update them.
 - Pat runs behind the GUI and the audio (lower priority).
 - Over SSH, `x6100-winlink status` prints the state, and
-  `/run/winlink/pat.log` and `/run/winlink/ardopcf.log` have the programs'
+  `/run/winlink/pat.log`, `/run/winlink/ardopcf.log`,
+  `/run/winlink/mercury.log` and `/run/winlink/xara.log` have the programs'
   output (in memory).
+  `/run/winlink/radio` is the radio's state as the GUI writes it each second
+  while the modem is on its audio (the Before you connect card's).
 
-Tested on an X6200: the receive path, Pat's page and its guard, and ARDOP's
-ID frame on the air (1 W). Not tested yet: a real session with a gateway, and
-the X6100 on the air. Reports are welcome ([#18](https://github.com/Guru-RF/OpenX6X00/issues/18)).
+Sessions with gateways work, as reported on
+[#18](https://github.com/Guru-RF/OpenX6X00/issues/18): KM4GKD on an X6100,
+80 m to W4NWG, a message sent; M7SVA from the UK to DM6TS on 40 m, a message
+sent at 200 Hz (2000MAX did not connect); EA5JTT's X6200 reached HB9MM at
+2000MAX and stopped at the password, which was not set
+([#80](https://github.com/Guru-RF/OpenX6X00/issues/80)). Tested here: the
+receive path, Pat's page and its guard, ARDOP's ID frames on the air at 1 W
+(X6200) and its frames at 5 W into a dummy load (X6100). More reports are
+welcome on #18.
 
-Pat (MIT, Martin Hebnes Pedersen LA5NTA) and ardopcf (MIT, Rick Muething, John
-Wiseman, Peter LaRue) come with the firmware: Pat with small changes (its page
-answers only to the radio's names, no calls home), ardopcf with its audio and
-PTT through the radio's GUI.
+Pat's Configure page has "Listen for inbound P2P traffic": the radio turns it
+off again each time Pat starts. Listening would make the radio transmit,
+unattended, on whatever frequency it is on.
+
+Pat 1.0.1 (MIT, Martin Hebnes Pedersen LA5NTA) and ardopcf (MIT, Rick Muething,
+John Wiseman, Peter LaRue) come with the firmware: Pat with small changes (its
+page answers only to the radio's names and never through Tailscale Funnel, no
+calls home, the Winlink page's ARDOP bandwidth as the widest, its log open to
+the radio's lines, a reply with a Winlink form or a text-only template that
+reaches the composer), ardopcf with its audio and PTT through the radio's GUI.
+
+### Mercury (experimental)
+
+[Mercury](https://github.com/Rhizomatica/mercury) is a second HF modem for
+Winlink, from Rhizomatica's HERMES project: OFDM modes up to 2.1 kHz wide,
+faster than ARDOP on a good path, down to an MFSK mode for the weakest
+signals, and a VARA-style connection that Pat drives as its VARA HF transport.
+It comes with the firmware, pinned at version 1.9.21: `x6x00-mercury` is
+Mercury with the radio's GUI as its sound card and PTT, as ardopcf has.
+
+It is experimental. Two stations connected and exchanged mail through it on a
+PC, each with the radio's own Winlink code and Pat, but it has not been on the
+air from a radio yet. It needs far more of the radio's processor than ARDOP:
+on an X6100, into a dummy load, about one of its four cores, the radio at
+39 % of its processor with Mercury listening (18 % with ARDOP) and at most
+51 % during calls, its receiver never falling behind. The X6100 has no
+temperature sensor to read. Not measured on an X6200 yet.
+
+Choosing it: on Operating > Winlink, the Station card's Modem, Mercury
+(experimental), and its bandwidth, then Save. One modem runs at a time, since
+the radio's audio takes one: with Winlink on, Pat stops, ARDOP stops, Mercury
+starts and Pat starts again; the same way back to ARDOP. Status says "Running
+as ON6URE" once Pat and Mercury run, and the Connections card's Modem row
+"Mercury on the radio's audio".
+
+Who answers:
+
+- Only Mercury 1.9.20 or later: 1.9.20 and later do not connect to 1.9.19 or
+  older, and Mercury does not talk to VARA or ARDOP at all. Ask the other
+  station which version it runs.
+- Another Mercury station, station to station (P2P). The radio calls; it does
+  not answer calls (P2P listening stays off, as with ARDOP), so the other
+  station listens.
+- The few Winlink RMS gateways that run Mercury behind their VARA driver:
+  KO0OOO (its banner gives 7.101.5 MHz) and K7EK-10 were seen in Mercury's
+  issues in 2026; K7EK finds 30 m works best and 80 and 40 m poorly. Winlink's
+  gateway list has no Mercury: Pat's VARA HF list shows VARA gateways, which do
+  not answer it, and ARDOP's gateways do not either.
+
+Dialling: in the mailbox, Connect, VARA HF as the transport, then the other
+station's callsign as the target and its dial frequency in kHz by hand, and
+Connect. The radio tunes there in USB-D and back afterwards, as with ARDOP.
+The bandwidth field may stay empty: Mercury then takes the Winlink page's.
+
+- The bandwidth: 2300 Hz (the default) lets Mercury use all its modes; 500 Hz
+  keeps it narrow (DATAC3, 562 Hz, at the most), and its most robust mode, the
+  MFSK floor, is then a 500 Hz MFSK at half the speed (about 27 s a frame);
+  2750 Hz has 2300's modes for now. The narrower of the two stations' is used.
+  The RX filter has to cover Mercury's audio: 450-2550 Hz at 2300 and 2750 Hz,
+  1200-1800 Hz at 500 Hz. The Before you connect card checks it.
+- Mercury's keys are longer than ARDOP's: a call on its MFSK floor took 27 s
+  on the PC, and a round in a session is up to 30 s on the air plus its head
+  and tail. The radio stops a Mercury key after 40 s ("Winlink: TX stopped
+  after 40 s"), an ARDOP one after 30 s. The power is the same, at most 7 W,
+  and everything above holds for Mercury too: simplex, the apps, the SWR hold,
+  a QSY asked during a key.
+- Mercury sends no CW ID (Pat's CWID ON is not one of its commands): the
+  callsigns go in its own call frames.
+
+When it does not work:
+
+- The Connections card's last connection says what happened, as with ARDOP:
+  no answer (the other station needs Mercury 1.9.20 or later, a VARA gateway
+  from Pat's list does not answer it), a dropped link (500 Hz on a weak
+  path), "Pat called through ARDOP, but the radio runs Mercury" (VARA HF in
+  Pat's Connect dialog, or ARDOP on the page), "Mercury was not ready", a
+  bandwidth Mercury does not have (500, 2300 or 2750).
+- The Modem row says "Ready, but it fell behind the receiver lately" in red,
+  and Pat's log "OpenX6X00: Mercury could not keep up with the receiver": one
+  of Mercury's decoders dropped audio, or it threw away audio it had not
+  decoded yet ("decoder ring full" or "RX backlog exceeded" in its log), and
+  its connections fail. The radio's processor is short for it: use ARDOP, and send
+  the logs download on [#18](https://github.com/Guru-RF/OpenX6X00/issues/18),
+  it helps the measurement.
+- Mercury's log is `/run/winlink/mercury.log` (in the logs download too), its
+  settings `/run/winlink/mercury.ini`, written at each start: its TNC ports
+  8300 and 8301 for Pat and its broadcast port 8100, all on 127.0.0.1 (which
+  Tailscale's userspace mode also opens to your tailnet, as ARDOP's), no web
+  UI, no message store.
+
+Mercury (GPL-3.0-or-later, Rafael Diniz and Rhizomatica's HERMES project; its
+FreeDV part LGPL-2.1 with KISS FFT in it BSD-3-Clause, its iniparser, nanorq
+and oblas MIT) comes with the firmware as upstream has it, with two small
+changes: its TNC and broadcast ports listen on 127.0.0.1 only, and it answers
+Pat's VERSION with a VERSION line, so Pat never hangs starting it
+(`third-party/mercury/UPSTREAM.md`).
+
+### XARA (experimental)
+
+[XARA](https://github.com/x0rro/xara) is a third HF modem for Winlink: an
+independent program by another author (x0rro) that speaks VARA HF on the air
+and VARA's interface to Pat. So the VARA HF gateways in Pat's list answer it,
+where they do not answer Mercury. It comes with the firmware, pinned at
+version 0.1.3 and built from its source with three changes of ours: the
+radio's GUI is its sound card and PTT, as for ardopcf and Mercury, it
+identifies in CW with any callsign, and a call you cancel ends at once
+(below). Every transmission goes through the radio's own TX path, as for the
+other digital modes: the amateur bands only, simplex, at most 7 W, the SWR
+hold, no TX while a digital app is open.
+
+It is experimental. Two stations exchanged mail through it on a PC, each with
+the radio's own Winlink code and Pat, at the free speed and at full speed. It
+has not been on the air from a radio yet, nor against VARA itself or a VARA
+gateway. Listening on the bench X6200 it took 6-7 % in `top`; keyed, and
+its timing through the radio's audio, are not measured yet. XARA itself is young (its first release
+came out on 21 October 2026) and still changes fast.
+
+Choosing it: on Operating > Winlink, the Station card's Modem, XARA
+(experimental, VARA-compatible), its bandwidth and the VARA HF licence box
+(below), then Save. One modem runs at a time, as with Mercury.
+
+XARA needs your callsign, the Winlink page's or the radio's (Settings >
+General): 1 to 7 letters and digits, with an SSID from -1 to -19 if any, not
+N0CALL. With none, or one it does not take, the Status says so and XARA does
+not start.
+
+The speed:
+
+- VARA HF has free speed levels, and faster ones for those who bought a
+  licence. On the air the difference is one bit in the caller's connect
+  frame: the station called follows it, and nothing else is checked.
+- By default XARA runs VARA's free levels (1 to 4), without compression, as a
+  VARA without a licence does. The Connections card's Modem row says "VARA's
+  free speed levels".
+- The VARA HF licence box: tick it only if you hold a VARA HF licence of your
+  own. It is your statement; the radio does not check it. Ticked, XARA calls
+  as a registered VARA station does, and the link may use every level ("full
+  speed (VARA HF licence ticked)"). The radio always calls (it answers no
+  call, below), so its own setting is the one that counts on its links.
+- XARA's author ships his own builds without the faster levels, so that
+  using them takes a build of one's own. This firmware has them built in, off,
+  behind the box: ticking it is your statement that you hold a licence.
+
+Dialling: in the mailbox, Connect, VARA HF as the transport, then a gateway
+from the VARA HF gateway list, or another station's callsign and dial
+frequency by hand, and Connect. The radio tunes there in USB-D and back
+afterwards, as with ARDOP. The bandwidth field may stay empty: XARA then
+takes the Winlink page's. Call a gateway at the bandwidth its list entry
+gives.
+
+- The bandwidth: VARA HF's 500, 2300 (the default) or 2750 Hz. The RX filter,
+  and the TX filter on a base that has one, have to cover XARA's audio:
+  350-2650 Hz at 2300 Hz, 120-2880 Hz at 2750 Hz, 1240-1760 Hz at 500 Hz. The
+  Before you connect card checks it.
+- XARA's keys are a few seconds long (6 s at the most on the PC, with the CW
+  ID). The radio stops one after 30 s ("Winlink: TX stopped after 30 s").
+- XARA identifies in CW as each session ends, and after a call that got no
+  answer or that you cancelled, since Pat asks it to (CWID ON), with any
+  callsign: yours without its SSID, at about 28 words a minute, at the end of
+  its last transmission. A call you cancel in Pat ends at once, and its ID
+  goes out straight away (or in the same transmission, when the call was
+  still on the air), on the call's frequency: the radio tunes back for Pat
+  only after it. When the other station ended the link and identifies too,
+  the radio first waits out its ID, keyed and silent (about 3 s), then sends
+  its own. The ID is part of a key like the rest of XARA's audio: the radio's
+  checks and power hold for it, and the silent wait leaves the TX level as it
+  was. XARA 0.1.3 itself sends one only with a US callsign (such as K1ABC or
+  N0AAA), and after a cancelled call only once the call's wait for an answer
+  is over, when Pat may have tuned the radio back already; ours with any, a
+  European one too, and at once.
+
+The radio calls; it does not answer calls. XARA starts with listening off,
+and on the radio Pat never turns it on (P2P listening stays off, as with
+ARDOP). So a station that calls your callsign over VARA HF gets no answer,
+and the radio does not transmit for it, also with Winlink on and nobody at
+the radio.
+
+When it does not work:
+
+- The Connections card's last connection says what happened, as with ARDOP
+  and Mercury: no answer (call the gateway at the bandwidth Pat's list gives
+  it), a dropped link (500 Hz on a weak path), "Pat called through ARDOP, but
+  the radio runs XARA" (VARA HF in Pat's Connect dialog, or ARDOP on the
+  page), "XARA was not ready", a bandwidth XARA does not have (500, 2300 or
+  2750). A delivered connection says its speed: "Done with YO4CIL at 2300 Hz
+  at VARA's free speed: 1 sent, 0 received".
+- After a call that got no answer, or right after you cancel one, the radio
+  keys once more for a few seconds: that is its CW ID, not another call.
+- The Modem row says "Ready, but it fell behind the receiver lately" in red,
+  and Pat's log "OpenX6X00: XARA could not keep up with the receiver": XARA
+  fell behind the radio's audio ("xara is falling behind real time" in its
+  log), and its connections fail. The radio's processor is short for it: use
+  ARDOP, and send the logs download on
+  [#120](https://github.com/Guru-RF/OpenX6X00/issues/120), it helps the
+  measurement.
+- XARA's log is `/run/winlink/xara.log` (in the logs download too), its
+  settings `/run/winlink/xara.conf`, written at each start: its commands on
+  127.0.0.1:8300 and its data on 8301 (which Tailscale's userspace mode also
+  opens to your tailnet, as ARDOP's), no KISS port, no web UI of its own.
+
+XARA (MIT, x0rro) comes with the firmware built from its v0.1.3 release with
+three changes of ours: its sound card and PTT through the radio's GUI, its CW
+ID with any callsign, and a cancelled call that ends at once
+(`tools/xara/UPSTREAM.md`). The Rust crates in it are MIT (some also
+Apache-2.0, Zlib or 0BSD) and the Rust standard library Apache-2.0 or MIT;
+their texts are on the radio in `/usr/share/x6100/licenses/xara`.
 
 ## Browser panel
 
@@ -2505,20 +5078,35 @@ The radio worked natively from a browser: `http://x6100.local/panel` (the
 web configurator's Remote > Panel page). Not a picture of the radio's screen
 but the radio's own controls, laid out for a touch screen, on a phone, a
 tablet or a PC, portrait or landscape: what the closed phone app does, as a
-web page, nothing to install, any device with a browser.
+web page, nothing to install, any device with a browser. Away from home it
+works over Tailscale, and with [Tailscale Funnel](#tailscale-funnel) from a
+browser paired at home on any device.
 
 ![The Panel page on a tablet](screenshots/web_panel.png)
 
 - The spectrum and the waterfall, live from the radio's own FFT (a kilobyte a
   frame, fifteen a second: a tenth of the Screen page's bandwidth), with the
-  frequency scale, the IARU band plan strip, the VFO line and the passband.
+  frequency scale, the band plan strip, the VFO line and the passband.
   Tap or drag to tune, pinch (or Ctrl + the mouse wheel) to zoom, the wheel
   to tune by the step. Colours: Blue, Fire, Ice, Grey.
 - The frequency: tap it for a keypad (kHz). BAND up and down, MODE, STEP,
-  ZOOM, VFO A/B, LOCK; the knob buttons tune by the step.
+  ZOOM, VFO A/B, LOCK; the knob buttons tune by the step. LOCK shows and sets
+  the radio's [frequency lock](#buttons-and-knobs). While an app holds the
+  frequency, the frequency is greyed and stays put, and LOCK stays as you set
+  it.
 - PRE, ATT, NB, NR, AGC, ATU on and off; VOL, SQL, RF GAIN and POWER with
-  - and +, or a slider on a tap; FILTER presets for the mode and the edges by
-  hand; ATU TUNE (a long press of the key).
+  - and +, or a slider on a tap; ATU TUNE (a long press of the key); TUNE for an
+  external tuner, a press to start and another to stop (see
+  [TUNE for an external tuner](#tune-for-an-external-tuner)).
+- FILTER: presets for the mode and the edges by hand, by the radio's own
+  filter rules: in SSB and DIG both edges (presets 1.8 to 3.6 kHz); in CW
+  and CW-R the width, around the key tone (100 Hz to 1 kHz), so an edge
+  typed alone takes the other one along, as the radio's own Filter low and
+  Filter high do, and the two typed give their width; in AM, NFM and
+  SAM the high edge alone, the low one is always 0 (2.5 to 6 kHz); in WFM
+  the same up to 10 kHz (4 to 10 kHz). No edge goes past 6 kHz, 10 kHz in
+  WFM. A field left empty, or holding no number, keeps its edge. The preset
+  lit is the one whose edges the radio has.
 - The S-meter, the power and SWR while transmitting, the battery.
 - Spots: the DX cluster's spots as the radio filters them (see
   [DX Cluster](#dx-cluster)), newest first, tap one to tune to it; the calls
@@ -2534,10 +5122,18 @@ web page, nothing to install, any device with a browser.
   does now and next is a timeline above the list, see below.
 - CW: the radio's CW decoder's text as it comes (in CW mode, Settings > CW);
   LOG takes the last call sign in it to the Log tab.
-- Log: a voice or CW QSO by hand: call, RST sent and received, a name, LOG.
-  It goes to the day's ADIF log on the radio on the radio's frequency and
-  mode (the web Logs page lists it), as a QSO from the CW keyboard does; during
-  a Field Ops activation it counts for the activation.
+- Log: a QSO by hand (voice, CW, or a keyboard mode such as PSK31): call,
+  RST sent and received, a name, LOG. It goes to the day's ADIF log on the
+  radio on the radio's frequency (the web Logs page lists it), as a QSO from
+  the CW keyboard does, also during a Field Ops activation: a QSO for the
+  activation is logged with Field Ops' Log QSO. The mode is the one of the digital app open on the radio
+  (PSK31, PSK63, OLIVIA, CONTESTI, JTTY, RTTY, SSTV, FT8, FT4, FT2, JS8, WSPR), else
+  the radio's (CW, SSB, AM, FM, and FT8 or FT4 on their frequencies). In CW
+  or CW-R it is CW, also with RTTY or SSTV open (they leave the mode free).
+  The radio's message names it. In USB-D or LSB-D with no app open, away from
+  FT8 and FT4, the radio can't tell (a program on TCI or the USB audio isn't
+  known): the QSO is logged without a mode, the radio says so, and it waits
+  for Wavelog until the mode is set on the Logs page.
 - Keys: the front keys and knobs, for the radio's menus and apps; the Screen
   tab shows the radio's display, so an app opened with APP is worked from
   here. The [Browser remote](#browser-remote) is the same thing full size.
@@ -2568,19 +5164,31 @@ shows again; a change neither confirmed nor refused within two seconds goes
 back to the radio's value too. A browser that only watches, or does not
 have control, does not send the change at all: it says why and opens the
 pairing or Take control dialog. With LOCK on, the frequency stays and the
-status line says so.
+status line says so. A text of the status line that says how things are
+("Take control first", "On the air", "LOCK is on", "The radio does not
+answer") goes once it is no longer so, within a second; news ("QSO logged")
+stays until the next.
 
-The page talks to the GUI's remote WebSocket (port 50002, the Screen page's):
+The page talks to the GUI's remote WebSocket (port 50002, the Screen page's;
+the https page at `wss://<address>/ws/remote`, which the web server hands on):
 `panel 1` subscribes to the state (`state {...}` as JSON: frequency, mode,
-filter, the switches and the levels, whenever something changes), the
+filter, the switches and the levels, whenever something changes; `lock` is 1
+while the frequency is locked by the user or held by an app, `ulock` the
+user's lock alone; `kt` the key tone, and `cwrise` 1 where CW's tone rises
+as the dial goes up, as CW-R's does, the X6200: its CW passband lies like
+CW-R's), the
 S-meter (`m <dB>`, ten a second), the TX meters (`t <W> <SWR> <ALC>`), the
-bands and the band plan (`bands`, `plan`), the spots (`spots [...]`) and the
+bands and the band plan (`bands`, `plan`; again when either changes: another
+plan or region, a band edited on the web page), the spots (`spots [...]`) and the
 spectrum as binary frames (16 bytes header `{u16 0xFFFF, u16 bins, u32
 centre Hz, u32 width Hz, u32 sequence}`, then one int8 dB per bin). `set NAME
-VALUE` changes the radio: `freq`, `mode` (0-7, the order of the mode list),
-`agc` (0-3), `pre`, `att`, `nb`, `nr`, `atu`, `lock` (0/1), `sql`, `rfg`
-(0-100), `vol` (0-55 on the X6100, 0-100 on the X6200), `pwr` (tenths of a watt), `step`, `zoom` (1-8), `band`
-(+1/-1), `vfo` (toggle), `filter LO HI`. A `set` the radio refuses is
+VALUE` changes the radio: `freq`, `mode` (0-7, the order of the mode list; 8 SAM and 9 WFM on the X6200),
+`agc` (0-3), `pre`, `att`, `nb`, `nr`, `atu`, `lock` (0/1: the user's lock; an app's hold stays), `sql`, `rfg`
+(0-100), `vol` (0-55 on the X6100, 0-100 on the X6200), `pwr` (tenths of a watt: 1-100,
+1-80 on the X6200, 1-50 there on battery), `step`, `zoom` (1-8), `band`
+(+1/-1), `vfo` (toggle), `filter LO HI` (in Hz, as the radio keeps them: in CW
+centred on the key tone, the low edge no lower than 0; in AM and FM LO is
+0). A `set` the radio refuses is
 answered `err ...` (`err freq: locked (LOCK, or an app holds the
 frequency)`, `err freq: not a frequency this radio tunes`, `err NAME: the
 radio is busy, try again`, `err unknown setting NAME`, the role and
@@ -2608,7 +5216,8 @@ written), `conflict` (the number holds another QSO) or `unknown` (never
 seen, the radio restarted since, or no longer kept). After `size` the radio lists its keys (`keys GEN APP
 ...`: the X6200 has no PRE, V/M, AGC or LOCK key) and, to a panel, `modes 8|10`
 (the X6200 adds SAM and WFM; `set mode` with one the radio has not is answered
-`err mode: not on this radio`) and `volmax 55|100`, the AF volume's range. The greeting `hello <version> <boot>` ends with a
+`err mode: not on this radio`), `volmax 55|100`, the AF volume's range, and `pwrmax 100|80`, the top of
+`pwr` in tenths of a watt. The greeting `hello <version> <boot>` ends with a
 number chosen when the GUI started: a client that sees it change knows the
 radio restarted. Sessions and control: `pair?` puts a code on the radio's
 screen, `pair CODE NAME` answers `paired TOKEN ROLE TX`, `auth TOKEN` at each
@@ -2619,7 +5228,11 @@ the code is for the eyes at the radio); an admin's `sessions` lists the paired b
 ends one; `unpair` forgets the caller's own; `tx 0|1` goes to every client
 when the radio keys or unkeys. `key PTT 1 N` keys the radio's own microphone,
 N the page's number for this press, and is repeated every second as the
-lease; `key PTT 0` lets go (see Transmitting from the browser). Settings > General > BROWSER REMOTE turns the
+lease; `key PTT 0` lets go (see Transmitting from the browser). `tune 1 N`
+starts a TUNE for an external tuner the same way, repeated every second while
+the state says `"tune":1` (`"tune_s"` its time limit); `tune 0` stops it, one
+the radio or another page started too with operate and control; the radio's
+refusals and stops come as `err tune: ...` and `err tune stopped: ...`. Settings > General > BROWSER REMOTE turns the
 server on and off for both pages. A page opens on a tab with `/panel#ft8`,
 `#cw`, `#log`, `#keys` or `#screen`.
 
@@ -2696,16 +5309,25 @@ is paired once, with a code the radio shows:
    code on its screen for two minutes (Settings > General > BROWSER REMOTE >
    Pair code shows it again, and the card shows it too).
 2. Type the code and a name for the browser ("Kitchen phone", "Shack PC").
-   Three wrong tries burn the code; Pair asks for a new one.
+   Three wrong tries burn the code; Pair asks for a new one. A browser gets a
+   new code at most every 30 s, and after each burned code it waits twice as
+   long as the time before (1 min, 2, 4, up to an hour), with "Pairing paused"
+   on the radio's screen and in the dialog: guessing the six digits from a
+   browser would otherwise take less than an hour. Settings > General >
+   BROWSER REMOTE > Pair code gives a code at once and starts the waits over.
 3. The browser is paired: the bar shows its name, and it stays paired through
    reloads and restarts of either side (a token in the browser's storage,
    shared by the Panel and the Screen page). The radio keeps up to sixteen
-   paired browsers in `/mnt/remote_sessions.conf`.
+   paired browsers in `/mnt/remote_sessions.conf`, each as a hash (SHA-256)
+   of its token: the Files page hands out what is in `/mnt`, and a hash is no
+   use to whoever reads it. A file from before the hashes is converted at the
+   first start; the browsers paired before stay paired.
 
 The first browser ever paired is the admin: it operates the radio and manages
 the others (Sessions in the bar lists them, with their name, their address,
-whether they are connected now and when they were last seen; Revoke ends one
-at once, its open connections included). Every later browser is an operator:
+"via Funnel" for one last seen from the internet, whether they are connected
+now and when they were last seen; Revoke ends one at once, its open
+connections included). Every later browser is an operator:
 it operates the radio but manages nothing. A browser unpairs itself from its
 name in the bar. Settings > General > BROWSER REMOTE > Forget all revokes
 every browser at the radio, for a radio that changes hands or a code that
@@ -2728,17 +5350,27 @@ radio · Take control" (someone used the radio's own keys or knobs), "TCI
 client · Take control". A key, a knob or a setting pressed in a browser
 without control is not sent to the radio: a Take control dialog opens, says
 who has control, and its button brings control here (as the button in the
-bar does at any time). One exception: while the radio transmits, control
+bar does at any time); the status line then says "In control", and no longer
+"Take control first". One exception: while the radio transmits, control
 stays where it is until the transmission ends.
 Release gives it up without anyone taking it. The radio's own keys and knobs
 always take control back (the operator standing at the radio has the last
 word); a browser takes it again on purpose. A TCI client takes it as the
-knob always did, the moment it tunes or keys, unless someone is on the air;
-the TCI page's "Clients may" (or Settings > General > TCI SERVER > Clients)
-set to Listen only makes TCI clients hear and follow the radio without
-tuning or keying it, for a shared network. A browser that loses its link
-loses control with it. Web Logs and the configurator pages are not gated:
-they change settings, not the air.
+knob always did, the moment it tunes or keys, unless someone is on the air.
+What it only asks (the frequency, the TX state: a logger through Hamlib asks
+at every poll) takes nothing, and control stays where it is.
+When it keys while it does not have control (it tuned nothing, or someone
+took control since), control goes back when that transmission ends: to the
+browser, the radio or the program it came from, or free if it was free or
+that browser left meanwhile; not when a knob at the radio took it during
+the transmission.
+Mic on keys the browser's microphone through the TCI: during such an over
+the bar says "TCI client", and after it control is where it was, with no
+Take control needed. The TCI page's "Clients may" (or Settings > General >
+TCI SERVER > Clients) set to Listen only makes TCI clients hear and follow
+the radio without tuning or keying it, for a shared network. A browser that
+loses its link loses control with it. Web Logs and the configurator pages
+are not gated: they change settings, not the air.
 
 ### Transmitting from the browser
 
@@ -2758,6 +5390,10 @@ shows what the radio did, never what the page hoped:
   microphone went away, the page lost sight of the key (a tab switch, a call
   on the phone), the lease ran out. The operator presses again, on purpose.
 - TX (not this browser), while the radio is keyed from elsewhere.
+- No TX and the reason, for 5 s after a refused press. A reason that is how
+  things are (control elsewhere, the radio not answering, the microphone not
+  ready) goes once it is no longer so: after Take control the button is
+  PTT (hold) again at once.
 
 A held PTT is a lease. With the radio's microphone the page renews the key
 every second: three seconds without a renewal (the link gone, the page
@@ -2769,11 +5405,33 @@ keys the radio across a gap: a reconnect never re-presses PTT, and every
 press has a number of its own that its renewals carry. A hold the radio let
 go (the lease ran out, three minutes, a release) stays over: renewals of it
 that a stalled link delivers late are ignored, only a new press keys again.
+A press where the radio may not transmit (outside the
+[amateur bands](#amateur-bands-only), receive only) is refused with the
+reason, "no TX on 27.185 MHz: outside the amateur bands (Settings > TX
+Cal)", and nothing is keyed. So is a press while the base sends no data,
+with "no data from the base" (see
+[No TX without data from the base](#no-tx-without-data-from-the-base)).
 A Panel or Screen page left open since before the update that brought the
 numbers cannot key the radio's own microphone until it is reloaded: its PTT
 button shows "No TX" and the status line "this session may not transmit
 from a page older than the radio: reload the page". With Mic on (the
 browser's microphone, through the TCI) such a page still transmits.
+
+TUNE for an external tuner (the button beside ATU TUNE) is a press, not a
+hold: Tuning... until the radio says it tunes (within 2 s, else "No tune",
+the radio did not start it), then TUNE with the seconds against its
+limit ("TUNE 4 / 15 s"), the power and SWR on the meter; a press stops it.
+While it is on the page renews it every second as a held PTT is renewed: if
+the link drops or stalls the radio stops the tune three seconds after the
+last renewal it got ("tune stopped: no renewal from the page"), and its time
+limit ends it in any case. On a stall the page also sends the stop behind
+the renewals still stuck in the link, so that if they get through late the
+stop comes with them. A tune started at the radio shows on the button
+too ("from the radio"), and a press stops it. Refused as PTT is (a browser
+that watches, a session without TX, control elsewhere), and where the radio
+would not tune ("No tune" and why); as with PTT, "No tune" goes once its
+reason does (control back here, the radio back on receive after "on the
+air").
 
 ### What the FT8 app will do next
 
@@ -2851,33 +5509,41 @@ here it is a web page, nothing to install.
 - Mic: the browser's microphone goes to the radio while PTT is held, over the
   TCI server as any TCI client does it. Browsers only give the microphone to
   an https page: open `https://x6100.local/remote` and accept the radio's
-  certificate once. Without Mic, PTT keys the radio's own microphone or hand
-  mic, as the PTT key on the radio does.
+  certificate, once for that address: the page's picture, sound and
+  microphone come through the same port (see HTTPS under
+  [Web configurator](#web-configurator)). Without Mic, PTT keys the radio's
+  own microphone or hand mic, as the PTT key on the radio does.
 - Fullscreen fills the display with the remote; the status line shows the
   frame rate and the bandwidth (about 300-500 kB/s with a moving waterfall).
 
 Where: the Remote link in the web configurator's menu. Settings > General >
 BROWSER REMOTE turns the server on and off (on by default) and shows who is
 watching; the web page offers to turn it on when it is off. The port is in
-`/mnt/remote.conf`. Up to three viewers at a time.
+`/mnt/remote.conf`. Up to four viewers at a time, the Panel and Screen pages
+together, two of them at most from the internet through
+[Tailscale Funnel](#tailscale-funnel).
 
 The screen is streamed even while the radio's panel is dark (Screen off after,
 Screen always off): a radio with its screen off, worked from the browser, is
-the intended setup for a remote shack corner. The link's health, the greyed
+the intended setup for a remote shack corner. While the page is open the
+[screensaver](#screensaver) waits: the page shows the radio's screen. The link's health, the greyed
 last picture with its age when the link drops, the reconnection and what is
 never replayed across a gap are as on the Panel page (When the link drops,
 above); so are the pairing, the roles, control of the radio and the PTT as
 the radio confirms it (Pairing and control, Transmitting from the browser,
 above): anyone on the network watches, a paired browser operates. The web
 configurator itself has no login: use it on a network you trust. Pages from
-other sites cannot connect (the browser's Origin is checked).
+other sites cannot connect (the browser's Origin is checked), nor can Pat's
+Winlink mailbox (port 8080). So the Panel and the Screen page do not connect
+either when you open them at port 8080 of your own computer, through an SSH
+tunnel or a forwarded port: use another port for that, 8000 for instance.
 
 ## TCI server
 
 While a TCI client transmits (the knob's PTT, AetherSDR, the browser remote's
 microphone) the radio's speaker and TX monitor are quiet, and come back as they
 were when the client unkeys. A frequency change from a TCI client wakes a blanked
-screen like a key does (not with Screen always off).
+screen or ends the screensaver like a key does (not with Screen always off).
 
 TCI (Transceiver Control Interface, version 2.0) is the protocol of Expert
 Electronics' SDRs, the one AetherSDR serves to WSJT-X and to the
@@ -2895,37 +5561,55 @@ program on the network tunes the radio, hears it and keys it.
   a listening client hears and follows the radio, and its tuning and keying
   are answered with the state as it is, unchanged. An operating client takes
   control of the radio the moment it tunes or keys, as the knob always did,
-  unless someone is on the air; a browser that was operating sees "TCI
-  client active" and takes control back on purpose (Pairing and control,
-  under Browser panel).
+  unless someone is on the air. What it only asks takes no control and is
+  answered with the state: `vfo:0,0;`, `trx:0;`, and `modulation`,
+  `rx_filter_band`, `agc_mode`, `rit_enable`, `rit_offset` or `drive`
+  without a value. Hamlib's TCI backend asks `VFO:0,0;` and `TRX:0;` at
+  every poll, so a program that polls through it leaves control with the
+  browser or the program that has it. One that keys while it does not have
+  control (it tuned nothing, or someone took control since) gives it back
+  when its transmission ends, to whoever had it (or free); after one that
+  tuned, a browser that was operating sees "TCI client · Take control" and
+  takes control back on purpose (Pairing and control, under Browser panel).
+- Not on the internet: TCI has no login, so a connection through Tailscale
+  Funnel is refused, also from a funnel set up by hand (`tailscale funnel
+  50001`). The one exception is the browser Panel's own sound and microphone
+  from away, which gives a paired browser's key first and may then only set
+  its audio and key with it ([Tailscale Funnel](#tailscale-funnel)). A TCI
+  program away from home connects over Tailscale on that machine.
 - One transmission at a time: the client that keyed holds it, and its unkey
   or its leaving unkeys the radio, whoever has control by then. Another
   operating client's key meanwhile, also one sent while the first key is
   still on its way to the radio, is answered `trx:0,false;` and changes
   nothing, not even who has control: the client that keyed still tunes
   during its over. A key the radio refuses (someone on the air, TCI audio in
-  CW or DIGU) is answered `trx:0,false;` too, to the client that sent it
+  CW or CW-R) is answered `trx:0,false;` too, to the client that sent it
   alone, and so is a PTT key that, once at the radio, does not put it on the
-  air within a second (a frequency it does not transmit on). A key still on
-  its way when its client unkeys or leaves keys nothing, and a client whose
-  key was refused or cancelled unkeys nothing: a transmission keyed
-  meanwhile with the PTT key on the radio or the browser's PTT stays on the
-  air.
+  air within a second (a frequency it does not transmit on, no data from the
+  base). A key still on its way when its client unkeys or leaves keys
+  nothing, and a client whose key was refused or cancelled unkeys nothing:
+  a transmission keyed meanwhile with the PTT key on the radio or the
+  browser's PTT stays on the air.
 - There is no login or pairing for TCI clients: enable it only on a network
   you trust, or set Listen only, and turn it off when it is not needed.
   Anyone who reaches the port can key the transmitter when clients may
   operate. A web page is the exception: a browser names the page's site
   (Origin) when it opens the socket, and the radio refuses a page from any
   site but its own, so a page you happen to visit cannot key the radio
-  through your browser. TCI programs send no Origin and are not affected.
+  through your browser. Pat's Winlink mailbox (port 8080) is refused too: it
+  is the radio's, but it shows what anyone can send by Winlink. TCI programs
+  send no Origin and are not affected.
 - The TCI SERVER card shows the connected client (address), "no client"
   otherwise.
 - What it carries: `vfo`, `modulation` (lsb, usb, cw, cwr, am, nfm, digl,
   digu), `rx_filter_band`, `agc_mode`, `rit_enable` / `rit_offset`,
-  `drive` (TX power), `trx` (PTT; `trx:0,true,tci;` keys with the client's
+  `drive` (TX power, 0-100 %: 0.1 W up to 10 W, 8 W on the X6200; on its
+  battery 5 W from 62 % up),
+  `trx` (PTT; `trx:0,true,tci;` keys with the client's
   audio as the microphone), `rx_smeter` and `rx_channel_sensors` (the
   S-meter in dBm, after `rx_sensors_enable:true;`), `tx_sensors` (mic level,
-  forward power, SWR, ALC, after `tx_sensors_enable:true;`), the RX audio
+  forward power, SWR, ALC, after `tx_sensors_enable:true;`; 0 from the key
+  until the radio's first reading, the SWR 1.0, never less), the RX audio
   stream (`audio_start`, in the client's format, below) and the TX audio
   frames the client answers to each `TX_CHRONO`. The greeting ends with
   `start;` then `ready;`: the radio is running, as ExpertSDR3 says of an SDR
@@ -2944,8 +5628,9 @@ program on the network tunes the radio, hears it and keys it.
   rate with a filter, flat to 9 kHz. The greeting gives the client's format,
   a change is answered with what moved, and every frame's header says its
   rate, type, length and channels.
-- TCI audio on the air (`trx:0,true,tci;`): in LSB, USB, AM and FM, not in
-  CW or DIGL/DIGU, where the key is refused. Every 21.3 ms a `TX_CHRONO`
+- TCI audio on the air (`trx:0,true,tci;`): in every mode but CW and CW-R,
+  where the key is refused. DIGU and DIGL take it as the radio's own FT8,
+  PSK and Winlink take theirs in USB-D. Every 21.3 ms a `TX_CHRONO`
   asks for 21.3 ms of audio in the client's format (1024 samples of each
   channel at 48 kHz, 512 at 24 kHz); the radio takes 8 to 48 kHz in any of
   the four types and transmits the first channel. A frame whose size is not
@@ -2960,15 +5645,23 @@ program on the network tunes the radio, hears it and keys it.
 - Other clients: anything that talks to AetherSDR or ExpertSDR3 over TCI
   (loggers, CW keyers) should work for what the radio has; what it does not
   have is answered with the radio's own value.
+- Commands in any case, as TCI says the case of the letters does not matter:
+  `VFO:0,0,7074000;` and `TRX:0,TRUE,TCI;` (Hamlib's TCI backend sends its
+  commands in capitals) are `vfo:0,0,7074000;` and `trx:0,true,tci;`, the
+  words in them too (`USB`, `INT16`). The radio answers in lower case.
+  `dds` (the receiver's centre, which Hamlib sends before each `vfo`) is
+  answered with the frequency, set or asked, and changes nothing; a command
+  the radio does not know at all is left unanswered, as TCI says.
 - WSJT-X, WSJT-X Improved and JTDX: CAT and audio over the one connection,
   no sound card or cable. The audio takes about 3 Mbit/s from the radio, and
   about 6 Mbit/s more from the PC while it transmits (they send each TX frame
   at twice its size).
   - Settings > Radio: Rig "TCI Client RX1", Network Server the radio's
     address and port (`x6100.local:50001`), PTT Method CAT (the only one TCI
-    has), Mode USB (Data/Pkt puts the radio in DIGU, where TCI audio does not
-    key it; or None, with the radio in USB yourself), Split Operation None or
-    Fake It.
+    has), Mode Data/Pkt (the radio in DIGU, as for its own FT8) or USB; or
+    None, with the radio's mode set yourself. Split Operation None or Fake
+    It. Up to v0.3.6 TCI audio did not go out in DIGU, so Mode had to be
+    USB.
   - Settings > Audio: "Use TCI Audio" on, then restart the program. The Rx
     dB box beside it sets the receive level. Keep it on: their keying always
     sends TCI audio (`trx:0,true,tci;`), so with it off the radio is keyed
@@ -2987,9 +5680,9 @@ opens the web configurator and `x6100.local:50001` is the TCI server, on WiFi
 and on Ethernet alike, without knowing the address. Phones, tablets, Macs,
 Linux and current Windows resolve `.local` names out of the box.
 
-The name is `x6100` by default. Change it in Settings > Wireless > NETWORK NAME
-(the keyboard opens; letters, digits and `-`, up to 32) or on the web
-configurator's Network page. It is saved in `/mnt/hostname.conf` on the DATA
+The name is `x6100` by default, `x6200` on an X6200. Change it in Settings >
+Wireless > NETWORK NAME (the keyboard opens; letters, digits and `-`, up to
+32) or on the web configurator's Network page. It is saved in `/mnt/hostname.conf` on the DATA
 partition, so it survives a new card image, and takes effect at once: the
 radio's hostname changes and Avahi announces the new name within a few
 seconds. Two radios on one LAN need two names.
@@ -2997,32 +5690,242 @@ seconds. Two radios on one LAN need two names.
 Where mDNS is blocked (some corporate or guest networks) or the browser does
 not resolve `.local`, the IP address shown in Settings > Wireless still works.
 
+### The radio's own names
+
+The web configurator takes changes, opens the Files page and the Backup
+download, and the Panel, the Screen page and the Winlink mailbox connect, only
+when the page was opened by one of the radio's own names. By any other name a
+web site could do the same through your browser: it can point a name of its
+own at the radio (DNS rebinding). Its own names are:
+
+- its address, any of them (`http://192.168.1.40/`);
+- its network name: `x6100.local` (`x6200.local`, or the name you gave it);
+- `<name>.<domain>` for the domain your network gives the radio, the one your
+  router's DHCP hands out (`x6100.home.lan`, `x6100.fritz.box`,
+  `x6100.example.nl`), on WiFi and on Ethernet. The Network page shows which
+  ones the radio has now. A domain that is a public suffix on its own (`nl`,
+  `com`, `co.uk`, or a single word other than `lan`, `home`, `localdomain`,
+  `internal`, `intranet`, `corp` and `private`) does not count: anyone could
+  register `x6100.nl`;
+- the names you add under Other names on the Network page (System > Network):
+  a name your own DNS server gives the radio that is not `<name>.<domain>` (an
+  A record such as `shack.example.nl`), or a reverse proxy's name. Only names
+  of your own: a page opened by a listed name can change everything the
+  configurator can, so never add a name a web site or a message asks you to
+  add, and a reverse proxy's name only when it serves the radio alone (another
+  site behind the same name could change the radio's settings too) and the
+  internet does not reach it (these pages have no login). Whole names
+  only, up to 8: no addresses (they count already), no wildcards, not a
+  public suffix alone (`nl`, `co.uk`) and not a single word. The list is kept
+  in `/mnt/own_names.conf` on the DATA partition, so it survives a new card
+  image. It is not in the Backup, as the network name is not: these are this
+  radio's names on this network. It changes only from a page opened by one of
+  the radio's own names, so a site that reached the radio by a name of its own
+  cannot add that name;
+- with Tailscale on, its Tailscale name (the full `*.ts.net` one, or the short
+  one on your tailnet).
+
+Opened by another name, the page says by which name it was opened, which names
+work (the Tailscale name only while Tailscale runs) and, for a name the list
+takes, that it can be added on the Network page if it is your own: open that
+page by one of the names that work, add the name, and it works at once. TCI
+programs, which are not browsers, connect by any name.
+
 ## SSH
 
 SSH on the radio takes keys only: logging in with a password is off, because
-every radio came with the same root password. Each computer you log in from
-needs its public key on the radio:
+every radio came with the same root password. Without a key on the radio, SSH
+lets nobody in. The radio's everyday use needs no SSH: the web configurator's
+Files page downloads files from the card, and Backup and Update are there too.
 
-1. On the computer, once: `ssh-keygen -t ed25519` (it keeps the key in
-   `~/.ssh/id_ed25519`, the public half in `~/.ssh/id_ed25519.pub`).
-2. On the web configurator, System > SSH: paste the one line of
-   `id_ed25519.pub` and press Add.
-3. `ssh root@x6100.local` (your radio's name, or its address) logs in.
+A key has two halves, made once on each computer you log in from:
 
-- The page lists the keys (type, comment, fingerprint) and removes one; a
-  removed key can be put back with Undo for twenty seconds. It takes
-  ssh-ed25519, ecdsa-sha2-nistp256/384/521 and ssh-rsa of 3072 bits or more,
-  one key at a time, as `ssh-keygen` writes it (no options in front).
-- The keys are root's, in `/root/.ssh/authorized_keys`. A copy goes to
-  `backups/backup.tgz` on the DATA partition after each change on the page and
-  at every clean power-off, so a new card image takes them back.
-- The page opens only by the radio's address or its own name (as the
-  Tailscale page): a page from another site cannot add a key through your
-  browser.
+- The public half (`id_ed25519.pub`, one line that starts with `ssh-ed25519`)
+  goes on the radio, on the web configurator's System > SSH page.
+- The private half (`id_ed25519`, without `.pub`, or PuTTY's `.ppk` file)
+  stays on the computer. Never paste it anywhere; the SSH page refuses it.
+
+In short: make a key on the computer, paste its public half on System > SSH
+and press Add, then `ssh root@x6100.local`. The radio takes ed25519 keys (the
+ones made below), ECDSA keys and RSA keys of 3072 bits or more. This section
+writes `x6100.local`: an X6200 answers as `x6200.local`, a radio you gave a
+[network name](#network-name) by that name, and every radio by its address.
+
+### A key on Windows
+
+Windows 10 (version 1809 or later) and Windows 11 come with OpenSSH's `ssh`
+and `ssh-keygen` (the OpenSSH Client feature). They run in PowerShell.
+
+1. Press the Windows key, type `PowerShell` and open it.
+2. Type `ssh-keygen -t ed25519` and press Enter. It asks three questions
+   (where to keep the key, and a passphrase twice): press Enter three times.
+   The key is now in `C:\Users\<you>\.ssh\`: `id_ed25519` and
+   `id_ed25519.pub`.
+3. Type `cat ~\.ssh\id_ed25519.pub | clip` and press Enter. The public half
+   is now copied: paste it on the radio
+   ([Adding the key on the radio](#adding-the-key-on-the-radio)).
+4. Then, in PowerShell: `ssh root@x6100.local`
+   ([The first login](#the-first-login)).
+
+- PowerShell says the term 'ssh-keygen' is not recognized: the OpenSSH client
+  is not installed. Press the Windows key, type `Optional features` and open
+  it, then Add a feature (View features on Windows 11): choose OpenSSH
+  Client and install it. Then open PowerShell again.
+- `ssh-keygen` asks "Overwrite (y/n)?": this computer has a key already. Type
+  `n` and go on with step 3 with that key; a new one would lock you out
+  wherever the old one logs in.
+- A passphrase is up to you: it locks the private half on the computer, and
+  `ssh` asks for it at each login ("Enter passphrase for key"). The radio
+  never sees it.
+
+### A key on a Mac or on Linux
+
+1. Open Terminal (on a Mac: Applications > Utilities > Terminal).
+2. Type `ssh-keygen -t ed25519` and press Enter. It asks the same three
+   questions as on Windows: press Enter three times. The key is now in
+   `~/.ssh/id_ed25519` and `~/.ssh/id_ed25519.pub`.
+3. Copy the public half. On a Mac, `pbcopy < ~/.ssh/id_ed25519.pub` copies
+   it. On Linux, `cat ~/.ssh/id_ed25519.pub` prints the line: select all of
+   it and copy it (Ctrl+Shift+C in most terminals).
+4. Paste it [on the radio](#adding-the-key-on-the-radio), then
+   `ssh root@x6100.local` ([The first login](#the-first-login)).
+
+### A key in PuTTY
+
+PuTTY keeps the private half in a `.ppk` file made by PuTTYgen, which comes
+with PuTTY. WinSCP takes the same file.
+
+1. Open PuTTYgen. Under Parameters, Type of key to generate: EdDSA, with
+   Ed25519 (255 bits) in Curve to use for generating this key (PuTTYgen 0.74
+   and older: Ed25519). PuTTYgen's default, RSA of 2048 bits, is refused by
+   the radio.
+2. Press Generate and move the mouse over the empty part of the window until
+   the bar is full.
+3. The box Public key for pasting into OpenSSH authorized_keys file now holds
+   the public half, as one line. Right-click in it, Select All, right-click
+   again, Copy, and paste it [on the radio](#adding-the-key-on-the-radio).
+   Not the Save public key button: it writes another format, which the radio
+   does not take.
+4. Press Save private key. Without a passphrase PuTTYgen asks whether to save
+   the key without one: Yes (or type one in Key passphrase and Confirm
+   passphrase first). Keep the `.ppk` file.
+5. In PuTTY, on Session: Host Name `root@x6100.local`, Port 22, SSH. Then
+   Connection > SSH > Auth > Credentials (in older versions Connection > SSH >
+   Auth itself): Private key file for authentication, Browse..., the `.ppk`
+   file. Back on Session, type a name under Saved Sessions and press Save,
+   then Open ([The first login](#the-first-login)). Next time, double-click
+   the name.
+
+WinSCP: New Site, SFTP, Host name `x6100.local`, User name `root`, then
+Advanced... > SSH > Authentication > Private key file: the `.ppk` file (an
+OpenSSH `id_ed25519` chosen there is converted to one).
+
+### Adding the key on the radio
+
+1. In a browser on the radio's network, open the web configurator:
+   `http://x6100.local/`, or `http://` and the radio's address (Settings >
+   Wireless: the first address of IP / Gateway on the WIFI card, or Address
+   in use on the ETHERNET card).
+2. System > SSH (or the SSH keys tile on General).
+3. Click in the box under Add a key, paste (Ctrl+V, on a Mac Cmd+V) and press
+   Add. The page says "Added: it logs in from now on", and the list shows the
+   key with its comment (`you@laptop`, the computer's user and name;
+   `eddsa-key-20261030` from PuTTYgen) and its fingerprint.
+
+- Once for each computer, up to 32 keys. The bin (Remove) on a row removes
+  that key; Undo puts it back for twenty seconds. Removing a key does not end
+  a session already open with it.
+- It takes ssh-ed25519, ecdsa-sha2-nistp256/384/521 and ssh-rsa of 3072 bits
+  or more, one key at a time, as `ssh-keygen` writes it (no options in front).
+- The keys are root's, in `/root/.ssh/authorized_keys`.
+- The page opens only by the radio's address or its
+  [own names](#the-radios-own-names), as the Tailscale page: a page from
+  another site cannot add a key through your browser.
 - `/mnt/ssh/authorized_keys` on the DATA partition, which the X6100's card
   images of v0.3.1 to v0.3.5 also read, is no longer read: at the first start
   after the update its keys move into root's file (they show on the page) and
   it is renamed `authorized_keys.imported`.
+
+### The first login
+
+`ssh root@x6100.local` (PuTTY: Open). The first time from a computer, it does
+not know the radio yet and asks:
+
+```
+The authenticity of host 'x6100.local (192.168.1.40)' can't be established.
+ED25519 key fingerprint is SHA256:...
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])?
+```
+
+Type `yes` (the whole word) and press Enter. The computer keeps the radio's
+host key, in `.ssh/known_hosts`, and checks it at every login after that; it
+does not ask again. PuTTY asks the same in its PuTTY Security Alert window:
+Accept. You are then root on the radio; `exit` ends the session.
+
+### After a new card image
+
+- The radio keeps root's keys and its own host keys in `backups/backup.tgz`
+  on the DATA partition, after each change on the SSH page and at every clean
+  power-off.
+- At the first start of a newly written card it takes them back from there:
+  the same keys log in, and the computers see the same radio, with no
+  warning.
+- Writing an image normally keeps the DATA partition (see
+  [Updating the firmware](#updating-the-firmware)). An image written to
+  another card, or to a card a tool wiped, starts without it: add the key
+  again (the computer still has it: copy it as when it was made) and tell the
+  computer to forget the old host key (below).
+- An update (Settings > Info > Update) leaves the keys as they are.
+
+### When SSH does not let you in
+
+- `Permission denied (publickey)`: the radio has no key of this computer.
+  - Check that the SSH page lists it: `ssh-keygen -lf ~/.ssh/id_ed25519.pub`
+    (in PowerShell: `ssh-keygen -lf $env:USERPROFILE\.ssh\id_ed25519.pub`)
+    prints the key's fingerprint, the same `SHA256:...` as on the page.
+  - Log in as root: `ssh root@x6100.local`. Plain `ssh x6100.local` logs in
+    with the computer's user name, which the radio does not have.
+  - A key kept in a file of another name: `ssh -i <file> root@x6100.local`.
+- PuTTY says "No supported authentication methods available (server sent:
+  publickey)": no `.ppk` file in Connection > SSH > Auth > Credentials, or
+  its public half is not on the radio. "Server refused our key": the `.ppk`
+  file is not the one whose public half is on the radio.
+- The page says "An RSA key of 2048 bits: 3072 or more, or an ed25519 key":
+  RSA keys of 2048 bits (the old default of `ssh-keygen`, and still
+  PuTTYgen's) are refused. Make an ed25519 key as above. The old key can stay
+  for other servers: `ssh` tries both.
+- The page says "That is a private key, which stays on your computer": the
+  file without `.pub` was pasted. Paste the line of the `.pub` file.
+- The page says "One key at a time, on one line": the file of PuTTYgen's
+  Save public key (it starts with `---- BEGIN SSH2 PUBLIC KEY ----`), or a
+  line an editor broke in two. Copy the key from PuTTYgen's box (Load with
+  the saved `.ppk` file shows it again), or the `.pub` file's line as above.
+- The page says "This page was opened as ..., which is not one of the radio's
+  own names": it was opened by a name the radio does not know as its own (an A
+  record of your own DNS server). Open it by one of the names the message
+  lists, or, when it is a name of your own, add it on the Network page
+  ([the radio's own names](#the-radios-own-names)).
+- `Could not resolve hostname x6100.local` (PuTTY: "Host does not exist"):
+  this computer does not resolve `.local` names (some Windows computers, and
+  networks that block mDNS). Use the radio's address instead,
+  `ssh root@192.168.1.40`, from Settings > Wireless.
+- `Connection timed out`: the computer does not reach the radio: a wrong
+  address, or another network (a guest WiFi keeps its devices apart).
+- `WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!` and
+  `Host key verification failed.`: the computer knew another host key under
+  that name or address. The card was written without its old DATA partition (above),
+  or another device has that address now. Once you know why,
+  `ssh-keygen -R x6100.local` forgets the old key (and
+  `ssh-keygen -R 192.168.1.40` when you logged in by the address); log in
+  again and answer `yes`. PuTTY says "WARNING - POTENTIAL SECURITY BREACH!":
+  Accept takes the new key.
+- `Too many authentication failures`: the computer offered many keys before
+  this one (an agent holding six or more), and the radio counts each.
+  `ssh -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519 root@x6100.local` offers
+  only that one.
+- `Enter passphrase for key`: the passphrase given to the key when it was
+  made. The radio itself never asks for a password.
 
 ## Tailscale
 
@@ -3054,7 +5957,7 @@ From the laptop or the phone, with Tailscale on: `http://<name>/` (the full
 name, `http://x6200/` with MagicDNS on, or the `100.x.y.z` address), with
 `/panel` and `/remote` after it; a TCI client connects to the same name, port
 50001. The browser's microphone needs the https page (`https://<name>/remote`),
-with the radio's certificate accepted as on the LAN.
+with the radio's certificate accepted for that name, as on the LAN.
 
 Good to know:
 
@@ -3066,6 +5969,12 @@ Good to know:
 - Tailscale runs in userspace mode (the radio's kernel has no TUN device): it
   hands each incoming connection to the radio's own port. The radio itself
   cannot reach the other machines of the tailnet, and needs not.
+- It hands them to the radio's own address, 127.0.0.1, so what listens on
+  this radio only is open to the tailnet too while Tailscale runs: the hamlib
+  port of Winlink (4532, it tunes the radio), ardopcf's host ports (8515 and
+  8516, which can make it transmit while Winlink is on) and gpsd (2947, the
+  radio's position). Another reason to share the radio's machine only with
+  people you would let in at home.
 - Its log upload to Tailscale is off (`--no-logs-no-support`), and so is its
   DNS on the radio.
 - The login (the radio's key) is kept on the radio's root filesystem, out of
@@ -3088,18 +5997,127 @@ Good to know:
 The tailscaled program is Tailscale's own build (BSD-3-Clause), fetched from
 pkgs.tailscale.com; OpenX6X00 does not include it.
 
+### Tailscale Funnel
+
+Funnel puts the browser Panel on the internet, for a phone or a PC that does
+not run Tailscale (a work PC, a friend's tablet, a hotel's computer): the
+Panel and the Screen page at `https://<name>.<tailnet>.ts.net/panel`, with
+their sound and microphone, through Tailscale's relays, with nothing opened on
+your router. Only browsers paired at home get in.
+
+What goes on the internet, and what does not:
+
+- The Panel and the Screen page, as pages that tailscaled serves itself: the
+  web server writes them at its start into the radio's memory
+  (`/run/x6100-funnel`), without the menu and nothing of the configurator,
+  and again when the radio's name on the tailnet changes: the pages may
+  connect to that name alone. Any other address on that name leads to the
+  Panel. Before a key, that is all anyone gets: the pages are the same on
+  every radio of a version but for that name, with no callsign and nothing of
+  the radio's state, and their files carry no time, so they do not tell when
+  the radio last started. A browser therefore loads them whole at each visit
+  and reload, about 265 kB for the Panel and 206 kB for the Screen page, over
+  the radio's own connection (tailscaled runs on the radio).
+- Their two sockets: the browser remote's (50002) and TCI (50001), which take
+  nothing from the internet, not even a greeting, before the key of a browser
+  paired at home, within 5 s; a wrong key closes the connection, and ten wrong
+  keys within ten minutes refuse Funnel for ten minutes (a note on the radio's
+  screen). Over TCI only the Panel's own audio and its key go, for a session
+  that may transmit; TCI programs cannot pair and do not come over Funnel.
+  The sound and the microphone go to one browser at a time; a phone that
+  changes networks (from the WiFi to its mobile data) has them back within
+  seconds, in place of its connection from before.
+- Never: the web configurator (it has no login: every request from the
+  internet gets a 403, also through a funnel set up by hand), TCI programs,
+  Pat's mailbox, SSH, rigctld, ardopcf, gpsd.
+- At most two browsers come from the internet at once; the home network
+  always has two more. Sessions shows a browser from the internet with its
+  address there and "via Funnel"; the log says so too.
+
+Turning it on:
+
+1. Tailscale is on and Connected (above), and BROWSER REMOTE is on (Settings >
+   General).
+2. Settings > Wireless > TAILSCALE > Funnel on, or Remote > Tailscale >
+   Tailscale Funnel on the web configurator.
+3. The first time, your tailnet must allow it: HTTPS certificates and the
+   "funnel" node attribute (Tailscale's default policy gives it to its
+   members). Until it does, Public on the radio shows a code, and the web page
+   an Allow in Tailscale link: the admin console's own page that turns them on
+   for your tailnet (it needs MagicDNS on). Once allowed, the radio goes on by
+   itself.
+4. Public shows `https://<name>.<tailnet>.ts.net/panel`. The name can take up
+   to ten minutes to be found everywhere, and the first visit waits a few
+   seconds while tailscaled fetches its certificate.
+
+Getting a browser in (pair at home, use from anywhere):
+
+- Pairing is refused over Funnel. Pair the browser at home as always
+  ([Pairing and control](#pairing-and-control)), then, on the Panel at home,
+  press **Use away from home**: the radio makes that browser a key of its own,
+  "NAME (away)", with the same rights, and the page offers the link to the
+  Panel on the internet with the key in it, after `#`, which no server sees.
+  Open it in the same browser and keep the page (a bookmark): it takes the key
+  out of the address bar and remembers it. A new away key replaces the one
+  made before; Revoke in Sessions ends it, as any browser's. The key never
+  shows on the radio's screen, which any viewer may watch.
+- A device with Tailscale on can also open the same address over the tailnet
+  and pair there, as at home.
+- Opened without a key, the page says it is not paired for use away from
+  home, and stops trying.
+
+Good to know:
+
+- The name becomes public: Funnel needs an HTTPS certificate for it, and every
+  certificate is listed in public logs that scanners read, so anyone can find
+  the address. Only paired browsers get in, but pick a network name you do not
+  mind being seen.
+- You remain the control operator of every transmission from away, as your
+  licence requires: the Panel shows the radio's state, and PTT is held by the
+  button and let go when the link stalls.
+- Bandwidth: the sound takes about 50 kB/s each way, the spectrum about
+  15 kB/s, the Screen page's picture much more (Picture: fast helps).
+- While Funnel is on, port 443 on the tailnet is the Panel's (with a real
+  certificate); the configurator stays at `http://<name>/`, and its https page
+  is reached by the radio's address on the LAN.
+- The radio owns Funnel: a funnel set up by hand (`tailscale funnel ...`, the
+  command is not installed on the radio) is taken off the internet within a
+  minute, whether Funnel is on or off; serving to the tailnet alone stays.
+- It stays on through restarts, and after a new card image it comes back by
+  itself once Tailscale has its new login (the name may then be `x6200-1`
+  while the tailnet still has the old machine: remove it in the admin console).
+  Tailscale turned off, and the radio's shutdown, take the funnel out of
+  tailscaled; the next start puts it back within seconds.
+- Over SSH, `x6100-tailscale status` prints `funnel=` (off, starting, enable,
+  on, error) with `funnel_text=` and `public=`; `x6100-tailscale funnel on|off`
+  is the switch. Its setting is `funnel=0|1` in `/mnt/tailscale.conf`.
+
 ## Ethernet
 
 A USB Ethernet adapter in the radio's USB port gives it a wired connection
 instead of WiFi. Adapters with the common chips work (ASIX, Realtek
 RTL8152/8153, CDC Ethernet/NCM). It can be plugged in at any time.
 
-While the adapter is connected (cable in, address got) the WiFi radio is
+While the adapter is connected with a gateway (cable in, an address and a
+gateway got: the cable is the radio's way to the internet) the WiFi radio is
 held off: the info bar shows a USB plug in the WiFi cell, lit, and the
 WiFi status says "Ethernet in use". The WiFi/BT chip
 stays on, so Bluetooth keeps working. Pull the cable or the adapter and
 WiFi comes back on its own. An adapter plugged in without a cable shows the
 plug unlit, and WiFi stays as it was.
+
+A cable without a gateway, to a computer for the web configurator or the
+TCI server, reaches only its own subnet: WiFi stays on and keeps the
+internet (update check, spots, Wavelog), its DNS servers first, and the
+info bar's cell stays WiFi's while WiFi is connected (with WiFi off or no
+WiFi network in reach it shows the plug, lit). For such a cable set Mode to
+Static with an address in the computer's subnet and leave Gateway and DNS
+empty. A gateway that is the computer itself takes the internet off WiFi,
+and it works only when the computer shares its internet on that port; DHCP
+works there too then, since the sharing hands out the addresses. In DHCP
+mode a cable to a computer that gives no addresses never connects: the
+radio asks for 45 seconds, gives up and asks again later, and WiFi is left
+alone.
 
 Where: Settings > Wireless > ETHERNET, or the Network page of the web
 configurator (System > Network). Both show the same settings. The ETHERNET
@@ -3124,10 +6142,10 @@ valid, the subnet's network or broadcast address, and a gateway outside the
 subnet. The setting is kept across restarts and belongs to the port, not to
 one adapter: another adapter gets the same address.
 
-WiFi and Ethernet together: with a gateway set, internet traffic goes over
-the cable and WiFi stays connected for its own network. Leave the gateway
-empty and the cable reaches only its subnet, while internet stays on WiFi.
-Changing Ethernet never touches the WiFi settings.
+WiFi and Ethernet together: a cable with a gateway carries the internet and
+holds WiFi off, as above. Leave the gateway empty and the cable reaches only
+its subnet, while internet stays on WiFi. Changing Ethernet never touches
+the WiFi settings.
 
 ### USB tethering
 
@@ -3165,7 +6183,13 @@ UTC and the seconds since power-on:
    end", ...), with ", exit N" after one that failed, and "init scripts done"
    after the last. S00adata checks the DATA partition at every start and makes
    it at the first start of a new card; its own lines ("S00adata: fsck.fat of
-   ...", "fsck.fat exit N", "formatting ...") show a check that takes long.
+   ...", "fsck.fat exit N", "formatting ...", "... formatted as DATA and
+   mounted") show a check that takes long. A third partition it leaves alone
+   is said with why and what to do ("not touched (it holds ext4); for DATA
+   there, format it as FAT32 on a PC"), in `data_fsck.log` too, and so is a
+   DATA it cannot find or mount ("DATA partition not found ...", "mount of
+   ... failed; check it on a PC (chkdsk /f on Windows) ..."); see also
+   [no DATA drive](#on-a-pc-the-card-has-no-data-drive-only-an-unknown-partition).
 3. "x6100_daemon: GUI start N" before each start of the GUI, then the GUI's
    own lines:
    1. "GUI start", with the version
@@ -3183,6 +6207,9 @@ UTC and the seconds since power-on:
       started"
    8. "first frame": the screen is the GUI's from here on
    9. "battery: readings count", 15 to 20 seconds later
+   10. "base: no data in 60 s" when no data has come from the base since
+       the start (see
+       [The waterfall stays black](#the-waterfall-stays-black-and-the-s-meter-does-not-move))
 4. "x6100_daemon: GUI ended, exit code N" when the GUI stops (139: it crashed),
    then the next start of the GUI
 
@@ -3238,6 +6265,80 @@ settings and saves nothing. A version installed by an update is then not
 confirmed: after three such starts, the next start goes back to the version
 before. Please report it, with the run's log from `app_logs`.
 
+#### On a PC the card has no DATA drive, only an unknown partition
+
+Up to v0.3.8 the first start of a newly written card (a new card, or one a
+tool wiped) made the DATA partition but did not format it: a PC shows the
+card's third partition as unknown or RAW, with no drive, and the start trace
+on the system partition says "holds another filesystem: not formatted", then
+"not FAT32: not touched" at every start. The radio worked, but kept its
+settings, QSO log and the rest in the system partition's own `/mnt` folder,
+which a new card image overwrites.
+
+Now the first start after the update recognises that partition, formats it as
+DATA and moves those files onto it: the radio comes up with its own settings
+and log. The start trace says so ("... is the DATA partition an earlier start
+made and never formatted: formatting it", "... formatted as DATA and mounted",
+"files found in the system's /mnt moved to DATA's top level"). When they
+cannot all be copied onto it (a card error), they stay where they are and that
+start does not use DATA ("... formatted as DATA, not mounted: files found in
+the system's /mnt not all copied onto it, ..."): the radio comes up with them,
+and the next start copies them again. Leave the partition alone on the PC. One
+formatted there as FAT32 is used as DATA, and as it has no settings of its own
+(no `params.db`), those files go onto its top level the same way: the radio
+comes up with its settings and log. It is DATA at the first start after a new
+card image too, but the settings and log kept on the system partition go with
+the old image then: update the radio instead (Settings > Info > Update), or
+download the Backup first. One formatted as exFAT, NTFS or FAT16 (Windows'
+"FAT"), named DATA or not, or holding anything else, is never touched, and the
+radio goes on without DATA. Nor is a FAT32 that the radio's partition tool
+does not read ("not touched (a FAT32 to blkid, not to parted)"): check it on a
+PC first (chkdsk /f on Windows).
+
+A DATA drive that worked and later shows as unknown is a different case: its
+first sector (the boot sector) is most likely damaged, by a power cut while
+the radio wrote it at a start. The radio does not format it, and runs without
+DATA meanwhile, on the system partition's `/mnt` folder. It tells such a
+partition from a new one by what is left of the filesystem: the copy of the
+boot sector that FAT32 keeps in its sector 6 (exFAT in sector 12), or, when
+the card lost the sectors around it too, one of the two FATs (its tables of
+where the files lie) that follow them. And by the mark each start that mounts
+DATA leaves on the system partition, which a new card image takes with it. The start trace says why at every start, and
+what to do: "not touched (a FAT32 whose boot sector went bad, its copy in
+sector 6 found); its files are most likely still there: copy them off on a PC
+with a recovery tool, then format it there as FAT32", or "not touched (DATA
+was mounted at an earlier start, its boot sector gone bad since); ...", and
+at the first start of a new image "... holds a FAT32 whose boot sector went
+bad, ...: not formatted; ...". Those lines are on the system partition, but
+the same is in `data_fsck.log` in the `/mnt` folder the radio runs on
+meanwhile: the web configurator's Files page shows it.
+
+What to do then:
+
+1. Don't let Windows format the drive when it offers to, and don't delete
+   the partition: the next start makes it again, and formats it when it
+   finds nothing of the old filesystem on it, the mark or not.
+2. The files are most likely still there: copy them off on a PC with a
+   recovery tool. TestDisk (free) can usually put the boot sector back from
+   its copy; the drive then opens again, and the radio uses it as before.
+3. Then, or when nothing on it is worth keeping, format the partition as
+   FAT32 on the PC: the next start uses it as DATA, with the settings, QSO
+   log and the rest the radio kept on the system partition meanwhile on its
+   top level. Windows' own tools format FAT32 only up to 32 GB: for the DATA
+   of a larger card use a FAT32 formatting tool (exFAT or NTFS is never
+   used).
+
+The radio formats such a partition only when it finds nothing of the old
+filesystem and no mark: everything up to its second FAT lost (more than the
+first 3 MiB on a 4 GB card, 7 MiB on 8 to 64 GB, 15 MiB on 128 GB, 30 MiB on
+256 GB, 60 MiB on 512 GB; on a larger card more than the first 32 KiB), and a
+new image written since, or DATA last mounted by v0.3.8 or older (by v0.3.5
+or older, whose starts leave no trace, or with many starts without it since).
+The other way round, a card whose third partition held a FAT32 before (an
+earlier DATA) and was wiped by a tool that clears only its first sectors can
+be taken for a damaged DATA and left alone: formatting the partition as
+FAT32 on a PC settles it.
+
 #### FT8, JS8 or WSPR decode nothing, or nobody answers
 
 Check the clock: FT8 and JS8 need it within about 2 s, WSPR within about a
@@ -3256,7 +6357,8 @@ time set in Settings > General > DATE / TIME, and keeps it from then on.
 #### The ALC reads about 1 in FT8 or JS8. Is it too high?
 
 No. The TX level settles with the ALC working a little, with the power at the
-setting. It comes down by itself over 3. See [Digital-mode TX level](#digital-mode-tx-level).
+setting. It comes down by itself over 3. On the X6200 the ALC reading does not
+follow the level and changes nothing. See [Digital-mode TX level](#digital-mode-tx-level).
 
 #### The ALC reads about 5 in CW. Is it too high?
 
@@ -3302,13 +6404,94 @@ certificate once, or use "Convert on radio".
 
 #### A Bluetooth headset gives no audio for the microphone
 
-Only A2DP (listening) is used: HFP/HSP gives no audio on this radio and drops
+Only A2DP (listening) is used: HFP/HSP gives no audio on the X6100 and drops
 the WiFi.
+
+#### A PC on Bluetooth has an audio output but no input
+
+That is how the radio is set up: the output plays nowhere, and there is no
+Bluetooth audio input. See [A PC on Bluetooth](#a-pc-on-bluetooth): a
+program on the PC takes its audio from the USB cable or [TCI](#tci-server).
 
 #### The new font did not change anything
 
-Black Metal, Total Black, 1bit and theme files that set a font have their own
-and keep it: pick another theme to see the font you chose.
+Classic, Black Metal, Total Black, 1bit, Amber Trey and theme files that set a
+font have their own and keep it: pick another theme to see the font you chose.
+
+#### The waterfall stays black and the S-meter does not move
+
+The radio gets no data from its base, the board that receives and
+transmits. The spectrum, the waterfall, the S-meter, the battery and supply
+readings, the TX meters and the SWR protection all come from that data. The
+digital apps still decode: they work on the audio, and FT8 draws its own
+waterfall from it.
+
+After 30 s without data in receive, or 60 s after a start when none has
+come yet, the radio says so, one message after the other, 4 s each:
+
+- "No data from the base"
+- "No spectrum, no SWR protection"
+- "Baseband: Settings > Info"
+- "Base versions: see the README"
+
+If the data comes back meanwhile, the ones still to come are left out.
+
+Not in the first 60 s after a start (an X6200 on base 1.0.8 has sent its
+first data 16 s after the start), not while the radio transmits from the
+screen, an app, the CW key, a tune or an SWR scan, and not for 30 s after.
+Without the data the radio cannot see a transmission keyed by the hand mic's
+PTT, VOX or the KEY jack, so the messages can come during one, TX on the
+screen or not. It is said once, and again only if the data came back and
+stopped again. The base log (`/mnt/base_i2c.log`) gets "no data from the
+base for N ms: said on the screen", and the start trace "base: no data in
+60 s" when none came since the start.
+
+Meanwhile:
+
+- What the radio keys itself is refused from 3 s without data, and before
+  the first data after a start: PTT, the apps, CW, the tuner, TUNE and the
+  SWR scan, with "No TX: no data from the base" (see
+  [No TX without data from the base](#no-tx-without-data-from-the-base)).
+  The hand mic's PTT, VOX and the KEY jack still transmit, without SWR
+  protection and with no power reading: don't transmit that way into an
+  antenna you don't know.
+- A tune or an SWR scan the data stops in is given up 3 s after the last
+  data: "Tuner: no data from the base", "SWR scan: no data from the base".
+- A transmission from the screen, an app or the CW key that the data
+  stopped in shows TX until PTT, the app or the CW key let go (the CW key
+  3 s after) and the data has been gone for 3 s, then the radio is back in
+  receive. One keyed by the hand mic's PTT, VOX or the KEY jack the radio
+  cannot see let go: it shows TX until the data has been gone for 30 s,
+  then receive even if it is still keyed. If the radio's commands to the
+  base fail as well (the base log says "register block not sent"), its PTT
+  off may not have reached the base: the radio shows TX until one gets
+  through. Up to v0.3.8 it stayed in TX, and the digital apps did not
+  transmit, until a restart.
+- The hand mic's keys do nothing, and on the X6200 the POWER key neither:
+  the base reports them in the same data. An X6200 POWER key the data
+  stopped on while down counts as let go, so a tap cannot turn into a
+  power-off. The X6100's POWER key has a line of its own and still
+  switches the radio off (up to v0.3.8 it said "Power off" and saved, but
+  the radio stayed on).
+
+Look at Settings > Info > Baseband and at the table of bases in the
+[README](../README.md#the-baseband). An X6200 base older than 1.0.7 sends
+its data in a form OpenX6X00 does not read: update it (README, Updating the
+baseband). On an X6200 with base 1.0.6 (issues #94 and #95) the waterfall
+stayed black, the needle at S1, with no battery reading and no tuner, until
+the base update.
+
+On an X6200 with base 1.0.7 or 1.0.8 the cause is not known yet. OpenX6X00
+reads 1.0.7's data (our X6200 ran it, and in issue #14 its battery and TX
+readings came through), yet the radio in issue #152 shows these signs on
+1.0.7. Update to 1.0.8 all the same: another X6200 with them got it all
+back that way (issue #47). If it stays on 1.0.8, or on an X6100, open an
+issue with a photo of Settings > Info and `base_i2c.log` from the web
+configurator's Files page.
+
+If only the S-meter stays at S1, -121.0 on an X6200 while the waterfall and
+the battery reading work, that is a fault of base 1.0.7 itself (issue #14):
+1.0.8 fixes it.
 
 #### The main screen's waterfall stands still
 
@@ -3318,7 +6501,26 @@ That is normal while JS8 is open.
 
 FT8/FT4 in `/mnt/ft_log.adi`, JS8 in `/mnt/js8call_log.adi`, Field Ops in
 `/mnt/field/logs/`, the QSOs logged outside an activation in the day's log. The web configurator's
-Logs page shows them all.
+Logs page shows them all. What PSK, Olivia, Contestia and JTTY received and sent, and what RTTY received, is in
+`/mnt/digi_text/`, a file a UTC day, on the Logs page too ([Text log of the keyboard modes](#text-log-of-the-keyboard-modes)).
+
+An FT8, FT4 or FT2 QSO is in two of them, `ft_log.adi` and the day's log
+(or the activation's), and a JS8 QSO in `js8call_log.adi` and that log. For
+LoTW or another logbook, upload one source, the Logs page's Export ADIF: it
+has every QSO (FT8, FT4, FT2, JS8, the ones logged by hand, the
+activations), the other files one app's each. LoTW tells QSOs apart by call,
+band, mode, date and time, and `ft_log.adi` and the day's log once wrote the
+time in two ways (`1802` and `180259`): the same QSO uploaded from both
+counted twice. `ft_log.adi` and the day's log write it as the same record
+now (issue #174); an activation's log has the same call, date, time to the
+second, band, frequency and mode, with the activation's reference fields
+besides. The records `ft_log.adi` got before stay as they were written. A
+band set on the Logs page goes in the same way (`20m`). `ft_log.adi`,
+the day's and the activations' logs and the export start with the same
+header: a line naming the file, ADIF_VER 3.1.8, PROGRAMID OpenX6X00 and
+PROGRAMVERSION, the firmware's version (Settings > Info). An `ft_log.adi`
+begun before keeps the header it had (PROGRAMVERSION 1.0.0, ADIF_VER 3.14);
+`js8call_log.adi` keeps desktop JS8Call's.
 
 ## Reference
 
@@ -3329,7 +6531,7 @@ Logs page shows them all.
 | Transport | Bluetooth SPP, RFCOMM channel 1 (or USB CAT) |
 | SPP UUID | `00001101-0000-1000-8000-00805F9B34FB` |
 | Pairing | required once, in the 3-minute pairing window; Just Works, no PIN; device name `X6100` (`BTCAT_ALIAS` in `/etc/default/btcat`) |
-| Protocol | Icom CI-V, radio address `0xA4` |
+| Protocol | CI-V, radio address `0xA4` |
 | Frame | `FE FE A4 <ctrl> <cmd> [sub] [data] FD`; reply `FB` = OK, `FA` = NG |
 | Baud (USB) | 19200 8N1 (ignored over BT) |
 | Hamlib / flrig | rig model Xiegu X6100 |
@@ -3352,21 +6554,21 @@ Logs page shows them all.
 | `14` | `02` | RF gain (0-255) | yes | yes |
 | `14` | `03` | Squelch (0-255) | yes | yes |
 | `14` | `09` | CW pitch (0-255 = 300-900 Hz) | yes | yes |
-| `14` | `0A` | TX power (0-255 = 0-10 W) | yes | yes |
+| `14` | `0A` | TX power (0-255 = 0-10 W; the X6200 stops at 8 W) | yes | yes |
 | `14` | `15` | Monitor level | yes | - |
-| `15` | `02` | S-meter (Icom scale, 120 = S9, for network clients) | yes | - |
-| `15` | `11` | TX power meter | yes | - |
-| `15` | `12` | SWR meter | yes | - |
-| `15` | `13` | ALC meter | yes | - |
+| `15` | `02` | S-meter (the CI-V scale, 120 = S9, for network clients) | yes | - |
+| `15` | `11` | TX power meter (0 in receive, and in a transmission until its first reading) | yes | - |
+| `15` | `12` | SWR meter, on the CI-V scale: 0 = SWR 1.0, 48 = 1.5, 80 = 2.0, 120 = 3.0, 200 = 5.0, the most the radio reads (as the power meter: 0 before a reading). Up to v0.3.8 it turned down above SWR 3.2: SWR 5 gave 23, which a CAT program reads as 1.2 | yes | - |
+| `15` | `13` | ALC meter (as the power meter) | yes | - |
 | `16` | `02` | Preamp | yes | yes |
 | `16` | `22` | Noise blanker | yes | yes |
 | `16` | `40` | Noise reduction | yes | yes |
 | `16` | `44` / `46` | Compressor / VOX (always off, write ignored) | yes | - |
 | `19` | `00` | Transceiver ID (returns `A4`) | yes | - |
-| `1A` | `01` | Band (Icom codes `01` 160 m ... `09` 10 m, `10` 6 m, `15` none); write tunes the band's centre | yes | yes |
+| `1A` | `01` | Band (the CI-V codes `01` 160 m ... `09` 10 m, `10` 6 m, `15` none); write tunes the band's centre | yes | yes |
 | `1A` | `03` | IF filter width (BCD index) | yes | - |
 | `1A` | `06` | Data mode + filter; write only adds or drops the data mode (USB ↔ USB-D, LSB ↔ LSB-D) | yes | yes |
-| `1C` | `00` | PTT (`00` RX, `01` TX) | yes | yes |
+| `1C` | `00` | PTT (`00` RX, `01` TX); a TX the radio refuses (outside the [amateur bands](#amateur-bands-only), receive only, [no data from the base](#no-tx-without-data-from-the-base)) answers NG (`FA`) | yes | yes |
 | `25` | `00` / `01` | Frequency of selected / unselected VFO | yes | yes |
 | `26` | `00` / `01` | Mode + data mode of selected / unselected VFO | yes | yes |
 | `27` | `10` / `11` | Scope on (always) / wave data output: accepted, a stub | yes | yes |
@@ -3424,16 +6626,23 @@ The DATA partition, readable on a PC.
 | `js8_inbox.txt`, `js8_held.txt`, `js8_texts.txt` | JS8 inbox, messages held for others, INFO/STATUS/alert words/groups |
 | `incoming_log.adi` | put an ADIF log here to import it at the next start; a record with neither OPERATOR nor STATION_CALLSIGN is logged under your callsign |
 | `field/` | Field Ops state and activation logs (`field/logs/`) |
+| `digi_text/` | the [text log of the keyboard modes](#text-log-of-the-keyboard-modes): `YYYY-MM-DD.txt`, a file a UTC day |
+| `conditions.txt` | the Propagation app's last band conditions from hamqsl.com |
 | `screenrec/` | screen recordings (AVI) |
 | `themes/` | theme files and folders ([docs/THEMES.md](THEMES.md)) |
 | `sstv/` | received SSTV pictures; `tx_pics/` pictures and `tx_text/` text templates to send |
 | `wefax/` | received faxes; `tx_pics/` pictures to send |
 | `https/` | the web configurator's HTTPS certificate |
+| `hostname.conf` | the radio's [network name](#network-name) |
+| `own_names.conf` | the [other names](#the-radios-own-names) the radio answers to, one per line, written by the web configurator's Network page |
 | `tailscale.conf` | Tailscale on or off: `enabled=0|1` |
 | `tailscale/` | the tailscaled program, downloaded when Tailscale is turned on and checked before every start |
-| `winlink.conf` | Winlink: `enabled=0|1`, `mycall=`, `locator=` (empty: the radio's), `bandwidth=500|2000` |
+| `winlink.conf` | Winlink: `enabled=0|1`, `mycall=`, `locator=` (empty: the radio's), `bandwidth=200|500|1000|2000` (the widest ARDOP may use), `modem=ardop|mercury|xara`, `mercury_bandwidth=500|2300|2750`, `xara_bandwidth=500|2300|2750`, `vara_licence=0|1` (1: you say you hold a VARA HF licence, XARA's full speed; nothing checks it), and for measuring on the bench, not on the page, `xara_path_ms=CAPTURE,KEYING,OUT` (XARA's audio path in ms, default 25,50,80) |
 | `winlink/` | Pat's mailbox (`winlink/pat/mailbox/<call>/`), forms and gateway list |
 | `app_logs/` | the log of each run of the GUI (`x6100_log_*.txt`), `wifi.txt` after a failed join, `start_trace.txt`: each step of each start ([a start that stops](#the-radio-stops-at-the-boot-logo-or-the-screen-stays-dark-after-it)) |
+| `bootlogo.png` | your own [boot picture](#boot-picture), from the Display page of the web configurator |
+| `data_fsck.log` | what the last start's check of DATA found, or that the start formatted it and moved the system's `/mnt` files onto it. While the radio runs without DATA, why it left the partition alone and what to do, in the system's `/mnt` folder it runs on (the Files page shows that one then) |
+| `found_on_system/` | files the radio wrote into the system partition's `/mnt` folder while DATA was there but not mounted, put here at the next start that mounted it; `found_on_system.2/`, `.3/` ... when one is there already (nothing on DATA is written over). A DATA without settings of its own (no `params.db`, as after a format on a PC) gets them on its top level instead, the names it has already left here (a database with its `-wal`, `-shm` and `-journal` when DATA has one of those names: SQLite reads a journal into the database of its name). Files that cannot all be copied, or found when the check did not leave DATA clean ("check not clean: ..." in `data_fsck.log`), stay on the system partition until a start that can move them; a DATA without settings of its own is then not used at that start: the radio comes up with the settings kept there |
 
 `cluster.conf` example (the `host=`/`port=` lines are the server in use, each
 `server=` line is a saved server, `name|host|port`):
@@ -3486,6 +6695,40 @@ x6100-gui-rebuild` (then `make`) in `~/AetherX6100Buildroot/build`. Buildroot
 copies the local GUI sources with `rsync -u`, so a newer file edited inside
 `build/build/x6100-gui-*/` survives a rebuild: always edit this repository,
 never the copy in the build tree.
+
+The Winlink modems are built by the GUI's CMake and installed with it, so
+the image and the update bundle carry them: ardopcf (`third-party/ardopcf`)
+and, experimental and chosen on the Winlink page,
+`x6x00-mercury` (`third-party/mercury`: Mercury v1.9.21's daemon build and
+our program around it, which takes its audio and PTT through the GUI's
+modem socket). Pat is built outside, by `tools/pat/build.sh`. In the PC
+build both modems are built only when named (`cmake --build build-host
+--target ardopcf x6x00-mercury`); `tools/winlink` then tests the GUI's
+modem socket with them, Pat to Pat over Mercury and over XARA included
+(see its README).
+
+XARA, the third Winlink modem (experimental), is built outside too, by
+`tools/xara/build.sh`: the pinned v0.1.3 release's source and vendored
+crates, the official Rust 1.99.1 (buildroot's Rust is too old), each
+download's SHA-256 checked and kept in `$HOME/.cache/openx6x00`, with our
+patches: the GUI's modem socket as its sound card and PTT, its CW ID with any
+callsign, a cancelled call that ends at once. Linked with the buildroot
+tree's own gcc, which `local-build.sh` makes first (`make toolchain`), it is
+installed as `/usr/bin/xara`, its licence and the notices of the Rust crates
+in it in `/usr/share/x6100/licenses/xara` (`tools/xara/UPSTREAM.md`).
+`tools/xara/build.sh --host` builds it for the PC, for `tools/winlink`'s
+`make modems`.
+
+U-Boot's release tarball comes from ftp.denx.de; buildroot's own mirror
+has the X6100's 2026.07 but not the X6200's 2023.01. When ftp.denx.de
+doesn't answer and the tree's `buildroot/dl/uboot/` hasn't got the file,
+`local-build.sh` makes it from U-Boot's tag archive on GitHub: the tar
+inside is the release's byte for byte, and bzip2 gives back the release
+tarball itself. Whichever site it came from, the script checks the file
+against the release's SHA-256, since buildroot checks none for a U-Boot
+version of one's own. A U-Boot version the script has no SHA-256 for
+stops the build; bumping the version means adding its release SHA-256 to
+the table in `uboot_source` too.
 
 The private tests and UI harnesses of the original author are not part of
 this repository.

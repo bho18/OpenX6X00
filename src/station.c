@@ -8,6 +8,7 @@
 
 #include "station.h"
 
+#include "band_plan.h"
 #include "textarea_window.h"
 #include "params/params.h"
 #include "qth/qth.h"
@@ -24,6 +25,8 @@ static bool check_ftx_msg_encoding(const char *text) {
     ftx_message_rc_t rc;
     ftx_message_t msg;
     char decoded[128];
+    /* Zeroed: free text leaves payload[9], which tells the decoder the message type, as it was */
+    ftx_message_init(&msg);
     rc = ftx_message_encode(&msg, NULL, text);
     if (rc != FTX_MESSAGE_RC_OK) {
         return false;
@@ -68,6 +71,14 @@ void station_callsign_edit(lv_obj_t *text) {
 bool station_callsign_save(const char *callsign) {
     char buf[256];
 
+    /* An empty field clears it (the FT8 check refused it: "too long"); the apps that need one say so */
+    if (!callsign[0]) {
+        params_str_set(&params.callsign, "");
+        band_plan_follow();
+        msg_schedule_text_fmt("Callsign cleared");
+        return true;
+    }
+
     // Try encode
     snprintf(buf, sizeof(buf), "CQ %s AA00", callsign);
     if (!check_ftx_msg_encoding(buf)) {
@@ -81,6 +92,7 @@ bool station_callsign_save(const char *callsign) {
         }
     }
     params_str_set(&params.callsign, callsign);
+    band_plan_follow();     /* Auto without a locator goes by the callsign's country */
     return true;
 }
 
@@ -103,6 +115,7 @@ bool station_qth_save(const char *qth) {
         return false;
     }
     params_str_set(&params.qth, qth);
+    band_plan_follow();     /* Auto: the region of the new locator */
     return true;
 }
 

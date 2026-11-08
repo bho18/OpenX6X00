@@ -53,6 +53,7 @@
 #include "jtty_tx.h"
 #include "psk_spec.h"           /* the waterfall of the keyboard modes */
 #include "digi_qso.h"           /* shared QSO state: DX call */
+#include "digi_textlog.h"       /* the text on the card (#55) */
 
 #include <ctype.h>
 #include <math.h>
@@ -177,11 +178,11 @@ static void tol_press_cb(button_data_t *b);
 static void clear_press_cb(button_data_t *b);
 static void fkey(int n);
 
-static buttons_page_t page_1, page_2, page_3, page_4;
+static buttons_page_t page_1, page_2, page_3, page_4, page_5;
 
 static button_data_t btn_p1 = {
-    .type = BTN_TEXT, .label = "(JTTY 1:4)",
-    .press = button_next_page_cb, .hold = button_prev_page_cb, .next = &page_2, .prev = &page_4,
+    .type = BTN_TEXT, .label = "(JTTY 1:5)",
+    .press = button_next_page_cb, .hold = button_prev_page_cb, .next = &page_2, .prev = &page_5,
 };
 static button_data_t btn_text = {.type = BTN_TEXT, .label = "Free\nText", .press = text_press_cb};
 static button_data_t btn_stop = {.type = BTN_TEXT, .label = "Stop\nTX", .press = stop_press_cb};
@@ -192,7 +193,7 @@ static button_data_t btn_status = {
     .type = BTN_TEXT_FN, .label_fn = status_label_getter, .press = status_press_cb, .hold = status_hold_cb,
 };
 
-/* The function keys: press sends, as F1..F8 on a keyboard; hold edits */
+/* The function keys: press sends, as CapsLock+1 to 8 on a keyboard (dialog_jtty_macro); hold edits */
 static void fkey_hold(int n);
 #define FKEY_BTN(n)                                                                              \
     static void fkey##n##_cb(button_data_t *b) { (void)b; fkey(n); }                             \
@@ -215,16 +216,21 @@ static button_data_t *const fkey_btns[FKEYS] = {&btn_f1, &btn_f2, &btn_f3, &btn_
                                                  &btn_f5, &btn_f6, &btn_f7, &btn_f8};
 
 static button_data_t btn_p2 = {
-    .type = BTN_TEXT, .label = "(JTTY 2:4)",
+    .type = BTN_TEXT, .label = "(JTTY 2:5)",
     .press = button_next_page_cb, .hold = button_prev_page_cb, .next = &page_3, .prev = &page_1,
 };
 static button_data_t btn_p3 = {
-    .type = BTN_TEXT, .label = "(JTTY 3:4)",
+    .type = BTN_TEXT, .label = "(JTTY 3:5)",
     .press = button_next_page_cb, .hold = button_prev_page_cb, .next = &page_4, .prev = &page_2,
 };
 static button_data_t btn_p4 = {
-    .type = BTN_TEXT, .label = "(JTTY 4:4)",
-    .press = button_next_page_cb, .hold = button_prev_page_cb, .next = &page_1, .prev = &page_3,
+    .type = BTN_TEXT, .label = "(JTTY 4:5)",
+    .press = button_next_page_cb, .hold = button_prev_page_cb, .next = &page_5, .prev = &page_3,
+};
+/* TUNE for an external tuner, on the TX frequency chosen (ext_tune.h) */
+static button_data_t btn_p5 = {
+    .type = BTN_TEXT, .label = "(JTTY 5:5)",
+    .press = button_next_page_cb, .hold = button_prev_page_cb, .next = &page_1, .prev = &page_4,
 };
 static button_data_t btn_serial = {
     .type = BTN_TEXT_FN, .label_fn = serial_label_getter, .press = serial_press_cb, .hold = serial_hold_cb,
@@ -239,6 +245,7 @@ static buttons_page_t page_1 = {{&btn_p1, &btn_text, &btn_stop, &btn_dx, &btn_st
 static buttons_page_t page_2 = {{&btn_p2, &btn_f1, &btn_f2, &btn_f3, &btn_f4}};
 static buttons_page_t page_3 = {{&btn_p3, &btn_f5, &btn_f6, &btn_f7, &btn_f8}};
 static buttons_page_t page_4 = {{&btn_p4, &btn_serial, &btn_tol, &btn_dial, &btn_clear}};
+static buttons_page_t page_5 = {{&btn_p5, &btn_ext_tune}};
 
 static dialog_t dialog = {
     .run = false,
@@ -373,6 +380,8 @@ static void rx_msg_ui(void *data)
 
     if (!alive)
         return;
+    digi_textlog_msg("JTTY", m->id, (uint32_t)cparam_i_get(cfg_fg_freq) + (uint32_t)lroundf(m->freq),
+                     DIGI_TEXTLOG_SIG_DB, m->snr, m->text, m->complete);
     l = txt_find(m->id);
     win = l ? l->kind == 0 : in_window(m->freq);
     if (!l)
@@ -771,6 +780,7 @@ static void send_text(const char *text, int profile)
     }
     txt_line_t *l = txt_add(2, 0);
     snprintf(l->s, sizeof(l->s), "%s", canon);
+    digi_textlog_tx("JTTY", (uint32_t)cparam_i_get(cfg_fg_freq) + jtty_tx_get_freq(), canon);
     was_tx = true;
     draft_dirty = true;
     refresh_btn(&btn_status);
@@ -981,6 +991,16 @@ static void fkey(int n)
     send_text(out, JTTY_PROFILE_RTTY);
 }
 
+/* CapsLock+1 to 8 on a keyboard (screen_main.c): macro n, as its button, while JTTY has the keyboard: open, with no
+ * text box of its own up */
+bool dialog_jtty_macro(int n)
+{
+    if (!alive || input_active || !text_box || lv_group_get_focused(keyboard_group) != text_box)
+        return false;
+    fkey(n);
+    return true;
+}
+
 static bool free_text_ok_cb(void)
 {
     const char *t = textarea_window_get();
@@ -1086,10 +1106,6 @@ static void key_cb(lv_event_t *e)
 {
     uint32_t key = *((uint32_t *)lv_event_get_param(e));
 
-    if (key >= KEYBOARD_F1 && key <= KEYBOARD_F8) {
-        fkey((int)(key - KEYBOARD_F1) + 1);
-        return;
-    }
     switch (key) {
         case LV_KEY_ESC:
             if (jtty_tx_is_on())
@@ -1301,6 +1317,7 @@ static void destruct_cb(void)
         usleep(20000);
 
     jtty_rx_stop();
+    digi_textlog_end();
 
     pthread_mutex_lock(&spec_mux);
     if (spec_ok)

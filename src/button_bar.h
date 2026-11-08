@@ -20,7 +20,7 @@
 #define BUTTONS     5
 #define BTN_HEIGHT  BUTTONS_H
 #define BTN_WIDTH   160
-#define BTN_INSET   (1 + theme_shape.btn_gap)   /* space on every side of a drawn button */
+#define BTN_INSET   (theme_amber ? 0 : 1 + theme_shape.btn_gap)   /* space on every side of a drawn button; Amber Trey: none */
 
 #ifdef __cplusplus
 #include "params/params.h"
@@ -67,6 +67,7 @@ typedef buttons_page_t *buttons_group_t[];
 extern buttons_page_t buttons_page_vol_1;
 extern buttons_page_t buttons_page_rtty;
 extern button_data_t  btn_dig_pwr;   /* TX power steps for the digital apps */
+extern button_data_t  btn_ext_tune;  /* TUNE for an external tuner, on and off (ext_tune.h) */
 extern button_data_t  btn_tx_pwr;    /* TX power on the knob (walkie.c too) */
 
 /* GEN APP KEY DFN DFL VM: the key again shows the next page */
@@ -82,6 +83,9 @@ void            buttons_init(lv_obj_t *parent);
 void            buttons_vertical(lv_obj_t *parent, lv_coord_t w, lv_coord_t h);
 /* Back in a row at the bottom of parent, where they were (the main screen) */
 void            buttons_horizontal(lv_obj_t *parent);
+/* The five and the knob lines over them hidden, or shown again (Settings > Display > Hide buttons, screen_main.c) */
+void            buttons_hide(bool hide);
+bool            buttons_hidden();
 /* Show the button again (label, mark, disabled) if it is on screen */
 void            buttons_refresh(button_data_t *data);
 void            buttons_refresh_marks();

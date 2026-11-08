@@ -45,7 +45,8 @@ const PARTS = [
   ["qso", "QSO log", "", true],
   ["voice", "Voice keyer messages", "", true],
   ["cw", "CW trainer progress", "", false],
-  ["wifi", "WiFi networks and passwords", "", false],
+  ["wifi", "WiFi networks and passwords", "(and the Ethernet setting)", false],
+  ["bootpic", "Boot picture", "(your own, System > Display)", true],
 ];
 
 var showStatus = function(kind, text, error=false) {
@@ -100,7 +101,7 @@ $("#file").on("change", function() {
         row.append($("<td>").append($("<input type='checkbox'>").attr("value", p[0]).prop("checked", p[3])));
         row.append($("<td>").text(p[1]));
         row.append($("<td>").text(r.parts[p[0]].file));
-        row.append($("<td>").text(r.parts[p[0]].now || "none"));
+        row.append($("<td>").text(r.parts[p[0]].now || (p[0] == "bootpic" ? "the built-in logo" : "none")));
         body.append(row);
       });
       $("#restore").data("token", r.token);   /* names this upload to the restore: a later upload, another tab's, is refused */
@@ -124,6 +125,7 @@ $("#restore_btn").on("click", function() {
       const failed = Object.keys(r.failed);
       let text = "Restored: " + (r.restored.map(partLabel).join(", ") || "nothing");
       if (r.gui_restarted) text += ". The radio screen was restarted";
+      if (r.restored.indexOf("wifi") >= 0) text += ". The radio takes the WiFi networks in a few seconds; one that replaces the network it is on drops the link for a few seconds";
       if (failed.length) text += ". Failed: " + failed.map(function(k) { return (k == "gui" ? "screen" : partLabel(k)) + " (" + r.failed[k] + ")"; }).join(", ");
       showStatus("restore", text, failed.length > 0);
       $("#restore").prop("hidden", true);

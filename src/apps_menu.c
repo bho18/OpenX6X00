@@ -28,7 +28,7 @@
 #define COLS   4
 #define GAP    4
 #define PAD    6
-#define BOX_W  760
+#define BOX_W  796     /* the screen less the top bar's margins: nothing of the strip shows at the sides */
 #define TILE_W ((BOX_W - 2 * PAD - (COLS - 1) * GAP) / COLS)
 #define TILE_H 66
 #define HEAD_H 38
@@ -43,11 +43,13 @@ static const struct {
     open_t         what;
     press_action_t action;
 } apps[] = {
-    {"Modes", "FT8, JS8, PSK, SSTV...", "modes", OPEN_APP, ACTION_APP_MODES},
+    {"Modes", "FT8, JS8, PSK, SSTV", "modes", OPEN_APP, ACTION_APP_MODES},
     {"Cluster", "DX spots", "cluster", OPEN_APP, ACTION_APP_CLUSTER},
-    {"Field Ops", "SOTA, POTA, WWFF...", "field", OPEN_APP, ACTION_APP_FIELD},
+    {"Field Ops", "SOTA, POTA, WWFF", "field", OPEN_APP, ACTION_APP_FIELD},
     {"Bands", "Band activity", "bands", OPEN_APP, ACTION_APP_BANDS},
+    {"Propagation", "Conditions, beacons", "prop", OPEN_APP, ACTION_APP_PROPAGATION},
     {"Channels", "Memory channels", "channels", OPEN_APP, ACTION_APP_CHANNELS},
+    {"Scanner", "Stops on activity", "scan", OPEN_APP, ACTION_APP_SCAN},
     {"SWR Scan", "Sweep, transmits", "swr", OPEN_APP, ACTION_APP_SWRSCAN},
     {"Recorder", "RX audio", "recorder", OPEN_APP, ACTION_APP_RECORDER},
     {"CW Trainer", "Learn CW", "trainer", OPEN_APP, ACTION_APP_CWTRAINER},
@@ -63,7 +65,7 @@ static const struct {
 #define ROWS_N ((APPS_N + COLS - 1) / COLS)
 #define BOX_H  (HEAD_H + ROWS_N * TILE_H + (ROWS_N - 1) * GAP + HINT_H + PAD)
 
-_Static_assert(BOX_Y + BOX_H <= 480 - BUTTONS_H_MAX, "APP grid overlaps the buttons");
+_Static_assert(BOX_Y + BOX_H <= BOARD_DISP_H - BUTTONS_H_MAX, "APP grid overlaps the buttons");
 
 static void construct_cb(lv_obj_t *parent);
 static void destruct_cb(void);
@@ -176,7 +178,7 @@ static void construct_cb(lv_obj_t *parent) {
     dialog.obj    = box;
     lv_obj_remove_style_all(box);
     lv_obj_set_size(box, BOX_W, BOX_H);
-    lv_obj_set_pos(box, (800 - BOX_W) / 2, BOX_Y);
+    lv_obj_set_pos(box, (BOARD_DISP_W - BOX_W) / 2, BOX_Y);
     lv_obj_add_style(box, &popup_style, 0);
     lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
 

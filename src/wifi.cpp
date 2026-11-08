@@ -69,7 +69,8 @@ static void retry_start(const char *uuid, const char *ssid) {
 static wifi_status_t status = WIFI_OFF;
 static bool          scanning = false;
 static uint64_t      last_scan;
-static bool          eth_holds_wifi;   /* a wired adapter is connected: WiFi's radio off for it */
+static bool          eth_holds_wifi;   /* a wired adapter is connected with a gateway: WiFi's radio off for it */
+static bool          eth_up;           /* a wired adapter is connected, with or without a gateway */
 
 static void loop_iterations_cb(lv_timer_t *);
 static void update_scan_status_cb(lv_timer_t *t);
@@ -112,11 +113,12 @@ static void wifi_log(const char *ssid) {
 }
 
 /* No network in reach for three minutes, WiFi on and not connected: the chip is powered off
- * and on again, two seconds apart. Now and then it stops seeing any network until it is. */
+ * and on again, two seconds apart. Now and then it stops seeing any network until it is. Not
+ * while a cable is connected: the radio has a network then, and the restart would cut Bluetooth */
 static void no_network_cb(lv_timer_t *t) {
     static int empty;
 
-    if (status != WIFI_DISCONNECTED || !device || eth_holds_wifi) {
+    if (status != WIFI_DISCONNECTED || !device || eth_up) {
         empty = 0;
         return;
     }
@@ -211,7 +213,7 @@ bool wifi_eth_active(void) {
 }
 
 bool net_connected(void) {
-    return eth_holds_wifi || status == WIFI_CONNECTED;
+    return eth_up || status == WIFI_CONNECTED;
 }
 
 /* NetworkManager's WirelessEnabled (the rfkill soft switch of wlan0), asynchronously */
@@ -896,9 +898,11 @@ static void device_disconnection_cb(GObject *device, GAsyncResult *result, gpoin
 
 /*
  * Ethernet. One saved profile, "Ethernet", for any wired adapter (no interface name or MAC in it:
- * a USB adapter can be swapped). Routes keep the NetworkManager metrics: wired 100, WiFi 600, so
- * with a gateway on both the cable carries the traffic and WiFi stays up. Without a gateway the
- * cable reaches its own subnet only and the default route stays on WiFi.
+ * a USB adapter can be swapped). Routes keep the NetworkManager metrics: wired 100, WiFi 600.
+ * A cable with a gateway (a router's DHCP, or one typed in) is the way out: WiFi's radio is held
+ * off for it, see eth_refresh_cb. Without a gateway NetworkManager gives the cable no default
+ * route: it reaches its own subnet only (a computer on the other end), WiFi stays on with the
+ * default route, and NetworkManager writes the DNS of the device with the default route first.
  */
 
 #define ETH_CON_ID "Ethernet"
@@ -985,20 +989,33 @@ static void eth_refresh_cb(lv_timer_t *t) {
         }
     }
 
+    /* A wired connection with a gateway takes over: WiFi's radio is held off while it lasts (a
+     * radio the Bluetooth chip shares, and two routes to the same LAN confuse the TCI clients);
+     * the chip stays powered for Bluetooth. One without a gateway, to a computer, has no way out
+     * (#169: every lookup failed while it held WiFi off): WiFi stays and keeps the internet. The
+     * gateway, the cable or the adapter gone: the radio comes back */
+    bool hold = in.connected && in.gw[0];
     bool changed;
     {
         std::lock_guard<std::mutex> lock(eth_mutex);
-        changed  = in.present != eth_info.present || in.connected != eth_info.connected;
+        changed  = in.present != eth_info.present || in.connected != eth_info.connected || hold != eth_holds_wifi;
         eth_info = in;
     }
-    /* A wired connection takes over: WiFi's radio is held off while it lasts (a radio the
-     * Bluetooth chip shares, and two routes to the same LAN confuse the TCI clients); the chip
-     * stays powered for Bluetooth. The cable or the adapter gone: the radio comes back */
-    if (in.connected != eth_holds_wifi) {
-        eth_holds_wifi = in.connected;
-        LV_LOG_USER("Ethernet %s: WiFi radio %s", in.connected ? "connected" : "gone", in.connected ? "off" : "on");
-        wifi_radio_enable(!in.connected);
-        if (in.connected && scan_timer) {
+    /* Logged at each change of the cable's state. Apply in the settings activates the profile
+     * again, so a gateway emptied there can pass through "not connected" first */
+    if (hold != eth_holds_wifi || in.connected != eth_up) {
+        LV_LOG_USER("Ethernet %s: WiFi radio %s",
+                    hold           ? "connected with a gateway"
+                    : in.connected ? "connected without a gateway"
+                    : in.present   ? "not connected"
+                                   : "gone",
+                    hold != eth_holds_wifi ? (hold ? "off" : "on") : "stays on");
+    }
+    eth_up = in.connected;
+    if (hold != eth_holds_wifi) {
+        eth_holds_wifi = hold;
+        wifi_radio_enable(!hold);
+        if (hold && scan_timer) {
             lv_timer_del(scan_timer);
             scan_timer = NULL;
             scanning   = false;

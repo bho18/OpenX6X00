@@ -64,7 +64,9 @@ extern ParamInt         *cfg_atu_enabled;       // p_atu_enabled
 extern ParamInt         *cfg_auto_level_enabled; // p_auto_level_enabled
 extern ParamFloat       *cfg_auto_level_offset;  // p_auto_level_offset
 extern ParamInt         *cfg_knob_info;          // p_knob_info
+extern ParamInt         *cfg_buttons_hide;       // p_buttons_hide
 extern ParamInt         *cfg_mode_from_plan;     // p_mode_from_plan
+extern ParamInt         *cfg_band_region;        // p_band_region
 extern ParamInt         *cfg_birdie_marks;       // p_birdie_marks
 extern ParamInt         *cfg_spectrum_show;      // p_spectrum_show
 extern ParamInt         *cfg_spectrum_height;    // p_spectrum_height
@@ -87,6 +89,9 @@ extern ParamInt         *cfg_spectrum_fill_gradient; // p_spectrum_fill_gradient
 extern ParamInt         *cfg_smeter_bar_color;   // p_smeter_bar_color
 extern ParamInt         *cfg_swr_color;          // p_swr_color
 extern ParamInt         *cfg_swr_protect;        // p_swr_protect
+extern ParamInt         *cfg_tx_outside_bands;   // p_tx_outside_bands
+extern ParamFloat       *cfg_tune_pwr;           // p_tune_pwr
+extern ParamInt         *cfg_tune_time;          // p_tune_time
 extern ParamInt         *cfg_smeter_lamp;        // p_smeter_lamp
 extern ParamInt         *cfg_broadcast_name;     // p_broadcast_name
 extern ParamInt         *cfg_cluster_column;     // p_cluster_column
@@ -95,11 +100,20 @@ extern ParamInt         *cfg_cluster_all_bands;  // p_cluster_all_bands
 extern ParamInt         *cfg_waterfall_ref;      // p_waterfall_ref
 extern ParamInt         *cfg_smeter_cal;         // p_band_smeter_cal (current band)
 extern ParamInt         *cfg_smeter_pre;         // p_smeter_pre
-extern ParamInt         *cfg_smeter_att;         // p_smeter_att
+extern ParamInt         *cfg_smeter_att;         // p_smeter_att (X6200: p_band_smeter_att, current band)
 extern ParamInt         *cfg_smeter_rfg;         // p_smeter_rfg
 extern ParamInt         *cfg_waterfall_speed;    // p_waterfall_speed
 extern ParamInt         *cfg_wf_mode;            // p_wf_mode
+extern ParamInt         *cfg_wf_3d;              // p_wf_3d
+extern ParamInt         *cfg_wf_3d_colors;       // p_wf_3d_colors
+extern ParamInt         *cfg_wf_3d_depth;        // p_wf_3d_depth
+extern ParamInt         *cfg_wf_3d_tilt;         // p_wf_3d_tilt
+extern ParamInt         *cfg_wf_3d_floor;        // p_wf_3d_floor
+extern ParamInt         *cfg_wf_3d_peak;         // p_wf_3d_peak
+extern ParamInt         *cfg_wf_3d_glide;        // p_wf_3d_glide
+extern ParamInt         *cfg_wf_3d_range;        // p_wf_3d_range
 extern ParamText        *cfg_encoder_bind;       // p_encoder_bind
+extern ParamInt         *cfg_power_display;      // p_power_display
 
 // VOX
 extern ParamInt *cfg_vox_on;   // p_vox_en
@@ -181,6 +195,14 @@ extern ParamInt   *cfg_tx_filter_high;       // p_tx_filter_high
 extern ParamInt   *cfg_cessb_on;             // p_cessb_on
 extern ParamFloat *cfg_cessb_power_up;       // p_cessb_power_up
 
+// Text log of the keyboard modes
+extern ParamInt   *cfg_textlog;              // p_textlog
+extern ParamInt   *cfg_textlog_mb;           // p_textlog_mb
+
+// Waterfall Mode Fixed: when the view moves on, and where the line goes
+extern ParamInt   *cfg_wf_fixed_jump;        // p_wf_fixed_jump
+extern ParamInt   *cfg_wf_fixed_after;       // p_wf_fixed_after
+
 // --- BAND params ---
 extern ParamInt   *cfg_band_current_vfo;  // p_band_current_vfo
 extern ParamInt   *cfg_band_if_shift;     // p_band_if_shift
@@ -208,13 +230,15 @@ extern ParamInt *cfg_mode_zoom;      // p_mode_zoom ("spectrum_factor")
 extern ParamInt *cfg_mode_freq_step; // p_mode_freq_step
 
 // --- Transverter params (OTHER storage, fixed HW conversion) ---
-// Values are Hz (p_transverter_{0,1}_{from,to,shift}).
+// Values are Hz (p_transverter_{0,1}_{from,to,shift}), the TX power limits W (p_transverter_{0,1}_pwr, 0 none).
 extern ParamInt *cfg_transverter_0_from;
 extern ParamInt *cfg_transverter_0_to;
 extern ParamInt *cfg_transverter_0_shift;
+extern ParamFloat *cfg_transverter_0_pwr;
 extern ParamInt *cfg_transverter_1_from;
 extern ParamInt *cfg_transverter_1_to;
 extern ParamInt *cfg_transverter_1_shift;
+extern ParamFloat *cfg_transverter_1_pwr;
 
 // --- Computed params (current operating state, not persisted) ---
 extern ComputedParamInt *cfg_fg_freq;          // cp_fg_freq

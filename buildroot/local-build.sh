@@ -113,6 +113,11 @@ grep -E "^(${GUI_VAR}|X6100_WEBSERVER)_SITE" $GUI_MK $WEB_MK
 # The backend: the GUI's CMake defaults to the X6100. Before the eval line: what a .mk sets after
 # $(eval $(cmake-package)) the package never sees
 sed -i "/_CONF_OPTS += -DHW_BACKEND=/d" $GUI_MK
+# Not synced into the build: the worktrees under .claude (gigabytes) and the PC's own builds. In place of the line
+# the package may have of its own (the X6100's excludes build-host only)
+sed -i "/^${GUI_VAR}_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS/d" $GUI_MK
+sed -i "s|^\$(eval \$(cmake-package))|${GUI_VAR}_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = --exclude /.claude --exclude /build --exclude /build-host --exclude /build-docker\n\n&|" $GUI_MK
+grep -q "^${GUI_VAR}_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = --exclude /.claude" $GUI_MK
 sed -i "s|^\$(eval \$(cmake-package))|${GUI_VAR}_CONF_OPTS += -DHW_BACKEND=$MODEL\n\n&|" $GUI_MK
 grep -q "^${GUI_VAR}_CONF_OPTS += -DHW_BACKEND=$MODEL" $GUI_MK
 
@@ -185,6 +190,11 @@ rm -f $BOARD/rootfs-overlay/etc/init.d/S01create_data   # S00adata does it, with
 rm -f $BOARD/rootfs-overlay/etc/init.d/S00adata $BOARD/rootfs-overlay/etc/NetworkManager/dispatcher.d/99-ntp-sync.sh
 # The WiFi and SSH backup at shutdown and restore at boot too (rootfs/etc/init.d, since v0.3.4)
 rm -f $BOARD/rootfs-overlay/etc/init.d/S04restore_backup_config
+# gpsd's start, which leaves an X6200's WR12 alone (rootfs/etc/init.d/S50gpsd, #134), goes into the overlay: buildroot's
+# gpsd package installs a start of its own (no control socket, the defconfig's ttyACM0 whatever it is), and only the
+# overlay, laid last, wins over it whatever the order the packages are installed in
+mkdir -p $BOARD/rootfs-overlay/etc/init.d
+cp $GUI/rootfs/etc/init.d/S50gpsd $BOARD/rootfs-overlay/etc/init.d/S50gpsd
 # And sshd_config, keys only (rootfs/etc/ssh): the upstream overlay's lets root in with the image's password
 rm -f $BOARD/rootfs-overlay/etc/ssh/sshd_config
 # The card image's level for this radio (rootfs/usr/share/x6100/image-required), stamped where no update writes:
@@ -205,7 +215,8 @@ if [ $MODEL = x6100 ]; then
     # had a 2025 binary written over the 2023.01 buildroot built: it switches the DRAM supply on in an order
     # mainline put back in 2025.04 (1dadb246a3) because it hung boards of this family at the kernel start, and a
     # radio of #21 stopped there with our card and started with IU1WXY's v0.131, whose U-Boot 2026.07 is the only
-    # real difference (same kernel, same device tree). The dtsi adds U-Boot's own nodes
+    # real difference (same kernel, same device tree). The dtsi adds U-Boot's own nodes. Another version needs its
+    # release SHA-256 in uboot_source's table below, or the build stops there
     sed -i 's/^BR2_TARGET_UBOOT_CUSTOM_VERSION_VALUE=.*/BR2_TARGET_UBOOT_CUSTOM_VERSION_VALUE="2026.07"/' $DEFCONFIG
     grep -q "^BR2_TARGET_UBOOT_NEEDS_PYTHON3=y" $DEFCONFIG || echo "BR2_TARGET_UBOOT_NEEDS_PYTHON3=y" >> $DEFCONFIG
     sed -i 's|^\(BR2_TARGET_UBOOT_CUSTOM_DTS_PATH=".*/sun8i-r16-x6100\.dts\)"$|\1 $(BR2_EXTERNAL_X6100_PATH)/board/X6100/u-boot/sun8i-r16-x6100-u-boot.dtsi"|' $DEFCONFIG
@@ -233,16 +244,50 @@ cp $GUI/boot/kernel_logo.png $BOARD/logo.png
 echo "== Configure"
 cd $BR && bash ./br_config.sh
 
+echo "== XARA, the VARA-compatible Winlink modem (tools/xara/build.sh): one ARMv7 binary, linked with this tree's gcc"
+# Built with its own pinned Rust (buildroot's is too old for it) and kept in $HOME/.cache/openx6x00; the GUI's CMake
+# installs it as /usr/bin/xara, so it is in the image and in the update bundle. Linked with buildroot's own
+# toolchain (glibc 2.36, the GUI's), which a tree built for the first time makes here, the first step of its build
+XARA_CC=$BR/build/host/bin/arm-buildroot-linux-gnueabihf-gcc
+(cd $BR/build && make toolchain)
+XARA_BIN=$(CC=$XARA_CC bash $GUI/tools/xara/build.sh)
+[ -x "$XARA_BIN" ]
+sed -i "/_CONF_OPTS += -DXARA_BINARY=/d" $GUI_MK
+sed -i "s|^\$(eval \$(cmake-package))|${GUI_VAR}_CONF_OPTS += -DXARA_BINARY=$XARA_BIN\n&|" $GUI_MK
+grep -q "^${GUI_VAR}_CONF_OPTS += -DXARA_BINARY=$XARA_BIN" $GUI_MK
+
 echo "== Build"
 cd $BR/build
+# U-Boot's release tarball comes from ftp.denx.de (buildroot's mirror has the X6100's 2026.07, not the X6200's
+# 2023.01). When that site doesn't answer (down for days in November 2026, PR #154) and buildroot's download folder
+# hasn't got the file, it is made from U-Boot's tag archive on GitHub: the tar in it is the release's byte for byte,
+# and bzip2 gives back the release tarball itself. buildroot checks no hash for a U-Boot version of one's own, so
+# the release's is checked here, wherever the file came from, and a version not in the table stops the build until
+# its release SHA-256 is added
+uboot_source() {
+    local ver sha f
+    ver=$(sed -n 's/^BR2_TARGET_UBOOT_VERSION="\(.*\)"$/\1/p' .config)
+    case $ver in
+        2023.01) sha=69423bad380f89a0916636e89e6dcbd2e4512d584308d922d1039d1e4331950f ;;
+        2026.07) sha=78e8bfc382fe388f9b55aa1daf8c563522a037779b5d4c349d1415e381f1243e ;;  # as in IU1WXY's v0.131 sources
+        *) echo "U-Boot $ver: no release SHA-256 for it in local-build.sh's table (uboot_source), add it there"; return 1 ;;
+    esac
+    f=$BR/buildroot/dl/uboot/u-boot-$ver.tar.bz2
+    if [ ! -s $f ] && ! curl -sfIL --max-time 30 -o /dev/null https://ftp.denx.de/pub/u-boot/u-boot-$ver.tar.bz2; then
+        echo "   U-Boot $ver: ftp.denx.de doesn't answer, the release tarball is made from its tag on GitHub"
+        mkdir -p ${f%/*}
+        curl -sSfL --retry 3 https://github.com/u-boot/u-boot/archive/refs/tags/v$ver.tar.gz | gunzip | bzip2 > $f.part
+        echo "$sha  $f.part" | sha256sum -c - || { rm -f $f.part; return 1; }
+        mv $f.part $f
+    fi
+    make uboot-source
+    echo "$sha  $f" | sha256sum -c -
+}
 if [ $MODEL = x6100 ]; then
     # A U-Boot configured here before its defconfig turned mkeficapsule off is configured again
     grep -qs "^CONFIG_TOOLS_MKEFICAPSULE=y" $BR/build/build/uboot-2026.07/.config && make uboot-dirclean
-    # buildroot checks no hash for a U-Boot version of one's own: this one is the release's
-    # (ftp.denx.de, the same file as in IU1WXY's v0.131 sources)
-    make uboot-source
-    echo "78e8bfc382fe388f9b55aa1daf8c563522a037779b5d4c349d1415e381f1243e  $BR/buildroot/dl/uboot/u-boot-2026.07.tar.bz2" | sha256sum -c -
 fi
+uboot_source
 make lame mpg123
 make libsndfile-dirclean
 # A package patched after an earlier build here is built again: buildroot applies patches at extraction only
@@ -260,7 +305,9 @@ fi
 # would stay there and be installed again (an old S01create_data was), as would what an earlier
 # build put in target/. A directory that held another GUI's sources (the stock X6200 GUI, in a tree
 # built stock before) is wiped once: its files would be compiled along with ours
-if ls $BR/build/build/$GUI_PKG-*/.stamp_built > /dev/null 2>&1; then
+# A tree whose GUI was configured before, also one whose last build failed in the GUI (.stamp_built gone): the
+# first-build path below skipped the web server's reinstall there, and the bundle went without it
+if ls $BR/build/build/$GUI_PKG-*/.stamp_configured > /dev/null 2>&1; then
     for d in $BR/build/build/$GUI_PKG-*/; do
         [ -d "$d" ] && [ ! -f "$d/.openx6x00" ] && { echo "   wiping $d (not synced from OpenX6X00 before)"; rm -rf "$d"; }
     done
@@ -284,6 +331,23 @@ if ls $BR/build/build/$GUI_PKG-*/.stamp_built > /dev/null 2>&1; then
         done
     done
     rm -rf $BR/build/target/usr/lib/python3*/site-packages/x6100_webserver* $BR/build/target/usr/bin/x6100_webserver
+    # The sync is buildroot's `rsync -au`: a file newer in the build directory than in the source is kept. A build
+    # from a worktree (GUI_DIR) leaves its files newer than another tree's, and the next build from there kept them:
+    # a bundle of main went out with a branch's GUI. What differs from the source is copied in now, with the time
+    # of now: the sync then leaves it, and make compiles it again (the sync would bring the source's older time,
+    # older than the objects of the other tree's file). What earlier builds synced of the worktrees and the PC's
+    # builds, no longer synced, goes
+    for d in $BR/build/build/$GUI_PKG-*/ $BR/build/build/x6100-webserver-*/; do
+        [ -d "$d" ] || continue
+        case $d in *webserver*) src=$GUI/webserver ;; *) src=$GUI; rm -rf "$d/.claude" "$d/build" "$d/build-host" "$d/build-docker" ;; esac
+        (cd "$d" && find . -type f -not -path './CMakeFiles/*' -not -name '.stamp_*' -not -name .openx6x00) |
+            while read -r f; do
+                if [ -f "$src/$f" ] && ! cmp -s "$src/$f" "$d/$f"; then
+                    echo "   $f differs from $src: copied in again"
+                    cp "$src/$f" "$d/$f"
+                fi
+            done
+    done
     # The GUI is configured again, not only rebuilt: its options (HW_BACKEND above) live in CMake's
     # cache, which a rebuild keeps
     make $GUI_PKG-reconfigure x6100-webserver-rebuild
@@ -319,6 +383,15 @@ echo "== Update bundle (tools/update/mkbundle.py): what x6100-update installs on
 VER=$(sed -n 's/.*define VERSION.* v\([0-9.]*\).*/\1/p' $GUI/src/main.h)
 KEY=${UPDATE_KEY:-$HOME/.config/openx6x00/update-key.pem}
 KEYARG=""; [ -f "$KEY" ] && KEYARG="--key $KEY"
+# The FT8 library goes in too (mkbundle.py LIB_FILES): the ft8lib package at the tree's pin, installed in target/ by
+# this build (an X6200 card image up to v0.3.8 has 117022b). Buildroot installs a version once: a tree that had
+# another pin after this one (the X6200's had 117022b) keeps that one's file in target/ when it comes back to this
+FT8LIB_VER=$(sed -n 's/^FT8LIB_VERSION = //p' $EXT/package/ft8lib/ft8lib.mk)
+FT8LIB_STAMP=$BR/build/build/ft8lib-$FT8LIB_VER/.stamp_target_installed
+[ -f $FT8LIB_STAMP ] || { echo "ft8_lib $FT8LIB_VER, the tree's pin, was never installed in target/"; exit 1; }
+[ "$(ls -t $BR/build/build/ft8lib-*/.stamp_target_installed | head -1)" = $FT8LIB_STAMP ] ||
+    { echo "ft8_lib $FT8LIB_VER: another version was installed in target/ after it (make ft8lib-dirclean, build again)"; exit 1; }
+echo "   ft8_lib ${FT8LIB_VER:0:7}: /usr/lib/libft8.so $(sha256sum $BR/build/target/usr/lib/libft8.so | cut -c1-12)"
 python3 $GUI/tools/update/mkbundle.py --target $BR/build/target --manifest $(ls -d $BR/build/build/$GUI_PKG-*/install_manifest.txt | head -1) \
     --version $VER --model $MODEL --out $BR/build/images/$OUT-v$VER-update.tar.gz $KEYARG
 

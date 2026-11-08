@@ -11,6 +11,7 @@
  * screen as EVENT_ROTARY with its speed. */
 
 #include "freedv/features.h"
+#include "gui_wake.h"
 #include "knob_device.h"
 
 #include "screen_light.h"
@@ -52,10 +53,13 @@ static void vol_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
 #ifdef ENABLE_FREEDV_CONTROL
             if (ctl_diagnostic_input_blocked()) knob->diagnostic_generation = ctl_remote_input_generation();
 #endif
-            backlight_tick();
+            bool woke = backlight_knob_tick();     /* the turn that ends the screensaver only ends it */
+
             ctl_local_input();
-            pending                = sum;
-            data->continue_reading = true;
+            if (!woke) {
+                pending                = sum;
+                data->continue_reading = true;
+            }
         }
     } else if (key_down) {
         data->state            = LV_INDEV_STATE_RELEASED;
@@ -152,6 +156,7 @@ static void *main_knob_thread(void *arg) {
             knob_main.head                  = next;
         }
         pthread_mutex_unlock(&knob_main.lock);
+        gui_wake_input();
     }
     return NULL;
 }
@@ -178,13 +183,12 @@ static void main_knob_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     }
     pthread_mutex_unlock(&knob_main.lock);
 
-    if (sum) {
+    if (sum && !backlight_knob_tick()) {      /* the turn that ends the screensaver only ends it */
 #ifdef ENABLE_FREEDV_VOICE
         knob_main.voice_generation=ctl_diagnostic_input_blocked()?ctl_remote_input_generation():0;
 #endif
         rotary_data_t *ev = malloc(sizeof(*ev));
 
-        backlight_tick();
         ev->diff = sum;
         ev->dt   = LV_MAX(ms / count, 1);
         lv_event_send(lv_scr_act(), EVENT_ROTARY, ev);

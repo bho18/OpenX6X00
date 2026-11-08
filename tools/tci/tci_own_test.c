@@ -9,7 +9,9 @@
  *  when that client says so or leaves; a start ended before its key ran keys nothing, an unkey
  *  never drops a PTT the operator keyed, a refused start takes no control. Each case runs in a
  *  child process: a server as it starts. A client is one end of a socket pair, what the server
- *  tells it is read from the other. No listener.
+ *  tells it is read from the other. No listener. Every case runs three times: its commands as
+ *  written, in capitals (Hamlib's TCI backend) and in mixed case, which TCI says are the same;
+ *  the answers are the same, in lower case.
  *
  *  Copyright (c) 2026 Joeri Van Dooren ON6URE / Guru-RF
  */
@@ -26,6 +28,14 @@ int         stub_run(int n);
 static int      peer[MAX_CLIENTS];
 static rstate_t last;
 static int      failed;
+static int      letters;    /* how a client writes its commands: 0 as the case has them, 1 in capitals, 2 mixed */
+
+/* The first n characters of s written as letters says ("trx:0,true,tci;": TRX:0,TRUE,TCI; or TrX:0,TrUe,tCi;) */
+static void lettered(char *s, size_t n) {
+    for (size_t i = 0; s[i] && i < n; i++)
+        if (letters == 1 || (letters == 2 && i % 2 == 0))
+            s[i] = (char)toupper((unsigned char)s[i]);
+}
 
 /* The server as tci_server_init leaves it, without its threads: the case calls their steps */
 static void server_start(void) {
@@ -57,16 +67,57 @@ static void client_open(int ci) {
     peer[ci] = sv[1];
 }
 
+/* A connection over Tailscale Funnel as tailscaled hands it over: its upgrade request with tailscaled's header,
+ * read by client_read. True when its handshake was taken (the 101 read here) */
+static bool funnel_connect(int ci, const char *addr) {
+    client_t *c = &clients[ci];
+    int       sv[2];
+    char      req[512], resp[512];
+
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sv) < 0) {
+        perror("socketpair");
+        exit(2);
+    }
+    c->fd       = sv[0];
+    c->fmt_rate = 48000;
+    c->fmt_type = TCI_FLOAT32;
+    c->last_ms = c->ping_ms = now_ms();
+    snprintf(c->ip, sizeof(c->ip), "127.0.0.1");
+    atomic_fetch_add(&nclients, 1);
+    peer[ci] = sv[1];
+    snprintf(req, sizeof(req), "GET / HTTP/1.1\r\nHost: x6200.tail1234.ts.net\r\nUpgrade: websocket\r\n"
+             "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+             "Tailscale-Funnel-Request: ?1\r\nX-Forwarded-For: %s\r\n\r\n", addr);
+    if (send(peer[ci], req, strlen(req), MSG_NOSIGNAL) != (ssize_t)strlen(req))
+        exit(2);
+    client_read(ci);
+    ssize_t n = recv(peer[ci], resp, sizeof(resp) - 1, 0);
+    return c->fd >= 0 && c->ws && n > 12 && !strncmp(resp, "HTTP/1.1 101", 12);
+}
+
+/* A text frame from client ci as a browser sends it (masked), read by client_read; nothing when it is closed. Its
+ * word ("auth") as letters says, the token as it is */
+static void funnel_say(int ci, const char *text) {
+    uint8_t f[256] = {0x81, (uint8_t)(0x80 | strlen(text))};   /* a mask of zeros: the text as it is */
+
+    memcpy(f + 6, text, strlen(text));
+    lettered((char *)f + 6, strcspn(text, ": "));
+    if (clients[ci].fd >= 0 && send(peer[ci], f, 6 + strlen(text), MSG_NOSIGNAL) == (ssize_t)(6 + strlen(text)))
+        client_read(ci);
+}
+
 /* The connection lost, as client_read handles it */
 static void client_gone(int ci) {
     tx_session_end(ci, false);
     client_close(&clients[ci]);
 }
 
+/* Commands from client ci, as letters says */
 static void say(int ci, const char *cmd) {
     char line[256];
 
     snprintf(line, sizeof(line), "%s", cmd);
+    lettered(line, sizeof(line));
     handle_text(ci, line);
 }
 
@@ -493,6 +544,293 @@ static void two_tci_starts(void) {
     check(!on_air(), "A's unkey ends it");
 }
 
+/* TCI audio in DIGU (WSJT-X on Mode Data/Pkt) and DIGL keys the radio, the modem bit taking the
+ * client's audio as the radio's own digital apps do in USB-D; only CW refuses it (#17) */
+static void tci_audio_in_dig(void) {
+    const int   modes[] = {radio_mode_usb_dig, radio_mode_lsb_dig};
+    const char *names[] = {"DIGU", "DIGL"};
+    const char *h;
+    char        what[96];
+
+    client_open(A);
+    for (int i = 0; i < 2; i++) {
+        cparam_i_set(cfg_cur_mode, modes[i]);
+        gui(-1);
+        heard(A);
+        say(A, "trx:0,true,tci;");
+        gui(-1);
+        h = heard(A);
+        snprintf(what, sizeof(what), "in %s A's TCI audio start keys, A hears trx:0,true", names[i]);
+        check(radio_get_modem() && atomic_load(&txs.keyed) && txs.owner == A && strstr(h, "trx:0,true;")
+              && !strstr(h, "trx:0,false;"), what);
+        say(A, "trx:0,false;");
+        gui(-1);
+        h = heard(A);
+        snprintf(what, sizeof(what), "in %s A's unkey ends it, A hears trx:0,false", names[i]);
+        check(!on_air() && !atomic_load(&txs.keyed) && txs.owner < 0 && strstr(h, "trx:0,false;"), what);
+    }
+}
+
+static bool ctl_free(void) {
+    ctl_info_t o;
+
+    ctl_get(&o);
+    return o.kind == CTL_NONE;
+}
+
+/* A browser keying its microphone through its TCI link: the start takes control from the browser's session, which
+ * the radio cannot tell from that link, and its end gives it back; free again when it was free (a page just opened
+ * keys before anything else) or the one it came from left during the over; not when the control changed hands
+ * during the over (a knob), or when the client had it before its start (it tuned) */
+static void control_given_back(void) {
+    client_open(A);
+    say(A, "trx:0,true,tci;");          /* control free: nobody took it yet */
+    gui(-1);
+    check(radio_get_modem() && ctl_holds(CTL_TCI, A), "control free: A's TCI audio start takes it");
+    say(A, "trx:0,false;");
+    gui(-1);
+    check(!on_air() && ctl_free(), "A's unkey: control free again");
+
+    ctl_claim(CTL_BROWSER, 0, "Macbook", true);
+    say(A, "trx:0,true,tci;");
+    gui(-1);
+    check(radio_get_modem() && txs.owner == A && ctl_holds(CTL_TCI, A), "A's TCI audio start keys, control with A");
+    say(A, "trx:0,false;");
+    gui(-1);
+    check(!on_air() && ctl_holds(CTL_BROWSER, 0), "A's unkey: control back with the browser");
+
+    say(A, "trx:0,true,tci;");
+    gui(-1);
+    ctl_local_input();                  /* a knob at the radio during the over */
+    say(A, "trx:0,false;");
+    gui(-1);
+    check(!on_air() && ctl_holds(CTL_LOCAL, 0), "a knob during the over: control stays at the radio");
+
+    ctl_claim(CTL_BROWSER, 0, "Macbook", true);
+    say(A, "trx:0,true,tci;");
+    gui(-1);
+    ctl_release(CTL_BROWSER, 0);        /* the browser gone during the over */
+    say(A, "trx:0,false;");
+    gui(-1);
+    check(!on_air() && ctl_free(), "the browser gone during the over: control free, as its leaving left it");
+
+    ctl_claim(CTL_BROWSER, 0, "Macbook", true);
+    say(A, "vfo:0,0,7100000;");         /* A tunes first: control is A's before its start */
+    gui(-1);
+    say(A, "trx:0,true,tci;");
+    gui(-1);
+    say(A, "trx:0,false;");
+    gui(-1);
+    check(!on_air() && ctl_holds(CTL_TCI, A), "A had control before its start: A keeps it");
+}
+
+/* Listen only: tuning, the mode, filter, AGC, RIT, drive and a key are answered with the state as it is; nothing goes
+ * to the LVGL thread and control stays where it is */
+static void listen_only(void) {
+    const char *h;
+
+    client_open(A);
+    ctl_claim(CTL_BROWSER, 0, "Shack PC", true);
+    atomic_store(&trust_operate, false);
+    say(A, "vfo:0,0,14074000;modulation:0,usb;rx_filter_band:0,100,3000;agc_mode:0,slow;rit_offset:0,100;");
+    say(A, "drive:0,80;trx:0,true,tci;");
+    h = heard(A);
+    check(strstr(h, "vfo:0,0,7074000;") && strstr(h, "modulation:0,lsb;") && strstr(h, "rx_filter_band:0,-2700,-300;")
+          && strstr(h, "agc_mode:0,fast;") && strstr(h, "rit_offset:0,0;") && strstr(h, "drive:0,")
+          && strstr(h, "trx:0,false;"), "each answered with the state");
+    check(stub_run(-1) == 0 && !on_air() && ctl_holds(CTL_BROWSER, 0), "nothing done, control stays with the browser");
+    atomic_store(&trust_operate, true);
+    say(A, "vfo:0,0,14074000;");
+    gui(-1);
+    check(cparam_i_get(cfg_fg_freq) == 14074000 && ctl_holds(CTL_TCI, A), "on Operate A tunes and takes control");
+}
+
+/* dds (Hamlib's TCI backend sends one before each vfo) is answered with the frequency, set or asked, and an unknown
+ * command (its digl_offset) is left unanswered: neither tunes nor takes control. The vfo after it tunes */
+static void dds_and_unknown(void) {
+    const char *h;
+
+    client_open(A);
+    ctl_claim(CTL_BROWSER, 0, "Shack PC", true);
+    say(A, "dds:0,14074000;dds:0;");
+    h = heard(A);
+    check(!strcmp(h, "dds:0,7074000;dds:0,7074000;"), "dds answered with the frequency");
+    say(A, "digl_offset:1500;rx_nb_enable:0,true;");
+    check(!*heard(A), "an unknown command left unanswered");
+    check(stub_run(-1) == 0 && ctl_holds(CTL_BROWSER, 0), "nothing done, control stays with the browser");
+    say(A, "dds:0,14074000;vfo:0,0,14074000;");
+    gui(-1);
+    h = heard(A);
+    check(strstr(h, "dds:0,7074000;") && strstr(h, "vfo:0,0,14074000;") && cparam_i_get(cfg_fg_freq) == 14074000,
+          "dds then vfo, as Hamlib sets a frequency: the vfo tunes");
+}
+
+/* A question takes no control: a vfo without its frequency, a trx without true or false, the filter without its two
+ * edges, the mode, AGC, RIT and drive without their value. Hamlib's TCI backend asks VFO:0,0; and TRX:0; at every
+ * poll: each is answered with the state, nothing is done, and the browser or the program that has control keeps it,
+ * also during the asking client's own transmission, after it and during another's. What sets something takes
+ * control as before, also a value the radio has already, and a trx true or false; Listen only asks the same */
+static void questions_take_no_control(void) {
+    struct {
+        const char *ask;
+        char        answer[48];
+    } q[] = {
+        {"vfo:0,0;", "vfo:0,0,7074000;"},
+        {"vfo:0;", "vfo:0,0,7074000;"},
+        {"vfo;", "vfo:0,0,7074000;"},
+        {"trx:0;", "trx:0,false;"},
+        {"trx;", "trx:0,false;"},
+        {"modulation:0;", "modulation:0,lsb;"},
+        {"rx_filter_band:0;", "rx_filter_band:0,-2700,-300;"},
+        {"rx_filter_band:0,300;", "rx_filter_band:0,-2700,-300;"},  /* one edge: no filter to set */
+        {"agc_mode:0;", "agc_mode:0,fast;"},
+        {"rit_enable:0;", "rit_enable:0,false;"},
+        {"rit_offset:0;", "rit_offset:0,0;"},
+        {"drive:0;", ""},                                           /* the stub's power as TCI's drive, below */
+    };
+    static const char *const sets[] = {     /* the second vfo sets the frequency the radio has by then */
+        "vfo:0,0,14074000;", "vfo:0,0,14074000;", "modulation:0,usb;", "rx_filter_band:0,100,3000;",
+        "agc_mode:0,slow;", "rit_offset:0,100;", "rit_enable:0,false;", "drive:0,80;", "trx:0,false;",
+    };
+    int         nq = sizeof(q) / sizeof(q[0]);
+    const char *h;
+    char        what[128];
+    rstate_t    s;
+    bool        idle;
+
+    state_read(&s);
+    snprintf(q[nq - 1].answer, sizeof(q[nq - 1].answer), "drive:0,%d;", s.drive);
+    client_open(A);
+    client_open(B);
+    for (int i = 0; i < nq; i++) {
+        ctl_claim(CTL_BROWSER, 0, "Shack PC", true);
+        say(A, q[i].ask);
+        h    = heard(A);
+        idle = stub_run(-1) == 0;
+        snprintf(what, sizeof(what), "%s answered %s, nothing done, control stays with the browser", q[i].ask,
+                 q[i].answer);
+        check(!strcmp(h, q[i].answer) && idle && ctl_holds(CTL_BROWSER, 0), what);
+    }
+
+    say(B, "vfo:0,0,7100000;");             /* B tunes: control is B's */
+    gui(-1);
+    check(cparam_i_get(cfg_fg_freq) == 7100000 && ctl_holds(CTL_TCI, B), "B tunes and takes control");
+    heard(A);
+    say(A, "dds:0;vfo:0,0;trx:0;");         /* Hamlib's poll */
+    check(!strcmp(heard(A), "dds:0,7100000;vfo:0,0,7100000;trx:0,false;") && ctl_holds(CTL_TCI, B),
+          "A's poll answered, control stays with B");
+
+    ctl_claim(CTL_BROWSER, 0, "Shack PC", true);
+    say(A, "trx:0,true;");                  /* A keys: control is A's for its transmission */
+    gui(-1);
+    check(on_air() && ptt_owner == A && ctl_holds(CTL_TCI, A), "A's start keys, control with A");
+    heard(A);
+    heard(B);
+    say(A, "trx:0;");
+    say(B, "vfo:0,0;trx:0;");
+    check(!strcmp(heard(A), "trx:0,true;") && !strcmp(heard(B), "vfo:0,0,7100000;trx:0,true;") &&
+          ctl_holds(CTL_TCI, A), "A's and B's polls during A's transmission: control stays with A");
+    say(A, "trx:0,false;");
+    gui(-1);
+    check(!on_air() && ctl_holds(CTL_BROWSER, 0), "A's unkey ends it, control back with the browser");
+    heard(A);
+    say(A, "vfo:0,0;trx:0;");
+    check(!strcmp(heard(A), "vfo:0,0,7100000;trx:0,false;") && ctl_holds(CTL_BROWSER, 0),
+          "A's poll after its transmission: control stays with the browser");
+
+    for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++) {
+        ctl_claim(CTL_BROWSER, 0, "Shack PC", true);
+        say(A, sets[i]);
+        gui(-1);
+        snprintf(what, sizeof(what), "%s takes control%s", sets[i],
+                 i && !strcmp(sets[i], sets[i - 1]) ? ", the frequency the radio has" : "");
+        check(ctl_holds(CTL_TCI, A), what);
+    }
+    check(cparam_i_get(cfg_fg_freq) == 14074000 && cparam_i_get(cfg_cur_mode) == radio_mode_usb &&
+          cparam_i_get(cfg_cur_agc) == radio_agc_slow, "the sets are done");
+
+    ctl_claim(CTL_BROWSER, 0, "Shack PC", true);
+    atomic_store(&trust_operate, false);    /* Listen only */
+    heard(A);
+    say(A, "vfo:0,0;trx:0;");
+    check(!strcmp(heard(A), "vfo:0,0,14074000;trx:0,false;") && stub_run(-1) == 0 && ctl_holds(CTL_BROWSER, 0),
+          "on Listen only A's poll answered, control stays with the browser");
+}
+
+/* Over Tailscale Funnel (#58) only the Panel's own sound and its key with it: a session that may not transmit, or
+ * one that keyed nothing, asking for the TX state or unkeying is answered with the state and takes no control (the
+ * browser at home keeps it, as when that session's browser asks on the browser remote's socket); the session that
+ * keyed unkeys its own transmission */
+static void funnel_takes_no_control(void) {
+    client_open(A);
+    client_open(B);
+    clients[A].funnel = clients[B].funnel = true;
+    snprintf(clients[A].token, sizeof(clients[A].token), "%s", "11111111111111111111111111111111");  /* no TX */
+    snprintf(clients[B].token, sizeof(clients[B].token), "%s", "0123456789abcdef0123456789abcdef");
+    ctl_claim(CTL_BROWSER, 0, "Shack PC", true);
+    say(A, "trx:0,false;");
+    say(A, "trx;");
+    say(B, "trx:0,false;");
+    check(ctl_holds(CTL_BROWSER, 0), "an unkey or a question from a client that keyed nothing takes no control");
+    check(strstr(heard(A), "trx:0,false;") && strstr(heard(B), "trx:0,false;"), "both answered with the state");
+    say(A, "trx:0,true,tci;");
+    check(ctl_holds(CTL_BROWSER, 0) && strstr(heard(A), "trx:0,false;"), "the session without TX: its key refused");
+    say(B, "trx:0,true,tci;");
+    gui(-1);
+    check(radio_get_modem() && txs.owner == B && ctl_holds(CTL_TCI, B), "B keys with its audio, control with it");
+    say(B, "trx:0,false;");
+    gui(-1);
+    check(!on_air() && txs.owner < 0, "B's unkey ends it");
+}
+
+/* Over Tailscale Funnel one browser at a time has the Panel's sound and microphone (#58). A phone that goes from
+ * the WiFi to its mobile data leaves its connection stale, without a word, up until IDLE_MS: the same browser's new
+ * connection, its key the same, takes its place once that one has been silent FUNNEL_STALE_MS, and what it had on
+ * the air ends with it. While its page answers (the Panel and the Screen page in two tabs) the place stays its, and
+ * another browser's key is refused. One connection at the most waits for its key; wrong keys pause Funnel (the
+ * stub's rule: three) */
+static void funnel_same_browser_back(void) {
+    enum { C = 2, D = 3 };
+    const char *op = "auth:0123456789abcdef0123456789abcdef;", *listener = "auth:11111111111111111111111111111111;";
+
+    check(funnel_connect(A, "203.0.113.7"), "A over Funnel: its handshake taken");
+    funnel_say(A, op);
+    check(clients[A].up && strstr(heard(A), "ready;"), "A's key: A greeted");
+    say(A, "trx:0,true,tci;");
+    gui(-1);
+    check(radio_get_modem() && txs.owner == A, "A on the air with its audio");
+    check(!funnel_connect(B, "198.51.100.2") && clients[B].fd < 0, "A's page answers: another connection refused");
+
+    clients[A].last_ms = now_ms() - FUNNEL_STALE_MS - 1;   /* A's page gone without a word */
+    check(funnel_connect(B, "198.51.100.2"), "A silent: another connection's handshake taken");
+    funnel_say(B, listener);
+    check(clients[B].fd < 0 && clients[A].up && txs.owner == A, "another browser's key: refused, A keeps the air");
+    check(funnel_connect(B, "198.51.100.3"), "the same browser from another network: its handshake taken");
+    funnel_say(B, op);
+    check(clients[A].fd < 0 && clients[B].up && strstr(heard(B), "ready;"), "its key: A closed, B greeted");
+    gui(-1);
+    check(!on_air() && txs.owner < 0, "A's transmission ended with it");
+    say(B, "trx:0,true,tci;");
+    gui(-1);
+    check(radio_get_modem() && txs.owner == B, "B keys with its audio");
+    say(B, "trx:0,false;");
+    gui(-1);
+    check(!on_air(), "B's unkey ends it");
+
+    clients[B].last_ms = now_ms() - FUNNEL_STALE_MS - 1;
+    funnel_connect(C, "198.51.100.4");
+    funnel_connect(D, "198.51.100.5");
+    check(clients[C].fd < 0 && clients[D].fd >= 0 && clients[B].up, "a second waiting for its key: the first goes");
+    for (int k = 0; k < 3; k++) {
+        if (k)
+            funnel_connect(D, "198.51.100.5");
+        funnel_say(D, "auth:00000000000000000000000000000007;");
+        check(clients[D].fd < 0 && clients[B].up && remote_server_funnel_paused() == (k == 2),
+              k < 2 ? "a wrong key: closed, B kept" : "the third wrong key: Funnel paused, B kept");
+    }
+    check(!funnel_connect(D, "198.51.100.5"), "paused: a connection over Funnel refused");
+}
+
 static int run(const char *name, void (*fn)(void)) {
     int   st;
     pid_t pid;
@@ -537,15 +875,27 @@ int main(void) {
         {"A's key reaches the LVGL thread more than a second late", late_key},
         {"Starts ended before their key ran key nothing", cancelled_keys_nothing},
         {"Two TCI audio starts", two_tci_starts},
+        {"TCI audio in DIGU and DIGL", tci_audio_in_dig},
+        {"A browser's TCI audio start gives the browser its control back at the end", control_given_back},
+        {"Listen only: a client's tuning and key answered with the state", listen_only},
+        {"dds answered with the frequency, an unknown command with nothing", dds_and_unknown},
+        {"A question (Hamlib's poll) takes no control, a set does", questions_take_no_control},
+        {"Over Funnel, an unkey or a question from a client that keyed nothing", funnel_takes_no_control},
+        {"Over Funnel, the same browser back from another network", funnel_same_browser_back},
     };
-    int n = sizeof(cases) / sizeof(cases[0]), bad = 0;
+    static const char *const written[] = {"", ", in capitals", ", in mixed case"};
+    int  n = sizeof(cases) / sizeof(cases[0]), bad = 0;
+    char name[160];
 
-    for (int i = 0; i < n; i++)
-        bad += run(cases[i].name, cases[i].fn);
+    for (letters = 0; letters < 3; letters++)
+        for (int i = 0; i < n; i++) {
+            snprintf(name, sizeof(name), "%s%s", cases[i].name, written[letters]);
+            bad += run(name, cases[i].fn);
+        }
     if (bad) {
-        printf("OWNER FAILED: %d of %d cases\n", bad, n);
+        printf("OWNER FAILED: %d of %d cases\n", bad, 3 * n);
         return 1;
     }
-    printf("OWNER OK: %d cases\n", n);
+    printf("OWNER OK: %d cases, each as written, in capitals and in mixed case\n", n);
     return 0;
 }

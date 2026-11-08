@@ -10,7 +10,7 @@
 #include <math.h>                 /* log10f */
 #include <pthread.h>
 #include <stdatomic.h>
-#include <stdio.h>               /* the 0 W line in the log */
+#include <stdio.h>               /* the log's lines: 0 W, the level moved */
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -35,12 +35,22 @@
  * most, tx_level.c) took many transmissions to bring the power back */
 #define LEARNED_MIN_DB (-42.0f)
 
+/* The whole gain (the codec's and the samples') never above this: the apps' waveforms peak at 0.8 of full scale
+ * (gfsk.c, tune_tx.c, rtty.c), and over 0 dB the codec cuts them at its full scale, more distortion and no more drive.
+ * The X6200's codec goes to +24 dB: a level learned up there (33.4 dB, #126) sent its base a square wave 14 dB over
+ * the default, and every app (TUNE too) went out that way */
+#define TOTAL_TOP_DB        0.0f
+
 #define BLOCK_SAMPLES       2048    /* audio sent per pass, the ALC is read between passes */
 #define STALL_MS            3000    /* keyed this long without a block of audio: unkeyed */
 
 static atomic_bool     playing;
+static atomic_bool     busy;       /* a transmission from its start to its end (tx_player_stream, tx_player_claim) */
+static _Thread_local bool claimed; /* this thread's tx_player_claim, until its tx_player_release */
 static atomic_uint_fast64_t last_block_ms;
-static float           own_w;      /* tx_player_set_pwr: an app's own power, 0 none */
+/* tx_player_set_pwr: an app's own power, 0 none. The thread's own: a TUNE (tune_tx.c) and WSPR's beacon each set
+ * theirs on their thread, and one never went out at the other's */
+static _Thread_local float own_w;
 
 static uint64_t now_ms(void) {
     struct timespec ts;
@@ -63,8 +73,8 @@ static void *stall_watch(void *arg) {
     return NULL;
 }
 
-static float keep_in_range(float db) {
-    if (db > DRIVE_TOP_DB) return DRIVE_TOP_DB;
+static float keep_in_range(float db, float top) {
+    if (db > top) return top;
     return db < DRIVE_FLOOR_DB ? DRIVE_FLOOR_DB : db;
 }
 
@@ -96,16 +106,55 @@ void tx_player_set_pwr(float w) {
     own_w = w;
 }
 
-/* The power a transmission goes out at: the app's own, else the radio's setting; at most the cap */
+bool tx_player_claim(void) {
+    FD_WRITE_GUARD(return false);
+    if (atomic_exchange(&busy, true)) return false;
+    claimed = true;
+    return true;
+}
+
+bool tx_player_busy(void) {
+    return atomic_load(&busy);
+}
+
+void tx_player_release(void) {
+    if (!claimed) return;
+    claimed = false;
+    atomic_store(&busy, false);
+}
+
+/* The power a transmission goes out at: the app's own, else the radio's setting at most the cap; then at most the
+ * radio's top (a transverter's TX power limit, #104; the X6200 on battery): WSPR's own 5 W at 0.5 W there, and the
+ * level control aims at what comes out. An own power has its own top: WSPR's 5 W, TUNE's the radio's PWR top for its
+ * time limit (#87), which the cap held to 7 W */
 static float tx_pwr(void) {
-    return LV_MIN(own_w > 0.0f ? own_w : param_f_get(cfg_pwr), TX_PLAYER_MAX_PWR_W);
+    return LV_MIN(own_w > 0.0f ? own_w : LV_MIN(param_f_get(cfg_pwr), TX_PLAYER_MAX_PWR_W), cfg_pwr_max_get());
 }
 
 bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, float base_gain,
                       tx_abort_fn_t abort, void *abort_ctx) {
     FD_WRITE_GUARD(return false);
+    bool claim = !claimed;      /* else the caller holds the player (tx_player_claim) and lets it go itself */
+
+    /* One transmission at a time from its start: an app's slot and a TUNE (tune_tx.c) that start in the same moment
+     * both found the radio in RX below, before either keyed, and played into one another */
+    if (claim && atomic_exchange(&busy, true)) {
+        fprintf(stderr, "tx_player: another transmission is under way, this one is not sent\n");
+        return false;
+    }
+    /* The radio on the air already (a TCI session, the PTT): not a second transmission over it. With TCI audio
+     * keyed in the DIG modes too (#17), an app's slot could start inside a TCI transmission: both waveforms went
+     * out mixed, the TCI session ended under the app, and the app's audio went on into TCI's stream after it
+     * was freed. Winlink checks this itself (winlink.c on_air) */
+    if (radio_get_modem() || radio_get_state() != RADIO_RX) {
+        if (claim) atomic_store(&busy, false);
+        fprintf(stderr, "tx_player: the radio is on the air already, this transmission is not sent\n");
+        return false;
+    }
+
     float   pwr_w = tx_pwr();
     bool    own = own_w > 0.0f;
+    unsigned band_stops = radio_band_stops();
     /* The cap (RTTY and WeFax over 7 W) or an app's own power (WSPR's 0.2 W): the radio there for this transmission,
      * its setting back after */
     bool    pwr_set = pwr_w != param_f_get(cfg_pwr);
@@ -113,10 +162,13 @@ bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, floa
     if (pwr_set) radio_set_pwr(pwr_w);
 
     /* Part of the gain goes to the codec volume (6 dB above the total), the rest is applied
-     * to the samples */
-    float   total = base_gain + LV_MAX(params.ft8_output_gain_offset.x, LEARNED_MIN_DB);
+     * to the samples. The whole at most TOTAL_TOP_DB, also as the level climbs: what is learned stays under it */
+    float   was   = params.ft8_output_gain_offset.x;
+    float   kept  = LV_MAX(was, LEARNED_MIN_DB);  /* from the last transmission */
+    float   total = base_gain + LV_MIN(kept, TOTAL_TOP_DB - base_gain);
     float   codec = audio_set_play_vol(total + 6.0f);
     float   drive = total - codec;
+    float   top   = LV_MIN(DRIVE_TOP_DB, TOTAL_TOP_DB - codec);
 
     /* The VFO that transmits moves for the tone: the other one in split (a TX shift), the IF shift put back after */
     int32_t dial = radio_tx_freq();
@@ -142,6 +194,15 @@ bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, floa
     bool    stopped = false;
     float   peak_w = 0.0f, peak_alc = 0.0f;    /* the highest readings after the settling, and how many */
     int     reads = 0;
+    /* tx_level counts in blocks of BLOCK_SAMPLES (its 1.3 s to settle, its half-second windows), so it is given one
+     * for each BLOCK_SAMPLES of audio, not one a fill. Winlink's fill gives 10 ms at a time: the settling was over
+     * after 0.3 s, the base's overshoot at keying (ALC 5, twice the power) was taken for overdrive, and ARDOP frames
+     * turned the level all the apps share down to the floor and kept it from climbing back (#66). A reading that
+     * comes between two of its blocks waits for the next one, the last reading kept */
+    size_t  played = 0;             /* samples played */
+    float   pwr = 0.0f, alc = 0.0f; /* the last reading */
+    bool    have = false;           /* not yet given to tx_level */
+    bool    quiet = false;          /* only zeros played since tx_level's last block (tx_level.c: no readings then) */
 
     static pthread_t watch;
     if (!watch && pthread_create(&watch, NULL, stall_watch, NULL) == 0) pthread_detach(watch);
@@ -149,11 +210,17 @@ bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, floa
     atomic_store(&playing, true);
 
     for (;;) {
-        float   pwr = 0.0f, alc = 0.0f;
         bool    fresh = tx_info_refresh(&reading, &alc, &pwr, NULL);
 
-        drive = keep_in_range(drive + tx_level_block(&level, fresh, pwr, alc));
-        if (fresh && level.blocks > TX_LEVEL_SETTLE_BLOCKS) {
+        have = have || fresh;
+        /* one more each time the audio has gone into a new block: with whole blocks each pass, the short last one
+         * too, as before */
+        if ((size_t)level.blocks <= (played + BLOCK_SAMPLES - 1) / BLOCK_SAMPLES) {
+            drive = keep_in_range(drive + tx_level_block(&level, !quiet, have, pwr, alc), top);
+            have = false;
+            quiet = true;
+        }
+        if (fresh && tx_level_counts(&level)) {
             peak_w = LV_MAX(peak_w, pwr);
             peak_alc = LV_MAX(peak_alc, alc);
             reads++;
@@ -162,6 +229,7 @@ bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, floa
         size_t n = fill(block, BLOCK_SAMPLES, fill_ctx);
 
         if (n == 0) break;
+        for (size_t i = 0; quiet && i < n; i++) quiet = block[i] == 0;
         /* the app's stop, or the modem dropped by the SWR protection (radio.c) */
         stopped = (abort && abort(abort_ctx)) || !radio_get_modem();
         if (stopped) break;
@@ -172,6 +240,7 @@ bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, floa
             audio_gain_db(block, n, drive, block);
         }
         audio_play(block, n);
+        played += n;
         atomic_store(&last_block_ms, now_ms());
     }
     atomic_store(&playing, false);
@@ -200,6 +269,9 @@ bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, floa
     if (own) {
         /* An app's own power (a 0.2 W WSPR beacon): what it found is not kept, it would pull the level the other apps
          * start from (FT8 at 5 W) down with it */
+    } else if (radio_band_stops() != band_stops) {
+        /* Stopped by the radio where it may not transmit (#121): held at 0 W before the stop, its readings are not the
+         * band's. On the X6100 the level climbing at 0 W was kept for every app */
     } else if (level.power_hold && no_rf) {
         /* Nothing came out: the next transmission from the default, where the X6200 gives the setting at once, not
          * 8 dB a transmission up from a level near the floor */
@@ -209,6 +281,13 @@ bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, floa
     } else if (params.ft8_output_gain_offset.x < 0.0f && learned > params.ft8_output_gain_offset.x) {
         params_float_set(&params.ft8_output_gain_offset, LV_MIN(learned, 0.0f));
     }
+    /* The level all the digital apps share moved: by how many windows, and how much of the key was silent (XARA's wait
+     * for the other station's CW ID), so that a bench check or a report tells one key's change from another's. At the
+     * precision it is printed: the level rebuilt through the codec's steps can come back a float step away unmoved */
+    if (fabsf(params.ft8_output_gain_offset.x - was) >= 0.005f) {
+        fprintf(stderr, "tx_player: level %.2f -> %.2f dB, %d windows decided in %d blocks, %d of them silent\n", was,
+                params.ft8_output_gain_offset.x, level.windows, level.blocks, level.silent);
+    }
     audio_play_wait();          /* the last block out before unkeying */
     radio_set_modem(false);     /* unkeyed: back to the dial frequency */
     radio_set_tx_freq(0);
@@ -217,6 +296,7 @@ bool tx_player_stream(tx_fill_fn_t fill, void *fill_ctx, int32_t offset_hz, floa
         /* the setting back: RTTY and WeFax left the radio at the cap, also in SSB after */
         radio_set_pwr(param_f_get(cfg_pwr));
     }
+    if (claim) atomic_store(&busy, false);
     return !stopped;
 }
 

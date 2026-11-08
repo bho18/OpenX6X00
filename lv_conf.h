@@ -14,7 +14,11 @@
 #ifndef LV_CONF_H
 #define LV_CONF_H
 
-/* 800x480 screen, 32 bit ARGB; LVGL draws on a transparent screen layer */
+#ifndef BOARD_DISP_W
+#include "src/board.h"
+#endif
+
+/* Panel size BOARD_DISP_W x BOARD_DISP_H (800x480 on the X6100 and X6200), 32 bit ARGB; LVGL draws on a transparent screen layer */
 #define LV_COLOR_DEPTH 32
 #define LV_COLOR_SCREEN_TRANSP 1
 #define LV_COLOR_MIX_ROUND_OFS (LV_COLOR_DEPTH == 32 ? 0: 128)
@@ -28,6 +32,11 @@
 #define LV_MEM_CUSTOM 1
 #define LV_MEMCPY_MEMSET_STD 1
 
+/* LVGL's clock is the kernel's monotonic clock, as the GUI loop and a 5 ms thread last read it (lv_tick_mono.h) */
+#define LV_TICK_CUSTOM 1
+#define LV_TICK_CUSTOM_INCLUDE "lv_tick_mono.h"
+#define LV_TICK_CUSTOM_SYS_TIME_EXPR (lv_tick_mono_ms())
+
 /* Screen refresh about 30 per second; keys and knobs read every 10 ms */
 #define LV_DISP_DEF_REFR_PERIOD 33      /*[ms]*/
 #define LV_INDEV_DEF_READ_PERIOD 10     /*[ms]*/
@@ -40,8 +49,8 @@
 #define LV_GRADIENT_MAX_STOPS 5
 #define LV_GRAD_CACHE_DEF_SIZE 20*1024
 
-/* Rotation buffer: 50 lines of 800 pixels, 4 bytes each */
-#define LV_DISP_ROT_MAX_BUF (4*800*50)
+/* Rotation buffer: 50 lines of BOARD_DISP_W pixels, 4 bytes each */
+#define LV_DISP_ROT_MAX_BUF (4*BOARD_DISP_W*50)
 
 /* LVGL warnings go to the GUI log through printf, without trace messages */
 #define LV_USE_LOG 1

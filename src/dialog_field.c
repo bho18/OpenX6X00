@@ -3,8 +3,8 @@
  *
  *  Xiegu X6100 LVGL GUI - Field Ops
  *
- *  Screens: home (a scrolling row of tiles: Log, SOTA, POTA, WWBOTA, HOTA, WWFF, TOTA, WCA, MOTA, LH, Tiles, Bands), a
- *  program (the reference where you are and the nearest ones; during an activation the activation screen:
+ *  Screens: home (a scrolling row of tiles: Log, SOTA, POTA, WWBOTA, HOTA, WWFF, TOTA, WCA, MOTA, LH, Tiles, LLOTA,
+ *  Bands), a program (the reference where you are and the nearest ones; during an activation the activation screen:
  *  frequency, S-meter, CQ, QSO count and time), Bands (activity and who hears you, from RBN) and
  *  the activation log. The dialog covers the whole screen above the buttons; the main
  *  knob still tunes. The network jobs (reference list update, POTA/WWBOTA/HOTA/WWFF spot, QRZ upload) run
@@ -13,6 +13,8 @@
  */
 
 #include "dialog_field.h"
+#include "adif.h"
+#include "band_plan.h"
 #include "board.h"
 
 #include "buttons.h"
@@ -42,6 +44,7 @@
 #include "styles.h"
 #include "textarea_window.h"
 #include "theme.h"
+#include "util.h"
 #include "vol.h"
 
 #include <ctype.h>
@@ -78,7 +81,7 @@
 #define WAVELOG_SYNC "x6100-wavelog sync 2>/dev/null"
 #define WAVELOG_RETRY (5 * 60 * 1000)   /* ms: the next try while QSOs wait for the network */
 
-#define W           800
+#define W           BOARD_DISP_W
 #define HEAD_H      46
 #define STATUS_H    34
 #define MAX_NEAR    30
@@ -98,7 +101,7 @@ static struct {
     screen_t    screen;
     int         home_sel;
     char        prog;       /* 'S' SOTA, 'P' POTA, 'B' WWBOTA, 'H' HOTA, 'F' WWFF, 'T' TOTA, 'C' WCA, 'M' MOTA, 'L' LH,
-                             * 'G' Tiles */
+                             * 'G' Tiles, 'K' LLOTA */
     bool        have_ref;
     field_ref_t ref;
     bool        active;
@@ -159,7 +162,7 @@ static time_t      spot_armed_at;
  * or another mode) once we transmitted there and stayed QSY_SETTLE_S (field/qsy.c) */
 static lv_timer_t *qsy_timer;
 static int32_t     spot_hz;      /* where the last spot said we are */
-static char        spot_mode[8];
+static char        spot_mode[16];      /* as field_qso_t.mode */
 static field_qsy_t qsy;
 
 /* The programmes */
@@ -191,8 +194,12 @@ static const prog_t progs[] = {
     /* Tiles on the Air: the 6-character locator square you are in (about 5 x 7 km), from the position, no list.
      * One QSO activates it, once per tile and UTC day. Its own spots need an account key: the DX clusters only */
     {'G', "TILES",  "tiles",  "Tiles\nOn The Air",   "TILE",   1,  false, false},
+    /* Lakes and Lagoons On The Air (llota.app): 10 QSOs, within 200 m of the water. Spotting on llota.app needs the
+     * activator's login there: the DX clusters, "LLOTA LLPL-0001 SSB"; llota.app's spots come in with the others
+     * (x6100-pota-spots) */
+    {'K', "LLOTA",  "llota",  "Lakes and\nLagoons",  "LAKE",   10, false, false},
 };
-#define PROG_LETTERS "SPBHFTCMLG"
+#define PROG_LETTERS "SPBHFTCMLGK"
 
 /* The programme of a letter; SOTA for one that is none (a damaged file): DX cluster spots only, never a site's */
 static const prog_t *prog_of(char p) {
@@ -216,6 +223,7 @@ static lv_color_t prog_color(char p) {
         case 'M': return lv_color_mix(TC(ok), TC(vfo), LV_OPA_50);     /* teal */
         case 'L': return TC(err);                                       /* the red of the bands */
         case 'G': return lv_color_mix(TC(ok), TC(warn), LV_OPA_50);     /* lime */
+        case 'K': return lv_color_mix(TC(vfo), TC(text), LV_OPA_60);    /* water, lighter than WWFF's blue */
         default: return TC(text);
     }
 }
@@ -228,7 +236,7 @@ static const struct {
 } tiles[] = {
     {SCR_LOG, 0, "LOG", "log", "Activation\nlog"},
     {SCR_PROG, 'S'}, {SCR_PROG, 'P'}, {SCR_PROG, 'B'}, {SCR_PROG, 'H'}, {SCR_PROG, 'F'},
-    {SCR_PROG, 'T'}, {SCR_PROG, 'C'}, {SCR_PROG, 'M'}, {SCR_PROG, 'L'}, {SCR_PROG, 'G'},
+    {SCR_PROG, 'T'}, {SCR_PROG, 'C'}, {SCR_PROG, 'M'}, {SCR_PROG, 'L'}, {SCR_PROG, 'G'}, {SCR_PROG, 'K'},
     {SCR_BANDS, 0, "BANDS", "bands", "Activity\nRBN, beacon"},
 };
 #define HOME_TILES ((int)(sizeof(tiles) / sizeof(tiles[0])))
@@ -365,40 +373,17 @@ static bool ref_text_ok(const char *r) {
     return true;
 }
 
-/* FT8/FT4 dial frequencies, kHz: in USB or DIG on one of them the mode is that, not SSB */
-static const char *digi_mode(void) {
-    static const int ft8[] = {1840, 3573, 5357, 7074, 10136, 14074, 18100, 21074, 24915, 28074, 50313};
-    static const int ft4[] = {3575, 7047, 10140, 14080, 18104, 21140, 24919, 28180, 50318};
-    int32_t          hz    = cparam_i_get(cfg_fg_freq);
-
-    for (size_t i = 0; i < sizeof(ft8) / sizeof(ft8[0]); i++)
-        if (hz >= ft8[i] * 1000 - 500 && hz <= ft8[i] * 1000 + 3500)
-            return "FT8";
-    for (size_t i = 0; i < sizeof(ft4) / sizeof(ft4[0]); i++)
-        if (hz >= ft4[i] * 1000 - 500 && hz <= ft4[i] * 1000 + 3500)
-            return "FT4";
-    return NULL;
+/* The mode of a QSO logged here: the digital app open (PSK31, Olivia, JTTY, RTTY...), else the radio's mode and
+ * frequency; "" in USB-D or LSB-D with no app, away from FT8 and FT4 (field_qso_mode) */
+static const char *adif_mode(void) {
+    return field_qso_mode(main_screen_digital_app(), cparam_i_get(cfg_cur_mode), cparam_i_get(cfg_fg_freq));
 }
 
-static const char *adif_mode(void) {
-    const char *d = digi_mode();
+/* The mode on the screen and in a spot: the log's, DATA for a data mode it does not know */
+static const char *shown_mode(void) {
+    const char *m = adif_mode();
 
-    switch (cparam_i_get(cfg_cur_mode)) {
-        case radio_mode_cw:
-        case radio_mode_cwr:
-            return "CW";
-        case radio_mode_am:
-        case radio_mode_sam:
-            return "AM";
-        case radio_mode_nfm:
-        case radio_mode_wfm:
-            return "FM";
-        case radio_mode_lsb_dig:
-        case radio_mode_usb_dig:
-            return d ? d : "FT8";
-        default:
-            return d ? d : "SSB";
-    }
+    return m[0] ? m : "DATA";
 }
 
 static bool is_cw(void) {
@@ -810,6 +795,10 @@ static lv_obj_t *icon(lv_obj_t *parent, const char *name, int size, lv_coord_t x
     lv_obj_t *img = lv_img_create(parent);
     lv_img_set_src(img, d);
     lv_obj_set_pos(img, x, y);
+    if (theme_shape.codec) {    /* the colour artwork in the theme's phosphor green */
+        lv_obj_set_style_img_recolor(img, TC(accent), 0);
+        lv_obj_set_style_img_recolor_opa(img, LV_OPA_80, 0);
+    }
     return img;
 }
 
@@ -1290,7 +1279,7 @@ static void act_update(void) {
     lv_label_set_text(act_band, band[0] ? band : "--");
     freq_text(buf, sizeof(buf), hz);
     lv_label_set_text(act_freq, buf);
-    lv_label_set_text(act_mode, adif_mode());
+    lv_label_set_text(act_mode, shown_mode());
 
     /* S-meter: 9 S units of 6 dB, then +10 .. +40 */
     int db = meter_get_raw_db();
@@ -1324,7 +1313,7 @@ static void build_act(void) {
     lv_coord_t h = body_h - STATUS_H - 10;
     char       t[48];
 
-    snprintf(t, sizeof(t), "%s - ACTIVATION (%s)", prog_name(), adif_mode());
+    snprintf(t, sizeof(t), "%s - ACTIVATION (%s)", prog_name(), shown_mode());
     head_set(prog_icon(), t);
 
     lv_obj_t *p = panel(body, 8, 6, 584, h);
@@ -1375,7 +1364,7 @@ static void build_act(void) {
         lv_obj_set_style_text_align(*vals[k], LV_TEXT_ALIGN_CENTER, 0);
     }
     act_update();
-    lv_label_set_text(status, is_cw() ? "CQ calls in CW.  Log QSO: call [rst rcvd [rst sent]]"
+    lv_label_set_text(status, is_cw() ? "CQ calls in CW.  Log QSO: call [rst sent [rst rcvd]]"
                                       : "CQ sends your voice CQ (Rec CQ: page 2).  Log QSO: call [rst...]");
     buttons_load_page(&page_act1);
 }
@@ -1454,7 +1443,7 @@ static void build_bands(void) {
 /* Logbook */
 
 static void build_log(void) {
-    static const lv_coord_t widths[] = {52, 90, 200, 80, 80, 140};
+    static const lv_coord_t widths[] = {52, 90, 180, 80, 100, 140};   /* MODE: room for "SSB LL2LL" */
     char                    row[120], t[80];   /* room for the reference and the red TEST */
     struct tm               tm;
 
@@ -1630,7 +1619,7 @@ static bool wwff_key(void) {
  * with no site of its own (progs[].site) */
 static bool spot_job(bool qrt) {
     double      khz = cparam_i_get(cfg_fg_freq) / 1000.0;
-    const char *m   = adif_mode();
+    const char *m   = shown_mode();
     const char *cmd = st.ref.type == 'P' ? "pota-spot" : st.ref.type == 'H' ? "hota-spot" : st.ref.type == 'F' ? "wwff-spot" : NULL;
 
     if (!ref_ok(st.ref.ref) || !prog_of(st.ref.type)->site)   /* it goes on a command line */
@@ -1650,7 +1639,7 @@ static void qsy_cb(lv_timer_t *t) {
     if (!st.active || !prog_of(st.ref.type)->site || !qsy.spot_at) {
         return;
     }
-    moved = abs(cparam_i_get(cfg_fg_freq) - spot_hz) >= 1000 || strcmp(adif_mode(), spot_mode);
+    moved = abs(cparam_i_get(cfg_fg_freq) - spot_hz) >= 1000 || strcmp(shown_mode(), spot_mode);
     /* ponytail: TX polled every 500 ms, a shorter transmission is missed */
     if (field_qsy_step(&qsy, param_i_get(cfg_field_respot), moved, radio_get_state() == RADIO_TX, time(NULL))
         && !atomic_load(&busy)) {
@@ -1758,14 +1747,15 @@ static void spot_to(bool cluster) {
         /* On the DX cluster only. SOTA: SOTAwatch's API needs a client approved by SOTA, APRS2SOTA a
          * registration (RBNHole still spots a CW CQ after an alert on SOTAwatch). TOTA: its cluster takes
          * spots from its own app's key only, and relays them to the DX cluster as "TOTA <ref> <mode>"; WCA
-         * ("WCA <ref>", as its groups ask) and MOTA have no spot API of their own */
+         * ("WCA <ref>", as its groups ask) and MOTA have no spot API of their own; llota.app takes spots from
+         * a logged-in activator only (its activators spot the DX cluster as well, by hand) */
         char        comment[48];
         const char *p = prog_name_of(st.ref.type);
         snprintf(comment, sizeof(comment), "%s %s %s", prog_of(st.ref.type)->spot ? prog_of(st.ref.type)->spot : p,
-                 st.ref.ref, adif_mode());
+                 st.ref.ref, shown_mode());
         if (cluster_client_send_spot(cparam_i_get(cfg_fg_freq) / 1000.0, my_call(), comment))
             msg_update_text_fmt("%s spot on the DX clusters: %s %.1f %s", p, st.ref.ref,
-                                cparam_i_get(cfg_fg_freq) / 1000.0, adif_mode());
+                                cparam_i_get(cfg_fg_freq) / 1000.0, shown_mode());
         else
             msg_update_text_fmt("DX cluster not running: no %s spot", p);
         return;
@@ -1773,9 +1763,9 @@ static void spot_to(bool cluster) {
     char        comment[48];
     const char *p = prog_name_of(st.ref.type);
     spot_hz = cparam_i_get(cfg_fg_freq);
-    snprintf(spot_mode, sizeof(spot_mode), "%s", adif_mode());
+    snprintf(spot_mode, sizeof(spot_mode), "%s", shown_mode());
     qsy.spot_at = time(NULL);
-    snprintf(comment, sizeof(comment), "%s %s %s", p, st.ref.ref, adif_mode());
+    snprintf(comment, sizeof(comment), "%s %s %s", p, st.ref.ref, shown_mode());
     if (cluster)
         cluster_client_send_spot(cparam_i_get(cfg_fg_freq) / 1000.0, my_call(), comment);   /* the DX clusters too */
     if ((st.ref.type == 'H' && !hota_key()) || (st.ref.type == 'F' && !wwff_key())) {
@@ -1785,7 +1775,7 @@ static void spot_to(bool cluster) {
         return;
     }
     if (spot_job(false))
-        msg_update_text_fmt("%s spot: %s %.1f %s...", p, st.ref.ref, cparam_i_get(cfg_fg_freq) / 1000.0, adif_mode());
+        msg_update_text_fmt("%s spot: %s %.1f %s...", p, st.ref.ref, cparam_i_get(cfg_fg_freq) / 1000.0, shown_mode());
 }
 
 static void spot(void) {
@@ -1798,7 +1788,7 @@ static void spot_cb(button_data_t *b) {
         spot_armed_at = time(NULL);
         buttons_refresh(&b_spot);
         msg_update_text_fmt("Press Spot again to post %s %.1f %s", st.have_ref ? st.ref.ref : "",
-                            cparam_i_get(cfg_fg_freq) / 1000.0, adif_mode());
+                            cparam_i_get(cfg_fg_freq) / 1000.0, shown_mode());
         return;
     }
     spot_armed = false;
@@ -1866,7 +1856,8 @@ static bool day_log_add(const field_qso_t *q, const char *me) {
     return true;
 }
 
-/* The phone's logger outside Field Ops (QSOs in voice and so on): the day's log, on the radio's frequency and mode */
+/* The phone's logger outside Field Ops (QSOs in voice and so on): the day's log, on the radio's frequency, in the
+ * mode of the digital app open or else the radio's (adif_mode) */
 bool dialog_field_qso_log(const char *text) {
     field_qso_t     q   = {.t = time(NULL), .freq_hz = cparam_i_get(cfg_fg_freq)};
     const char     *rst = is_cw() ? "599" : "59";
@@ -1885,22 +1876,18 @@ bool dialog_field_qso_log(const char *text) {
     snprintf(q.rst_r, sizeof(q.rst_r), "%s", rr[0] ? rr : rst);
     if (!day_log_add(&q, my_call()))
         return false;
-    msg_update_text_fmt("QSO logged: %s %s %s", q.call, q.rst_s, q.rst_r);
+    if (q.mode[0])
+        msg_update_text_fmt("QSO logged: %s %s %s %s", q.call, q.rst_s, q.rst_r, q.mode);
+    else    /* long: it scrolls */
+        msg_schedule_text_ms(9000, "QSO logged: %s %s %s, without a mode (no app open): set it on the Logs page",
+                             q.call, q.rst_s, q.rst_r);
     return true;
 }
 
-/* FT8, FT4 and JS8 QSOs into the day's log too, next to the phone's */
+/* FT8, FT4, FT2 and JS8 QSOs into the day's log too, next to the phone's: the QSO as ft_log.adi has it (adif.c) */
 void dialog_field_day_log(const qso_log_record_t *r) {
-    field_qso_t q = {.t = r->time, .freq_hz = (int32_t)(r->freq_mhz * 1e6f + 0.5f)};
+    field_qso_t q = adif_field_qso(r);
 
-    snprintf(q.call, sizeof(q.call), "%s", r->remote_call);
-    snprintf(q.mode, sizeof(q.mode), "%s", r->mode == MODE_FT4 ? "FT4" : r->mode == MODE_JS8 ? "JS8" : r->mode == MODE_FT2 ? "FT2" : "FT8");
-    /* The digital reports signed in two digits ("+01", "-05"), as in every logbook */
-    bool digi = r->mode == MODE_FT8 || r->mode == MODE_FT4 || r->mode == MODE_FT2 || r->mode == MODE_JS8;
-    snprintf(q.rst_s, sizeof(q.rst_s), digi ? "%+03d" : "%d", r->rsts);
-    snprintf(q.rst_r, sizeof(q.rst_r), digi ? "%+03d" : "%d", r->rstr);
-    snprintf(q.name, sizeof(q.name), "%s", r->name);
-    snprintf(q.grid, sizeof(q.grid), "%s", r->remote_grid);
     /* An activation going on: the QSO counts for it and goes in its log, as the voice QSOs
      * logged here do; otherwise in the day's log. Not both: the web page lists every log */
     if (st.active)
@@ -1950,13 +1937,19 @@ static bool activation_log_add(const field_qso_t *q) {
     }
     wavelog_kick(true);
     log_load();
-    msg_update_text_fmt("QSO %d: %s %s %s %s", qsos_total, q->call, q->rst_s, q->rst_r, field_qso_tag(q));
+    const char *tag = field_qso_tag(q);
+    if (q->mode[0])
+        msg_update_text_fmt("QSO %d: %s %s %s %s", qsos_total, q->call, q->rst_s, q->rst_r, tag);
+    else    /* USB-D or LSB-D away from FT8 and FT4 (adif_mode); long: it scrolls */
+        msg_schedule_text_ms(9000, "QSO %d: %s %s %s%s%s, logged without a mode: set it on the Logs page", qsos_total,
+                             q->call, q->rst_s, q->rst_r, tag[0] ? " " : "", tag);
     if (dialog.run && (st.screen == SCR_LOG || act_freq))
         refresh();
     return true;
 }
 
-/* Log QSO on the radio: "CALL [rst received [rst sent]]" */
+/* Log QSO on the radio: "CALL [rst sent [rst received]]", the order of the main screen's box (cw_field.c); up to
+ * v0.3.8 the report received came first */
 
 static void kbd_end(void) {
     textarea_window_close();
@@ -1980,7 +1973,7 @@ static bool wca_pad(const char *ref, char *out, size_t size) {
 
 static bool log_ok(void) {
     const char *v = textarea_window_get();
-    char        text[160], *words[8], *save, call[32] = "", r1[8] = "", r2[8] = "";
+    char        text[160], *words[8], *save, call[32] = "", rs[8] = "", rr[8] = "";
     int         nw = 0, n_rst = 0;
     bool        lh_word = false;    /* the word before was LH or ARLHS: a lighthouse's number follows */
     field_qso_t more = {0};
@@ -1990,7 +1983,7 @@ static bool log_ok(void) {
         for (char *p = t; *p; p++) *p = toupper((unsigned char)*p);
         words[nw++] = t;
     }
-    /* "CALL [rst rcvd [rst sent]] [their reference]": a word shaped as a reference is theirs */
+    /* "CALL [rst sent [rst rcvd]] [their reference]": a word shaped as a reference is theirs */
     if (nw >= 1) {
         snprintf(call, sizeof(call), "%s", words[0]);
         for (int i = 1; i < nw; i++) {
@@ -2040,11 +2033,11 @@ static bool log_ok(void) {
             if (field_ref_prog(w))
                 snprintf(more.their_ref, sizeof(more.their_ref), "%s", w);
             else if (n_rst == 0)
-                snprintf(r1, sizeof(r1), "%s", w), n_rst++;
+                snprintf(rs, sizeof(rs), "%s", w), n_rst++;
             else if (n_rst == 1)
-                snprintf(r2, sizeof(r2), "%s", w), n_rst++;
+                snprintf(rr, sizeof(rr), "%s", w), n_rst++;
         }
-        if (!log_add(call, r2, r1, &more))
+        if (!log_add(call, rs, rr, &more))
             msg_update_text_fmt("Log: \"%s\" is not a callsign", call);
     }
     kbd_end();
@@ -2063,7 +2056,7 @@ static void log_cb(button_data_t *b) {
     }
     kbd_open = true;
     lv_group_remove_obj(dialog.obj);
-    textarea_window_open_w_label(log_ok, kbd_cancel, "Call [rst rcvd [sent]] [their ref]: ");
+    textarea_window_open_w_label(log_ok, kbd_cancel, "Call [sent [rcvd]] [their ref]: ");
 }
 
 static bool set_ref(const char *in) {
@@ -2181,13 +2174,14 @@ static void update_done(const char *line) {
     }
     update_text[0] = 0;
     if (!strncmp(line, "ok", 2)) {
-        int         p = 0, s = 0, b = 0, h = 0, w = 0, t = 0, c = 0, m = 0, l = 0;
+        int         p = 0, s = 0, b = 0, h = 0, w = 0, t = 0, c = 0, m = 0, l = 0, k = 0;
         const char *partial = strstr(line, " partial ");
 
-        /* x6100-field's LISTS order; named by programme: the message holds 127 characters */
-        sscanf(line, "ok %d %d %d %d %d %d %d %d %d", &p, &s, &b, &h, &w, &t, &c, &m, &l);
-        msg_update_text_fmt("Lists: %d POTA, %d SOTA, %d WWBOTA, %d HOTA, %d WWFF, %d TOTA, %d WCA, %d MOTA, %d LH",
-                            p, s, b, h, w, t, c, m, l);
+        /* x6100-field's LISTS order; named by programme: the message holds 127 characters (some 120 with six
+         * digits of summits) */
+        sscanf(line, "ok %d %d %d %d %d %d %d %d %d %d", &p, &s, &b, &h, &w, &t, &c, &m, &l, &k);
+        msg_update_text_fmt("Lists: %d POTA, %d SOTA, %d WWBOTA, %d HOTA, %d WWFF, %d TOTA, %d WCA, %d MOTA, %d LH, "
+                            "%d LLOTA", p, s, b, h, w, t, c, m, l, k);
         if (partial)    /* a list that could not be fetched kept its previous entries */
             msg_schedule_text_ms(6000, "Not updated, kept as it was: %s", partial + 9);
         near_lookup(true);
@@ -2213,9 +2207,198 @@ static void update_cb(button_data_t *b) {
     list_update();
 }
 
-void dialog_field_test_beacon(void) {
-    char text[64];
+/* Test beacon (#135): on the band chosen on the screen, not on the one the radio is on, and never before the operator
+ * listened there: the band's CW frequency is a calling one. The first press only takes the radio there (away from its
+ * band to the band's CW frequency, Use band's) to listen; a second press within TB_LISTEN_MS sends. No second press in
+ * time, tuned or another mode meanwhile: nothing sent, and the radio stays where it is. After a send away from its band
+ * it goes back where it was before the first press once the send is over and the radio receives again: it never moves
+ * the radio while it transmits. The timer is its own, as the Bands app and Field Ops may close meanwhile */
+#define TB_LISTEN_MS    10000   /* the first press, then the second */
+#define TB_SETTLE_MS    1000    /* the move, then the key: the base's band filters and the ATU's network switch, and
+                                 * the X6200's base brings its output up again from 0 over about 1 s (PR #140) */
 
+typedef enum { TB_OFF = 0, TB_LISTEN, TB_SETTLE, TB_SEND, TB_BACK } tb_phase_t;
+
+static struct {
+    lv_timer_t *timer;
+    tb_phase_t  phase;
+    int         band;
+    int32_t     hz;         /* the radio's frequency while it tests */
+    int32_t     back_hz;    /* where it was, 0: it tests there */
+    int32_t     back_mode;
+    uint64_t    key_at;     /* the move and TB_SETTLE_MS */
+    uint64_t    listen_end; /* the first press and TB_LISTEN_MS */
+    int         left;       /* the seconds shown */
+    const char *why;        /* stopped: why, "" asked */
+} tb;
+
+/* Why the radio would not send the test on band, NULL: it would. tx: where it transmits */
+static const char *tb_no_tx(int band, int32_t *tx) {
+    static char why[112];
+    char        no[96];
+    int32_t     f;
+
+    *tx = radio_tx_freq();
+    f   = *tx < 0 ? -*tx : *tx;     /* a TX shift below 0 Hz */
+    if (field_band_of(*tx) != band)     /* split or a TX shift: the other VFO, wherever it is */
+        snprintf(why, sizeof(why), "it sends on %.3f MHz (split or TX shift)", f / 1e6);
+    else if (cfg_tx_refusal_text(*tx, no, sizeof(no)))     /* receive only, outside the amateur bands (#121) */
+        snprintf(why, sizeof(why), "no TX on %s", no);
+    else if (radio_no_data())       /* none from the base (#152) */
+        snprintf(why, sizeof(why), "no data from the base");
+    else
+        return NULL;
+    return why;
+}
+
+/* Over: back where the radio was, unless it was moved meanwhile (the knob, a band key, the Panel, CAT) */
+static void tb_end(void) {
+    bool listened = tb.phase == TB_LISTEN;  /* nothing sent */
+    bool moved    = cparam_i_get(cfg_fg_freq) != tb.hz;
+    bool back     = tb.back_hz && !moved && !main_screen_freq_locked();
+
+    lv_timer_del(tb.timer);
+    tb.timer = NULL;
+    tb.phase = TB_OFF;
+    if (back) {
+        main_screen_set_freq(tb.back_hz);
+        if (cparam_i_get(cfg_cur_mode) != tb.back_mode && !main_screen_mode_locked())
+            cparam_i_set(cfg_cur_mode, tb.back_mode);
+        LV_LOG_USER("Test beacon: back on %i", (int)tb.back_hz);
+    }
+    /* Short: the message box shows about 30 characters a line */
+    if (listened && !tb.why) {  /* Use band, which says where the radio goes */
+        LV_LOG_USER("Test beacon: not sent, Use band");
+    } else if (listened) {
+        LV_LOG_USER("Test beacon: not sent, stays on %i", (int)cparam_i_get(cfg_fg_freq));
+        msg_update_text_fmt("Test beacon not sent%s%s\nThe radio stays on %.4f MHz", tb.why[0] ? ": " : "", tb.why,
+                            cparam_i_get(cfg_fg_freq) / 1e6);
+    } else if (tb.why && tb.why[0])
+        msg_update_text_fmt("Test beacon stopped: %s", tb.why);
+    else if (back)
+        msg_update_text_fmt("Test beacon %s, back on %.3f MHz", tb.why ? "stopped" : "sent", tb.back_hz / 1e6);
+    else
+        msg_update_text_fmt("Test beacon %s", tb.why ? "stopped" : "sent: watch who hears you");
+}
+
+/* Moved meanwhile (the knob, a band key, Use band, another VFO or mode, the Panel, CAT): the key up, and the radio
+ * stays as it was put. Going back after another mode undid it, CW again on the band before, and moved the radio at
+ * once, in its break-in delay */
+static void tb_stay(const char *why) {
+    if (tb.phase == TB_SEND)
+        cw_encoder_stop();
+    tb.back_hz = 0;
+    tb.why     = why;
+    tb_end();
+}
+
+/* Two lines of about 30 characters: the second counts down. In split it says where the test goes out, the other VFO:
+ * the frequency listened on alone hid that the test keys somewhere nobody listened */
+static void tb_listen_msg(void) {
+    int32_t tx = radio_tx_freq();
+
+    if (tx == tb.hz)
+        msg_update_text_fmt("Listen first: %s, %.3f MHz\nTest beacon again sends: %i s", field_band_name(tb.band),
+                            tb.hz / 1e6, tb.left);
+    else
+        msg_update_text_fmt("Listen first: %s, %.3f MHz\nAgain sends on %.3f MHz: %i s", field_band_name(tb.band),
+                            tb.hz / 1e6, (tx < 0 ? -tx : tx) / 1e6, tb.left);
+}
+
+/* Tuned or another mode since the test began: it ends there (tb_stay) */
+static bool tb_moved(void) {
+    bool listening = tb.phase == TB_LISTEN;     /* short: the first of two lines */
+
+    if (cparam_i_get(cfg_fg_freq) != tb.hz)
+        tb_stay(listening ? "tuned" : "the radio was tuned");
+    else if (!is_cw())
+        tb_stay(listening ? "new mode" : "the mode changed");
+    else
+        return false;
+    return true;
+}
+
+static void tb_timer_cb(lv_timer_t *t) {
+    char    text[64];
+    int32_t tx;
+    int     left;
+
+    if (tb_moved())
+        return;
+    switch (tb.phase) {
+        case TB_LISTEN:
+            if (get_time() >= tb.listen_end) {
+                tb_stay("");
+                return;
+            }
+            left = (int)((tb.listen_end - get_time() + 999) / 1000);
+            if (left != tb.left) {  /* each second: the message box keeps it for 2 s */
+                tb.left = left;
+                tb_listen_msg();
+            }
+            break;
+        case TB_SETTLE:
+            if (get_time() < tb.key_at)
+                return;
+            /* As it was when asked: in the meantime something may have keyed the radio or set split */
+            if (radio_get_state() != RADIO_RX || cw_encoder_state() != CW_ENCODER_IDLE)
+                tb.why = "the radio is busy";
+            else
+                tb.why = tb_no_tx(tb.band, &tx);
+            if (tb.why) {
+                tb.phase = TB_BACK;
+                return;
+            }
+            snprintf(text, sizeof(text), "TEST DE %s %s %s", my_call(), my_call(), my_call());
+            cw_encoder_send(text, false);
+            tb.phase = TB_SEND;
+            break;
+        case TB_SEND:
+            if (cw_encoder_state() == CW_ENCODER_IDLE)
+                tb.phase = TB_BACK;
+            break;
+        case TB_BACK:
+            /* The break-in delay, or another TX: the move waits for the receiver */
+            if (radio_get_state() == RADIO_RX)
+                tb_end();
+            break;
+        default:
+            break;
+    }
+}
+
+void dialog_field_test_beacon(int band) {
+    int32_t     here, mode, f, tx, back_hz = 0, back_mode = 0;
+    const char *why;
+
+    if (tb.phase == TB_LISTEN && tb_moved())    /* tuned just now, before the timer saw it */
+        return;
+    if (tb.phase == TB_LISTEN && band == tb.band) {     /* the second press: it sends there */
+        tx       = radio_tx_freq();
+        tb.phase = TB_SETTLE;
+        LV_LOG_USER("Test beacon: %s, sending on %i", field_band_name(band), (int)tx);
+        msg_update_text_fmt("Test beacon on %s, %.3f MHz", field_band_name(band), (tx < 0 ? -tx : tx) / 1e6);
+        return;
+    }
+    if (tb.phase == TB_LISTEN) {    /* another band chosen meanwhile: it listens there instead, the way back kept */
+        back_hz   = tb.back_hz ? tb.back_hz : tb.hz;
+        back_mode = tb.back_mode;
+        lv_timer_del(tb.timer);
+        tb.timer = NULL;
+        tb.phase = TB_OFF;
+    } else if (tb.phase != TB_OFF) {    /* again while it sends: stops it, and back */
+        if (tb.phase == TB_SEND)
+            cw_encoder_stop();
+        if (!tb.why)
+            tb.why = "";
+        tb.phase = TB_BACK;
+        return;
+    }
+    here = cparam_i_get(cfg_fg_freq);
+    mode = cparam_i_get(cfg_cur_mode);
+    f    = here;
+    if (band < 0 || band >= FIELD_RBN_BANDS)
+        return;
     if (!my_call()[0]) {
         msg_update_text_fmt("Set your callsign in Settings");
         return;
@@ -2224,13 +2407,65 @@ void dialog_field_test_beacon(void) {
         msg_update_text_fmt("Test beacon: switch to CW first");
         return;
     }
-    snprintf(text, sizeof(text), "TEST DE %s %s %s", my_call(), my_call(), my_call());
-    cw_encoder_send(text, false);
-    msg_update_text_fmt("Test beacon on the air: watch who hears you");
+    if (cw_encoder_state() != CW_ENCODER_IDLE) {    /* MSG > CW sending, or a beacon in its pause or before its start */
+        msg_update_text_fmt("Test beacon: a CW message or beacon is on (MSG > CW)");
+        return;
+    }
+    if (radio_get_state() != RADIO_RX) {
+        msg_update_text_fmt("Test beacon: the radio is transmitting");
+        return;
+    }
+    if (radio_no_data()) {      /* none from the base (#152): before the dial moves, as QRSS3 */
+        msg_update_text_fmt("Test beacon on %s: no data from the base", field_band_name(band));
+        return;
+    }
+    if (field_band_of(here) != band) {
+        if (main_screen_freq_locked() || main_screen_band_locked()) {
+            msg_update_text_fmt("Test beacon on %s: the frequency is locked", field_band_name(band));
+            return;
+        }
+        main_screen_set_freq(field_band_freq(band, true, band_plan_region()));
+        f = cparam_i_get(cfg_fg_freq);
+        /* The band's own mode came with it: the test goes in the CW or CW-R the radio was in */
+        if (cparam_i_get(cfg_cur_mode) != mode && !main_screen_mode_locked())
+            cparam_i_set(cfg_cur_mode, mode);
+        why = cparam_i_get(cfg_cur_mode) != mode ? "the mode is locked" : tb_no_tx(band, &tx);
+        if (why) {
+            main_screen_set_freq(here);
+            if (cparam_i_get(cfg_cur_mode) != mode && !main_screen_mode_locked())
+                cparam_i_set(cfg_cur_mode, mode);
+            msg_update_text_fmt("Test beacon on %s: %s", field_band_name(band), why);
+            return;
+        }
+        tb.back_hz = here;
+        LV_LOG_USER("Test beacon: %s on %i, from %i", field_band_name(band), (int)f, (int)here);
+    } else {
+        why = tb_no_tx(band, &tx);
+        if (why) {
+            msg_update_text_fmt("Test beacon on %s: %s", field_band_name(band), why);
+            return;
+        }
+        tb.back_hz = 0;
+    }
+    tb.band      = band;
+    tb.hz        = f;
+    tb.back_mode = mode;
+    tb.why       = NULL;
+    tb.key_at    = get_time() + (tb.back_hz ? TB_SETTLE_MS : 0);
+    if (back_hz) {
+        tb.back_hz   = back_hz;
+        tb.back_mode = back_mode;
+    }
+    /* Only there to listen: the second press sends */
+    tb.listen_end = get_time() + TB_LISTEN_MS;
+    tb.left       = TB_LISTEN_MS / 1000;
+    tb.phase      = TB_LISTEN;
+    tb.timer      = lv_timer_create(tb_timer_cb, 100, NULL);
+    tb_listen_msg();
 }
 
 static void beacon_cb(button_data_t *b) {
-    dialog_field_test_beacon();
+    dialog_field_test_beacon(sel);
 }
 
 void dialog_field_tune_band(int band) {
@@ -2240,10 +2475,20 @@ void dialog_field_tune_band(int band) {
         msg_update_text_fmt("The frequency is locked");
         return;
     }
-    int32_t f = field_band_freq(band, is_cw());
+    /* During a test: the band to stay on. On the band tested the frequency is the test's, so the test took it for no
+     * move, sent on and went back to the band before. Only listening: nothing to say, Use band says where it goes */
+    if (tb.phase != TB_OFF)
+        tb_stay(tb.phase == TB_LISTEN ? NULL : "Use band");
+    int32_t mode = cparam_i_get(cfg_cur_mode);
+    bool    cw   = is_cw();
+    int32_t f    = field_band_freq(band, cw, band_plan_region());
+
     main_screen_set_freq(f);
-    if (!is_cw() && !main_screen_mode_locked())
-        cparam_i_set(cfg_cur_mode, f < 10000000 ? radio_mode_lsb : radio_mode_usb);
+    /* The band brought its own mode: in CW the CW or CW-R the radio was in, else the frequency's sideband (USB on
+     * 60 m). From CW, 15 m last left in USB gave its CW frequency in USB */
+    mode = cw ? mode : cfg_default_mode(f);
+    if (cparam_i_get(cfg_cur_mode) != mode && !main_screen_mode_locked())
+        cparam_i_set(cfg_cur_mode, mode);
     msg_update_text_fmt("%s: %.3f MHz", field_band_name(band), f / 1e6);
 }
 
@@ -2560,7 +2805,7 @@ static void timer_cb(lv_timer_t *t) {
 }
 
 static void construct_cb(lv_obj_t *parent) {
-    lv_coord_t h = 480 - BUTTONS_H;
+    lv_coord_t h = BOARD_DISP_H - BUTTONS_H;
 
     if (!st_loaded) {
         state_load();

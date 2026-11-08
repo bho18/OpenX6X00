@@ -55,7 +55,7 @@ def same_sdk_build(readelf, actual, expected):
     return {'sdk_sha256':sha(expected),'image_sha256':sha(actual),'build_id':ids[0],
             'matching_allocated_section_dumps_sha256':sections}
 
-def verify(gui, package, sdk, image, output, debugfs='debugfs', qemu='qemu-arm'):
+def verify(gui, package, sdk, image, output, debugfs='debugfs', qemu='qemu-arm', runtime_package=None):
     gui, package, sdk, output = map(lambda p: Path(p).resolve(), (gui, package, sdk, output))
     output.mkdir(parents=True, exist_ok=False)
     compilers = sorted((sdk/'bin').glob('arm*-gcc'), key=lambda p: ('buildroot' not in p.name, p.name))
@@ -82,7 +82,37 @@ def verify(gui, package, sdk, image, output, debugfs='debugfs', qemu='qemu-arm')
     runtime = output/'runtime'; (runtime/'lib').mkdir(parents=True)
     shutil.copy2(target_loader, runtime/'lib/ld-linux-armhf.so.3')
     (runtime/'lib/ld-linux-armhf.so.3').chmod(0o755)
-    closure, queue = {}, [gui]
+    runtime_record = None
+    runtime_libraries = {}
+    extra_programs = []
+    extra_static_programs = []
+    if runtime_package is not None:
+        from runtime_package import validate_package
+        runtime_record = validate_package(runtime_package, sdk=sdk)
+        overlay = Path(runtime_package).resolve()/'overlay'
+        for destination in runtime_record['elf_libraries']:
+            expected = overlay/destination.lstrip('/')
+            actual = filesystem.dump(destination)
+            require_arm_elf(actual)
+            if sha(actual) != sha(expected):
+                raise ValueError('reviewed runtime library differs in image: ' + destination)
+            runtime_libraries[Path(destination).name] = (destination, expected)
+        for destination in runtime_record['elf_programs']:
+            expected = overlay/destination.lstrip('/')
+            actual = filesystem.dump(destination)
+            require_arm_elf(actual)
+            if sha(actual) != sha(expected):
+                raise ValueError('reviewed runtime program differs in image: ' + destination)
+            extra_programs.append(expected)
+        from runtime_package import require_static_arm_program
+        for destination in runtime_record['static_programs']:
+            expected = overlay/destination.lstrip('/')
+            actual = filesystem.dump(destination)
+            require_static_arm_program(actual)
+            if sha(actual) != sha(expected):
+                raise ValueError('static runtime program differs in image: ' + destination)
+            extra_static_programs.append(expected)
+    closure, queue = {}, [gui, *extra_programs]
     for binary in (package/'bin').iterdir():
         if binary.is_file():
             require_arm_elf(binary); queue.append(binary)
@@ -97,13 +127,17 @@ def verify(gui, package, sdk, image, output, debugfs='debugfs', qemu='qemu-arm')
             if packaged.is_file():
                 actual = filesystem.dump('/opt/freedv-benchmark/lib/'+name)
                 expected, provider = packaged, 'benchmark-package'
+            elif name in runtime_libraries:
+                destination, expected = runtime_libraries[name]
+                actual = filesystem.dump(destination)
+                provider = 'reviewed-sdk-runtime'
             else:
                 expected = sdk_file(sysroot, name)
                 relative = expected.relative_to(sysroot)
                 actual = filesystem.dump('/'+relative.as_posix())
                 provider = 'matching-baseline-sdk'
             require_arm_elf(actual)
-            if provider=='benchmark-package':
+            if provider in ('benchmark-package', 'reviewed-sdk-runtime'):
                 if sha(actual)!=sha(expected.resolve()): raise ValueError('packaged dependency bytes differ: '+name)
                 identity={'sdk_sha256':None,'image_sha256':sha(actual)}
             else:
@@ -114,16 +148,25 @@ def verify(gui, package, sdk, image, output, debugfs='debugfs', qemu='qemu-arm')
             queue.append(copied)
     ld = runtime/'lib/ld-linux-armhf.so.3'
     ld.chmod(0o755) # libc's dependency closure may have recopied the loader
-    programs = [gui]+[p for p in (package/'bin').iterdir() if p.is_file()]
+    programs = [gui]+[p for p in (package/'bin').iterdir() if p.is_file()]+extra_programs
     loader_checks = {}
     for program in programs:
         result = subprocess.run([str(qemu), '-L', str(runtime), '-E', 'LD_LIBRARY_PATH='+str(runtime/'lib'),
                                  str(ld), '--list', str(program)], check=True, capture_output=True, text=True)
         loader_checks[program.name] = result.stdout
+    for program in extra_static_programs:
+        # Pinned CGO-free Pat has no interpreter or dynamic dependencies. Its
+        # version command executes offline without starting its server/radio.
+        result = subprocess.run([str(qemu), '-L', str(runtime), str(program), 'version'],
+                                check=True, capture_output=True, text=True, timeout=20)
+        loader_checks[program.name] = result.stdout
     record = {'schema_version': 1, 'status': 'PASS', 'hardware_qualified': False,
               'compiler_version': run(compiler, '--version').splitlines()[0],
               'compiler_target': target, 'loader_sha256': sha(target_loader), 'loader_sdk_identity':loader_identity,
               'gui_sha256': sha(gui), 'dependencies': closure, 'loader_checks': loader_checks}
+    if runtime_record:
+        record['runtime_package_sha256']=sha(Path(runtime_package)/'runtime-manifest.json')
+        record['runtime_helpers_sha256']={p.name:sha(p) for p in extra_programs+extra_static_programs}
     (output/'report.json').write_text(json.dumps(record, indent=2)+'\n')
     return record
 
@@ -134,8 +177,9 @@ def main():
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--debugfs', default='debugfs')
     parser.add_argument('--qemu', default='qemu-arm')
+    parser.add_argument('--runtime-package', type=Path)
     a = parser.parse_args()
-    record = verify(a.gui,a.package,a.sdk,a.rootfs,a.output,a.debugfs,a.qemu)
+    record = verify(a.gui,a.package,a.sdk,a.rootfs,a.output,a.debugfs,a.qemu,runtime_package=a.runtime_package)
     print('PASS: ARM loader and',len(record['dependencies']),'verified runtime dependencies')
 
 

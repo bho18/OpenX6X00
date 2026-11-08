@@ -11,14 +11,97 @@
 # whatever it was called. Looked up by label only, such a card left /mnt unmounted and every
 # setting went into the system partition's /mnt folder, lost at the next start and filling the
 # system. A partition found that way gets the label; what was written into the system's /mnt
-# folder in the meantime is moved onto DATA, in found_on_system.
+# folder in the meantime is moved onto DATA, in found_on_system (rescue).
+#
+# The first start of a freshly written card makes DATA in the free space after the system's two
+# partitions and formats it. Up to v0.3.8 that start took blkid's answer for the new partition, its
+# own entry in the card's table (PARTUUID), for a filesystem: it left the partition unformatted
+# ("holds another filesystem") and every later start left it alone ("not FAT32: not touched"), the
+# radio running on the system's /mnt folder. Such a partition is recognised and formatted at the
+# next start, and the new DATA gets what the radio wrote meanwhile on its top level: the settings,
+# the QSO log and the rest carry over. DATA that worked before and shows nothing to blkid now (its
+# boot sector gone bad) looks the same, and is left alone: what is left of it tells it apart, or the
+# mark each start that mounts DATA leaves on the system partition. Nor is what is left of it
+# formatted after a new image.
 LOG=/tmp/data_fsck.log
 P3=/dev/mmcblk0p3
+SYS_TRACE=/var/lib/x6100/start_trace    # the start trace on the system partition (.txt, .1.txt)
+MOUNTED=/var/lib/x6100/data_mounted     # DATA mounted on this card, or found gone bad: never formatted
+# What to do with a third partition left alone (the trace, data_fsck.log, the manual): DATA that went
+# bad, a FAT32 the radio cannot use as it is, anything else
+DAMAGED="its files are most likely still there: copy them off on a PC with a recovery tool, then format it there as FAT32"
+CHECK="check it on a PC (chkdsk /f on Windows); if that does not help, copy its files off there and format it as FAT32"
+OTHER="for DATA there, format it as FAT32 on a PC"
 
 # A step into the start trace (x6100-starttrace; rcS writes this script's start and end): the check and
 # the format are what can take long here, on a large or a failing card
 trace() {
     [ -x /usr/sbin/x6100-starttrace ] && /usr/sbin/x6100-starttrace "S00adata: $*"
+}
+
+# DATA left alone, not formatted: why and what to do, on the console, in the trace and in data_fsck.log
+# in the system's /mnt folder the radio runs on then, which the web configurator's Files page shows
+alone() {
+    echo "$*"
+    trace "$*"
+    { echo "$(date '+%Y-%m-%d %H:%M:%S'), up $(cut -d' ' -f1 /proc/uptime) s"; echo "$*"; } > $LOG
+    cp $LOG /mnt/data_fsck.log 2>/dev/null
+}
+
+# blkid's low-level probe of the partition $1 (-p: the partition itself, no cache). probed: all its
+# lines; sig: those that are not the partition's own entry in the card's table (PART_ENTRY_*), a
+# filesystem, a partition table, a RAID, LVM or LUKS header... (TYPE=, PTTYPE=, USAGE=, ...). sig
+# empty: nothing on it that blkid knows. Two signatures at once (blkid's exit 8) or a probe that
+# failed count as something: such a partition is never formatted. A failed probe (a read error)
+# prints nothing and exits 2, as one that found nothing at all would; but on a partition of the
+# card's table blkid always finds that partition's own entry, so an answer without it is none
+probe() {
+    probed=$(blkid -p -o export "$1" 2>/dev/null)
+    rc=$?
+    if [ $rc -eq 0 ] && [ -n "$(field PART_ENTRY_NUMBER)" ]; then
+        sig=$(printf '%s\n' "$probed" | grep -v -e '^DEVNAME=' -e '^PART_ENTRY_' -e '^$')
+    else
+        sig="blkid -p exit $rc"
+    fi
+}
+
+# The probe's value of the field $1
+field() {
+    printf '%s\n' "$probed" | sed -n "s/^$1=//p"
+}
+
+# What the probe found, in a word for the trace: the filesystem's type, else its first line
+found() {
+    t=$(field TYPE)
+    [ -n "$t" ] && echo "$t" || printf '%s\n' "$sig" | head -n 1
+}
+
+# What is left on the partition $1, which shows nothing to blkid at its start, of a FAT32 (or exFAT)
+# whose boot sector went bad: FAT32 keeps a copy of that sector in sector 6 and exFAT of its own in
+# sector 12, which blkid reads as filesystems of their own 3 and 6 KiB in. A card that loses a sector
+# at a power cut can lose the 4 KiB to some MiB around it, that copy with it. Then one of FAT32's two
+# FATs still begins with its media mark (f8 ff ff 0f) at the start of a sector: the first after the
+# sectors reserved before it (32, 64 on a card over 32 GB; other counts on a PC), the second after
+# the first, some 3 MiB in on a 4 GB card, 7 on 8 to 64 GB, 60 on 512 GB. Each sector of the first
+# 64 MiB is looked at (hexdump: util-linux's, the first word of each sector as a number), but not
+# on a card with the mark (mark_data): that keeps the partition from a format already, and a DATA
+# with none of these left would be read that far at every start, seconds of dark screen. A partition
+# never formatted has none of these. left: what was found, for the trace
+fs_left() {
+    left=
+    if [ "$(blkid -p -O 3072 -o value -s TYPE "$1" 2>/dev/null)" = vfat ]; then
+        left="a FAT32 whose boot sector went bad, its copy in sector 6 found"
+    elif [ "$(blkid -p -O 6144 -o value -s TYPE "$1" 2>/dev/null)" = exfat ]; then
+        left="an exFAT whose boot sector went bad, its copy in sector 12 found"
+    elif [ ! -e $MOUNTED ] && hexdump -v -n 67108864 -e '1/4 "%08x\n" 127/4 ""' "$1" 2>/dev/null | grep -qx 0ffffff8; then
+        left="a FAT32 whose boot sector went bad, its FAT found"
+    fi
+    [ -n "$left" ]
+}
+
+# DATA mounted on this card, or found gone bad: the mark keeps it from ever being formatted (above)
+mark_data() {
+    [ -e $MOUNTED ] || { mkdir -p ${MOUNTED%/*} && : > $MOUNTED; } 2>/dev/null
 }
 
 # dev: the DATA partition; relabel set when it has no label yet
@@ -33,20 +116,104 @@ find_data() {
     return 1
 }
 
-# Files written into the system's own /mnt folder while DATA was not mounted: onto DATA
+# found_on_system, on a DATA that holds nothing else, is the copy of a start cut short when each file in
+# it is the system's of that name, or the start of it (the one the copy was at): the system's files all
+# still there. Up to v0.3.8 a start cut short after its copy left a found_on_system of older files
+# there, perhaps the only copy of those settings: not that one
+cut_copy() {
+    files=$(cd /mnt/found_on_system && find . -type f) || return 1
+    printf '%s\n' "$files" | while IFS= read -r f; do
+        f=${f#./}
+        [ -n "$f" ] || continue
+        [ -f "/tmp/sysroot/mnt/$f" ] || exit 1
+        head -c "$(wc -c < "/mnt/found_on_system/$f")" "/tmp/sysroot/mnt/$f" | cmp -s - "/mnt/found_on_system/$f" || exit 1
+    done
+}
+
+# Files written into the system's own /mnt folder while DATA was not mounted: onto DATA. Into
+# found_on_system when DATA has settings of its own (its files stay as they are); onto DATA's top
+# level when it has none: made at this start ($1 new), formatted on a PC or emptied there, and what
+# the radio wrote are its settings, log and the rest. All of it is copied first (params.db with its
+# -wal and -shm), then moved up on DATA, and only then, once it is on the card, taken off the system;
+# a name DATA has already stays in found_on_system, and a database with its -wal, -shm and -journal
+# when DATA has one of those names. The copy goes into a folder of its own, never over a file DATA
+# has: found_on_system.2, .3 ... when an earlier start left a found_on_system there (its files
+# perhaps the only copy of those settings). They stay on the system when they cannot all be copied,
+# or when the check did not leave DATA clean ($1 unchecked), and DATA without settings of its own is
+# unmounted again then
 rescue() {
     mkdir -p /tmp/sysroot && mount --bind / /tmp/sysroot || return
     if [ -n "$(ls -A /tmp/sysroot/mnt 2>/dev/null)" ]; then
-        mkdir -p /mnt/found_on_system &&
-            cp -a /tmp/sysroot/mnt/. /mnt/found_on_system/ &&
-            rm -rf /tmp/sysroot/mnt/* /tmp/sysroot/mnt/.[!.]* &&
-            echo "files found in the system's /mnt moved to found_on_system"
+        new=
+        [ "$1" = new ] && new=1
+        found=/mnt/found_on_system
+        made=
+        # DATA that holds nothing but found_on_system is new as well when the start that made it was cut
+        # short in this copy (seconds of a dark screen before the boot picture: a power cut): the copy
+        # goes on in it
+        if [ "$(ls -A /mnt)" = found_on_system ] && cut_copy; then
+            new=1
+        else
+            i=1
+            while [ -e "$found" ]; do i=$((i + 1)); found=/mnt/found_on_system.$i; done
+            made=1
+        fi
+        # So is DATA without settings of its own: the radio comes up with those it kept on the system.
+        # Not one with a params.db -wal, -shm or -journal of its own: SQLite would read that into the
+        # params.db moved beside it
+        db=
+        for f in /mnt/params.db /mnt/params.db-wal /mnt/params.db-shm /mnt/params.db-journal; do
+            [ -e "$f" ] && db=1
+        done
+        [ -n "$db" ] || new=1
+        kept=
+        if [ "$1" = unchecked ]; then
+            # Not onto DATA the check could not vouch for: fsck.fat's exit 1 after its second pass is
+            # errors still there, or a check that stopped (a read error, a FAT it cannot read)
+            echo "check not clean: files found in the system's /mnt left there"
+            kept=1
+        elif mkdir -p "$found" && cp -a /tmp/sysroot/mnt/. "$found/"; then
+            where=${found#/mnt/}
+            if [ -n "$new" ]; then
+                # A database goes up with its -wal, -shm and -journal or stays with them: SQLite reads
+                # a journal into the database of its name, one of DATA's own as well
+                had=$(ls -A /mnt)
+                for f in "$found"/* "$found"/.[!.]*; do
+                    [ -e "$f" ] || continue
+                    n=${f##*/}
+                    b=${n%-wal}; b=${b%-shm}; b=${b%-journal}
+                    printf '%s\n' "$had" | grep -qxF -e "$b" -e "$b-wal" -e "$b-shm" -e "$b-journal" && continue
+                    [ -e "/mnt/$n" ] || mv "$f" /mnt/
+                done
+                where="DATA's top level: the settings and logs carry over"
+                rmdir "$found" 2>/dev/null || where="$where (a name DATA had already: in ${found#/mnt/})"
+            fi
+            # DATA is mounted without sync: its copies can wait some 30 s in memory, the system's files
+            # are gone from the card within 5 s (a power cut then lost both). On the card first, the
+            # mark with them
+            sync
+            rm -rf /tmp/sysroot/mnt/* /tmp/sysroot/mnt/.[!.]*
+            echo "files found in the system's /mnt moved to $where"
+        else
+            # what this start copied goes again (the system's files stay): no folder more on DATA at
+            # each start that cannot copy them
+            [ -n "$made" ] && rm -rf "$found"
+            echo "files found in the system's /mnt not all copied onto DATA: left there"
+            kept=1
+        fi
+        # Left on the system: nor is DATA without settings of its own used then. The radio would come
+        # up with the defaults there, which the next start keeps, the system's going into
+        # found_on_system. It comes up with those it kept on the system, as before; the next start
+        # tries again
+        if [ -n "$kept" ] && [ -n "$new" ] && umount /mnt; then
+            echo "DATA not mounted at this start: without settings of its own, the radio comes up with those it kept on the system"
+        fi
     fi
     umount /tmp/sysroot
 }
 
 check_data() {
-    find_data || { echo "DATA partition not found" > $LOG; trace "DATA partition not found"; return; }
+    find_data || { alone "DATA partition not found (none labelled DATA, the third not FAT32 to blkid); $CHECK"; return; }
     if grep -q " /mnt " /proc/mounts; then umount /mnt; fi
     {
         echo "$(date '+%Y-%m-%d %H:%M:%S'), up $(cut -d' ' -f1 /proc/uptime) s"
@@ -59,16 +226,107 @@ check_data() {
             echo "fsck.fat exit $rc"
             trace "fsck.fat exit $rc"
             # a label only on a filesystem fsck left clean: not worth a write into a broken one
-            [ -n "$relabel" ] && [ $rc -le 1 ] && { fatlabel "$dev" DATA && echo "label DATA set"; }
+            [ -n "$relabel" ] && [ $rc -eq 0 ] && { fatlabel "$dev" DATA && echo "label DATA set"; }
             if mount "$dev" /mnt; then
-                rescue
+                mark_data
+                if [ $rc -eq 0 ]; then rescue; else rescue unchecked; fi
             else
-                echo "mount failed"
-                trace "mount of $dev failed"
+                echo "mount failed; $CHECK"
+                trace "mount of $dev failed; $CHECK"
             fi
         fi
     } 2>&1 | grep -v -e "conversion" -e "CP850" > $LOG
     tail -n 40 $LOG > /mnt/data_fsck.log 2>/dev/null
+    if l=$(grep "^DATA not mounted" $LOG); then trace "$l"; fi
+}
+
+# The partition $1, which holds nothing blkid knows, formatted as DATA and mounted, with what the
+# radio wrote into the system's /mnt folder before (a card that ran without DATA) on its top level;
+# not mounted when those cannot all be copied (rescue). Nothing is traced from the mount until then:
+# the trace's own app_logs folder would be in the way
+make_data() {
+    trace "formatting $1"
+    mkfs -t vfat -n DATA "$1" || { echo "Formatting $1 failed"; trace "formatting $1 failed"; return; }
+    if ! mount "$1" /mnt; then
+        echo "mount failed"
+        trace "mount of $1 failed"
+        return
+    fi
+    # From here on its files may be the only copy (rescue below)
+    mark_data
+    {
+        echo "$(date '+%Y-%m-%d %H:%M:%S'), up $(cut -d' ' -f1 /proc/uptime) s"
+        echo "$1 formatted as DATA"
+        rescue new
+    } 2>&1 | grep -v "can't preserve" > $LOG
+    tail -n 40 $LOG > /mnt/data_fsck.log 2>/dev/null
+    if ! grep -q " /mnt " /proc/mounts; then
+        trace "$1 formatted as DATA, not mounted: files found in the system's /mnt not all copied onto it, the radio runs on them"
+        return
+    fi
+    trace "$1 formatted as DATA and mounted"
+    if moved=$(grep "^files found" $LOG); then trace "$moved"; fi
+}
+
+# The card's third partition as a fresh card's first start makes it, never formatted (above): the
+# last of three in a DOS table, FAT32 by its type (0x0c, 0x0b), from the end of the second partition
+# to the end of the card (parted's alignment and the rounded end it is given leave up to 8 MiB
+# before it, and 1 % of the card and 8 MiB after it), and nothing on it that blkid knows. Anything
+# else is left alone, why in not_ours, what to do in todo
+unformatted_data_part() {
+    todo=$OTHER
+    probe $P3
+    if [ -n "$sig" ]; then
+        not_ours="it holds $(found)"
+        # a FAT32 to blkid that parted does not take (start), damaged or made by an odd tool: a check
+        # on a PC first, not a format
+        if [ "$(field TYPE)" = vfat ] && [ "$(field VERSION)" = FAT32 ]; then
+            not_ours="a FAT32 to blkid, not to parted" todo=$CHECK
+        fi
+        return 1
+    fi
+    if [ "$(field PART_ENTRY_SCHEME)" != dos ] || [ "$(field PART_ENTRY_NUMBER)" != 3 ]; then
+        not_ours="not in a DOS table"
+        return 1
+    fi
+    case "$(field PART_ENTRY_TYPE)" in
+        0xc|0xb) ;;
+        *) not_ours="type $(field PART_ENTRY_TYPE)"; return 1 ;;
+    esac
+    # in sectors: the card, the second partition's end, the third's start and end
+    table=$(parted -m -s /dev/mmcblk0 unit s print 2>/dev/null)
+    disk=$(printf '%s\n' "$table" | sed -n 's|^/dev/mmcblk0:\([0-9]*\)s:.*|\1|p')
+    p2end=$(printf '%s\n' "$table" | sed -n 's|^2:[0-9]*s:\([0-9]*\)s:.*|\1|p')
+    p3start=$(printf '%s\n' "$table" | sed -n 's|^3:\([0-9]*\)s:.*|\1|p')
+    p3end=$(printf '%s\n' "$table" | sed -n 's|^3:[0-9]*s:\([0-9]*\)s:.*|\1|p')
+    if [ "$(printf '%s\n' "$table" | grep -c '^[0-9][0-9]*:')" != 3 ] || [ -z "$disk" ] ||
+        [ -z "$p2end" ] || [ -z "$p3start" ] || [ -z "$p3end" ]; then
+        not_ours="not the last of three"
+        return 1
+    fi
+    before=$((p3start - p2end - 1))
+    after=$((disk - 1 - p3end))
+    if [ $before -lt 0 ] || [ $before -gt 16384 ] || [ $after -lt 0 ] || [ $after -gt $((disk / 100 + 16384)) ]; then
+        not_ours="sectors $p3start to $p3end, not the free space after the system"
+        return 1
+    fi
+    # Nor is DATA that went bad: with nothing blkid knows on it now, its boot sector went bad (the
+    # kernel rewrites it at each mount, fsck.fat at each start that finds it dirty: a power cut then),
+    # its files still there for a PC's repair tools. What is left of it says so (fs_left); else the
+    # mark of a start that mounted it, or (a card that mounted it only on v0.3.6 to v0.3.8) the check
+    # such a start traced on the system partition before the mount ("fsck.fat of": the last start's
+    # lines are always there). Found once, the mark keeps it for the starts after
+    if fs_left $P3; then
+        mark_data
+        not_ours=$left todo=$DAMAGED
+        return 1
+    fi
+    if [ -e $MOUNTED ] || grep -qs "S00adata: fsck.fat of " $SYS_TRACE.txt $SYS_TRACE.1.txt; then
+        mark_data
+        not_ours="DATA was mounted at an earlier start, its boot sector gone bad since" todo=$DAMAGED
+        return 1
+    fi
+    return 0
 }
 
 start() {
@@ -80,10 +338,16 @@ start() {
     fi
     # None: the first start of a freshly written card, two partitions and the rest of the card
     # free. A card with a third partition of another kind (a reused card) is left alone: the old
-    # script made a fourth and then formatted whatever was third.
+    # script made a fourth and then formatted whatever was third. The one exception is DATA as an
+    # earlier start made it and left it unformatted (above): formatted now
     if parted -m -s /dev/mmcblk0 print | grep -q "^3:"; then
-        echo "A third partition exists and is not FAT32: not touched"
-        trace "A third partition exists and is not FAT32: not touched"
+        if unformatted_data_part; then
+            echo "$P3 is the DATA partition an earlier start made and never formatted: formatting it"
+            trace "$P3 is the DATA partition an earlier start made and never formatted: formatting it"
+            make_data $P3
+            return
+        fi
+        alone "A third partition exists and is not FAT32: not touched ($not_ours); $todo"
         return
     fi
     FREE_INFO=$(parted -sm /dev/mmcblk0 print free | tail -n1 | grep free)
@@ -103,27 +367,50 @@ start() {
     partprobe /dev/mmcblk0
     NEW=$(parted -m -s /dev/mmcblk0 print | tail -n1 | cut -d: -f1)
     DEV=/dev/mmcblk0p$NEW
-    if [ "$NEW" != "3" ] || [ ! -b "$DEV" ]; then
-        echo "The new partition is not $DEV: not formatted"
-        trace "The new partition is not $DEV: not formatted"
+    if [ "$NEW" != "3" ]; then
+        alone "The new partition is $DEV, not the third: not formatted; $OTHER"
         return
     fi
-    if [ -n "$(blkid "$DEV")" ]; then
+    # (the kernel reads the card's table at the next start: the partition is there then)
+    if [ ! -b "$DEV" ]; then
+        alone "The new partition $DEV has no device yet: not formatted; switch the radio off and on again"
+        return
+    fi
+    # By what is on it: the partition's own entry in the card's table, all that blkid prints for
+    # a partition without a filesystem (PARTUUID), is not one
+    probe "$DEV"
+    if [ -n "$sig" ]; then
         # A card image is smaller than the card: a new image leaves the old DATA filesystem
         # where it was, only its partition entry is gone. Made again, it is the same DATA:
-        # settings and logs survive the new image (checked and mounted like any other start)
-        if [ "$(blkid -s LABEL -o value "$DEV")" = "DATA" ]; then
-            echo "The DATA filesystem of the previous image is still there: kept"
-            check_data
+        # settings and logs survive the new image (checked and mounted like any other start).
+        # So is a FAT32 formatted there on a PC (another label): the next start would take it up as
+        # the third partition, FAT32 (find_data), and this one does. Not one parted does not read,
+        # nor a FAT16 (labelled DATA or not), which the next start would leave alone
+        # (unformatted_data_part)
+        if [ "$(field TYPE)" = vfat ] && [ "$(field VERSION)" = FAT32 ]; then
+            if parted -m -s /dev/mmcblk0 print | grep -q '^3:[^:]*:[^:]*:[^:]*:fat32:'; then
+                l=$(field LABEL)
+                if [ "$l" = DATA ]; then
+                    echo "The DATA filesystem of the previous image is still there: kept"
+                else
+                    echo "A FAT32 filesystem is there, label ${l:-none}: kept as DATA"
+                fi
+                check_data
+                return
+            fi
+            alone "$DEV holds a FAT32 to blkid, not to parted: not formatted; $CHECK"
             return
         fi
-        echo "$DEV holds another filesystem: not formatted"
-        trace "$DEV holds another filesystem: not formatted"
+        alone "$DEV holds another filesystem ($(found)): not formatted; $OTHER"
         return
     fi
-    trace "formatting $DEV"
-    mkfs -t vfat -n DATA "$DEV" || { echo "Formatting $DEV failed"; trace "formatting $DEV failed"; return; }
-    mount "$DEV" /mnt || trace "mount of $DEV failed"
+    # Nor what is left of DATA whose boot sector went bad before the new image (the system's mark and
+    # trace went with it)
+    if fs_left "$DEV"; then
+        alone "$DEV holds $left: not formatted; $DAMAGED"
+        return
+    fi
+    make_data "$DEV"
 }
 
 case "$1" in

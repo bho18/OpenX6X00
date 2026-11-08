@@ -25,7 +25,7 @@ static unsigned test_audio_reads;
 static void observed(bool tx);
 static unsigned test_tci;
 static int32_t test_frequency = 7074000, test_split, test_shift;
-static int token_split, token_shift, token_vfo, token_fg, token_bg, token_hmic, token_imic, token_mic, token_vox, token_pwr;
+static int token_split, token_shift, token_vfo, token_fg, token_bg, token_hmic, token_imic, token_mic, token_vox, token_pwr, token_vfoa, token_vfob;
 ParamInt *cfg_vox_on=(ParamInt *)&token_vox;
 ParamFloat *cfg_pwr=(ParamFloat *)&token_pwr;
 ParamInt *cfg_hmic=(ParamInt *)&token_hmic;
@@ -34,6 +34,8 @@ ParamInt *cfg_mic=(ParamInt *)&token_mic;
 ParamInt *cfg_band_split=(ParamInt *)&token_split;
 ParamInt *cfg_band_tx_shift=(ParamInt *)&token_shift;
 ParamInt *cfg_band_current_vfo=(ParamInt *)&token_vfo;
+ParamInt *cfg_band_vfoa_freq=(ParamInt *)&token_vfoa;
+ParamInt *cfg_band_vfob_freq=(ParamInt *)&token_vfob;
 ComputedParamInt *cfg_fg_freq=(ComputedParamInt *)&token_fg;
 ComputedParamInt *cfg_bg_freq=(ComputedParamInt *)&token_bg;
 dialog_t *dialog_settings;
@@ -71,6 +73,7 @@ int32_t param_i_get(const ParamInt *p) {
     if (p==cfg_band_split) return test_split;
     if (p==cfg_band_tx_shift) return test_shift;
     if (p==cfg_band_current_vfo) return 0;
+    if (p==cfg_band_vfoa_freq || p==cfg_band_vfob_freq) return test_frequency;
     if (p==cfg_hmic) return 28;
     if (p==cfg_imic) return 17;
     if (p==cfg_mic) return radio_mic_auto;
@@ -78,17 +81,34 @@ int32_t param_i_get(const ParamInt *p) {
 }
 int32_t cparam_i_get(const ComputedParamInt *p) { assert(p==cfg_fg_freq || p==cfg_bg_freq); return test_frequency; }
 bool cfg_is_tx_freq(int32_t hz) { return hz>=100000 && hz<=30000000; }
+#include "radio_policy_fixture.h"
 static void observed(bool tx) {
     ++test_time;
     freedv_packet_tx_note(&packet_tx_tracker,tx,test_time);
+    atomic_store(&data_time,test_time);
     atomic_store(&state,tx?RADIO_TX:RADIO_RX);
 }
 static void snapshot(hw_freedv_cached_snapshot_t *s) { assert(hw_get_freedv_cached_snapshot(s)); }
+static void ordinary_tx_policy_cases(void) {
+    observed(false);assert(!radio_no_data());
+    atomic_store(&data_time,0);assert(radio_no_data() && !radio_set_ptt(true));
+    atomic_store(&data_time,test_time-NO_DATA_MS-1);
+    assert(radio_no_data() && !radio_set_ptt(true));
+    observed(false);assert(radio_set_ptt(true));assert(radio_set_ptt(false));
+    fixture_tx_block="Fixture WR12 not in bypass";
+    assert(!radio_set_ptt(true));fixture_tx_block=NULL;
+    test_frequency=14500000;assert(cfg_is_tx_freq(test_frequency) && cfg_tx_refusal(test_frequency));
+    assert(!radio_set_ptt(true));
+    fixture_tx_outside_bands=true;assert(radio_set_ptt(true));assert(radio_set_ptt(false));
+    fixture_tx_outside_bands=false;test_frequency=7074000;
+    observed(false);hw_freedv_cached_snapshot_t s;snapshot(&s);assert(!s.route.ptt && !s.route.modem);
+}
 int main(void) {
     ctl_init(); assert(hw_init()); hw_start();
     hw_set_i(HW_MIC,radio_mic_auto); hw_set_i(HW_HMIC,28); hw_set_i(HW_IMIC,17);
     hw_set_i(HW_RXVOL,30); hw_set_i(HW_MONI,12); hw_set_i(HW_LINE_IN,9); hw_set_i(HW_LINE_OUT,10);
     hw_set_i(HW_VOX,1); hw_set_i(HW_SPMODE,1); hw_set_f(HW_TXPWR_F,5.0f);
+    ordinary_tx_policy_cases();
     fd_radio_session s={0}; fd_observation o;
 #if defined(BOARD_X6200) || defined(ENABLE_FREEDV_NATIVE_VALIDATION)
     {
@@ -157,6 +177,7 @@ int main(void) {
     assert(!radio_freedv_session_acquire(&s,&o)); /* stale status */
     observed(true); assert(!radio_freedv_session_acquire(&s,&o));
     observed(false);
+    fixture_tx_player_busy=true; assert(!radio_freedv_session_acquire(&s,&o)); fixture_tx_player_busy=false;
     test_recording=true; assert(!radio_freedv_session_acquire(&s,&o)); test_recording=false;
     test_audio=true; assert(!radio_freedv_session_acquire(&s,&o)); test_audio=false;
     test_screen_recording=true; assert(!radio_freedv_session_acquire(&s,&o)); test_screen_recording=false;

@@ -8,28 +8,25 @@
 
 /* The radio's buttons (front and top side, the knob presses) from their input devices.
  * A button goes to the screen as EVENT_KEYPAD: press, release, and after the hold time
- * long and its release. The VOL press is an LVGL key of its own (KEY_VOL_PRESS), once a
- * press however long it is held; the MFK press is the button of the MFK encoder (encoder.c). */
+ * long and its release, each button on its own while others are down too. The VOL press
+ * is an LVGL key of its own (KEY_VOL_PRESS), once a press however long it is held; the
+ * MFK press is the button of the MFK encoder (encoder.c). */
 
 #include "freedv/features.h"
 #include "front_keys.h"
 #include "freedv/mode.h"
+#include "freedv/input_drain.h"
 
 #include "screen_light.h"
 #include "control_owner.h"
 #include "key_input.h"
 #include "main.h"
-#include "knob_device.h"
-#include "mfk_device.h"
-#include "freedv/input_drain.h"
 
 #include <fcntl.h>
 #include <linux/input.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
-#include <string.h>
 
 #define HOLD_MS 1000
 
@@ -68,78 +65,90 @@ static const struct {
 #define VOL_PRESS BTN_TRIGGER_HAPPY21
 #define MFK_PRESS BTN_TRIGGER_HAPPY27
 
+/* Each key on its own: its press, its long press and its release, whatever else is pressed and let go meanwhile.
+ * With one key remembered a release went missing: the side PTT held, a front key tapped, and the PTT's release
+ * found the tapped key's state and sent nothing, the radio on the air until PTT was pressed again. The browser's
+ * PTT lets go through here too: the end of its lease and its three minutes went missing the same way */
+#define KEYS (KEYPAD_FST + 1)   /* FST is the last key */
+
 #ifdef ENABLE_FREEDV_CONTROL
 static keypad_t *diagnostic_pads[4];
 static unsigned diagnostic_pad_count;
+static bool held_dispatch_local, power_reported_down;
+#ifdef HOST_BUILD
+extern bool front_keys_test_held(int fd, uint16_t code) __attribute__((weak));
 #endif
-static event_keypad_t cur;          /* sent by address: the receivers read it at once */
-static lv_timer_t    *hold_timer;
-static uint32_t       hold_ms = HOLD_MS;
+#endif
 
-#ifdef ENABLE_FREEDV_CONTROL
 static struct {
-    keypad_t *pad;             /* process-lifetime input device, never a widget */
-    uint16_t code;
-    keypad_key_t key;
-    unsigned generation;
-    bool armed, dispatching;
-} hold_origin;
-static bool legacy_power_hold,power_reported_down;
-static unsigned legacy_power_generation;
-#ifdef HOST_BUILD
-/* FIFO-based input fixtures have no EVIOCGKEY ioctl. Production always uses
- * the kernel level, independently of the queued press/release event state. */
-extern bool front_keys_test_held(int fd,uint16_t code) __attribute__((weak));
+    bool        down;
+    bool        long_sent;      /* KEYPAD_LONG went: KEYPAD_LONG_RELEASE on the release */
+    lv_timer_t *hold_timer;
+#ifdef ENABLE_FREEDV_CONTROL
+    keypad_t   *origin_pad;
+    uint16_t    origin_code;
+    unsigned    origin_generation;
+    bool        origin_armed, legacy_power;
 #endif
-static void hold_origin_clear(void) {
-    memset(&hold_origin,0,sizeof(hold_origin));legacy_power_hold=false;legacy_power_generation=0;
-}
-static bool hold_source_down(void) {
-    if (!hold_origin.pad) return false;
-#ifdef HOST_BUILD
-    if (front_keys_test_held) return front_keys_test_held(hold_origin.pad->fd,hold_origin.code);
-#endif
-    unsigned long keys[(KEY_MAX+8*sizeof(long))/(8*sizeof(long))];
-    memset(keys,0,sizeof(keys));
-    return hold_origin.code<=KEY_MAX && ioctl(hold_origin.pad->fd,EVIOCGKEY(sizeof(keys)),keys)>=0 &&
-        (keys[hold_origin.code/(8*sizeof(long))]&(1UL<<(hold_origin.code%(8*sizeof(long)))));
-}
-static bool held_dispatch_local(void) {
-    return hold_origin.dispatching && ctl_diagnostic_input_blocked() &&
-        hold_origin.generation==ctl_remote_input_generation() && cur.key==hold_origin.key && cur.state==KEYPAD_LONG;
-}
-#endif
+} key_st[KEYS];
+
+static uint32_t hold_ms = HOLD_MS;
 
 void keypad_set_long_time(uint32_t hold) {
     hold_ms = hold ? hold : HOLD_MS;
 }
 
-static void send(keypad_state_t state) {
-    cur.state = state;
-    lv_event_send(lv_scr_act(), EVENT_KEYPAD, &cur);
+static void send(keypad_key_t key, keypad_state_t state) {
+    event_keypad_t ev = {key, state};   /* sent by address: the receivers read it at once */
+
+    lv_event_send(lv_scr_act(), EVENT_KEYPAD, &ev);
 }
 
-static void held_cb(lv_timer_t *t) {
 #ifdef ENABLE_FREEDV_CONTROL
-    if (t!=hold_timer) return;
-    bool scoped=ctl_diagnostic_input_blocked();
-    bool verified=scoped && hold_origin.armed && hold_origin.pad && cur.state==KEYPAD_PRESS &&
-        cur.key==hold_origin.key && hold_origin.generation==ctl_remote_input_generation() &&
-        hold_origin.pad->diagnostic_generation==hold_origin.generation && hold_source_down();
-    /* The X6200 reports POWER through baseband telemetry, not this evdev fd.
-     * Preserve its existing terminal action without granting local UI consent.
-     * Remote POWER injection is independently blocked by the input fence. */
-    bool power=scoped && legacy_power_hold && power_reported_down && cur.key==KEYPAD_POWER &&
-        cur.state==KEYPAD_PRESS && legacy_power_generation==ctl_remote_input_generation();
-    if (scoped && !verified && !power) {
-        hold_timer=NULL;hold_origin_clear();return;
-    }
-    hold_timer=NULL; /* the callback may drain inputs or close this mode */
-    hold_origin.dispatching=verified;
-    send(KEYPAD_LONG);
-    hold_origin_clear();
-#else
-    (void)t;send(KEYPAD_LONG);hold_timer=NULL;
+/* A new physical UI press invalidates old held-key consent, without losing the
+ * independent press/release state of PTT or any other key. */
+static void hold_origins_clear(void) {
+    for (unsigned key = 0; key < KEYS; ++key) key_st[key].origin_armed = false;
+}
+
+static bool hold_source_down(keypad_key_t key) {
+    keypad_t *pad = key_st[key].origin_pad;
+    uint16_t code = key_st[key].origin_code;
+    if (!pad) return false;
+#ifdef HOST_BUILD
+    if (front_keys_test_held) return front_keys_test_held(pad->fd, code);
+#endif
+    unsigned long keys[(KEY_MAX + 8*sizeof(long))/(8*sizeof(long))] = {0};
+    return code <= KEY_MAX && ioctl(pad->fd, EVIOCGKEY(sizeof(keys)), keys) >= 0 &&
+        (keys[code/(8*sizeof(long))] & (1UL << (code%(8*sizeof(long)))));
+}
+#endif
+
+static void held_cb(lv_timer_t *t) {
+    keypad_key_t key = (keypad_key_t)(intptr_t)t->user_data;
+    if ((unsigned)key >= KEYS || key_st[key].hold_timer != t) return;
+    key_st[key].hold_timer = NULL;      /* one shot: LVGL deletes it */
+#ifdef ENABLE_FREEDV_CONTROL
+    bool scoped = ctl_diagnostic_input_blocked();
+    bool verified = scoped && key_st[key].down && key_st[key].origin_armed &&
+        key_st[key].origin_pad &&
+        key_st[key].origin_generation == ctl_remote_input_generation() &&
+        key_st[key].origin_pad->diagnostic_generation == key_st[key].origin_generation &&
+        hold_source_down(key);
+    /* Baseband POWER has no evdev level. Preserve its terminal hold without
+     * granting local UI consent or recognizing an injected input as physical. */
+    bool power = scoped && key == KEYPAD_POWER && key_st[key].down &&
+        key_st[key].legacy_power && power_reported_down &&
+        key_st[key].origin_generation == ctl_remote_input_generation();
+    if (scoped && !verified && !power) return;
+    held_dispatch_local = verified;
+#endif
+    key_st[key].long_sent = true;
+    send(key, KEYPAD_LONG);
+#ifdef ENABLE_FREEDV_CONTROL
+    held_dispatch_local = false;
+    key_st[key].origin_armed = false;
+    key_st[key].legacy_power = false;
 #endif
 }
 
@@ -153,37 +162,49 @@ static keypad_key_t button_of(uint16_t code) {
     return KEYPAD_UNKNOWN;
 }
 
-/* One input event a call; value 1 is a press, anything else (release, autorepeat) lets go */
-static void button_event(const struct input_event *in,keypad_t *source) {
+/* Independent state for every button: another key must never hide PTT release. */
+static void keypad_button_from(keypad_key_t key, int value, keypad_t *source, uint16_t code) {
+    if ((unsigned)key >= KEYS) return;
+    if (key_st[key].hold_timer) {
+        lv_timer_del(key_st[key].hold_timer);
+        key_st[key].hold_timer = NULL;
+    }
+    if (value == 1) {
+        key_st[key].down = true;
+        key_st[key].long_sent = false;
 #ifdef ENABLE_FREEDV_CONTROL
-    hold_origin_clear();
+        key_st[key].origin_pad = source;
+        key_st[key].origin_code = code;
+        key_st[key].origin_generation = ctl_remote_input_generation();
+        key_st[key].origin_armed = source && ctl_diagnostic_input_blocked() &&
+            source->diagnostic_generation == key_st[key].origin_generation;
+        key_st[key].legacy_power = !source && key == KEYPAD_POWER && ctl_diagnostic_input_blocked();
 #else
-    (void)source;
+        (void)source; (void)code;
 #endif
-    if(in->code == BTN_TRIGGER_HAPPY4 && freedv_mode_radio_ptt(in->value != 0))return;
-    cur.key = button_of(in->code);
-    if (hold_timer) {
-        lv_timer_del(hold_timer);
-        hold_timer = NULL;
-    }
-    if (in->value == 1) {
+        send(key, KEYPAD_PRESS);
+        /* Entry/exit handlers may synchronously drain the inputs. Do not
+         * resurrect a hold timer for a press that the barrier just revoked. */
+        if (!key_st[key].down) return;
+        key_st[key].hold_timer = lv_timer_create(held_cb, key == KEYPAD_POWER ? HOLD_MS : hold_ms,
+                                                 (void *)(intptr_t)key);
+        lv_timer_set_repeat_count(key_st[key].hold_timer, 1);
+    } else if (key_st[key].down) {
+        key_st[key].down = false;
 #ifdef ENABLE_FREEDV_CONTROL
-        if (source && ctl_diagnostic_input_blocked() &&
-            source->diagnostic_generation==ctl_remote_input_generation()) {
-            hold_origin.pad=source;hold_origin.code=in->code;hold_origin.key=cur.key;
-            hold_origin.generation=source->diagnostic_generation;hold_origin.armed=true;
-        } else if (!source && in->code==KEY_POWER && ctl_diagnostic_input_blocked()) {
-            legacy_power_hold=true;legacy_power_generation=ctl_remote_input_generation();
-        }
+        key_st[key].origin_armed = key_st[key].legacy_power = false;
 #endif
-        send(KEYPAD_PRESS);
-        hold_timer = lv_timer_create(held_cb, hold_ms, NULL);
-        lv_timer_set_repeat_count(hold_timer, 1);
-    } else if (cur.state == KEYPAD_PRESS) {
-        send(KEYPAD_RELEASE);
-    } else if (cur.state == KEYPAD_LONG) {
-        send(KEYPAD_LONG_RELEASE);
+        send(key, key_st[key].long_sent ? KEYPAD_LONG_RELEASE : KEYPAD_RELEASE);
     }
+}
+
+void keypad_button(keypad_key_t key, int value) {
+    keypad_button_from(key, value, NULL, 0);
+}
+
+static void button_event(const struct input_event *in, keypad_t *source) {
+    if (in->code == BTN_TRIGGER_HAPPY4 && freedv_mode_radio_ptt(in->value != 0)) return;
+    keypad_button_from(button_of(in->code), in->value, source, in->code);
 }
 
 static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
@@ -198,7 +219,7 @@ static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
         if (in.type == EV_KEY) {
 #ifdef ENABLE_FREEDV_CONTROL
             if (in.value == 1 && ctl_diagnostic_input_blocked()) {
-                hold_origin_clear();
+                hold_origins_clear();
                 pad->diagnostic_generation = ctl_remote_input_generation();
             }
 #endif
@@ -217,8 +238,6 @@ static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
                     if (ctl_diagnostic_input_blocked()) {
                         unsigned generation = ctl_remote_input_generation();
                         if (in.value == 1) mfk->diagnostic_generation = generation;
-                        /* A repeat of a pre-fence held button is not a new
-                         * local consent press. A fresh press/release is needed. */
                         mfk->pressed = in.value != 0 && mfk->diagnostic_generation == generation;
                     } else
 #endif
@@ -228,7 +247,7 @@ static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
                  * in the same pass would be lost */
                 data->continue_reading = false;
             } else {
-                button_event(&in,pad);
+                button_event(&in, pad);
             }
         }
     }
@@ -244,17 +263,17 @@ static void keypad_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
  * so the wake, the hold and the control owner work the same. GUI thread */
 void keypad_power_set(bool down) {
     struct input_event in = {.type = EV_KEY, .code = KEY_POWER, .value = down ? 1 : 0};
-#ifdef ENABLE_FREEDV_CONTROL
-    power_reported_down=down;
-#endif
 
+#ifdef ENABLE_FREEDV_CONTROL
+    power_reported_down = down;
+#endif
     if (down) {
         ctl_local_input();
     }
     if (backlight_tick() && down) {
         return;     /* the press woke the screen: that was its job */
     }
-    button_event(&in,NULL);
+    button_event(&in, NULL);
 }
 
 keypad_t *keypad_init(char *dev_name) {
@@ -292,9 +311,11 @@ keypad_t *keypad_init(char *dev_name) {
 #ifdef ENABLE_FREEDV_CONTROL
 static bool diagnostic_inputs_reset(void) {
     bool ok = true;
-    hold_origin_clear();
-    if (hold_timer) { lv_timer_del(hold_timer); hold_timer = NULL; }
-    cur = (event_keypad_t){.key=KEYPAD_UNKNOWN, .state=KEYPAD_RELEASE};
+    held_dispatch_local = false;
+    for (unsigned key = 0; key < KEYS; ++key) {
+        if (key_st[key].hold_timer) lv_timer_del(key_st[key].hold_timer);
+        memset(&key_st[key], 0, sizeof(key_st[key]));
+    }
     for (unsigned i = 0; i < diagnostic_pad_count; ++i) {
         keypad_t *pad = diagnostic_pads[i];
         if (!fd_diagnostic_drain_input(pad->fd)) ok = false;
@@ -325,7 +346,7 @@ void front_keys_diagnostic_input_release(void) {
 }
 bool front_keys_diagnostic_local_event(void) {
     if (!ctl_diagnostic_input_blocked()) return false;
-    if (held_dispatch_local()) return true;
+    if (held_dispatch_local) return true;
     lv_indev_t *input = lv_indev_get_act();
     if (!input) return false;
 #ifdef HOST_BUILD

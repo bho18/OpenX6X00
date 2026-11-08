@@ -17,6 +17,7 @@ def fn(name):
 (p/'control_owner.c').write_text(Path('src/control_owner.c').read_text())
 pre = r'''
 #define _GNU_SOURCE
+#include "board.h"     /* the ranges handle_cmd clamps with (BOARD_RIT_MAX, #189) */
 #include "control_owner.h"
 #include "radio.h"
 #include <stdio.h>
@@ -25,6 +26,7 @@ pre = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -32,7 +34,9 @@ pre = r'''
 #define AUDIO_RATE 24000
 static bool keyed;
 radio_state_t radio_get_state(void) {return keyed ? RADIO_TX : RADIO_RX;}
-typedef struct {pthread_mutex_t lock; bool rx_sensors,tx_sensors,audio_on; uint32_t fmt_gen;} client_t;
+typedef struct {pthread_mutex_t lock; bool rx_sensors,tx_sensors,audio_on; uint32_t fmt_gen;
+                bool funnel; char token[33]; int role; bool tx_ok;} client_t;   /* funnel: #58, never set here */
+static bool remote_server_session_check(const char *t,int *role,bool *tx,char *name,size_t n) {(void)t;(void)role;(void)tx;(void)name;(void)n;return false;}
 static client_t clients[4];
 typedef struct {int32_t freq,mode,flo,fhi,agc,rit; int drive; bool tx;} rstate_t;
 static atomic_bool trust_operate = true;
@@ -41,6 +45,7 @@ typedef struct {uint32_t rate,type,ch,samples;} afmt_t;
 static afmt_t audio_fmt(const client_t *c) {(void)c;return (afmt_t){48000,0,2,2048};}
 static void audio_fmt_cmd(client_t *c,const char *name,const char *arg) {(void)c;(void)name;(void)arg;}
 static int ptt_owner;
+static int tx_lent = -1;   /* #97: the start that took control for itself, set by handle_cmd */
 static bool ptt_on_air;
 static uint64_t ptt_ms, ptt_keyed_ms;
 static uint32_t key_gen;
@@ -77,4 +82,4 @@ int main(void) {
   return !(!keyed && ends==2 && last_command==-1);   /* fixed (audit B01): both unkeys end the session */
 }
 '''
-(p/'unkey-ownership.c').write_text(pre+'\n'+fn('static bool parse_bool(')+'\n'+fn('static int split_args(')+'\n'+fn('static void handle_cmd(')+'\n'+main)
+(p/'unkey-ownership.c').write_text(pre+'\n'+fn('static bool parse_bool(')+'\n'+fn('static int split_args(')+'\n'+fn('static bool funnel_cmd_ok(')+'\n'+fn('static void handle_cmd(')+'\n'+main)

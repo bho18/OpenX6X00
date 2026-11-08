@@ -12,6 +12,10 @@ target_sources(${PROJECT_NAME} PUBLIC
     rcond_38.c rcond_40.c rcond_42.c rcond_44.c
     rcond_60.c
     rcond_freq_54.c rcond_freq_88.c rcond_pm_20.c   # the frequency, the scope span
+    codec_14.c codec_16.c codec_18.c codec_20.c codec_22.c codec_24.c codec_26.c   # Codec (Share Tech Mono, OFL)
+    codec_28.c codec_30.c codec_32.c codec_34.c codec_36.c
+    codec_38.c codec_40.c codec_42.c codec_44.c
+    codec_60.c
     dejavu_14.c dejavu_16.c dejavu_18.c dejavu_20.c dejavu_22.c dejavu_24.c dejavu_26.c
     dejavu_28.c dejavu_30.c dejavu_32.c dejavu_34.c dejavu_36.c
     dejavu_38.c dejavu_40.c dejavu_42.c dejavu_44.c
@@ -20,8 +24,10 @@ target_sources(${PROJECT_NAME} PUBLIC
     arial_28.c arial_30.c arial_32.c arial_34.c arial_36.c
     arial_38.c arial_40.c arial_42.c arial_44.c
     arial_60.c
+    power_sym_14.c power_sym_18.c power_sym_22.c                        # the top bar: a plug (Font Awesome 5 Free as LVGL's own symbols: OFL-1.1, icons CC BY 4.0), Montserrat for the rest
     pixel_12.c pixel_14.c pixel_16.c pixel_18.c pixel_20.c pixel_22.c   # 1bit (Terminus Font, OFL-1.1)
     pixel_24.c pixel_28.c pixel_32.c pixel_44.c
     pixel_freq_40.c                                                     # its frequency
+    matrix_20.c                                                         # the screensaver's rain (Noto Sans CJK JP, OFL-1.1)
     font_select.c
 )

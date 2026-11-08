@@ -103,5 +103,16 @@
     "commit": "a2d5365fbbb651be67959d47c351573f9374d5e0",
     "source_archive_sha256": "ca3c083fc54ec5e6266560492576a8e08d970ffd51ca40875236cca19fade58c",
     "track": "complete official GUI build, separate from backend harness"
+  },
+  "upstream_integration": {
+    "application_repository": "https://github.com/Guru-RF/OpenX6X00",
+    "application_commit": "733c425e40b3bbd41e1bb3eac098edfc1a8f2cb4",
+    "public_beta_commit": "9688d21cbf360ad14acf059e7df304b5dba9a1ec",
+    "verified_application_baseline": "91f3b5e03f8cf7bffc58a1c44eaef6221be21631",
+    "public_history_bridge": "da84c3361676beb2a77119a185eb13e26e15b7aa",
+    "runtime_recipe_repository": "https://github.com/Guru-RF/AetherX6200Buildroot",
+    "runtime_recipe_commit": "aa1c7a57e8dc812dacfae2484568f1a5a426342e",
+    "linux_sdk_baseline_unchanged": true,
+    "publication_repository": "bho18/OpenX6X00"
   }
 }

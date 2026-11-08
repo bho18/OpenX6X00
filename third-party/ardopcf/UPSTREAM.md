@@ -62,3 +62,16 @@ Each one is its own commit on top of the pristine import.
 - `lib/rawhid/rawhid.c`: on Linux `CM108Handle` is the file descriptor its
   `read`/`write`/`close` calls take, not a `hid_device *` (an int-conversion
   warning with older gcc, an error with gcc 14 and later).
+- `src/common/ARQ.c`, from upstream `2b1e6d5` (develop, after 1.0.4.1.3): a
+  call that gets no answer reports `STATUS CONNECT TO <call> FAILED` on the
+  host port and the console, not `END ARQ CALL` (the test was inverted).
+  Host and log text only.
+- `src/common/HostInterface.c`, from upstream `906a38c` (develop, its
+  PROTOCOLMODE test only, not its comment typos): `PROTOCOLMODE` with a mode
+  other than ARQ, RXO or FEC answers `FAULT Syntax Err`, instead of
+  `PROTOCOLMODE now <mode>` with the mode quietly set to ARQ.
+- `src/common/ARQ.c`, `src/common/ARDOPC.c`, `src/common/Modulate.c`, from
+  upstream `971957f` (develop, its ID part only, not its reconfiguration
+  feature): a ConReq or Ping frame (and its repeats) counts as an ID, as it
+  carries our call, so no 10 minute ID frame follows a call nobody answered
+  (it keyed by itself about 9 minutes after the call).

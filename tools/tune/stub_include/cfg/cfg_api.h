@@ -1,0 +1,27 @@
+/* Host test shim of src/cfg/cfg_api.h: the settings tx_player.c and ext_tune.c read, and the ATU switch ext_tune.c
+ * sets (#87), which the test keeps (tune_test.c), and the subjects ext_tune.c subscribes to */
+#pragma once
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+typedef struct ParamFloat       ParamFloat;
+typedef struct ParamInt         ParamInt;
+typedef struct ComputedParamInt ComputedParamInt;
+typedef struct Subject          Subject;
+typedef struct Observer         Observer;
+typedef void (*observer_cb)(Subject *, void *);
+extern ParamFloat       *cfg_pwr, *cfg_tune_pwr;
+extern ParamInt         *cfg_tune_time, *cfg_wspr_tx_freq, *cfg_atu_enabled;
+extern ParamInt         *cfg_band_vfoa_freq, *cfg_band_vfob_freq, *cfg_band_vfoa_mode, *cfg_band_vfob_mode,
+                        *cfg_band_current_vfo, *cfg_band_split, *cfg_band_tx_shift;
+extern ComputedParamInt *cfg_cur_mode;
+float     param_f_get(const ParamFloat *p);
+int32_t   param_i_get(const ParamInt *p);
+void      param_i_set(ParamInt *p, int32_t v);
+int32_t   cparam_i_get(const ComputedParamInt *p);
+bool      cfg_is_tx_freq(int32_t freq);
+const char *cfg_tx_refusal(int32_t freq);
+const char *cfg_tx_mhz(int32_t freq, char *buf, size_t size);
+const char *cfg_tx_refusal_text(int32_t freq, char *buf, size_t size);
+float     cfg_pwr_max_get(void);
+Observer *subject_subscribe(Subject *subj, observer_cb fn, void *user_data);

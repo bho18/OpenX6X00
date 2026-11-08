@@ -98,6 +98,10 @@ static const std::map<int, Knob> knobs = {
     {CTRL_IF_SHIFT, num("IF shift", cfg_sm.p_band_if_shift)},
     {CTRL_WF_REF, num("WF ref", cfg_sm.p_waterfall_ref)},
     {CTRL_WF_MODE, pick("WF mode", cfg_sm.p_wf_mode, {"Centered", "Fixed"})},
+    {CTRL_WF_3D, on_off("WF 3D", cfg_sm.p_wf_3d)},
+    {CTRL_WF_3D_DEPTH, num("3D depth", cfg_sm.p_wf_3d_depth)},
+    {CTRL_WF_3D_TILT, num("3D tilt", cfg_sm.p_wf_3d_tilt)},
+    {CTRL_WF_3D_FLOOR, num("3D floor", cfg_sm.p_wf_3d_floor)},
     {CTRL_CLUSTER, {"Cluster", nullptr, [] { return std::string(cluster_column_move(0)); }}},
     {CTRL_CLUSTER_ORDER, pick("Cluster order", cfg_sm.p_cluster_order, {"Freq", "Time"})},
     {CTRL_CLUSTER_BANDS, pick("Cluster bands", cfg_sm.p_cluster_all_bands, {"Band", "All"})},
@@ -106,6 +110,13 @@ static const std::map<int, Knob> knobs = {
         return std::string(m == CLUSTER_FM_ALL ? "All" : m == CLUSTER_FM_CW ? "CW" : m == CLUSTER_FM_SSB ? "SSB"
                            : m == CLUSTER_FM_DIG ? "DIG" : m == (CLUSTER_FM_CW | CLUSTER_FM_DIG) ? "CW+DIG" : "Some");
     }}},
+
+    {CTRL_AGC, pick("AGC", cfg_sm.cp_cur_agc, {"Off", "Slow", "Fast", "Auto"})},
+    {CTRL_PRE, on_off("PRE", cfg_sm.cp_cur_pre)},
+    {CTRL_ATT, on_off("ATT", cfg_sm.cp_cur_att)},
+    {CTRL_ATU, on_off("ATU", cfg_sm.p_atu_enabled)},
+    {CTRL_STEP, {"Step", &cfg_sm.p_mode_freq_step,
+                 [] { return std::to_string(cfg_sm.p_mode_freq_step.get()) + " Hz"; }}},
 
     {CTRL_DNF, on_off("Notch filter", cfg_sm.p_dnf)},
     {CTRL_DNF_CENTER, num("DNF center", cfg_sm.p_dnf_center)},
@@ -217,7 +228,7 @@ class KnobLine {
         }
         float max = ctrl == CTRL_VOL                                            ? BOARD_VOL_MAX
                   : ctrl == CTRL_SQL || ctrl == CTRL_RFG || ctrl == CTRL_MONI ? 100
-                  : ctrl == CTRL_PWR                                            ? 10
+                  : ctrl == CTRL_PWR                                            ? BOARD_PWR_MAX
                                                                                 : 0;
 
         *level = max > 0 ? atof(val) / max : -1;
@@ -229,26 +240,49 @@ class KnobLine {
 static KnobLine &vol_line = *new KnobLine(LV_SYMBOL_UP);
 static KnobLine &mfk_line = *new KnobLine(LV_SYMBOL_DOWN);
 static bool      enabled;
+static bool      wanted = true;     /* knobs_display(): no window or decoder text over them */
+static bool      tucked;            /* hidden with the buttons (Hide buttons, button_bar.cpp) */
 
 static void knob_info_cb(Subject *subj, void *user_data) {
     enabled = cfg_sm.p_knob_info.get();
 }
 
 void knobs_init(lv_obj_t *parent) {
-    lv_coord_t y = 480 - BTN_HEIGHT - 5;     /* just over the buttons */
+    lv_coord_t y = BOARD_DISP_H - BTN_HEIGHT - 5;     /* just over the buttons */
 
     vol_line.make(parent, y - LINE_H * 2);
     mfk_line.make(parent, y - LINE_H);
+
+    /* A line as high as its box at least: in VISION's bigger type the boxes are 35 px, the
+     * two lay over each other and the MFK one ran 3 px under the buttons (#82) */
+    lv_obj_update_layout(mfk_line.obj());
+    lv_coord_t h = LV_MAX(LINE_H, lv_obj_get_height(mfk_line.obj()));
+
+    lv_obj_set_y(vol_line.obj(), y - h * 2);
+    lv_obj_set_y(mfk_line.obj(), y - h);
+    tucked = false;     /* made shown, as the buttons are (buttons_init()) */
     cfg_sm.p_knob_info.subscribe_delayed_and_notify(knob_info_cb, nullptr);
 }
 
-void knobs_display(bool on) {
+static void show_lines() {
     for (lv_obj_t *l : {vol_line.obj(), mfk_line.obj()}) {
-        if (on && enabled) {
+        if (wanted && enabled && !tucked) {
             lv_obj_clear_flag(l, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
         }
+    }
+}
+
+void knobs_display(bool on) {
+    wanted = on;
+    show_lines();
+}
+
+void knobs_hide(bool hide) {
+    tucked = hide;
+    if (vol_line.obj()) {
+        show_lines();
     }
 }
 

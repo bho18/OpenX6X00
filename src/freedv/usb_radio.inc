@@ -63,6 +63,7 @@ bool radio_usb_observe(void *unused,fd_usb_inputs *out){
     uint64_t wanted=atomic_load(&usb_radio.requested_revision);
     pthread_mutex_lock(&usb_radio.queue_mutex);bool eligible=usb_radio.pending.tx_eligible;
     pthread_mutex_unlock(&usb_radio.queue_mutex);
+    bool blocked=cfg_tx_block()!=NULL;
     bool fresh=packet.known && packet.age_ms<=250;
     *out=(fd_usb_inputs){.valid=true,.pressed=pressed,.release=release,
         .rf_valid=fresh,.rf_tx=packet.tx,.sequence=packet.sequence,.rf_age_ms=packet.age_ms,
@@ -70,8 +71,8 @@ bool radio_usb_observe(void *unused,fd_usb_inputs *out){
             packet.sequence>atomic_load(&usb_radio.applied_sequence) && fresh && !packet.tx &&
             !atomic_load(&usb_radio.restoring) && !atomic_load(&usb_radio.failed),
         .tuning_revision=wanted,
-        .tx_eligible=eligible,
-        .protection=atomic_load(&usb_radio.failed) || radio_swr_trips()!=usb_radio.swr ||
+        .tx_eligible=eligible && !blocked,
+        .protection=blocked || atomic_load(&usb_radio.failed) || radio_swr_trips()!=usb_radio.swr ||
             atomic_load(&freedv_base_errors)!=usb_radio.errors};
     return true;
 }
@@ -79,51 +80,60 @@ bool radio_usb_allow_tx(bool allow){
     if(!allow){atomic_store(&usb_radio.rf_allowed,false);return true;}
     fd_usb_inputs in;
     if(!radio_usb_owned() || atomic_load(&usb_radio.halted) || !radio_usb_observe(NULL,&in) ||
-       !in.valid || in.pressed || !in.rf_valid || in.rf_tx || in.protection || !in.configuration_ready)return false;
+       !in.valid || in.pressed || !in.rf_valid || in.rf_tx || in.protection || !in.configuration_ready ||
+       !in.tx_eligible || cfg_tx_block())return false;
     pthread_mutex_lock(&usb_radio.queue_mutex);bool eligible=usb_radio.pending.tx_eligible;
     pthread_mutex_unlock(&usb_radio.queue_mutex);if(!eligible)return false;
     atomic_store(&usb_radio.rf_allowed,true);
-    if(atomic_load(&usb_radio.halted)){atomic_store(&usb_radio.rf_allowed,false);return false;}
+    if(atomic_load(&usb_radio.halted) || cfg_tx_block()){atomic_store(&usb_radio.rf_allowed,false);return false;}
     return true;
 }
 bool radio_usb_permit(void *unused,bool allow){(void)unused;return radio_usb_allow_tx(allow);}
+/* The global inhibit may arrive after the profile was prepared. The control
+ * worker clears software TX and reinstates the ordinary receive-only hold. */
+static void usb_radio_block_hold_locked(void){
+    if(cfg_tx_block()){
+        hw_set_f(HW_TXPWR_F,0.0f);hw_set_i(HW_KEY_TRAIN,true);hw_set_i(HW_VOX,false);
+    }
+}
 void radio_usb_clear(void *unused,bool halt){
     (void)unused;if(halt)radio_usb_inhibit(NULL);
     if(!radio_usb_owned())return;
     radio_lock();hw_set_i(HW_MODEM,false);hw_set_i(HW_PTT,false);hw_pin_set(HW_PIN_MORSE_KEY,false);
-    atomic_store(&modem_on,false);morse_on=false;radio_unlock();
+    atomic_store(&modem_on,false);morse_on=false;usb_radio_block_hold_locked();radio_unlock();
 }
 bool radio_usb_key(void *unused,uint64_t expected_release){
     (void)unused;fd_usb_inputs in={0};
     if(!atomic_load(&usb_radio.rf_allowed) || atomic_load(&usb_radio.halted) ||
        !radio_usb_observe(NULL,&in) || !in.valid || !in.pressed || !in.configuration_ready ||
-       !in.rf_valid || in.rf_tx || in.protection)return false;
+       !in.rf_valid || in.rf_tx || in.protection || !in.tx_eligible || cfg_tx_block())return false;
     if(!fd_writer_voice_begin())return false;
     radio_lock();hw_freedv_cached_snapshot_t current,expected;
     pthread_mutex_lock(&usb_radio.queue_mutex);expected=usb_radio.expected;
     bool eligible=usb_radio.pending.tx_eligible;pthread_mutex_unlock(&usb_radio.queue_mutex);
     bool ok=radio_usb_observe(NULL,&in) && in.valid && in.pressed && in.release==expected_release &&
-        in.configuration_ready && in.rf_valid && !in.rf_tx && !in.protection && eligible &&
+        in.configuration_ready && in.rf_valid && !in.rf_tx && !in.protection && eligible && !cfg_tx_block() &&
         radio_usb_owned() && atomic_load(&usb_radio.rf_allowed) && !atomic_load(&usb_radio.halted) &&
         hw_get_freedv_cached_snapshot(&current) && hw_freedv_tuning_matches(&expected,&current) &&
         !current.route.record && current.line_in==0 && current.monitor_level==0 && !current.vox_enabled;
     if(ok){
         /* A power detent immediately before PTT must not fail admission merely
          * because its targeted mailbox write has not run yet. */
-        hw_set_f(HW_TXPWR_F,radio_usb_power_tenths()/10.0f);
+        hw_set_f(HW_TXPWR_F,cfg_tx_block()?0.0f:radio_usb_power_tenths()/10.0f);
         hw_set_i(HW_RECORD,false);hw_set_i(HW_PTT,false);
         /* Stop and a retune both win while either preceding I/O was blocked. */
         ok=atomic_load(&usb_radio.rf_allowed) && !atomic_load(&usb_radio.halted) &&
            radio_usb_observe(NULL,&in) && in.valid && in.pressed && in.release==expected_release &&
-           in.configuration_ready && in.rf_valid && !in.rf_tx && !in.protection;
+           in.configuration_ready && in.rf_valid && !in.rf_tx && !in.protection &&
+           in.tx_eligible && !cfg_tx_block();
         if(ok)ok=hw_set_i(HW_MODEM,true);
         bool retained=radio_usb_observe(NULL,&in) && in.valid && in.pressed && in.release==expected_release &&
-            in.rf_valid && !in.protection &&
+            in.rf_valid && !in.protection && in.tx_eligible && !cfg_tx_block() &&
             atomic_load(&usb_radio.requested_revision)==atomic_load(&usb_radio.applied_revision);
         if(atomic_load(&usb_radio.halted) || !atomic_load(&usb_radio.rf_allowed) || !retained){
             hw_set_i(HW_MODEM,false);hw_set_i(HW_PTT,false);ok=false;
         }
-        atomic_store(&modem_on,ok);
+        usb_radio_block_hold_locked();atomic_store(&modem_on,ok);
     }
     radio_unlock();fd_writer_voice_end();return ok;
 }
@@ -134,7 +144,10 @@ static bool usb_radio_capture(usb_radio_profile *p,bool restore){
     p->frequency[0]=param_i_get(cfg_band_vfoa_freq);p->frequency[1]=param_i_get(cfg_band_vfob_freq);
     if(p->vfo<0 || p->vfo>1 || !cfg_is_valid_hw_freq(p->frequency[p->vfo]) ||
        (!restore && cfg_transverter_shift_for(p->frequency[p->vfo])))return false;
-    p->power=radio_usb_power_tenths();p->tx_eligible=cfg_is_tx_freq(p->frequency[p->vfo]);
+    p->power=radio_usb_power_tenths();
+    /* The hardware range alone does not grant TX: retain upstream band policy
+     * and its independent WR12/global inhibit in the GUI-captured profile. */
+    p->tx_eligible=cfg_is_tx_freq(p->frequency[p->vfo]) && !cfg_tx_refusal(p->frequency[p->vfo]);
     p->tx_i=param_i_get(cfg_band_tx_i_offset);p->tx_q=param_i_get(cfg_band_tx_q_offset);
     for(int32_t zoom=param_i_get(cfg_mode_zoom);zoom>1;zoom>>=1)p->fft_decimation++;
     p->dac_gain=param_f_get(cfg_band_dac_offset);p->atu_enabled=param_i_get(cfg_atu_enabled);p->atu_network=cfg_atu_get_network();
@@ -146,6 +159,15 @@ static bool usb_radio_capture(usb_radio_profile *p,bool restore){
     p->rfg=param_i_get(cfg_rfgain);p->sql=param_i_get(cfg_squelch);
     p->filter_low=cparam_i_get(cfg_cur_filter_low);p->filter_high=cparam_i_get(cfg_cur_filter_high);
     p->rit=param_i_get(cfg_rit);p->xit=param_i_get(cfg_xit);p->split=param_i_get(cfg_band_split);
+    /* radio_tx_freq() is deliberately the foreground while FreeDV is active.
+     * Restoration must also check the ordinary saved split/shift TX target. */
+    int64_t tx_frequency=p->frequency[p->vfo];
+    if(p->split){
+        int32_t shift=param_i_get(cfg_band_tx_shift);
+        tx_frequency=shift?(int64_t)p->frequency[p->vfo]+(p->vfo?-((int64_t)shift):(int64_t)shift):p->frequency[1-p->vfo];
+    }
+    p->tx_eligible=p->tx_eligible && tx_frequency>=INT32_MIN && tx_frequency<=INT32_MAX &&
+        cfg_is_tx_freq((int32_t)tx_frequency) && !cfg_tx_refusal((int32_t)tx_frequency);
     p->key_train=param_i_get(cfg_key_train);p->nr=param_i_get(cfg_nr);p->nb=param_i_get(cfg_nb);
     p->dnf=param_i_get(cfg_dnf);p->dnf_auto=param_i_get(cfg_dnf_auto);p->comp=param_i_get(cfg_comp);
     bool muted=mute || tci_mute || btaudio_speaker_muted() || param_i_get(cfg_speaker_off);
@@ -168,6 +190,10 @@ static bool usb_radio_continue(bool restore,uint64_t revision){
 #define USB_WRITE(call) do { if(!usb_radio_continue(restore,p->revision))return false; (void)(call); } while(0)
 static bool usb_radio_apply(const usb_radio_profile *p,bool restore){
     USB_WRITE(hw_set_i(HW_MODEM,false));USB_WRITE(hw_set_i(HW_PTT,false));USB_WRITE(hw_set_i(HW_RECORD,false));
+    /* Hold autonomous sources at the ordinary receive-only settings throughout
+     * a retune and the potentially blocking base-band calibration operation. */
+    USB_WRITE(hw_set_f(HW_TXPWR_F,0.0f));USB_WRITE(hw_set_i(HW_KEY_TRAIN,true));
+    USB_WRITE(hw_set_i(HW_VOX,false));
     USB_WRITE(hw_set_i(HW_SPLIT,restore?p->split:false));
     USB_WRITE(hw_set_i(HW_RIT,restore?p->rit:0));USB_WRITE(hw_set_i(HW_XIT,restore?p->xit:0));
     USB_WRITE(hw_set_i(HW_IF_SHIFT_ON,restore && p->if_shift!=0));USB_WRITE(hw_set_i(HW_IF_SHIFT_HZ,restore?p->if_shift:0));
@@ -200,18 +226,31 @@ static bool usb_radio_apply(const usb_radio_profile *p,bool restore){
     USB_WRITE(hw_set_i(HW_DNF,restore?p->dnf:false));USB_WRITE(hw_set_i(HW_DNF_AUTO,restore?p->dnf_auto:false));
     USB_WRITE(hw_set_i(HW_COMP_ON,restore?p->comp<=1:true));
     if(restore && p->comp>1)USB_WRITE(hw_set_i(HW_COMP_LEVEL,p->comp-2));
-    USB_WRITE(hw_set_i(HW_KEY_TRAIN,restore?p->key_train:true));
+    bool eligible=p->tx_eligible && !cfg_tx_block();
+    bool training=restore && p->key_train &&
+        (p->mode[p->vfo]==radio_mode_cw || p->mode[p->vfo]==radio_mode_cwr ||
+         (p->split && (p->mode[1-p->vfo]==radio_mode_cw || p->mode[1-p->vfo]==radio_mode_cwr)));
+    USB_WRITE(hw_set_i(HW_KEY_TRAIN,restore && eligible?p->key_train:true));
     if(restore){
         const hw_freedv_cached_snapshot_t *s=&usb_radio.saved;
         USB_WRITE(hw_set_i(HW_MIC,s->microphone));USB_WRITE(hw_set_i(HW_HMIC,s->hand_mic_gain));
         USB_WRITE(hw_set_i(HW_IMIC,s->internal_mic_gain));USB_WRITE(hw_set_i(HW_LINE_IN,s->line_in));
         USB_WRITE(hw_set_i(HW_LINE_OUT,s->line_out));USB_WRITE(hw_set_i(HW_SPMODE,s->speaker_mode));
-        USB_WRITE(hw_set_i(HW_VOX,s->vox_enabled));
+        USB_WRITE(hw_set_i(HW_VOX,eligible?s->vox_enabled:false));
     }else{
         USB_WRITE(hw_set_i(HW_VOX,false));USB_WRITE(hw_set_i(HW_LINE_IN,0));USB_WRITE(hw_set_i(HW_LINE_OUT,10));
     }
     USB_WRITE(hw_set_i(HW_RXVOL,restore?p->volume:0));USB_WRITE(hw_set_i(HW_MONI,restore?p->monitor:0));
-    USB_WRITE(hw_set_f(HW_TXPWR_F,p->power/10.0f));
+    /* The core owns the cached calibration state as well as ordinary deferred
+     * writes. Its result is required before RX can become ready; PTT never
+     * starts this operation cold. This is not an independent RF-off receipt. */
+    if(!usb_radio_continue(restore,p->revision) ||
+       !freedv_usb_open_tx_apply(eligible))return false;
+    eligible=p->tx_eligible && !cfg_tx_block();
+    if(!eligible){
+        USB_WRITE(hw_set_i(HW_KEY_TRAIN,true));USB_WRITE(hw_set_i(HW_VOX,false));
+    }
+    USB_WRITE(hw_set_f(HW_TXPWR_F,eligible && !training?p->power/10.0f:0.0f));
     if(!usb_radio_continue(restore,p->revision))return false;
     return hw_resend_all();
 }
@@ -242,7 +281,10 @@ static void *usb_radio_worker(void *unused){
             radio_lock();
             if(usb_radio_continue(restore,p.revision)){
                 if(restore || profile)ok=usb_radio_apply(&p,restore);
-                else {hw_set_f(HW_TXPWR_F,p.power/10.0f);
+                else {
+                    bool eligible=p.tx_eligible && !cfg_tx_block();
+                    hw_set_f(HW_TXPWR_F,eligible?p.power/10.0f:0.0f);
+                    if(!eligible){hw_set_i(HW_KEY_TRAIN,true);hw_set_i(HW_VOX,false);}
                     ok=usb_radio_continue(false,p.revision) && hw_resend_all();}
                 if(ok && !restore && profile){
                     hw_freedv_cached_snapshot_t expected;
@@ -364,6 +406,7 @@ bool radio_usb_release(void){
     if(!radio_usb_restore() || !atomic_load(&usb_radio.worker_done))return false;
     bool ok=ctl_freedv_release(true);
     if(ok){atomic_store(&usb_radio.rf_allowed,false);atomic_store(&usb_radio.owned,false);
-        pthread_mutex_lock(&usb_radio.input_mutex);close(usb_radio.keypad);usb_radio.keypad=-1;pthread_mutex_unlock(&usb_radio.input_mutex);}
+        pthread_mutex_lock(&usb_radio.input_mutex);close(usb_radio.keypad);usb_radio.keypad=-1;pthread_mutex_unlock(&usb_radio.input_mutex);
+        freedv_usb_policy_released();}
     return ok;
 }

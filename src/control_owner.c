@@ -25,6 +25,8 @@ static ctl_info_t      owner;
 static ctl_info_t      before_diagnostic;
 static ctl_info_t      before_freedv;
 #endif
+static ctl_info_t      lender;    /* who a takeover took it from (ctl_give_back), kind CTL_NONE: no one (it was free) */
+static bool            lent;      /* that takeover is still the last change of holder: lender is to have it back */
 static atomic_uint     version;
 static atomic_uint_fast64_t injected_ms;
 
@@ -36,13 +38,17 @@ static uint64_t now_ms(void) {
 
 void ctl_init(void) {
     memset(&owner, 0, sizeof(owner));
+    memset(&lender, 0, sizeof(lender));
+    lent = false;
 }
 
 bool ctl_transmitting(void) {
     return radio_get_state() != RADIO_RX;
 }
 
+/* Every change of holder forgets the lender: only ctl_claim's takeover names one, after it */
 static void set_owner(ctl_kind_t kind, int id, const char *name) {
+    lent = false;
     owner.kind = kind;
     owner.id   = id;
     snprintf(owner.name, sizeof(owner.name), "%s", name ? name : "");
@@ -63,7 +69,11 @@ bool ctl_claim(ctl_kind_t kind, int id, const char *name, bool take) {
     if (owner.kind == kind && owner.id == id) {
         ok = true;
     } else if (owner.kind == CTL_NONE || (take && !ctl_transmitting())) {
+        ctl_info_t was = owner;
+
         set_owner(kind, id, name);
+        lender = was;
+        lent   = true;
         ok = true;
     } else {
         ok = false;
@@ -79,6 +89,21 @@ void ctl_release(ctl_kind_t kind, int id) {
     pthread_mutex_lock(&mux);
     if (owner.kind == kind && owner.id == id)
         set_owner(CTL_NONE, 0, "");
+    else if (lent && lender.kind == kind && lender.id == id)
+        memset(&lender, 0, sizeof(lender));     /* gone: it goes back free, as its leaving would have left it */
+    pthread_mutex_unlock(&mux);
+}
+
+void ctl_give_back(ctl_kind_t kind, int id) {
+#ifdef ENABLE_FREEDV_CONTROL
+    if (kind == CTL_DIAGNOSTIC || kind == CTL_FREEDV) return;
+#endif
+    pthread_mutex_lock(&mux);
+    if (owner.kind == kind && owner.id == id && lent) {
+        ctl_info_t to = lender;
+
+        set_owner(to.kind, to.id, to.name);     /* CTL_NONE: free again */
+    }
     pthread_mutex_unlock(&mux);
 }
 

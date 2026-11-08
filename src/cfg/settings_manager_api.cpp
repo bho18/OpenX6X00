@@ -3,10 +3,13 @@
 #include "../freedv/writer_gate.h"
 
 #include "db.h"
+#include "ham_bands.h"
 #include "settings_manager.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <iterator>
 
 // SettingsManager-level operations exposed to C. cfg_api_init lives in
 // cfg_api.cpp (it also fills the extern parameter pointers); these are the
@@ -30,6 +33,101 @@ bool cfg_is_rx_only_freq(int32_t freq) {
 
 bool cfg_is_tx_freq(int32_t freq) {
     return cfg_sm.is_tx_freq(freq);
+}
+
+bool cfg_wr12_freq(int32_t freq) {
+    return cfg_sm.wr12_freq(freq);
+}
+
+static std::atomic<const char *(*)(void)> tx_block{nullptr};
+
+void cfg_tx_block_set(const char *(*block)(void)) {
+    tx_block.store(block);
+}
+
+const char *cfg_tx_block(void) {
+    const char *(*block)(void) = tx_block.load();
+
+    return block ? block() : nullptr;
+}
+
+const char *cfg_tx_refusal(int32_t freq) {
+    const char *block = cfg_tx_block();
+
+    if (block) {
+        return block;
+    }
+    switch (ham_tx_check(freq, cfg_sm.is_tx_freq(freq), cfg_sm.transverter_shift_for(freq) != 0,
+                         cfg_sm.p_tx_outside_bands.get())) {
+        case HAM_TX_RX_ONLY:
+            return "receive only";
+        case HAM_TX_OFF_BAND:
+            return "outside the amateur bands (Settings > TX Cal)";
+        default:
+            return NULL;
+    }
+}
+
+/* tools/tune/tune_test.c keeps a copy of this one and cfg_tx_refusal_text: change both */
+const char *cfg_tx_mhz(int32_t freq, char *buf, size_t size) {
+    int32_t f      = freq < 0 ? -freq : freq;   /* a TX shift below 0 Hz */
+    int32_t sub    = f % 1000000;
+    int     digits = 3;
+
+    if (sub % 1000) {
+        for (digits = 6; sub % 10 == 0; digits--) sub /= 10;
+    } else {
+        sub /= 1000;
+    }
+    snprintf(buf, size, "%s%d.%0*d MHz", freq < 0 ? "-" : "", (int)(f / 1000000), digits, (int)sub);
+    return buf;
+}
+
+const char *cfg_tx_refusal_text(int32_t freq, char *buf, size_t size) {
+    const char *why = cfg_tx_refusal(freq);
+    char        mhz[24];
+
+    if (!why) {
+        return NULL;
+    }
+    snprintf(buf, size, "%s: %s", cfg_tx_mhz(freq, mhz, sizeof(mhz)), why);
+    return buf;
+}
+
+bool cfg_tx_range(int32_t freq, int32_t *lo, int32_t *hi) {
+    struct Range {
+        bool    on;
+        int32_t from, to;
+    };
+    const Range r[] = {
+        {cfg_sm.p_transverter_0_shift.get() != 0, cfg_sm.p_transverter_0_from.get(), cfg_sm.p_transverter_0_to.get()},
+        {cfg_sm.p_transverter_1_shift.get() != 0, cfg_sm.p_transverter_1_from.get(), cfg_sm.p_transverter_1_to.get()},
+        {true, SettingsManager::HF_MIN_FREQ, SettingsManager::HF_MAX_FREQ},
+    };
+
+    for (size_t k = 0; k < std::size(r); k++) {
+        if (!r[k].on || freq < r[k].from || freq > r[k].to) {
+            continue;
+        }
+        *lo = r[k].from;
+        *hi = r[k].to;
+        if (k == std::size(r) - 1 && !cfg_sm.p_tx_outside_bands.get() && !ham_band_of(freq, lo, hi)) {
+            return false;   /* HF outside the amateur bands (#121) */
+        }
+        for (size_t j = 0; j < k; j++) {    /* one before it covers part of it: there the radio goes another way */
+            if (!r[j].on) {
+                continue;
+            }
+            if (r[j].from > freq) {
+                *hi = std::min(*hi, r[j].from - 1);
+            }
+            if (r[j].to < freq) {
+                *lo = std::max(*lo, r[j].to + 1);
+            }
+        }
+        return true;
+    }
+    return false;
 }
 
 bool cfg_band_usable(void) {
@@ -81,6 +179,51 @@ void cfg_pwr_set(float watts) {
     cfg_sm.p_pwr.set(watts);
 }
 
+void cfg_hw_caps_set(uint32_t caps) {
+    cfg_sm.hw_caps_ = caps;
+    cfg_sm.cp_mode_lo_offset.recompute();
+}
+
+void cfg_pwr_max_set(float watts) {
+    cfg_sm.pwr_max_.store(watts);
+}
+
+float cfg_pwr_max_get(void) {
+    return cfg_sm.pwr_top();
+}
+
+float cfg_transverter_pwr_for(int32_t freq) {
+    return cfg_sm.transverter_pwr_for(freq);
+}
+
+float cfg_transverter_pwr_cap(int32_t rx, int32_t tx) {
+    return cfg_sm.transverter_pwr_cap(rx, tx);
+}
+
+pwr_xvtr_t cfg_pwr_xvtr_set(float watts, bool on_xvtr) {
+    switch (cfg_sm.pwr_xvtr_set(watts, on_xvtr)) {
+        case SettingsManager::XvtrPwr::HELD:     return PWR_XVTR_HELD;
+        case SettingsManager::XvtrPwr::RESTORED: return PWR_XVTR_RESTORED;
+        default:                                 return PWR_XVTR_SAME;
+    }
+}
+
+float cfg_pwr_xvtr_get(void) {
+    return cfg_sm.pwr_xvtr_.load();
+}
+
+void cfg_transverter_name(int32_t freq, char *buf, size_t size) {
+    BandInfoLoadResult b     = BandsTable::get_by_freq(static_cast<uint32_t>(freq));
+    bool               first = cfg_sm.p_transverter_0_shift.get() && freq >= cfg_sm.p_transverter_0_from.get() &&
+                         freq <= cfg_sm.p_transverter_0_to.get();
+
+    if (b.rc == SUCCESS && b.value.id != BAND_UNDEFINED && !b.value.name.empty()) {
+        snprintf(buf, size, "%s", b.value.name.c_str());
+    } else {
+        snprintf(buf, size, "%d", first ? 1 : 2);     /* as Settings numbers them */
+    }
+}
+
 void cfg_vfo_toggle(void) {
 #ifdef ENABLE_FREEDV_VOICE
     if(freedv_mode_active() && !fd_writer_voice_authorized()) {
@@ -115,6 +258,19 @@ int cfg_bands_active_ids(int32_t *ids, int32_t *start, int32_t *stop, char (*nam
     return n;
 }
 
+int cfg_bands_follow_region(int region) {
+    int from = cfg_sm.p_band_edges_region.get();
+
+    if (region == from || region < 1 || region > 3) return 0;
+    int changed = BandsTable::follow_region(from, region);
+    cfg_sm.p_band_edges_region.set(region);
+    return changed;
+}
+
+int cfg_bands_region(void) {
+    return cfg_sm.p_band_edges_region.get();
+}
+
 void cfg_band_vfo_copy(void) {
     cfg_sm.cfg_band_vfo_copy();
 }
@@ -131,4 +287,59 @@ int32_t cfg_mode_change_freq_step(bool up) {
     step = steps[i];
     cfg_sm.p_mode_freq_step.set(step);
     return step;
+}
+
+// --- A band's dial (cfg_band_dial_t) ---
+
+static const char *const band_dial_names[CFG_BAND_DIAL_N] = {
+    "vfo", "vfoa_freq", "vfob_freq", "vfoa_mode", "vfob_mode", "vfoa_att", "vfob_att", "vfoa_pre", "vfob_pre",
+    "vfoa_agc", "vfob_agc"};
+
+int32_t cfg_band_current(void) {
+    return cfg_sm.current_band_id();
+}
+
+int32_t cfg_band_of(int32_t freq) {
+    BandInfoLoadResult b = BandsTable::get_by_freq(static_cast<uint32_t>(freq));
+
+    return b.rc == SUCCESS ? b.value.id : BAND_UNDEFINED;
+}
+
+bool cfg_band_dial_get(int32_t freq, cfg_band_dial_t *d) {
+    int32_t id = cfg_band_of(freq);
+
+    if (id == BAND_UNDEFINED) {
+        return false;
+    }
+    // The band in use too (a band key, CAT or TCI went there while the app was open): its writes still waiting go in
+    // first, so the rows read are its dial as it is. Refused, it was taken at a later visit with the app's in it
+    cfg_sm.flush_storage(StorageType::BAND, id);
+    d->band_id = id;
+    for (int i = 0; i < CFG_BAND_DIAL_N; i++) {
+        ParamLoadResult<int32_t> r = BandParamsTable::Load<int32_t>(id, band_dial_names[i]);
+
+        if (r.rc != SUCCESS && r.rc != NOT_FOUND) {
+            return false;   // not read: the band left alone. Taken as none, its row was deleted on close
+        }
+        d->stored[i] = r.rc == SUCCESS;
+        d->val[i]    = r.value;
+    }
+    return true;
+}
+
+bool cfg_band_dial_put(const cfg_band_dial_t *d) {
+    if (d->band_id == BAND_UNDEFINED || d->band_id == cfg_sm.current_band_id()) {
+        return false;
+    }
+    cfg_sm.flush_storage(StorageType::BAND, d->band_id);    // what the app left there, written now and not after this
+    cfg_db_tx_lock();       // as the pending writes do: outside the legacy writer's transaction (audit B12)
+    for (int i = 0; i < CFG_BAND_DIAL_N; i++) {
+        if (d->stored[i]) {
+            BandParamsTable::Save<int32_t>(d->band_id, band_dial_names[i], d->val[i]);
+        } else {
+            BandParamsTable::Remove(d->band_id, band_dial_names[i]);
+        }
+    }
+    cfg_db_tx_unlock();
+    return true;
 }

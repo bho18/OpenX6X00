@@ -43,8 +43,13 @@ void base_guard_unkeyed(void);
  * writes lost after all tries; reg: the last register that failed */
 unsigned base_guard_take(unsigned *resent, unsigned *lost, int *reg);
 
-/* A line to /mnt/base_i2c.log (two files of 16 kB at most) and stderr, one per second at most */
+/* A line to /mnt/base_i2c.log (two files of 16 kB at most) and stderr, one per second at most: one more in the
+ * same second is dropped, counted on the next line */
 void base_guard_log(const char *fmt, ...);
+
+/* True when a line now gets into the log: none written in this second yet. For a line that can wait a little (the
+ * flow resets', radio.c), so that it is not the one dropped */
+bool base_guard_log_free(void);
 
 #define BASE_SILENT_START_MS 10000   /* no line for the flow resets of the first 10 s */
 #define BASE_SILENT_EVERY_MS 10000   /* then one line per 10 s at most */
@@ -52,6 +57,25 @@ void base_guard_log(const char *fmt, ...);
 /* Flow from the base stopped: true when it gets a line in the log. start_ms: GUI start,
  * *last_ms: the last line (0 at first) */
 bool base_silent_due(uint64_t now_ms, uint64_t start_ms, uint64_t *last_ms);
+
+#define BASE_GONE_MS         30000   /* no data from the base this long in receive: said on the screen */
+#define BASE_GONE_START_MS   60000   /* and this long from the start before the first packet: one X6200 on 1.0.8
+                                      * sent its first 16 s in (#47), a slower start must not be told it */
+
+/* No data from the base, said on the screen (#152), looked at in each flow reset: true when it is due, BASE_GONE_MS
+ * after the last packet (seen: one came; else BASE_GONE_START_MS after pack_ms, the start) and BASE_GONE_MS after
+ * the GUI's last TX. keyed: the GUI keys, or a tune, an SWR scan or a power-off is under way (a TX with nothing
+ * keying it from the GUI is not); *tx_ms is kept here (0 at first). said: told already, until a packet comes */
+bool base_gone_due(uint64_t now_ms, uint64_t pack_ms, bool seen, bool keyed, uint64_t *tx_ms, bool said);
+
+#define NO_DATA_MS           3000    /* no packet this long: what the GUI keys is refused (base_no_data), and a TX or an
+                                      * SWR scan under way that only a packet ends is ended (radio.c) */
+
+/* No TX from the GUI while the base sends no data (#152): without it there is no SWR protection, no power or SWR
+ * reading and no TX on the screen. True when no packet came since the start (seen false), or none for NO_DATA_MS
+ * after pack_ms, the last one; packets come many times a second (the X6200's every ~35 ms), a gap of 0.3 s is a flow
+ * reset. A now_ms before pack_ms (another thread's clock, read as the radio thread took a packet) is data */
+bool base_no_data(uint64_t now_ms, uint64_t pack_ms, bool seen);
 
 typedef struct {
     uint64_t armed_until;

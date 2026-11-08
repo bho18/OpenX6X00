@@ -5,7 +5,7 @@
 Open firmware for the **Xiegu X6100** and **X6200**: a complete microSD image
 with every digital mode decoded on the radio itself, and sent where the mode
 transmits; the DX cluster on the waterfall; portable activations (SOTA, POTA,
-WWBOTA, HOTA, WWFF, TOTA, WCA, MOTA, lighthouses, Tiles) with big outdoor tiles;
+WWBOTA, HOTA, WWFF, TOTA, WCA, MOTA, lighthouses, Tiles, LLOTA) with big outdoor tiles;
 themes; Bluetooth headphones and CAT; the radio worked from a browser, as a
 panel of its own or with its own screen live; a web configurator; an update
 from inside the radio; and a **TCI server** so the
@@ -40,8 +40,9 @@ these; please give:
    in. A photo of the screen helps, above all of a message or of the TX
    panel.
 4. **Power and antenna**: an external supply or the battery; an antenna, a
-   tuner or a dummy load. For a transmit problem, give what the TX panel shows
-   (PWR, SWR, ALC), and what an external wattmeter shows if you have one.
+   tuner or a dummy load. For a transmit problem, give what the TX panel or
+   the S-meter box shows while transmitting (PWR, SWR, ALC), and what an
+   external wattmeter shows if you have one.
 5. **The logs**, from the card's DATA partition: attach the newest files of
    the `app_logs` folder, from the card in a PC or from the web configurator's
    Files page. Each run of the radio software leaves one `x6100_log_*.txt`.
@@ -107,7 +108,8 @@ The settings that need a newer base are hidden when the base is too old.
 
 | Baseband | What it is | With OpenX6X00 |
 |---|---|---|
-| 1.0.7 | Xiegu's base | Works. |
+| Older than 1.0.7 | Xiegu's earlier bases (1.0.6 in issues #94 and #95) | Not supported: update the base. OpenX6X00 reads the base's data in the form 1.0.7 brought in, as 1.0.8 sends it too. On 1.0.6 the waterfall stayed black, the S-meter at S1, with no battery reading and a tuner that did not tune, until the base update. The SWR protection and the TX meters come from the same data. The sound comes another way, so listening and the digital apps' decoding can still work, but without the base's data the radio does not transmit from the screen, the apps, the CW messages or the USB paddle. The hand mic's PTT, VOX and a key in the KEY jack still transmit then, with no SWR protection and no power reading ([manual](docs/MANUAL.md#no-tx-without-data-from-the-base)). It says "No data from the base" 60 s after a start ([manual](docs/MANUAL.md#the-waterfall-stays-black-and-the-s-meter-does-not-move)). |
+| 1.0.7 | Xiegu's base | Works, with a fault of the base: its S-meter can stick at -255 dBm, which OpenX6X00 shows as S1, -121.0 (issue #14, where the battery and TX readings still came through). 1.0.8 fixes it. |
 | 1.0.8 (August 2026) | Fixes the CW keyer speed and an S-meter stuck at -255 dBm, adds CW macros | Works. The bench X6200 runs it. |
 
 The X6200's settings show only what its base can do. OpenX6X00 v0.3.1 to
@@ -140,22 +142,24 @@ The patched X6100 base comes with its own instructions.
 
 | | |
 |---|---|
-| **Digital modes** | FT8, FT4 and FT2 (CQ, reply, auto sequence, Hound, POTA tag, ADIF log), JS8 (JS8Call compatible, all four speeds at once, inbox, relays, heartbeats, APRS), WSPR (decode and beacon, WSPRnet upload), PSK31, PSK63, Olivia, JTTY, RTTY, SSTV (receive with VIS, transmit with templates, denoise), WeFax, and NavTex with DSC (receive only). FT8, FT4, FT2, JS8, PSK, Olivia and JTTY decodes go to PSK Reporter (on by default), and the FT8 app sends WSJT-X UDP for GridTracker and loggers. No PC, no sound card cable: APP > Modes. |
+| **Digital modes** | FT8, FT4 and FT2 (CQ, reply, auto sequence, Hound, POTA tag, ADIF log), JS8 (JS8Call compatible, all four speeds at once, inbox, relays, heartbeats, APRS), WSPR (decode and beacon, WSPRnet upload), PSK31, PSK63, Olivia, Contestia, JTTY, RTTY, SSTV (receive with VIS, transmit with templates, denoise), WeFax, and NavTex with DSC (receive only). FT8, FT4, FT2, JS8, PSK, Olivia, Contestia and JTTY decodes go to PSK Reporter (on by default), and the FT8 app sends WSJT-X UDP for GridTracker and loggers. No PC, no sound card cable: APP > Modes. |
 | **CW** | A decoder that copies down to about 0 dB SNR with Parse splitting run-together words, CW as you type (a line on the main screen from a USB or Bluetooth keyboard, and the [CW Keyboard](docs/MANUAL.md#cw-keyboard) app, APP > CW Keyboard, with one or with the on-screen keyboard) with a send queue and Live mode that keys each letter as it is typed, messages with `{CALL}` and `{HIS}`, USB and Bluetooth paddles, a CW trainer. |
 | **DX Cluster** | Spots on the waterfall, in a column beside it and in a full app that follows the VFO; filters by mode, band, activity (POTA, SOTA, WWBOTA, HOTA) and the spotter's country (only the spots heard in PA and ON, say), alerts on calls and prefixes, spot snap when turning slowly; fifteen public servers built in, DXFUN by default. One login, a Link switch, and a login of its own if you set one (your call with `-2`, on the web Cluster page) so a logger can use the call at the same time. |
-| **Field Ops** | A second interface for SOTA, POTA, WWBOTA, HOTA, WWFF, TOTA, WCA, MOTA and lighthouse (LH, ARLHS) activations with big tiles for gloves: the summit or park found from the GPS or the locator, the references of the whole world offline after one Update list with internet, CQ, a log straight to ADIF with the references, self-spots to pota.app, wwbota.org, cqhota.app and the WWFF Spotline (the last two with your own key) and to the DX cluster (the only spot for SOTA, TOTA, WCA, MOTA and LH), QRZ Logbook upload. Tiles on the Air: the 6-character locator square you are in, from the GPS, with the eight around it. |
+| **Field Ops** | A second interface for SOTA, POTA, WWBOTA, HOTA, WWFF, TOTA, WCA, MOTA, lighthouse (LH, ARLHS) and LLOTA (lakes and lagoons) activations with big tiles for gloves: the summit or park found from the GPS or the locator, the references of the whole world offline after one Update list with internet, CQ, a log straight to ADIF with the references, self-spots to pota.app, wwbota.org, cqhota.app and the WWFF Spotline (the last two with your own key) and to the DX cluster (the only spot for SOTA, TOTA, WCA, MOTA, LH and LLOTA), QRZ Logbook upload. Tiles on the Air: the 6-character locator square you are in, from the GPS, with the eight around it. |
 | **Wavelog** | Every QSO the radio logs, in every mode, goes to your own [Wavelog](https://github.com/wavelog/wavelog) a few seconds later: a queue on the SD card while there is no network, the station profile chosen by the radio's callsign (DF8MH, DF8MH/P), the result on the display. |
-| **Winlink** | Winlink email over HF from the radio alone, no computer and no internet: [Pat](https://getpat.io) is the mail program, its mailbox a web page on a phone or a laptop, and ARDOP the modem, through the radio's own audio. When Pat calls a gateway the radio tunes there in USB-D and keys itself. Turned on in the web configurator, Operating > Winlink, with your callsign, locator and Winlink password ([manual](docs/MANUAL.md#winlink)). |
+| **Winlink** | Winlink email over HF from the radio alone, no computer and no internet: [Pat](https://getpat.io) is the mail program, its mailbox a web page on a phone or a laptop, and ARDOP the modem, through the radio's own audio, or Mercury (experimental: faster, with the few stations that run it), or XARA (experimental: speaks VARA HF, so the VARA HF gateways answer it; VARA's free speed unless you tick that you hold a VARA HF licence, which the radio does not check). When Pat calls a gateway the radio tunes there in USB-D and keys itself. Turned on in the web configurator, Operating > Winlink, with your callsign, locator and Winlink password; the page shows the radio as Winlink will use it and how each connection went, with what to do next ([manual](docs/MANUAL.md#winlink)). |
 | **Bands** | A live picture of 160 to 6 m from the cluster and the Reverse Beacon Network, and a test beacon that shows who hears you from your own antenna. |
-| **Radio** | IARU Region 1 band plan strip (60 m too, and a strip for each band you add), 60 m on the band keys, which step over a band the radio cannot tune (4 m), a TX shift per band for FM repeaters and a QO-100 IF (split kept by itself, REV on the VFO key), Birdie Cal (the radio's own carriers found, marked, notched), S-meter in bars or a needle, long-press actions on every key, editable bands, memories and channels, the broadcast bands in AM, transverters, RX recorder, screen recording and screenshots, voice messages, SWR scan, Walkie Talkie portrait mode, PRE and ATT on the VOL 2:2 page, local time on screen with UTC in the logs. |
-| **X6200** | SAM and WFM on the AM key, zoom 1 to 4 over the base's 384 kHz, the two-ring MFK, FM broadcast (87.5-108 MHz) and the airband (118-137 MHz) to receive after 6 m on the band keys, a WR12 switch for Xiegu's 54 MHz-1 GHz receiver on the HOST port (2 m and 70 cm to receive; not yet tried with a WR12, [manual](docs/MANUAL.md#wr12-receiver-x6200)), transverters off by default (they put 2 m on 10 m), PRE and ATT on the VOL 2:2 page since it has no PRE key, the volume over the base's whole range (0 to 100). |
-| **Screen** | DRM/KMS output with the GUI on a transparent layer over a waterfall drawn one line at a time, about half the CPU of the old path; a main knob with every detent timed in its own thread and acceleration that grows with the speed. |
-| **Themes** | Every colour, corner, font and waterfall palette comes from the theme. RF.Guru, Classic, Outdoor, Outdoor-Negative, VISION, Black Metal, Total Black and 1bit come with the image; Holo and Material 3 are in [themes/](themes) to copy to the card; your own go on the card too ([docs/THEMES.md](docs/THEMES.md)). |
+| **Propagation** | [Solar data and the band forecast](docs/MANUAL.md#propagation) (N0NBH, kept for when there is no network) on a world map with your QTH, the night and the grey line, and the 18 NCDXF beacons followed through their 3-minute cycle: which you hear, how strong, on which band. |
+| **Scanner** | [Stops on activity](docs/MANUAL.md#scanner) through the memory channels, the airband (X6200), the 40 CB channels or the band plan segment you are in, the speaker quiet while it looks; a level learnt per frequency, lockouts, hang time. Receive only. |
+| **Radio** | Band plan strip for IARU Region 1, 2 or 3, Auto from the GPS, the locator or the callsign, or the US sub-bands of your licence class with the rest in grey (60 m too, and a strip for each band you add; guidance only, it never stops the key or the microphone), 60 m on the band keys, which step over a band the radio cannot tune (4 m), a TX shift per band for FM repeaters and a QO-100 IF (split kept by itself, REV on the VFO key), Birdie Cal (the radio's own carriers found, marked, notched), S-meter in bars or a needle, long-press actions on every key, editable bands, memories and channels, the broadcast bands in AM, transverters (off by default), RX recorder, screen recording and screenshots, voice messages, SWR scan, Walkie Talkie portrait mode, PRE and ATT on the VOL 2:2 page, local time on screen with UTC in the logs. |
+| **X6200** | SAM and WFM on the AM key, zoom 1 to 4 over the base's 384 kHz, the two-ring MFK, FM broadcast (87.5-108 MHz) and the airband (118-137 MHz) to receive after 6 m on the band keys, Xiegu's WR12 54 MHz-1 GHz receiver on the HOST port, driven over its USB serial port when its switch is on (from 54 MHz up the radio listens through it, 2 m and 70 cm included, and transmits nothing meanwhile; gpsd leaves it alone; not yet tried with a WR12, [manual](docs/MANUAL.md#wr12-receiver-x6200)), the PA bias from its own base's factory calibration, as Xiegu's firmware does ([manual](docs/MANUAL.md#pa-bias-x6200)), PRE and ATT on the VOL 2:2 page since it has no PRE key, the volume over the base's whole range (0 to 100), the low-battery power-off at 6.8 V, minutes before the base cuts the power by itself, also on a supply the radio reads under 12.0 V (Xiegu's 12 V charger among them), which did not hold a flat battery up ([manual](docs/MANUAL.md#low-battery)). |
+| **Screen** | DRM/KMS output with the GUI on a transparent layer over a waterfall drawn one line at a time, about half the CPU of the old path, or, by default, as a 3D band scope (the last seconds in perspective, coloured by strength; Settings > Display > 3D off for the flat waterfall); a main knob with every detent timed in its own thread and acceleration that grows with the speed; the buttons hidden after a few seconds without a key, for the waterfall down to the bottom (Settings > Display > Hide buttons, off by default); a screensaver, Matrix rain, after 5 minutes without use, the screen dark after it or not, as set ([manual](docs/MANUAL.md#screensaver)). |
+| **Themes** | Every colour, corner, font and waterfall palette comes from the theme. RF.Guru, Classic, Outdoor, Outdoor-Negative, VISION, Black Metal, Total Black, 1bit and Amber Trey (an amber segment LCD) come with the image; Holo and Material 3, and Codec (green phosphor boxes with corner brackets, its own monospaced font and a SIGNAL bar meter) and Ops Room (amber operations-room frames in Roboto Condensed, with a TRANSMIT band while the radio transmits), both designed by Trey (rewtraw), are in [themes/](themes) to copy to the card; your own go on the card too ([docs/THEMES.md](docs/THEMES.md)). |
 | **Wireless** | WiFi (a failed join says why on the screen), a USB Ethernet adapter with DHCP or a fixed address, USB tethering, a network name of your own; Bluetooth CAT for three clients, headphones and keyboards with pairings that survive a new image. |
 | **Browser panel** | `http://x6100.local/panel` (`x6200.local` on an X6200): the radio worked natively from a phone, a tablet or a PC, portrait or landscape: the spectrum and the waterfall live (tap or drag to tune, pinch to zoom), the frequency, band, mode, step and zoom, every switch and level, the S-meter, the DX spots (tap to tune), the FT8 app (decodes, tap to answer, CQ, auto, hold), the CW decoder's text, a log entry, RX audio and the browser's microphone for TX, a light theme for the sun. What the closed phone app does, as a web page. |
-| **Browser remote** | `http://x6100.local/remote` (Remote > Screen in the web menu): the radio's screen live in any browser (up to three browsers at a time, the Panel and Screen pages together), every key and knob, RX audio and the browser's microphone for TX, a Picture choice (Sharp, Balanced, Fast) for a slow link, for the radio's own menus and apps. |
+| **Browser remote** | `http://x6100.local/remote` (Remote > Screen in the web menu): the radio's screen live in any browser (up to four browsers at a time, the Panel and Screen pages together), every key and knob, RX audio and the browser's microphone for TX, a Picture choice (Sharp, Balanced, Fast) for a slow link, for the radio's own menus and apps. |
 | **Remote station** | A browser watches until it is paired with a six-digit code from the radio; one holds the control at a time (a browser, a TCI client or the radio itself). Sound and Mic go over the TCI server; the microphone needs the https page. A key pressed without the control offers Take control, and Speaker always off (Settings > Audio) keeps the speaker silent. |
-| **Tailscale** | The radio on your own tailnet, so a laptop or a phone with Tailscale reaches it from anywhere (the configurator, the Panel and Screen pages, TCI) with nothing opened on the router. Turned on in Settings > Wireless or Remote > Tailscale; the login is a code on the radio's screen or a link on the web page. Tailscale's own build is downloaded once (37 MB) and checked against a pinned checksum ([manual](docs/MANUAL.md#tailscale)). |
+| **Tailscale** | The radio on your own tailnet, so a laptop or a phone with Tailscale reaches it from anywhere (the configurator, the Panel and Screen pages, TCI) with nothing opened on the router. Turned on in Settings > Wireless or Remote > Tailscale; the login is a code on the radio's screen or a link on the web page. Tailscale's own build is downloaded once (37 MB) and checked against a pinned checksum ([manual](docs/MANUAL.md#tailscale)). Funnel puts the browser Panel alone on the internet, for browsers paired at home ([manual](docs/MANUAL.md#tailscale-funnel)). |
 | **Web configurator** | `http://x6100.local/` (mDNS, `x6200.local` on an X6200, or the radio's IP): bands, digital frequencies, memories, cluster, Field Ops, Wavelog, CW messages, macros, logs, files, a gallery, backup and restore, display, time, network name, Ethernet, TCI, the SSH keys (SSH takes keys only, no password), the update. No login; pages from other sites are refused. |
 | **TCI server** | The VFO-Knob and any TCI client on the network: tune, mode, filter, AGC, PTT, the meters and the audio both ways; the clients may be set to Listen only, all of them together. |
 
@@ -210,7 +214,7 @@ live, its keys and knobs, Sound, Mic and the Picture choice.
 | | |
 |---|---|
 | ![Settings, General](docs/screenshots/settings_general.png) **[Settings](docs/MANUAL.md#settings) > General**: the station, the ten tabs down the left | ![Settings, TCI server and Browser remote](docs/screenshots/settings_general_remote.png) **General**: the TCI server and the browser remote |
-| ![Settings, Display](docs/screenshots/settings_display.png) **Display**: backlight and screen off | ![Settings, Audio](docs/screenshots/settings_audio.png) **Audio**: Speaker always off |
+| ![Settings, Display](docs/screenshots/settings_display.png) **Display**: backlight, screensaver and screen off | ![Settings, Audio](docs/screenshots/settings_audio.png) **Audio**: Speaker always off |
 
 <details>
 <summary>More Settings tabs</summary>
@@ -261,6 +265,12 @@ all the same (the [manual](docs/MANUAL.md#web-configurator) says what it
 holds); a card-wiping tool or a smaller card would lose it. For the
 baseband versions and how to update them, see [The baseband](#the-baseband).
 
+Up to v0.3.8 the first start of a newly written card (new, or wiped) left DATA
+unformatted, and the radio kept its settings and logs on the system partition
+(a PC shows the card's third partition as unknown). Now the first start after
+the update formats it and moves them onto it; leave that partition alone on
+the PC ([more](docs/MANUAL.md#on-a-pc-the-card-has-no-data-drive-only-an-unknown-partition)).
+
 <br clear="right">
 
 ## Tailscale
@@ -286,6 +296,15 @@ configurator has no login: share the radio only with people you would let in.
 Tailscale runs in userspace mode, its log upload is off, and the login stays on
 the radio. More in the [manual](docs/MANUAL.md#tailscale).
 
+**Tailscale Funnel** puts the browser Panel on the internet for devices without
+Tailscale, at `https://<name>.<tailnet>.ts.net/panel` (Settings > Wireless >
+TAILSCALE > Funnel, or Remote > Tailscale). Only the Panel and the Screen page
+go there, and only for browsers paired at home: pairing is refused from the
+internet, so a browser is paired on the home network and then gets its key
+for away with Use away from home on the Panel. The web configurator, TCI
+programs, the Winlink mailbox and SSH stay on your LAN and tailnet. Funnel
+names are listed in public certificate logs ([manual](docs/MANUAL.md#tailscale-funnel)).
+
 ## Where it comes from
 
 OpenX6X00 is a fork of the last fully open-source release of the X6100
@@ -306,7 +325,7 @@ Removed, so that nothing on the radio talks to a server of its own:
 - the X6100 Link phone app and its remote API: the `/link/v2` routes, the
   Link's Remote page, the GUI's remote socket with its spectrum, audio and
   event streams, and the phone voice PTT on UDP 50010;
-- the wfview (Icom LAN) server;
+- the wfview LAN server;
 - the x6100-link.it update channel: its update without the microSD, signed
   packages, update alert, remote updates and Settings Update tab;
 - the diagnostics upload, the site ping and every other telemetry;
@@ -333,7 +352,7 @@ Added:
   place of the Link's;
 - a **signed update from GitHub Releases**, with rollback and the card-image
   notice, in place of the x6100-link.it channel;
-- the TOTA, WCA, MOTA, lighthouse and Tiles programmes in Field Ops, and the
+- the TOTA, WCA, MOTA, lighthouse, Tiles and LLOTA programmes in Field Ops, and the
   network name (mDNS);
 - the RF.Guru default theme and the OpenX6X00 boot logo;
 - a local configurator socket (`/tmp/x6100_cfg.sock`) for the web pages that
@@ -357,7 +376,10 @@ run) when upstream has commits the fork has not, and names upstream's other bran
 with newer work (pull requests on their way) as a note. The X6100's upstream is
 gdyuldin's tree, moved to OpenX6100. `buildroot/local-build.sh` patches the
 buildroot tree (local GUI and web server, `boost` and `fftw-single` for JS8,
-no RHVoice, the boot logo), builds it and makes the update bundle. The GitHub
+no RHVoice, the boot logo), builds it and makes the update bundle. U-Boot's
+release tarball is checked against its SHA-256; when ftp.denx.de doesn't answer,
+the script makes it from U-Boot's tag on GitHub (the tar inside is the
+release's, and bzip2 gives back the release tarball). The GitHub
 Actions workflow (`.github/workflows/main.yml`, *Build image*, run by hand,
 about two hours, both radios side by side) runs that script and uploads
 `OpenX6X00-x6100-<ref>-sdcard.img.zip` and `OpenX6X00-x6200-<ref>-sdcard.img.zip`
@@ -401,7 +423,8 @@ src/                     the GUI (x6100_gui): main screen, apps, settings, decod
   cfg/ params/           the settings (SQLite params.db) and their C/C++ API
   ft8/ js8/ wspr/ sstv/ wefax/ navtex/ cw_decoder/ cluster/ field/ qth/
   fonts/ widgets/        LVGL fonts and custom widgets
-third-party/             js8core (JS8Call's modem, GPL-3), wsprd (WSJT-X, GPL-3), cty.dat
+third-party/             js8core (JS8Call's modem, GPL-3), wsprd (WSJT-X, GPL-3), cty.dat, the Winlink
+                         modems ardopcf (MIT) and Mercury (GPL-3, with our x6x00-mercury)
 lvgl/ lv_drivers/        LVGL 8.3 (gdyuldin's NEON fork, a submodule) and its drivers
 webserver/               the web configurator (Python, bottle)
 rootfs/                  init scripts, helper scripts (x6100-update, x6100-field, x6100-pota-spots,
@@ -410,14 +433,21 @@ rootfs/                  init scripts, helper scripts (x6100-update, x6100-field
 btcat/ bootanim/         Bluetooth CAT bridge, boot animation
 boot/                    boot logo
 sql/                     the default params.db
-themes/                  the Holo and Material 3 JSON themes to copy by hand; make_rs.py, an
-                         RS-BA1 look cut from a screenshot (personal use, not installed)
+themes/                  the Holo, Material 3, Codec and Ops Room themes to copy by hand (make_codec.py and
+                         make_ops_room.py draw their images); make_rs.py, a
+                         look cut from a screenshot of another maker's software (personal use, not installed)
 buildroot/               local-build.sh and Dockerfile (the image), br2_external/ and x6200/
                          (what it adds to and patches in the buildroot trees),
                          build.sh (the GUI alone with the buildroot toolchain)
 host/                    the GUI on a PC (SDL, stub radio)
-tools/                   screenshots/ (drive.py, grab.py, pull.py), update/ (the bundle),
-                         tci/ (the TCI server's host test), icons/, logo/ and fonts/
+tools/                   screenshots/ (drive.py, grab.py, pull.py), update/ (the bundle), pat/ and
+                         xara/ (the Winlink client and the VARA-compatible modem, built from their
+                         pinned releases with our patches),
+                         tci/ and winlink/ (the TCI server's and the Winlink modem socket's host
+                         tests), itu_region/ (the band plan's Auto region, a host test),
+                         data_partition/ (S00adata on fake cards, a host test), channels/ (the
+                         web Memories page, a host test), battery/ (the low-battery power-off and
+                         the battery %, a host test), icons/, logo/ and fonts/
 assets/                  the logo's fonts and marks
 docs/                    MANUAL.md, THEMES.md, MENUS.md, UPSTREAM_README.md, audit/,
                          screenshots/ (taken by script on an X6200)
@@ -430,7 +460,11 @@ docs/                    MANUAL.md, THEMES.md, MENUS.md, UPSTREAM_README.md, aud
 - [Themes](docs/THEMES.md): make your own.
 - [Menus](docs/MENUS.md): the icon grids, and how to get the text menus back.
 - [Screenshots](docs/screenshots/README.md): how they are taken.
-- [The TCI server's host test](tools/tci/README.md) and the [PC build](host/README.md).
+- [The TCI server's host test](tools/tci/README.md), [the Winlink modems'](tools/winlink/README.md), the
+  [ITU region's](tools/itu_region/itu_region_test.c), the [DX cluster bands'](tools/cluster/cluster_bands_test.c),
+  the [DATA partition's](tools/data_partition/Makefile), the [web Memories page's](tools/channels/Makefile), the
+  [web Backup page's WiFi restore](tools/wifi_restore/Makefile), the
+  [battery readings'](tools/battery/bat_watch_test.c) and the [PC build](host/README.md).
 
 ## Licences
 
@@ -438,9 +472,19 @@ The GUI is LGPL-2.1-or-later ([LICENSE](LICENSE)); js8core and wsprd
 (vendored), the JS8 and WSPR code (`src/js8`, `src/js8_window.c`, `src/wspr`,
 `src/dialog_wspr.c`), JTTY (ported from WSJT-X by K1JT and the WSJT-X team,
 `src/jtty*`, `src/dialog_jtty.c`) and the PSK Reporter upload
-(`src/pskreporter.c`) are GPLv3, so the firmware image is GPLv3. The web
-server is LGPL-2.1 ([webserver/LICENSE](webserver/LICENSE)). Every file keeps
-the copyright notice of its authors.
+(`src/pskreporter.c`) are GPLv3, so the firmware image is GPLv3. Mercury, the
+second Winlink modem (vendored in `third-party/mercury`, GPL-3.0-or-later, its
+FreeDV part LGPL-2.1 with KISS FFT in it BSD-3-Clause, its iniparser, nanorq and
+oblas MIT, see its [UPSTREAM.md](third-party/mercury/UPSTREAM.md)), and
+`x6x00-mercury`, our program that links it, are GPL-3.0-or-later; both come in
+the image and the update bundle, the source in this repository. ardopcf and
+Pat are MIT. XARA, the third Winlink modem (built from its release by
+`tools/xara/build.sh`, with our patches), is MIT, and so are the Rust crates in it
+as used here (some also Apache-2.0, Zlib or 0BSD), with the Rust standard library
+Apache-2.0 or MIT; their texts are in the image (`/usr/share/x6100/licenses/xara`),
+see [tools/xara/UPSTREAM.md](tools/xara/UPSTREAM.md). The web server is LGPL-2.1
+([webserver/LICENSE](webserver/LICENSE)). Every file keeps the copyright
+notice of its authors.
 
 ## Credits
 
@@ -453,17 +497,65 @@ Field Ops, Bands, the DX cluster, WSPR, SSTV TX, RTTY, WeFax TX, the CW
 keyboard, the Bluetooth work and the layer system; Hany El Imam (1KO125) the
 WeFax, NavTex and SSTV decoders; Jordan Sherer KN4CRD and the JS8Call
 contributors the JS8 engine; K1JT and K9AN wsprd (made a library by VA2GKA);
-K1JT and the WSJT-X team JTTY; SP2KMO the Bluetooth tab, PSK31, PSK63 and
-Olivia, the WSJT-X UDP output, the FT8 country and distance, and FT2
-(IU8LMC's mode); randal007 the PSK and Olivia merge, the Bluetooth scan and
+K1JT and the WSJT-X team JTTY; Rafael Diniz and Rhizomatica's HERMES project
+the Mercury modem; SP2KMO the Bluetooth tab, PSK31, PSK63 and Olivia, the
+WSJT-X UDP output, the FT8 country and distance, and FT2 (IU8LMC's mode);
+randal007 the PSK and Olivia merge, the Bluetooth scan and
 recovery, the JS8 map, the high-SWR guard and the digital-mode drive level;
-2E0JFS the Black Metal and Total Black themes. Libraries: LVGL, cJSON, FFTW,
+2E0JFS the Black Metal and Total Black themes.
+
+Pull requests to OpenX6X00: OM0WT (Pavol Calfa, om0wt) the Amber Trey theme
+(#98), independent VFOs, where a band key or a band edge moves the active VFO
+only (#60, #96), the TCI start that gives a browser its control back (#97), the
+locator clear of NR NB DNF (#99) and Settings pages that scroll to their end
+(#61); EA4ILN (ea4iln-debug) the X6200's TX power caps (#75), its charger
+setting in the top bar (#76), the base's warnings (#77), the H-22's band keys
+(#136), the SWR scan's SWR (#140) and the base's own band table while the WR12
+is in use, with docs/WR12.md (#176), and on his radio the finds behind the PA
+bias (#173) and the base's byte 280; Chris Lawson (cjlawson02) the radio's
+ranges (#171) and knob steps (#188) in board.h, the panel size from
+BOARD_DISP_W/H with a landscape blit (#162), taps on the F-bar and decoded keys
+(#163), the spectrum left unpainted while hidden (#177) and TCI's drive, VFO
+limits and RIT clamp from board.h (#189); Calin Rigo (timerealm) the 3D band
+scope (#161); Spyyena Contestia (#154); DF8MH the Wavelog upload (#12); Trey
+(rewtraw) the PC build in Docker (#180), LVGL's clock from CLOCK_MONOTONIC
+(#182), the GUI loop that wakes on keys, knobs and events (#183), the
+Propagation and Scanner apps (#184), APPS and Modes over the whole strip, the CW
+bars off the band plan and Settings' switches in the theme's colours (#185), and
+the Codec and Ops Room themes (#186, #187); jochenhammes the RADE app (#129,
+#130, not merged yet).
+
+Patches, captures, logs and tests from the issues: BrunoKlu the capture and the
+driver patch of #29; KR8MER the diagnosis and the patch of #50; DL9RP the
+S-meter measurements of #125; 123tcpip (Bob G6CKK) the start-pulse captures of
+#53; ea4iln-debug and edegraaff the battery logs; km4gkd, amystikis (M7SVA) and
+joanpao (EA5JTT) the Winlink logs from the air; doodlecomms the Mercury and XARA
+leads; firatsoygul the tests over https, a tailnet and Funnel; SQ9SZ how LLOTA's
+spots are posted. And everyone who opened an issue: 123tcpip, Al-k6avp,
+amystikis, andybateman, AndyKeir, baumertjohn, BG7JAF, BrunoKlu, ct7arf,
+ctsquid, DC6NS, Derek000, DG1SMD, dl1sdz, DL9RP, doodlecomms, dr4g0nized,
+ea4iln-debug, edegraaff, ericb2B, erikkt, F4ESO, firatsoygul, Flight3R,
+forshaws, gati111, gilcomnz-eng, hecpilot, in3fob, ItsRonan-Honest, joanpao,
+johny1time-code, jonnybb1, K4DB, kb3hjc, KC7BJE, keithwhite1982, kj7prs, km4gkd,
+KR8MER, Meges111, muratbedir, oh8mbu, ON2ON-HAM, orome, oxoocoffee, peterbmarks,
+pkoerner81929, RjulianTN, RSZ-Nld, rwensley, sa5qed, scotty123, SQ9SZ,
+theMadCatter, Urminme, VakrLothbrok, VariousGames, VR2XKP, W3POPat, W8LID,
+waydenie, XRF03, yo4cil and z1pppo78.
+
+Libraries: LVGL, cJSON, FFTW,
 liquid-dsp, ft8_lib, libpng, Boost, Eigen, CRCpp, bottle, jQuery, mp4-muxer,
-PulseAudio, BlueZ. The country list is AD1C's cty.dat. Fonts:
-Roboto, DejaVu, Arial, Sony Sketch, Inter (the boot logo), Terminus (the 1bit theme's
-pixel font, OFL-1.1, src/fonts/LICENSE-Terminus-OFL-1.1.txt). The skimmer spots
-come from the Reverse Beacon Network and the broadcast schedule from the EiBi
-list by Eike Bierwirth. The Field Ops reference lists come from POTA, SOTA,
+PulseAudio, BlueZ. The country list is AD1C's cty.dat. The band plans are our
+reduction of the IARU Region 1, 2 and 3 band plans, 47 CFR Part 97 (FCC) and
+the ARRL band plan. Fonts:
+Roboto, Roboto Condensed (Black Metal's, Total Black's, Amber Trey's and Ops Room's, OFL-1.1,
+src/fonts/LICENSE-RobotoCondensed-OFL-1.1.txt), DejaVu, Arial, Sony Sketch, Inter (the boot logo), Terminus (the 1bit theme's
+pixel font, OFL-1.1, src/fonts/LICENSE-Terminus-OFL-1.1.txt), Noto Sans CJK JP (a subset:
+the screensaver's characters, OFL-1.1, src/fonts/LICENSE-NotoSansCJK-OFL-1.1.txt), Share Tech Mono (the Codec
+theme's, OFL-1.1, src/fonts/LICENSE-ShareTechMono-OFL-1.1.txt). The skimmer spots
+come from the Reverse Beacon Network, the broadcast schedule from the EiBi
+list by Eike Bierwirth, and the Propagation app's solar data and band forecast from
+N0NBH (hamqsl.com). The Field Ops reference lists come from POTA, SOTA,
 WWBOTA, cqhota.app, WWFF, TOTA (OK2IH, wwtota.com), the WCA castle list as
-ON4VT keeps it, and GMA (gma.rocks) for the mills and the lighthouses.
+ON4VT keeps it, GMA (gma.rocks) for the mills and the lighthouses, and LLOTA
+(llota.app) for the lakes and lagoons.
 OpenX6X00 is maintained by RF.Guru (Joeri Van Dooren ON6URE).

@@ -33,7 +33,10 @@ typedef struct {
     int  repeats;
 } ftx_tx_msg_t;
 
-typedef void (*save_qso_cb_t)(const char *remote_callsign, const char *remote_grid, const int r_snr, const int s_snr);
+/* aside: a QSO the sequence had put aside (another one is current), ended late by its station; in
+ * Hound mode also one from before Hound on that its station took up again (Hound's is in progress) */
+typedef void (*save_qso_cb_t)(const char *remote_callsign, const char *remote_grid, const int r_snr, const int s_snr,
+                              bool aside);
 typedef bool (*is_pota_cb_t)(const char *callsign);
 
 #ifdef __cplusplus
@@ -51,12 +54,19 @@ class Candidate {
     void set_local_snr(int snr);
     void set_rcvd_snr(int snr);
     bool match_callsign(std::string callsign);
+    std::string callsign();
     bool is_finished();
+    bool is_over();
     bool can_be_saved();
+    bool is_saved();
+    bool sent_report();
+    void sent(std::string text);
     bool quiet_slot(int max_repeats);
-    void save_qso(save_qso_cb_t save_qso_cb);
+    void set_aside();
+    bool aside_slot();
+    void save_qso(save_qso_cb_t save_qso_cb, bool aside = false);
 
-    std::string get_tx_text(std::string local_callsign, std::string local_qth);
+    std::string get_tx_text(std::string local_callsign, std::string local_qth, bool local_std = true);
 
   private:
     std::string    _remote_callsign;
@@ -66,7 +76,11 @@ class Candidate {
     int            _rcvd_snr;
     int            _sent_snr;
     bool           _saved=false;
-    int            _quiet_slots=0;  /* slots since its last message */
+    bool           _ended=false;    /* logged, and not begun again since (a call, a grid or a report) */
+    int            _quiet_slots=0;  /* slots since its last message (put aside: since then too) */
+    std::string    _report_text;    /* our report (or R-report) as made last */
+    bool           _report_out=false;   /* a report of ours went out */
+    int            _out_snr;        /* the report in it, the one logged: one made since may never go */
 };
 
 class FTxQsoProcessor {
@@ -89,10 +103,16 @@ class FTxQsoProcessor {
     void process_cq(ftx_msg_meta_t *meta, std::vector<std::string> &tokens, const int snr);
 
     void set_auto(bool);
+    /// @brief Our call is a standard one (the default): false for one like KF0QGT/6Y, PA/ON6URE, which answers as
+    /// WSJT-X does, "<W1ABC> KF0QGT/6Y" to a CQ and "<W1ABC> KF0QGT/6Y RR73|73" (type 4, our call in plain text)
+    void set_local_standard(bool);
     void set_max_repeats(int);
     void set_is_pota(is_pota_cb_t);
+    void set_hound(bool on);
+    void sent(std::string text);
     void start_new_slot();
     void reset();
+    void clear();
     void start_qso(ftx_msg_meta_t *meta, ftx_tx_msg_t *tx_msg);
 
     bool can_save_qso();
@@ -102,19 +122,34 @@ class FTxQsoProcessor {
   private:
     bool          _auto    = true;
     bool          _have_tx = false;
+    bool          _local_std = true;
     std::string   _local_callsign;
     std::string   _local_qth;
     save_qso_cb_t _save_qso_cb;
     int           _max_repeats = -1;
     is_pota_cb_t  _is_pota = NULL;
     bool          _cur_fresh = false;   /* the current QSO is a non-POTA caller of this slot, not answered yet */
+    std::string   _gave_way;            /* the logged QSO a caller took over in this slot: back if its station sends */
+    bool          _hound = false;       /* Hound mode: our messages are Hound's, not the sequence's */
 
     ftx_msg_type_t _last_rx_type;
     Candidate     *_next_candidate = NULL;
     Candidate     *_cur_candidate  = NULL;
+    /* QSOs no longer current whose station may still end them (or did, logged): one per station,
+     * the oldest first */
+    std::vector<Candidate *> _aside;
 
     Candidate **get_candidate_to_update(std::string call_de);
     Candidate  *get_or_create_cur_candidate(std::string remote_callsign);
+    void        save_current();
+    void        put_aside(Candidate *candidate);
+    Candidate  *find_aside(std::string call);
+    Candidate  *take_aside(std::string call);
+    Candidate  *candidate_for(std::string call);
+    void        take_over(std::string call);
+    bool        take_back(std::string call);
+    bool        take_up(std::string call);
+    bool        take_ahead(std::string call);
 };
 #else
 typedef struct FTxQsoProcessor FTxQsoProcessor;
@@ -129,10 +164,17 @@ extern void             ftx_qso_processor_delete(FTxQsoProcessor *p);
 extern void ftx_qso_processor_add_rx_text(FTxQsoProcessor *p, const char *text, const int snr, ftx_msg_meta_t *meta,
                                           ftx_tx_msg_t *tx_msg);
 extern void ftx_qso_processor_set_auto(FTxQsoProcessor *p, bool);
+/* Our call is standard (msg_encode.h ftx_call_is_standard): true by default */
+extern void ftx_qso_processor_set_local_standard(FTxQsoProcessor *p, bool);
 extern void ftx_qso_processor_set_max_repeats(FTxQsoProcessor *p, int max_repeats);
 extern void ftx_qso_processor_set_is_pota(FTxQsoProcessor *p, is_pota_cb_t is_pota);
+/* A message of ours goes out (transmit()): a QSO is kept aside only once its report went out */
+extern void ftx_qso_processor_sent(FTxQsoProcessor *p, const char *text);
 extern void ftx_qso_processor_start_new_slot(FTxQsoProcessor *p);
+/* No current QSO: put aside, its station's late message still logs it (TX CQ) */
 extern void ftx_qso_processor_reset(FTxQsoProcessor *p);
+/* Hound on or off: no current QSO, the ones put aside still logged at their late message */
+extern void ftx_qso_processor_set_hound(FTxQsoProcessor *p, bool on);
 extern void ftx_qso_processor_start_qso(FTxQsoProcessor *p, ftx_msg_meta_t *meta, ftx_tx_msg_t *tx_msg);
 
 extern bool ftx_qso_processor_can_save_qso(FTxQsoProcessor *p);

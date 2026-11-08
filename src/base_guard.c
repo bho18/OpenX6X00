@@ -24,6 +24,7 @@ static atomic_uint  events;
 static atomic_uint  resent;
 static atomic_uint  lost;
 static atomic_int   last_reg = -1;
+static time_t       logged;     /* the second of the last line written (base_guard_log) */
 
 void base_guard_write_failed(int reg, bool ok) {
     atomic_store(&last_reg, reg);
@@ -50,8 +51,23 @@ bool base_silent_due(uint64_t now_ms, uint64_t start_ms, uint64_t *last_ms) {
     return true;
 }
 
+bool base_gone_due(uint64_t now_ms, uint64_t pack_ms, bool seen, bool keyed, uint64_t *tx_ms, bool said) {
+    if (keyed) {
+        *tx_ms = now_ms;
+        return false;
+    }
+    return !said && now_ms - pack_ms >= (seen ? BASE_GONE_MS : BASE_GONE_START_MS) && now_ms - *tx_ms >= BASE_GONE_MS;
+}
+
+bool base_no_data(uint64_t now_ms, uint64_t pack_ms, bool seen) {
+    return !seen || (now_ms > pack_ms && now_ms - pack_ms >= NO_DATA_MS);
+}
+
+bool base_guard_log_free(void) {
+    return time(NULL) != logged;
+}
+
 void base_guard_log(const char *fmt, ...) {
-    static time_t   last;
     static unsigned skipped;
     time_t          t = time(NULL);
     char            line[200], stamp[24];
@@ -60,11 +76,11 @@ void base_guard_log(const char *fmt, ...) {
     va_list         ap;
     FILE            *f;
 
-    if (t == last) {
+    if (t == logged) {
         skipped++;
         return;
     }
-    last = t;
+    logged = t;
     va_start(ap, fmt);
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);

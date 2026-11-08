@@ -4,10 +4,10 @@ Every colour of the GUI comes from a **role** (background, button, selected
 row, header text, OK, TX...). A theme gives each role a colour, plus a few
 shapes, the font and the waterfall palette.
 
-Built in: **RF.Guru** (default: near-black surfaces, gold for what is on, electric blue as the second accent), **Classic** (black, grey keys, IC-7300 style)
+Built in: **RF.Guru** (default: near-black surfaces, gold for what is on, electric blue as the second accent), **Classic** (black, grey keys, the look of a classic transceiver)
 **Outdoor** (light, for the sun), **Outdoor-Negative** (Outdoor with the
 lightness inverted: dark, the hues kept), **1bit** (black on one white, like a
-monochrome LCD) and, not offered in the menu, Legacy. More themes are JSON files
+monochrome LCD), **Amber Trey** (amber LCD glass, see below) and, not offered in the menu, Legacy. More themes are JSON files
 on the SD card in `/mnt/themes/`, one per file: `/mnt/themes/My theme.json`
 shows up as *My theme* in Settings -> Display -> INTERFACE -> Theme. Choosing a theme
 applies it at once, without restarting the radio app (an open app closes).
@@ -15,6 +15,16 @@ applies it at once, without restarting the radio app (an open app closes).
 On base `1bit` every pixel on the screen is ink or paper: a colour a file gives a
 role is drawn as the nearer of the two, a see-through box as a solid one (a faint
 one as a 50 % stipple), pictures as dots. `ink` and `paper` set the two colours.
+
+**Amber Trey** draws its own display, an amber segment LCD, over everything
+above the bottom buttons (src/lcd_panel.c):
+the bar graph with the S, SWR/CMP and RF/ALC scales and CWT, the filter graphic
+with NTCH, the VFO in use in seven segments with VOX, ATU, RIT, XIT, SPLT, AGC,
+ATT, PRE, NB, NR and XFIL under it, the other VFO in fourteen segments, the lock,
+A, TX and B, and the mode icons on the right. Under it a spectrum strip, shown
+whatever Settings say about the spectrum; in CW the strip takes the left half and
+the decoded text runs in fourteen segments on the right. The buttons are one line,
+without a frame.
 
 ## File format
 
@@ -45,13 +55,13 @@ Every key is optional: what a file does not set comes from its `base`.
 
 | Key | Meaning |
 |---|---|
-| `base` | `RF.Guru`, `Classic`, `Legacy`, `Outdoor`, `Outdoor-Negative` or `1bit` (default RF.Guru) |
+| `base` | `RF.Guru`, `Classic`, `Legacy`, `Outdoor`, `Outdoor-Negative`, `VISION`, `Black Metal`, `Total Black`, `1bit` or `Amber Trey` (default RF.Guru) |
 | `colors` | role -> `#rrggbb`, roles below |
 | `radius`, `radius_btn`, `radius_popup` | corners of the boxes (top bar, strip, windows), of the bottom buttons, of menus and panels in the apps |
 | `border` | border width of boxes and buttons (3 or more: high contrast boxes) |
 | `btn_gradient`, `box_gradient` | vertical gradient `btn` -> `btn_grad` on the buttons, `bar` -> `bar_grad` etc. on the boxes |
 | `focus_solid` | the focused control in Settings is filled with `focus` (else half see-through) |
-| `font` | `sony`, `roboto`, `dejavu`, `arial` or `pixel` (1bit's); without it the font chosen in Settings |
+| `font` | `sony`, `roboto`, `dejavu`, `arial`, `pixel` (1bit's), `codec` (Share Tech Mono, the Codec theme's) or `rcond` (Roboto Condensed, the deck themes' and Ops Room's); without it the base's own (Arial on Classic, Roboto Condensed on Black Metal, Total Black and Amber Trey, pixel on 1bit), on the other bases the font chosen in Settings |
 | `ink`, `paper` | on base `1bit` only: its two colours (`#000000` and `#efece2`), say a green LCD that still has only two |
 | `waterfall` | 2 to 16 colours from weak to strong signal |
 | `waterfall_steps` | 0 smooth, else that many flat bands |
@@ -60,6 +70,10 @@ Every key is optional: what a file does not set comes from its `base`.
 | `mode_box` | the mode next to the frequency in a box (`mode_bg`, `mode_border`) instead of plain text |
 | `btn_gap` | 0 to 4: more space around the bottom buttons, so rounded (pill) buttons show all their corners |
 | `rule` | an `accent` line under the top bar and on top of the active button instead of its frame (Holo) |
+| `btn_text_size` | the text on the bottom buttons, one size on every button and page, the apps' too: 16 to 36, the font's sizes (built in: 26 RF.Guru and Legacy, 28 Outdoor, Outdoor-Negative, Classic and 1bit, 24 Black Metal, Total Black and Amber Trey). Where two lines of it do not fit the buttons' height (`btn_gap`, a taller `font`) the whole row takes a smaller size (not on base `Amber Trey`: one line, an action's two joined with a space); a text too wide for its button takes the biggest smaller size it fits in. On base `VISION`, and on the walkie screen's narrow buttons, each text is fitted to its button instead |
+| `btn_caps` | that text in capitals, a unit after a number as it is (`FILTER HIGH 2950 Hz`, as Black Metal and Total Black write it) |
+| `codec` | the S-meter as a SIGNAL bar: a framed row of segments, red above S9, the peak bright, the S scale under it and the dB value top right (themes/Codec); in TX the TX readings, as in any theme. Settings > Display > S-meter type and S-meter colours have no effect under it |
+| `ops_room` | the Ops Room theme's own pieces: a red band with TRANSMIT and ON AIR across the main screen under the TX panel while the radio transmits (not over an app: the app shows the TX its own way); the time in 7-segment digits between INTERNAL/EXTERNAL and the battery %, the battery's time left as LIMIT under it (TO FULL on a supply, the supply's voltage without a battery); the S-meter as a row of SIGNAL hexagons, its value or TX over them. Settings > Display > Power display, S-meter type and S-meter colours have no effect under it |
 
 The encoder LED shows which encoder a button's control is on (`btn_mark`,
 `btn_mark_assigned`); the control the encoder adjusts now is `btn_mark_active`
@@ -118,10 +132,12 @@ The authoritative list, with the value of each built-in theme, is
   `alert`, `alert_text`, `alert_bg`, `new`
 - Main screen: `icon_off`, `mode_dig`, `mode_text`, `mode_bg`, `mode_border`, `pill_off_text`, `pill_border`,
   `meter_weak`, `meter_bar`, `meter_over`, `meter_low`, `meter_high`, `bar_high`, `bar_mid`, `alc`, `tx_box`, `vfo_line`, `spot`,
-  `tune_good`, `bp_cw`, `bp_dig`, `bp_ssb`, `bp_bcn`, `bp_text`, `finder_band`, `finder_cursor`
+  `tune_good`, `bp_cw`, `bp_dig`, `bp_ssb`, `bp_bcn`, `bp_out`, `bp_text`, `finder_band`, `finder_cursor`
 - Categories: `pill_hp`, `pill_cat`, `pill_cat_text`, `pill_kbd`, `pill_kbd_text` (Bluetooth devices), `age_mid`,
   `age_old` (cluster spots), `row_alert`, `row_alert_text`, `row_heard`, `row_tx`, `row_to_me`, `row_cq`,
   `row_group`, `row_sel_bar` (JS8), `ft8_cq`, `ft8_cq_worked`, `ft8_cq_same`, `ft8_to_me`, `ft8_tx` (FT8)
+- Screensaver: `saver_bg` (its ground, black in every built-in theme), `saver` (the Matrix rain's trail, fading into
+  the ground at its end), `saver_head` (the head of each column)
 
 A file with a wrong colour or an unknown role is still loaded; the error is in
 `/tmp/x6100_log.txt`. A file that is not valid JSON falls back to RF.Guru.

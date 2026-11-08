@@ -212,6 +212,10 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_host_resources.py)
                 add_test(NAME freedv_usb_controller_build COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_controller_build.py)
+                add_test(NAME freedv_runtime_package COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_runtime_package.py)
+                add_test(NAME freedv_operational_release COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_operational_release.py)
                 add_test(NAME freedv_usb_ci_diagnostics COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_ci_diagnostics.py)
                 add_executable(freedv_native_contract_test tools/freedv/native_contract_test.c)
@@ -267,6 +271,11 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                 target_link_libraries(freedv_voice_bookmarks_test PRIVATE cfg)
                 add_dependencies(freedv_voice_bookmarks_test params_sqlite)
                 add_test(NAME freedv_voice_bookmarks COMMAND freedv_voice_bookmarks_test ${CMAKE_BINARY_DIR}/params.db)
+                add_executable(freedv_voice_migrations_test tools/freedv/voice_migrations_test.c src/params/migrations.c)
+                target_compile_options(freedv_voice_migrations_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+                target_link_libraries(freedv_voice_migrations_test PRIVATE sqlite3)
+                add_dependencies(freedv_voice_migrations_test params_sqlite)
+                add_test(NAME freedv_voice_migrations COMMAND freedv_voice_migrations_test ${CMAKE_BINARY_DIR}/params.db)
                 add_executable(freedv_voice_audio_test tools/freedv/voice_audio_test.c)
                 target_compile_definitions(freedv_voice_audio_test PRIVATE BOARD_X6200=1)
                 target_compile_options(freedv_voice_audio_test PRIVATE -UNDEBUG)
@@ -292,7 +301,7 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                 find_package(PkgConfig REQUIRED)
                 pkg_check_modules(FREEDV_BACKEND_DEPS REQUIRED IMPORTED_TARGET libnm dbus-glib-1)
                 add_executable(freedv_voice_radio_test tools/freedv/voice_radio_test.c src/hw/stub/hw_stub.c
-                    src/control_owner.c src/freedv/packet_tx.c)
+                    src/control_owner.c src/freedv/packet_tx.c src/base_guard.c src/cfg/ham_bands.c)
                 target_include_directories(freedv_voice_radio_test PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/build-host/deps/include)
                 target_compile_definitions(freedv_voice_radio_test PRIVATE ENABLE_FREEDV_VOICE=1 FREEDV_HOST_TEST_PROFILE=1)
                 target_compile_options(freedv_voice_radio_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
@@ -310,7 +319,7 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                 target_link_libraries(freedv_native_coordinator_test PRIVATE freedv_writer_gate)
                 add_test(NAME freedv_native_coordinator COMMAND freedv_native_coordinator_test)
                 add_executable(freedv_native_radio_backend_test tools/freedv/native_radio_backend_test.c
-                    src/hw/stub/hw_stub.c src/control_owner.c src/freedv/packet_tx.c)
+                    src/hw/stub/hw_stub.c src/control_owner.c src/freedv/packet_tx.c src/base_guard.c src/cfg/ham_bands.c)
                 target_include_directories(freedv_native_radio_backend_test PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src
                     ${CMAKE_SOURCE_DIR}/build-host/deps/include)
                 target_compile_definitions(freedv_native_radio_backend_test PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1)
@@ -320,7 +329,7 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                     Threads::Threads m PkgConfig::FREEDV_BACKEND_DEPS)
                 add_test(NAME freedv_native_radio_backend COMMAND freedv_native_radio_backend_test)
                 add_executable(freedv_native_radio_blocked_test tools/freedv/native_radio_backend_test.c
-                    src/hw/stub/hw_stub.c src/control_owner.c src/freedv/packet_tx.c)
+                    src/hw/stub/hw_stub.c src/control_owner.c src/freedv/packet_tx.c src/base_guard.c src/cfg/ham_bands.c)
                 target_include_directories(freedv_native_radio_blocked_test PRIVATE ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src
                     ${CMAKE_SOURCE_DIR}/build-host/deps/include)
                 target_compile_definitions(freedv_native_radio_blocked_test PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1 BOARD_X6200=1)
@@ -452,7 +461,7 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                 target_compile_options(freedv_packet_tx_test PRIVATE -UNDEBUG)
                 target_link_libraries(freedv_packet_tx_test PRIVATE Threads::Threads)
                 add_test(NAME freedv_packet_tx COMMAND freedv_packet_tx_test)
-                add_executable(freedv_usb_radio_gate_test tools/freedv/usb_radio_gate_test.c src/freedv/packet_tx.c)
+                add_executable(freedv_usb_radio_gate_test tools/freedv/usb_radio_gate_test.c src/freedv/packet_tx.c src/cfg/ham_bands.c)
                 target_include_directories(freedv_usb_radio_gate_test PRIVATE ${CMAKE_SOURCE_DIR})
                 target_compile_options(freedv_usb_radio_gate_test PRIVATE -UNDEBUG)
                 target_link_libraries(freedv_usb_radio_gate_test PRIVATE Threads::Threads m)
@@ -483,7 +492,7 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                         add_executable(freedv_x6200_route_test src/hw/x6200/hw_x6200.c
                                        tools/freedv/x6200_route_snapshot_test.c)
                         target_include_directories(freedv_x6200_route_test PRIVATE ${X6200_CONTROL_INCLUDE_DIR})
-                        target_compile_definitions(freedv_x6200_route_test PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1)
+                        target_compile_definitions(freedv_x6200_route_test PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1 BOARD_X6200=1)
                         target_compile_options(freedv_x6200_route_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
                         target_link_options(freedv_x6200_route_test PRIVATE -Wl,--gc-sections -Wl,--wrap=dlsym)
                         target_link_libraries(freedv_x6200_route_test PRIVATE freedv_writer_gate)
@@ -531,13 +540,14 @@ if(ENABLE_TESTING)
         FetchContent_MakeAvailable(aether_x6100_control)
 elseif(HOST_BUILD)
         # This PC: no NEON, the SDL window driver, the host board (board.h), the data and share
-        # directories under the build directory; liquid-dsp and ft8_lib from build-host/deps
-        # (host/build.sh puts them there)
+        # directories under the build directory; liquid-dsp and ft8_lib from HOST_DEPS, build-host/deps
+        # by default (host/build.sh puts them in its build folder's deps/ and passes that)
         add_compile_definitions(LV_DRAW_NEON=0 HOST_BUILD=1 USE_SDL=1 USE_DRM=0 USE_FBDEV=0)
         add_compile_definitions(BOARD_DATA="${HOST_DATA_DIR}" BOARD_SHARE="${CMAKE_BINARY_DIR}/share")
+        add_compile_definitions(X6100_SBIN="${CMAKE_SOURCE_DIR}/rootfs/usr/sbin")    # the helpers, from the tree
         set(LV_DRIVERS_SDL ON)
         set(HW_BACKEND "stub" CACHE STRING "The radio backend: x6100 or stub")
-        set(HOST_DEPS ${CMAKE_SOURCE_DIR}/build-host/deps)
+        set(HOST_DEPS "${CMAKE_SOURCE_DIR}/build-host/deps" CACHE PATH "The host build's liquid-dsp, ft8_lib and boost")
         include_directories(${HOST_DEPS}/include)
         link_directories(${HOST_DEPS}/lib)
         add_link_options(-Wl,-rpath,${HOST_DEPS}/lib)
@@ -568,6 +578,7 @@ if(HW_BACKEND STREQUAL "x6200")
 endif()
 
 add_subdirectory(lvgl)
+target_sources(lvgl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/lv_tick_mono.c)
 
 if(ENABLE_TESTING AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests)
         # tests/ lives in the private dev repository
@@ -582,8 +593,11 @@ else()
         if(NOT HOST_BUILD)
                 add_subdirectory(btcat)       # the radio's own programs
                 add_subdirectory(bootanim)
-                add_subdirectory(third-party/ardopcf)     # the Winlink modem, for Pat
         endif()
+        # The Winlink modems for Pat: ardopcf, and Mercury (experimental). On the PC too, where they are
+        # built only when asked for by name, for the Winlink tests (tools/winlink)
+        add_subdirectory(third-party/ardopcf)
+        add_subdirectory(third-party/mercury)
 
         # Installed into the buildroot target: the GUI, the rootfs overlay
         # (init scripts, tools, data) and the images
@@ -592,13 +606,24 @@ else()
         install(DIRECTORY images DESTINATION share/x6100)
         # Callsign -> country for the FT8/FT4 table (AD1C, country-files.com)
         install(FILES third-party/cty/cty.dat DESTINATION share/x6100)
-        # No folder theme is installed: themes/RS is cut from a screenshot of Icom's RS-BA1
-        # (themes/make_rs.py, personal use only)
+        # No folder theme is installed: themes/ has them to copy to /mnt/themes (themes/README.md); themes/RS is
+        # cut from a screenshot of another maker's remote-control program (themes/make_rs.py, personal use only)
         # Pat, the Winlink client: built outside, by tools/pat/build.sh (buildroot/local-build.sh
         # passes its path), and installed as /usr/bin/pat, so the update bundle carries it too
         set(PAT_BINARY "" CACHE FILEPATH "Pat for the radio (tools/pat/build.sh)")
         if(PAT_BINARY)
                 install(PROGRAMS ${PAT_BINARY} DESTINATION bin RENAME pat)
+        endif()
+        # XARA, the VARA-compatible Winlink modem (experimental): built outside too, by tools/xara/build.sh with
+        # its own pinned Rust, and installed as /usr/bin/xara. Its licence and the notices of what is compiled
+        # into it (the doc/ beside the binary) go to /usr/share/x6100/licenses/xara: buildroot drops
+        # /usr/share/doc from the image
+        set(XARA_BINARY "" CACHE FILEPATH "XARA for the radio (tools/xara/build.sh)")
+        if(XARA_BINARY)
+                get_filename_component(XARA_DIR ${XARA_BINARY} DIRECTORY)
+                install(PROGRAMS ${XARA_BINARY} DESTINATION bin RENAME xara)
+                install(FILES ${XARA_DIR}/doc/LICENSE ${XARA_DIR}/doc/THIRD-PARTY
+                        ${XARA_DIR}/doc/rust-std-COPYRIGHT.html.gz DESTINATION share/x6100/licenses/xara)
         endif()
         # The apps' version, for the web configurator and the scripts. Read at configure time, so a
         # changed main.h must configure again: a plain rebuild left the old number in the file (and

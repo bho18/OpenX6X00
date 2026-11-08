@@ -50,6 +50,13 @@ start() {
 	return "$status"
 }
 
+after_gui_exit() {
+	# Run only after the GUI has relinquished radio ownership. Keep the CW key
+	# released and restore an attached WR12, including after abnormal GUI exit.
+	gpioset gpiochip1 203=1 2> /dev/null
+	/usr/sbin/x6100-wr12-bypass | logger -t S95gui 2> /dev/null
+}
+
 stop() {
 	printf 'Stopping %s: ' "$DAEMON"
 	start-stop-daemon -K -q -p "$PIDFILE"
@@ -62,6 +69,7 @@ stop() {
 	# once its GUI has
 	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
 		if ! pidof "$DAEMON" > /dev/null && ! pidof x6100_gui > /dev/null; then
+			after_gui_exit
 			result 0
 			return 0
 		fi

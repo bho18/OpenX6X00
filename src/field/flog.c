@@ -8,6 +8,7 @@
 
 #include "flog.h"
 #include "../board.h"
+#include "../radio_types.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -45,14 +46,66 @@ static size_t field(char *buf, size_t size, size_t len, const char *tag, const c
     return n > 0 ? len + (size_t)n : len;
 }
 
-/* The ADIF SUBMODE of a log mode that is one, NULL when the mode stands on its own */
-static const char *adif_submode(const char *mode) {
-    static const char *const sub[] = {"FT4", "JS8", "FT2", NULL};
+/* The log's modes that ADIF has as a SUBMODE, with their MODE (ADIF 3.1.8: JTTY came in 3.1.8, FT2 in 3.1.7).
+ * FT8, RTTY, OLIVIA, CONTESTI (so spelled in ADIF), SSTV, WSPR and the others stand on their own */
+static const struct {
+    const char *sub, *mode;
+} submodes[] = {
+    {"FT4", "MFSK"}, {"FT2", "MFSK"}, {"JS8", "MFSK"}, {"JTTY", "MFSK"}, {"PSK31", "PSK"}, {"PSK63", "PSK"},
+};
 
-    for (int i = 0; sub[i]; i++)
-        if (!strcasecmp(mode, sub[i]))
-            return sub[i];
+/* The ADIF MODE of a log mode that is a SUBMODE, NULL when the mode stands on its own */
+static const char *adif_mode_of(const char *sub) {
+    for (size_t i = 0; i < sizeof(submodes) / sizeof(submodes[0]); i++)
+        if (!strcasecmp(sub, submodes[i].sub))
+            return submodes[i].mode;
     return NULL;
+}
+
+/* FT8 and FT4 dial frequencies, kHz: in USB, LSB or a data mode on one of them (500 Hz below to 3.5 kHz above)
+ * the mode is that */
+static const char *ftx_by_freq(int32_t hz) {
+    static const int ft8[] = {1840, 3573, 5357, 7074, 10136, 14074, 18100, 21074, 24915, 28074, 50313};
+    static const int ft4[] = {3575, 7047, 10140, 14080, 18104, 21140, 24919, 28180, 50318};
+
+    for (size_t i = 0; i < sizeof(ft8) / sizeof(ft8[0]); i++)
+        if (hz >= ft8[i] * 1000 - 500 && hz <= ft8[i] * 1000 + 3500)
+            return "FT8";
+    for (size_t i = 0; i < sizeof(ft4) / sizeof(ft4[0]); i++)
+        if (hz >= ft4[i] * 1000 - 500 && hz <= ft4[i] * 1000 + 3500)
+            return "FT4";
+    return NULL;
+}
+
+const char *field_qso_mode(const char *app, int mode, int32_t hz) {
+    /* The apps a QSO is made with, by their names on the frequency strip, and their log modes. WeFax and NavTex
+     * receive only: the radio's mode, as with no app */
+    static const char *const apps[][2] = {
+        {"FT8", "FT8"},     {"FT4", "FT4"},       {"FT2", "FT2"},   {"JS8", "JS8"},   {"PSK31", "PSK31"},
+        {"PSK63", "PSK63"}, {"Olivia", "OLIVIA"}, {"JTTY", "JTTY"}, {"RTTY", "RTTY"}, {"SSTV", "SSTV"},
+        {"WSPR", "WSPR"},   {"Contestia", "CONTESTI"},
+    };
+    const char *ftx = ftx_by_freq(hz);
+
+    /* CW is CW, app or not: RTTY and SSTV leave the radio's mode free, and no app sends in CW */
+    if (mode == radio_mode_cw || mode == radio_mode_cwr)
+        return "CW";
+    for (size_t i = 0; app && i < sizeof(apps) / sizeof(apps[0]); i++)
+        if (!strcasecmp(app, apps[i][0]))
+            return apps[i][1];
+    switch (mode) {
+        case radio_mode_am:
+        case radio_mode_sam:
+            return "AM";
+        case radio_mode_nfm:
+        case radio_mode_wfm:
+            return "FM";
+        case radio_mode_lsb_dig:
+        case radio_mode_usb_dig:
+            return ftx ? ftx : "";      /* PSK, Olivia, RTTY... from a program on TCI: not known, and not FT8 (#92) */
+        default:
+            return ftx ? ftx : "SSB";
+    }
 }
 
 size_t field_adif_record(char *buf, size_t size, const field_qso_t *q, const field_station_t *st) {
@@ -70,10 +123,11 @@ size_t field_adif_record(char *buf, size_t size, const field_qso_t *q, const fie
     n = field(buf, size, n, "TIME_ON", tm_on);
     n = field(buf, size, n, "BAND", field_band(q->freq_hz));
     n = field(buf, size, n, "FREQ", freq);
-    /* ADIF has FT4, JS8 and FT2 as submodes of MFSK (FT8 is a mode of its own) */
-    const char *submode = adif_submode(q->mode);
-    n = field(buf, size, n, "MODE", submode ? "MFSK" : q->mode);
-    n = field(buf, size, n, "SUBMODE", submode ? submode : "");
+    /* ADIF has FT4, JS8, FT2 and JTTY as submodes of MFSK, PSK31 and PSK63 of PSK (FT8 is a mode of its own); a
+     * mode not known goes as no MODE at all */
+    const char *parent = adif_mode_of(q->mode);
+    n = field(buf, size, n, "MODE", parent ? parent : q->mode);
+    n = field(buf, size, n, "SUBMODE", parent ? q->mode : "");
     n = field(buf, size, n, "RST_SENT", q->rst_s);
     n = field(buf, size, n, "RST_RCVD", q->rst_r);
     n = field(buf, size, n, "NAME", q->name);
@@ -107,6 +161,15 @@ size_t field_adif_record(char *buf, size_t size, const field_qso_t *q, const fie
     if (n < size)
         n += (size_t)snprintf(buf + n, size - n, "<eor>\n");
     return n < size ? n : size - 1;
+}
+
+int field_adif_header(FILE *f, const char *title) {
+    const char *ver = getenv("X6100_FW");
+
+    if (!ver || !ver[0])
+        return fprintf(f, "%s\n<ADIF_VER:5>3.1.8 <PROGRAMID:9>OpenX6X00 <eoh>\n", title);
+    return fprintf(f, "%s\n<ADIF_VER:5>3.1.8 <PROGRAMID:9>OpenX6X00 <PROGRAMVERSION:%zu>%s <eoh>\n", title,
+                   strlen(ver), ver);
 }
 
 bool field_log_add(const char *path, const field_qso_t *q, const field_station_t *st) {
@@ -145,7 +208,7 @@ bool field_log_add(const char *path, const field_qso_t *q, const field_station_t
         return false;
     }
     if (is_new)
-        fprintf(f, BOARD_NAME " Field Ops log\n<ADIF_VER:5>3.1.4 <PROGRAMID:9>OpenX6X00 <eoh>\n");
+        field_adif_header(f, BOARD_NAME " Field Ops log");
     field_adif_record(rec, sizeof(rec), q, st);
     if (fputs(rec, f) < 0 || fflush(f) != 0)
         err = errno;
@@ -238,7 +301,8 @@ int field_log_read(const char *path, field_qso_t *out, int max) {
         get(line, "FREQ", v, sizeof(v));
         q->freq_hz = (int32_t)(atof(v) * 1e6 + 0.5);
         get(line, "MODE", q->mode, sizeof(q->mode));
-        if (!strcasecmp(q->mode, "MFSK")) {       /* the submode names it: FT4, JS8, FT2 */
+        /* the submode names it: FT4, JS8, FT2, JTTY, PSK31, PSK63 */
+        if (!strcasecmp(q->mode, "MFSK") || !strcasecmp(q->mode, "PSK")) {
             char sub[8];
             get(line, "SUBMODE", sub, sizeof(sub));
             if (sub[0])
@@ -345,6 +409,10 @@ char field_ref_prog(const char *ref) {
         return 'H';
     if (pre >= 3 && dash[-1] == 'F' && dash[-2] == 'F')                   /* DLFF-0123 */
         return 'F';
+    /* LLPL-0001, LLIE-10001: LL and two letters, which no POTA prefix has; before the towers (LLAR-0001 ends in R) */
+    if (pre == 4 && ref[0] == 'L' && ref[1] == 'L' && ref[2] >= 'A' && ref[2] <= 'Z' && ref[3] >= 'A' && ref[3] <= 'Z'
+        && (digits_end(dash + 1, 4) || digits_end(dash + 1, 5)))
+        return 'K';
     /* OKR-0150, 9MR-0101, K1R-0029: 2 to 4 before the R, which no POTA prefix has (KR-1308 is a park) */
     if (pre >= 3 && pre <= 5 && dash[-1] == 'R' && digits_end(dash + 1, 4))
         return 'T';
@@ -369,6 +437,7 @@ const char *field_prog_sig(char prog) {
         case 'M': return "MOTA";
         case 'L': return "ARLHS";   /* the lighthouses' numbering; GMA takes the reference from its upload form */
         case 'G': return "TILES";   /* Tiles reads the tile from MY_GRIDSQUARE; MY_SIG names the activation here */
+        case 'K': return "LLOTA";   /* llota.app finds the lake by MY_SIG LLOTA / MY_SIG_INFO in the upload */
         default:  return NULL;
     }
 }
@@ -385,6 +454,7 @@ const char *field_qso_tag(const field_qso_t *q) {
         case 'M': return "M2M";
         case 'L': return "L2L";
         case 'G': return "T3";      /* Tiles' own name for tile to tile */
+        case 'K': return "LL2LL";   /* lake to lake: L2L is the lighthouses' */
         default:  return "";
     }
 }
