@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from release_guide import render_guide, validate_guide_copies
 
 ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY = 'bho18/OpenX6X00'
@@ -131,6 +132,7 @@ def validate_assets(directory, tag, expected_commit):
         for key in ('image_sha256', 'gui_sha256', 'runner_sha256', 'rade_sha256', 'firmware_commit', 'build_id', *CONTRACTS):
             if kit.get(key) != manifest.get(key):
                 raise ValueError('Image/helper binding differs: '+key)
+    validate_guide_copies(directory)
     validate_source_archive(directory/'candidate-source.tar.xz', verification['source_files'])
     heads = subprocess.check_output(['git', 'bundle', 'list-heads', str(directory/'candidate-source.bundle')], text=True).splitlines()
     if heads != [expected_commit+' HEAD']:
@@ -199,14 +201,10 @@ def package_assets(candidate, output, tag, expected_commit, raw_image=None):
     for name in ('candidate-manifest.json', 'software-verification.json', 'candidate-source.bundle', 'candidate-source.tar.xz'):
         shutil.copy2(candidate/name, output/name)
     shutil.copy2(candidate/'x6200-native-development.abi.json', output/'image-abi.json')
-    guide = (ROOT/'docs/freedv/usb-rf-end-to-end.md').read_text()
-    current = re.search(r'Use the `(freedv-operational-beta-[0-9]{8}\.[0-9]+)`', guide)
-    if current:
-        guide = guide.replace(current.group(1), tag)
-    guide = guide.replace('(usb-test-strategy.md)', '(https://github.com/'+REPOSITORY+'/blob/'+tag+'/docs/freedv/usb-test-strategy.md)')
-    (output/'START-HERE.md').write_text(guide)
+    guide = render_guide((ROOT/'docs/freedv/usb-rf-end-to-end.md').read_bytes(), tag)
+    (output/'START-HERE.md').write_bytes(guide)
     subprocess.run([sys.executable, str(ROOT/'tools/freedv/build_usb_rf_kit.py'), '--image-manifest', str(candidate/'candidate-manifest.json'),
-                    '--output', str(output/'usb-rf-test-kit.zip')], check=True)
+                    '--output', str(output/'usb-rf-test-kit.zip'), '--guide', str(output/'START-HERE.md')], check=True)
     with zipfile.ZipFile(output/'x6200-usb-rf-windows.zip', 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         archive.write(image, 'x6200-usb-rf.img')
         archive.write(output/'START-HERE.md', 'START-HERE.md')

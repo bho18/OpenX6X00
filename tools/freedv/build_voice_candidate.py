@@ -17,6 +17,7 @@ from usb_test_campaign import validate_campaign
 from test_usb_audio_integration import CASES as USB_CONTROLLER_CASES
 from build_native_development import validate_build_record
 from runtime_package import application_version, validate_package
+from release_guide import render_guide
 
 ROOT=Path(__file__).resolve().parents[2]
 BASELINE_SHA='a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab'
@@ -249,6 +250,8 @@ def main():
         'signature_key_preserved':result['signature_key_preserved'],'actual_image_abi':result['abi']['status']},indent=2)+'\n')
     guide=out/'guide/docs/freedv';shutil.copytree(ROOT/'docs/freedv',guide)
     start=(ROOT/('docs/freedv/usb-rf-end-to-end.md' if a.usb_rf or a.usb_voice else 'docs/freedv/native-development-build.md')).read_text()
+    if a.usb_rf or a.usb_voice:
+        start=render_guide(start.encode(),verification['build_id']).decode()
     start=start.replace('(native-half-duplex-qualification.md)',
                         '(guide/docs/freedv/native-half-duplex-qualification.md)')
     start=start.replace('(baseband-research/README.md)',

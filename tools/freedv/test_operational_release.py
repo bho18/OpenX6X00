@@ -9,6 +9,8 @@ import sys
 import tarfile
 import tempfile
 import subprocess
+import sqlite3
+import stat
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -18,9 +20,123 @@ import operational_clock_probe as clock
 import publish_operational_release as publish
 import release_cache
 import stage_operational_publish as transport
+from release_guide import render_guide, validate_guide_copies
 
 
 class ReleaseBoundaries(unittest.TestCase):
+    def test_package_stage_bootstraps_observer_before_source_and_packaging(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            argv = ['build_operational_release.py', '--stage', 'package', '--expected-commit', 'a'*40,
+                    '--build-id', 'fixture', '--observer-provenance', str(root/'observer.json')]
+            for name in ('work', 'output', 'sdk', 'codec', 'host-codec', 'fixtures', 'baseline', 'control-headers', 'x6100-prefix'):
+                argv += ['--'+name, str(root/name)]
+            order = []
+            identity = {'source_commit': 'a'*40, 'source_tree_sha256': 'b'*64,
+                        'source_files': {'main.c': 'c'*64}, 'source_file_count': 1}
+            def observer(path):
+                self.assertEqual(path, root/'observer.json')
+                order.append('observer')
+            def source(expected):
+                order.append('source')
+                return identity
+            with patch.object(sys, 'argv', argv), patch.object(build, 'validate_observer', side_effect=observer), \
+                    patch.object(build, 'source_identity', side_effect=source), \
+                    patch.object(build, 'package', side_effect=lambda args: order.append('package')):
+                build.main()
+            self.assertEqual(order, ['observer', 'source', 'package'])
+
+    def test_working_gui_database_is_writable_without_changing_sealed_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root/'sealed-params.db'
+            with sqlite3.connect(source) as database:
+                database.execute('CREATE TABLE defaults(value INTEGER)')
+                database.execute('INSERT INTO defaults VALUES(42)')
+            source.chmod(0o555)
+            original = build.sha(source)
+            directory = root/'working'
+            directory.mkdir()
+            fixture = build.prepare_host_smoke_database({'path': str(source), 'sha256': original}, directory)
+            working = directory/'params.db'
+            self.assertEqual(fixture['status'], 'PASS')
+            self.assertEqual(build.sha(working), original)
+            self.assertEqual(stat.S_IMODE(working.stat().st_mode), 0o600)
+            with sqlite3.connect(working) as database:
+                database.execute('CREATE TABLE migration_probe(value INTEGER)')
+                database.execute('INSERT INTO migration_probe VALUES(7)')
+            self.assertNotEqual(build.sha(working), original)
+            self.assertEqual(build.sha(source), original)
+            self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o555)
+    def test_guide_render_changes_current_release_and_preserves_fallback(self):
+        template = (b'Use the `freedv-operational-beta-20261107.3` GitHub release.\n'
+                    b'Keep `freedv-operational-beta-20261107.2` as fallback.\n'
+                    b'[Strategy](usb-test-strategy.md)\n')
+        actual = render_guide(template, 'freedv-operational-beta-20261108.1')
+        self.assertIn(b'Use the `freedv-operational-beta-20261108.1`', actual)
+        self.assertIn(b'Keep `freedv-operational-beta-20261107.2`', actual)
+        self.assertIn(b'/blob/freedv-operational-beta-20261108.1/docs/freedv/usb-test-strategy.md', actual)
+        with self.assertRaises(ValueError):
+            render_guide(template, 'bad\nidentity')
+        with self.assertRaises(ValueError):
+            render_guide(b'No current release marker', 'freedv-operational-beta-20261108.1')
+
+    def kit_fixture(self, root, guide=None):
+        tag = 'freedv-operational-beta-20261108.1'
+        image = {'software_gates_passed': True, 'usb_rf_test_ready': True, 'on_device_readiness_required': True,
+                 'usb_startup_contract_version': 4, 'usb_output_contract_version': 1,
+                 'usb_capture_open_contract_version': 1, 'usb_refinement_contract_version': 2,
+                 'gui_sha256': 'a'*64, 'runner_sha256': 'b'*64, 'rade_sha256': 'c'*64,
+                 'image_sha256': 'd'*64, 'firmware_commit': 'e'*40, 'build_id': tag}
+        manifest = root/'image-manifest.json'
+        manifest.write_text(json.dumps(image))
+        command = [sys.executable, str(Path(publish.__file__).with_name('build_usb_rf_kit.py')),
+                   '--image-manifest', str(manifest), '--output', str(root/'usb-rf-test-kit.zip')]
+        if guide is not None:
+            command += ['--guide', str(guide)]
+        outcome = subprocess.run(command, capture_output=True)
+        self.assertEqual(outcome.returncode, 0, outcome.stderr)
+        return image
+
+    def test_real_kit_builder_uses_rendered_guide_and_exact_override(self):
+        raw = (publish.ROOT/'docs/freedv/usb-rf-end-to-end.md').read_bytes()
+        expected = render_guide(raw, 'freedv-operational-beta-20261108.1')
+        for override in (False, True):
+            with self.subTest(override=override), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                guide = root/'rendered-guide.md'
+                guide.write_bytes(expected)
+                self.kit_fixture(root, guide if override else None)
+                with zipfile.ZipFile(root/'usb-rf-test-kit.zip') as zipped:
+                    manifest = json.loads(zipped.read('rf-test-manifest.json'))
+                    self.assertEqual(zipped.read('START-HERE.md'), expected)
+                    self.assertEqual(manifest['files']['START-HERE.md'], hashlib.sha256(expected).hexdigest())
+                    for name, digest in manifest['files'].items():
+                        self.assertEqual(hashlib.sha256(zipped.read(name)).hexdigest(), digest)
+
+    def test_valid_self_consistent_kit_with_stale_guide_is_rejected(self):
+        raw = (publish.ROOT/'docs/freedv/usb-rf-end-to-end.md').read_bytes()
+        expected = render_guide(raw, 'freedv-operational-beta-20261108.1')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.kit_fixture(root)
+            (root/'START-HERE.md').write_bytes(expected)
+            with zipfile.ZipFile(root/'x6200-usb-rf-windows.zip', 'w') as image:
+                image.writestr('START-HERE.md', expected)
+            self.assertEqual(validate_guide_copies(root), hashlib.sha256(expected).hexdigest())
+            kit = root/'usb-rf-test-kit.zip'
+            with zipfile.ZipFile(kit) as zipped:
+                payloads = {name: zipped.read(name) for name in zipped.namelist()}
+            payloads['START-HERE.md'] = raw
+            manifest = json.loads(payloads['rf-test-manifest.json'])
+            manifest['files']['START-HERE.md'] = hashlib.sha256(raw).hexdigest()
+            payloads['rf-test-manifest.json'] = json.dumps(manifest).encode()
+            with zipfile.ZipFile(kit, 'w') as zipped:
+                for name, data in payloads.items():
+                    zipped.writestr(name, data)
+            with self.assertRaisesRegex(ValueError, 'guide differs'):
+                validate_guide_copies(root)
+
     def test_transport_reconstructs_exact_assets_and_rejects_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

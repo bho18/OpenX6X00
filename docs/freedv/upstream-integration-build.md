@@ -143,6 +143,7 @@ python3 tools/freedv/build_operational_release.py --stage verify \
   --runtime-package "$TASK_RUNTIME_PACKAGE"
 python3 tools/freedv/build_operational_release.py --stage package \
   "${TASK_COMMON[@]}" \
+  --observer-provenance "$TASK_OBSERVER_PROVENANCE" \
   --runtime-package "$TASK_RUNTIME_PACKAGE" --web-wheel "$TASK_WEB_WHEEL"
 ```
 
@@ -152,6 +153,8 @@ identities, actual CI/source receipts, ARM processing under QEMU, GUI operation
 and production collector/CLI behavior. Package requires that verification and
 the exact reviewed runtime/wheel. A build without passing CI remains blocked
 for publication.
+GUI verification uses a separate writable copy of the sealed default database;
+the retained database evidence remains read-only and byte-for-byte unchanged.
 
 The separate **Build base image (manual)** workflow maintains full Linux
 images. It does not automatically produce the operational FreeDV candidate and
@@ -184,6 +187,10 @@ checks their identities. Keep older working releases available.
 The release contains the image ZIP, matching helper kit, START-HERE guide,
 source archive/bundle, candidate manifest, software-verification record, image
 ABI evidence and checksums. Never mix an old helper kit with a new image.
+The build ID is rendered once into the operator guide; the top-level guide,
+image ZIP and helper ZIP must contain identical guide bytes. Helper generation
+also supports `--guide` for those exact already-rendered bytes, and release
+validation rejects a mismatched copy even if the ZIP's own hashes are valid.
 Download every published asset afresh and verify its checksums, raw image
 identity, source/tag identity and kit bindings before declaring delivery done.
 

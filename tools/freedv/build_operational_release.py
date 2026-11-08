@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -345,6 +346,27 @@ def validate_probe_context(clock, matrix, identity, build_id):
         raise ValueError('Independent observer source, CPU context or completion differs from qualification')
 
 
+def prepare_host_smoke_database(sealed, directory):
+    """Make a writable fixture while preserving the sealed default database."""
+    source = Path(sealed['path'])
+    target = Path(directory)/'params.db'
+    if not source.is_file() or sha(source) != sealed['sha256']:
+        raise ValueError('Host GUI smoke requires the sealed current default parameters')
+    if target.exists() or target.is_symlink() or target.resolve() == source.resolve():
+        raise ValueError('Host GUI database fixture must use a fresh separate path')
+    source_mode = stat.S_IMODE(source.stat().st_mode)
+    shutil.copy2(source, target)
+    # Retained build evidence is deliberately read-only. The GUI's disposable
+    # working database must support normal SQLite migration/journal writes.
+    target.chmod(0o600)
+    if (sha(target) != sealed['sha256'] or sha(source) != sealed['sha256'] or
+            stat.S_IMODE(source.stat().st_mode) != source_mode):
+        raise ValueError('Database fixture preparation changed bytes or sealed evidence')
+    return {'status': 'PASS', 'sealed_path': str(source), 'sealed_sha256': sealed['sha256'],
+            'sealed_mode_unchanged': oct(source_mode), 'working_path': str(target),
+            'working_initial_sha256': sha(target), 'working_mode': oct(stat.S_IMODE(target.stat().st_mode))}
+
+
 def collect_smokes(args, records, checks):
     from validate_native_host import smoke_gui
     host = args.work/'host-native/build'
@@ -353,9 +375,10 @@ def collect_smokes(args, records, checks):
         shutil.move(str(data), str(checks/'previous-host-data'))
     data.mkdir()
     params = records['host-native']['binaries'].get('params.db')
-    if not params or sha(params['path']) != params['sha256']:
+    if not params:
         raise ValueError('Host GUI smoke requires the sealed current default parameters')
-    shutil.copy2(params['path'], data/'params.db')
+    fixture = prepare_host_smoke_database(params, data)
+    save(checks/'host-gui-database-fixture.json', fixture)
     old_library = os.environ.get('LD_LIBRARY_PATH', '')
     os.environ['LD_LIBRARY_PATH'] = str(args.host_codec/'rade_c/src')+os.pathsep+old_library
     simulator = checks/'host-gui'
@@ -557,8 +580,9 @@ def main():
         if path == ROOT or ROOT in path.parents:
             parser.error('Work and output directories must be outside the source checkout')
     args.work.mkdir(parents=True, exist_ok=True)
-    if args.stage in ('builds', 'verify', 'all'):
-        validate_observer(args.observer_provenance)
+    # Packaging revalidates the complete source-bound waveform campaign too.
+    # Every stage starts in a fresh interpreter and needs the pinned observer.
+    validate_observer(args.observer_provenance)
     identity = source_identity(args.expected_commit)
     freeze_path = args.work/'frozen-source.json'
     frozen = {**identity, 'build_id': args.build_id}
