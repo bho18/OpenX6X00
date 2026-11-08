@@ -346,6 +346,7 @@ static void set_txpwr(float w) {
     /* A TUNE keeps its own power: the base is in USB-D for it, and the user asked for that carrier */
     if (atomic_load(&train_hold) && tune_cap <= 0.0f) w = 0.0f;
     if (atomic_load(&band_hold)) w = 0.0f;     /* a TUNE too: none starts there, one moved there is stopped */
+    if (cfg_tx_block()) w = 0.0f;
     hw_set_f(HW_TXPWR_F, w);
 }
 
@@ -2016,13 +2017,19 @@ static void open_tx_tick(void) {
 #if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
 /* Called by the profile worker under radio_lock, before it publishes readiness.
  * This potentially slow operation never belongs on a PTT or volume detent. */
+static void freedv_usb_power_state(bool eligible, bool training, float requested) {
+    /* Caller owns radio_lock; synchronize the ordinary policy's cached model
+     * before a profile or live power update reaches the base. */
+    atomic_store(&band_hold, !eligible);
+    atomic_store(&train_hold, training);
+    txpwr_asked = requested;
+}
+
 static bool freedv_usb_open_tx_apply(bool allow) {
     freedv_packet_tx_observation o = freedv_packet_tx_read(&packet_tx_tracker, get_time());
     if (!o.known || o.tx || o.age_ms > FD_RADIO_PACKET_MAX_AGE_MS || state != RADIO_RX ||
         hw_tx_keyed_by_gui() || morse_on ||
         (uint32_t)get_time() - morse_ms < MORSE_HANG_MS || (allow && cfg_tx_block())) return false;
-    atomic_store(&band_hold, !allow);
-    atomic_store(&train_hold, false); /* the USB profile uses a data mode, never the CW trainer */
 #ifdef BOARD_X6200
     int8_t want = allow ? 1 : 0;
     if (want != open_tx_asked) {

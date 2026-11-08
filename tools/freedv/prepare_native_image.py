@@ -58,8 +58,8 @@ def prepare(baseline, gui, package, overlay, variant, revision, sdk, output, bui
             if path.is_symlink(): raise ValueError('runtime overlay symlinks require explicit handling')
             if not path.is_file(): continue
             destination='/'+path.relative_to(overlay).as_posix()
-            if destination.startswith(('/mnt/','/lib/firmware/')) or destination.endswith('/allow-unsigned'):
-                raise ValueError('diagnostic overlay touches protected data/firmware policy')
+            from runtime_package import validate_overlay_destination
+            validate_overlay_destination(destination)
             files[destination]=image.write_file(path,destination)
         files['/usr/sbin/x6100_gui']=image.write_file(gui,'/usr/sbin/x6100_gui',0o755)
         image.mkdir('/opt/freedv-benchmark')

@@ -17,7 +17,7 @@ from fetch_native_baseline import BUILDROOT, BUILDROOT_SUBMODULE, ARTIFACT_SHA25
 from fetch_native_fixture import PREFIX_SHA as CONTINUOUS_FIXTURE_SHA256
 from native_image import sha
 from prepare_native_image import prepare
-from runtime_package import application_version, compatibility, validate_package
+from runtime_package import application_version, compatibility, validate_package, validate_web_wheel
 
 ROOT=Path(__file__).resolve().parents[2]
 # Public snapshot of the reviewed baseline-compatible runtime sources. Its
@@ -67,10 +67,7 @@ def current_overlay(work,version,web_wheel=None,runtime_package=None):
     if len(wheel)!=1: raise ValueError('one current webserver wheel required')
     site=overlay/'usr/lib/python3.11/site-packages'; site.mkdir(parents=True)
     with ZipFile(wheel[0]) as archive:
-        for path in (ROOT/'webserver/src/x6100_webserver').rglob('*'):
-            if path.is_file() and '__pycache__' not in path.parts:
-                name=path.relative_to(ROOT/'webserver/src').as_posix()
-                if archive.read(name)!=path.read_bytes():raise ValueError('web wheel differs from candidate source: '+name)
+        validate_web_wheel(archive,ROOT/'webserver/src/x6100_webserver')
         for member in archive.infolist():
             if Path(member.filename).is_absolute() or '..' in Path(member.filename).parts or member.filename.endswith('/'):
                 if member.filename.endswith('/'): continue

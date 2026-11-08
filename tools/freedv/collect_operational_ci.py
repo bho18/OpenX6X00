@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import zipfile
 
-from build_operational_release import JOBS, REPOSITORY, source_identity, validate_ci
+from build_operational_release import CI_ARTIFACTS, JOBS, REPOSITORY, source_identity, validate_ci
 
 
 def api(path):
@@ -27,12 +27,13 @@ def collect(run_id, expected_commit, output):
     run = api(base)
     if run.get('conclusion') != 'success' or run.get('status') != 'completed':
         raise ValueError('The actual CI run has not completed successfully')
-    jobs = api(base+'/jobs?per_page=100')['jobs']
+    jobs_api = api(base+'/jobs?per_page=100')
+    jobs = jobs_api['jobs']
     if {job['name'] for job in jobs} != JOBS:
         raise ValueError('Unexpected CI job set')
-    expected = {**{'tested-source-'+job: ('tested-source-'+job+'.json', job) for job in JOBS},
-                'pinned-opus-model-acquisition': ('model-acquisition.json', None)}
-    artifacts = api(base+'/artifacts?per_page=100')['artifacts']
+    expected = CI_ARTIFACTS
+    artifacts_api = api(base+'/artifacts?per_page=100')
+    artifacts = artifacts_api['artifacts']
     if any(sum(item['name'] == name for item in artifacts) != 1 for name in expected):
         raise ValueError('Required actual CI receipt artifact names are missing or ambiguous')
     selected = {item['name']: item for item in artifacts if item['name'] in expected}
@@ -40,7 +41,11 @@ def collect(run_id, expected_commit, output):
         raise ValueError('Required actual CI receipts are missing or expired')
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
-    result = {'run': run, 'jobs': jobs, 'tested_source_receipts': {}, 'artifact_downloads': {}}
+    result = {'run': run, 'jobs': jobs, 'tested_source_receipts': {}, 'artifact_downloads': {}, 'api_evidence': {}}
+    for name, receipt in (('run', run), ('jobs', jobs_api), ('artifacts', artifacts_api)):
+        path = output/(name+'-api.json')
+        path.write_text(json.dumps(receipt, indent=2)+'\n')
+        result['api_evidence'][name] = {'path': str(path), 'sha256': sha(path), 'receipt': receipt}
     for name, artifact in selected.items():
         archive_path = output/(name+'.zip')
         with archive_path.open('xb') as stream:

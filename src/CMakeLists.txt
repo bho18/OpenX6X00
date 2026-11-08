@@ -135,16 +135,10 @@ else()
 endif()
 
 # Subfolders: some add their sources to the GUI, others build a library
-foreach(dir fonts ft8 js8 widgets params qth cluster field wspr cfg cw_decoder)
-    add_subdirectory(${dir})
-endforeach()
-
-# ft8_lib headers (buildroot package ft8lib; the host build has them in HOST_DEPS, build-host/deps by default);
-# only for the GUI itself, not the libraries above
 set(OPENX6X00_FT8_LIBRARY "" CACHE FILEPATH "Verified target FT8 runtime library")
 set(OPENX6X00_FT8_INCLUDE_DIR "" CACHE PATH "Headers matching the verified FT8 runtime library")
 if(OPENX6X00_FT8_LIBRARY OR OPENX6X00_FT8_INCLUDE_DIR)
-    if(NOT EXISTS "${OPENX6X00_FT8_LIBRARY}" OR NOT IS_DIRECTORY "${OPENX6X00_FT8_INCLUDE_DIR}")
+    if(NOT EXISTS "${OPENX6X00_FT8_LIBRARY}" OR NOT EXISTS "${OPENX6X00_FT8_INCLUDE_DIR}/ft8lib/constants.h")
         message(FATAL_ERROR "Provide both the verified FT8 library and its matching headers")
     endif()
     include_directories(BEFORE "${OPENX6X00_FT8_INCLUDE_DIR}")
@@ -155,6 +149,14 @@ endif()
 if(NOT OPENX6X00_FT8_LINK)
     set(OPENX6X00_FT8_LINK ft8)
 endif()
+
+
+foreach(dir fonts ft8 js8 widgets params qth cluster field wspr cfg cw_decoder)
+    add_subdirectory(${dir})
+endforeach()
+
+# ft8_lib headers (buildroot package ft8lib; the host build has them in HOST_DEPS, build-host/deps by default);
+# only for the GUI itself, not the libraries above
 
 # The panel on a PC
 if(HOST_BUILD)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Execute against the exact SDK FT8 shared library before it enters an image.
-#include <message.h>
+#include <ft8lib/message.h>
 #include <stdio.h>
 #include <string.h>
 

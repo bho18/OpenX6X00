@@ -121,15 +121,16 @@ def build_inputs(args):
         archive.extractall(sources, filter='data')
     source = sources / prefix
     install = work / 'ft8'
-    include = install / 'include/ft8lib'
-    include.mkdir(parents=True)
+    include = install / 'include'
+    header_directory = include / 'ft8lib'
+    header_directory.mkdir(parents=True)
     library = install / 'lib/libft8.so'
     library.parent.mkdir()
     headers = sorted((source / 'ft8').glob('*.h'))
     if not headers:
         raise ValueError('FT8 source headers missing')
     for header in headers:
-        shutil.copy2(header, include / header.name)
+        shutil.copy2(header, header_directory / header.name)
     env = clean_environment()
     run([compiler, '-O3', '-fPIC', '-std=c11', '-D_GNU_SOURCE', '-shared', '-I' + str(source),
          '-Wl,-soname,libft8.so', '-o', library, *sorted((source / 'ft8').glob('*.c')), '-lm'],
@@ -170,7 +171,9 @@ def build_inputs(args):
               'ft8': {'commit': review['ft8_commit'], 'archive_sha256': sha(args.ft8_source_archive),
                       'compile_flags': ['-O3', '-fPIC', '-std=c11', '-D_GNU_SOURCE', '-shared', '-Wl,-soname,libft8.so'],
                       'library': artifact(library), 'include_dir': str(include),
-                      'headers_sha256': {p.name: sha(p) for p in sorted(include.iterdir())},
+                      'source_dir': str(source),
+                      'headers_sha256': {p.relative_to(include).as_posix(): sha(p) for p in sorted(include.rglob('*')) if p.is_file()},
+                      'license': artifact(source / 'LICENSE'),
                       'source_files_sha256': {p.relative_to(source).as_posix(): sha(p)
                                               for p in sorted(source.rglob('*')) if p.is_file()},
                       'smoke': {'status': 'PASS', 'scope': 'QEMU correctness only; no RF or radio timing',
@@ -190,7 +193,9 @@ def build_inputs(args):
                   'rustc': subprocess.check_output([str(work / 'cache/rust-1.99.1/bin/rustc'), '--version'], text=True).strip()},
               'toolchain_binaries_sha256': {name: sha(work / 'cache' / name) for name in
                                            ('go-1.27.3/bin/go', 'rust-1.99.1/bin/rustc', 'rust-1.99.1/bin/cargo')},
-              'logs': {'ft8': artifact(work / 'ft8-build.log'), 'xara': artifact(xara_log), 'pat': artifact(pat_log)}}
+              'logs': {name: artifact(work / name) for name in
+                       ('ft8-build.log', 'ft8-smoke-build.log', 'ft8-smoke.log',
+                        'xara-build.log', 'pat-build.log', 'pat-smoke.log')}}
     if before_sources != {p.relative_to(ROOT).as_posix(): sha(p) for p in sorted(source_paths)}:
         raise ValueError('dependency build sources changed while the build ran')
     (work / 'runtime-inputs.json').write_text(json.dumps(record, indent=2) + '\n')
@@ -215,6 +220,7 @@ def collect_package(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     shutil.copy2(args.inputs, output / 'runtime-inputs.json')
+    shutil.copy2(args.gui_build.parent / 'build-record.json', output / 'gui-build-record.json')
     overlay = output / 'overlay'
     overlay.mkdir()
     origins = {}
@@ -252,8 +258,7 @@ def collect_package(args):
         copy(checked_path(entry), '/usr/share/x6100/licenses/xara/' + name, 0o644)
     for name, entry in inputs['pat']['notices'].items():
         copy(checked_path(entry), '/usr/share/x6100/licenses/pat/' + name, 0o644)
-    source = Path(inputs['ft8']['include_dir']).parents[2] / 'sources' / ('ft8_lib-' + review['ft8_commit'])
-    copy(source / 'LICENSE', '/usr/share/x6100/licenses/ft8/LICENSE', 0o644)
+    copy(checked_path(inputs['ft8']['license']), '/usr/share/x6100/licenses/ft8/LICENSE', 0o644)
     for name in ('LICENSE', 'LICENSE-freedv', 'UPSTREAM.md', 'common/iniparser/LICENSE',
                  'datalink_broadcast/raptorq/LICENSE', 'datalink_broadcast/raptorq/deps/obl/LICENSE'):
         copy(ROOT / 'third-party/mercury' / name, '/usr/share/x6100/licenses/mercury/' + name, 0o644)

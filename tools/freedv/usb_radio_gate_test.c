@@ -44,6 +44,9 @@ static atomic_bool calibration_fail_once;
 static atomic_uint calibration_calls;
 static unsigned policy_release_calls;
 static atomic_bool calibration_open,key_train;
+static atomic_bool core_band_hold,core_train_hold;
+static atomic_int core_requested_tenths;
+static atomic_uint unauthorized_train_writes;
 static atomic_uint swr_count,modem_on_writes,ptt_on_writes,pin_on_writes,all_writes,gui_writes;
 static atomic_int stop_during_write=-1;
 static atomic_bool stop_during_modem_on;
@@ -113,6 +116,7 @@ bool hw_resend_all(void){++resends;return !atomic_exchange(&resend_fail_once,fal
 int32_t hw_get_i(hw_param_t p){(void)p;return 0;}
 static void wrote(void){++all_writes;if(scheduler_on_gui_thread())++gui_writes;}
 bool hw_set_i(hw_param_t p,int32_t value){
+    if(p==HW_KEY_TRAIN && value && !voice_scope){++unauthorized_train_writes;return false;}
     wrote();
     if(p==HW_MODEM){cached.route.modem=value!=0;if(value)++modem_on_writes;}
     if(p==HW_PTT){cached.route.ptt=value!=0;if(value)++ptt_on_writes;}
@@ -140,6 +144,9 @@ void hw_vfo_set_att(radio_vfo_t vfo,bool on){wrote();(void)vfo;(void)on;}
 void hw_pin_set(hw_pin_t pin,bool on){assert(pin==HW_PIN_MORSE_KEY);if(on)++pin_on_writes;}
 /* The production core performs bounded base-calibration I/O before declaring
  * the worker profile ready. This endpoint records admission/failure ordering. */
+static void freedv_usb_power_state(bool eligible,bool training,float requested){
+    core_band_hold=!eligible;core_train_hold=training;core_requested_tenths=(int)lroundf(requested*10);
+}
 static bool freedv_usb_open_tx_apply(bool allow){
     assert(voice_scope && !scheduler_on_gui_thread());
     freedv_packet_tx_observation packet=freedv_packet_tx_read(&packet_tx_tracker,get_time());
@@ -166,6 +173,7 @@ static void claim(void){
     press_during_resolve=false;press_during_voice_begin=false;
     global_tx_block=false;outside_bands_allowed=false;block_during_ptt=false;block_during_modem=false;
     calibration_fail_once=false;calibration_open=false;key_train=false;
+    core_band_hold=false;core_train_hold=false;core_requested_tenths=0;
     memset(cfg,0,sizeof(cfg));cfg[cfg_band_vfoa_freq]=cfg[cfg_band_vfob_freq]=7074000;cfg[cfg_pwr]=50;
     cfg[cfg_cur_filter_low]=300;cfg[cfg_cur_filter_high]=2700;cfg[cfg_volume]=10;
     cfg[cfg_band_vfoa_mode]=cfg[cfg_band_vfob_mode]=radio_mode_lsb;cfg[cfg_band_if_shift]=250;
@@ -177,6 +185,7 @@ static void claim(void){
     assert(cached.vfo_a_hz==7074000 && cached.requested_power_tenths_watt==50);
     assert(cached.rx_filter_low_hz==100 && cached.rx_filter_high_hz==3100);
     assert(calibration_open && key_train && !cached.vox_enabled);
+    assert(!core_band_hold && !core_train_hold && core_requested_tenths==50);
     assert(!atomic_load(&usb_radio.rf_allowed));
 }
 static void release(bool terminal){
@@ -224,6 +233,7 @@ int main(void){
         usleep(1000);assert(i<999);
     }
     assert(cached.route.modem); /* live power never clears an active turn */
+    assert(!core_band_hold && !core_train_hold && core_requested_tenths==34);
     assert(!radio_usb_request(FD_LOCAL_FREQUENCY,7100000));
     radio_usb_clear(NULL,false);panel_pressed=false;observed(false);
     uint64_t revision=atomic_load(&usb_radio.requested_revision);
@@ -245,6 +255,7 @@ int main(void){
     release(false);
     assert(cached.vfo_a_hz==7101650 && cached.requested_power_tenths_watt==42);
     assert(cached.backend_mode_a==radio_mode_lsb && cached.rx_filter_low_hz==300);
+    assert(!core_band_hold && !core_train_hold && core_requested_tenths==42);
 
     claim();initial=modem_on_writes;assert(radio_usb_allow_tx(true));panel_pressed=true;
     stop_during_write=HW_PTT;assert(!radio_usb_key(NULL,0));
@@ -277,6 +288,7 @@ int main(void){
     assert(calibration_open && radio_usb_allow_tx(true));
     outside_bands_allowed=false;usb_radio.saved.vox_enabled=true;release(false);
     assert(!calibration_open && !cached.requested_power_tenths_watt && key_train && !cached.vox_enabled);
+    assert(core_band_hold && !core_train_hold && core_requested_tenths==50);
 
     /* Restoring a permitted RX VFO must not restore RF power for a refused
      * ordinary split/shift TX target. */
@@ -286,12 +298,18 @@ int main(void){
 
     claim();cfg[cfg_key_train]=1;cfg[cfg_band_vfoa_mode]=radio_mode_cw;
     release(false);assert(calibration_open && !cached.requested_power_tenths_watt && key_train);
+    assert(!core_band_hold && core_train_hold && core_requested_tenths==50);
 
     claim();initial=modem_on_writes;assert(radio_usb_allow_tx(true));
     global_tx_block=true;fd_usb_inputs blocked;assert(radio_usb_observe(NULL,&blocked));
     assert(blocked.protection && !blocked.tx_eligible);panel_pressed=true;
     assert(!radio_usb_key(NULL,0) && modem_on_writes==initial);
-    radio_usb_clear(NULL,false);assert(!cached.requested_power_tenths_watt && key_train && !cached.vox_enabled);
+    /* KEY Train requires the reserved writer scope, while the safe unkey/zero
+     * fallback still runs when acquiring that scope is temporarily denied. */
+    key_train=false;writer_allowed=false;radio_usb_clear(NULL,false);
+    assert(!cached.route.modem && !cached.route.ptt && !cached.requested_power_tenths_watt && !cached.vox_enabled);
+    writer_allowed=true;radio_usb_clear(NULL,false);
+    assert(key_train && core_band_hold && !core_train_hold && core_requested_tenths==50);
     panel_pressed=false;release(false);assert(!calibration_open && !cached.requested_power_tenths_watt);
 
     claim();initial=modem_on_writes;assert(radio_usb_allow_tx(true));panel_pressed=true;block_during_ptt=true;
@@ -308,7 +326,7 @@ int main(void){
     fd_usb_inputs unprepared;assert(radio_usb_observe(NULL,&unprepared));
     assert(!unprepared.configuration_ready && !radio_usb_allow_tx(true) && modem_on_writes==initial);release(false);
 
-    assert(!ptt_on_writes && !pin_on_writes && all_writes && policy_release_calls);
+    assert(!ptt_on_writes && !pin_on_writes && all_writes && policy_release_calls && !unauthorized_train_writes);
     puts("PASS USB radio transactions: async full profile, unshifted tuning/coalescing, RX-only admission, live normal power, Stop races, upstream band/global policy, prepared base gate and receive-only restore; stub hardware only");
     return 0;
 }

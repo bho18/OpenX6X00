@@ -93,7 +93,12 @@ bool radio_usb_permit(void *unused,bool allow){(void)unused;return radio_usb_all
  * worker clears software TX and reinstates the ordinary receive-only hold. */
 static void usb_radio_block_hold_locked(void){
     if(cfg_tx_block()){
-        hw_set_f(HW_TXPWR_F,0.0f);hw_set_i(HW_KEY_TRAIN,true);hw_set_i(HW_VOX,false);
+        /* Unkey, zero power and VOX-off remain safety-only operations even if
+         * an owned writer scope cannot be obtained. KEY Train needs that scope. */
+        hw_set_f(HW_TXPWR_F,0.0f);hw_set_i(HW_VOX,false);
+        bool scope=fd_writer_voice_begin();
+        if(scope){hw_set_i(HW_KEY_TRAIN,true);fd_writer_voice_end();}
+        freedv_usb_power_state(false,false,radio_usb_power_tenths()/10.0f);
     }
 }
 void radio_usb_clear(void *unused,bool halt){
@@ -250,6 +255,7 @@ static bool usb_radio_apply(const usb_radio_profile *p,bool restore){
     if(!eligible){
         USB_WRITE(hw_set_i(HW_KEY_TRAIN,true));USB_WRITE(hw_set_i(HW_VOX,false));
     }
+    freedv_usb_power_state(eligible,training,p->power/10.0f);
     USB_WRITE(hw_set_f(HW_TXPWR_F,eligible && !training?p->power/10.0f:0.0f));
     if(!usb_radio_continue(restore,p->revision))return false;
     return hw_resend_all();
@@ -283,6 +289,7 @@ static void *usb_radio_worker(void *unused){
                 if(restore || profile)ok=usb_radio_apply(&p,restore);
                 else {
                     bool eligible=p.tx_eligible && !cfg_tx_block();
+                    freedv_usb_power_state(eligible,false,p.power/10.0f);
                     hw_set_f(HW_TXPWR_F,eligible?p.power/10.0f:0.0f);
                     if(!eligible){hw_set_i(HW_KEY_TRAIN,true);hw_set_i(HW_VOX,false);}
                     ok=usb_radio_continue(false,p.revision) && hw_resend_all();}

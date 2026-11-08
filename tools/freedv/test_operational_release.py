@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 import build_operational_release as build
 import operational_clock_probe as clock
@@ -118,27 +119,50 @@ class ReleaseBoundaries(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build.validate_probe_context(altered, matrix, identity, 'test')
 
-    def test_ci_requires_exact_clean_source_receipts_and_model_identity(self):
-        identity = {'source_commit': 'a'*40, 'source_tree_sha256': 'b'*64,
-                    'source_files': {'main.c': 'c'*64}}
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            value = {'run': {'conclusion': 'success', 'headSha': 'd'*40,
-                            'url': 'https://github.com/bho18/OpenX6X00/actions/runs/123'},
-                     'jobs': [{'name': job, 'conclusion': 'success'} for job in build.JOBS],
-                     'tested_source_receipts': {}}
-            for job in build.JOBS:
+    def ci_fixture(self, root, dirty=False):
+        identity = {'source_commit': 'a'*40, 'source_tree_sha256': 'b'*64, 'source_files': {'main.c': 'c'*64}}
+        run = {'id': 123, 'status': 'completed', 'conclusion': 'success', 'head_sha': 'd'*40,
+               'repository': {'id': 987, 'full_name': build.REPOSITORY},
+               'head_repository': {'id': 987, 'full_name': build.REPOSITORY},
+               'url': 'https://api.github.com/repos/'+build.REPOSITORY+'/actions/runs/123',
+               'html_url': 'https://github.com/'+build.REPOSITORY+'/actions/runs/123'}
+        jobs = [{'name': job, 'run_id': 123, 'status': 'completed', 'conclusion': 'success'} for job in sorted(build.JOBS)]
+        result = {'run': run, 'jobs': jobs, 'tested_source_receipts': {}, 'artifact_downloads': {}, 'api_evidence': {}}
+        artifacts = []
+        for index, (name, (filename, job)) in enumerate(sorted(build.CI_ARTIFACTS.items()), 1):
+            if job:
                 receipt = {'schema': 'x6200.usb.ci-tested-source.v1', **identity,
                            'expected_source_commit': identity['source_commit'], 'source_file_count': 1,
-                           'source_worktree_dirty': False, 'workflow_commit': 'd'*40, 'job': job}
-                path = root/(job+'.json')
-                path.write_text(json.dumps(receipt))
-                value['tested_source_receipts'][job] = {'path': str(path), 'sha256': build.sha(path), 'receipt': receipt}
-            model = {'sha256': 'e'*64, 'expected_sha256': 'e'*64, 'tested_source_commit': 'a'*40,
-                     'workflow_commit': 'd'*40, 'product_source_modified': False, 'unchanged_opus_self_verification': True}
-            model_path = root/'model.json'
-            model_path.write_text(json.dumps(model))
-            value['model_acquisition_receipt'] = {'path': str(model_path), 'sha256': build.sha(model_path)}
+                           'source_worktree_dirty': dirty, 'workflow_commit': 'd'*40, 'job': job}
+            else:
+                receipt = {'sha256': 'e'*64, 'expected_sha256': 'e'*64, 'tested_source_commit': 'a'*40,
+                           'workflow_commit': 'd'*40, 'product_source_modified': False, 'unchanged_opus_self_verification': True}
+            path = root/filename
+            path.write_text(json.dumps(receipt))
+            entry = {'path': str(path), 'sha256': build.sha(path), 'receipt': receipt}
+            if job:
+                result['tested_source_receipts'][job] = entry
+            else:
+                result['model_acquisition_receipt'] = entry
+            archive = root/(name+'.zip')
+            with zipfile.ZipFile(archive, 'w') as zipped:
+                zipped.write(path, filename)
+            digest = build.sha(archive)
+            result['artifact_downloads'][name] = {'path': str(archive), 'sha256': digest,
+                'github_api_digest': 'sha256:'+digest, 'artifact_id': index}
+            artifacts.append({'id': index, 'name': name, 'expired': False, 'size_in_bytes': archive.stat().st_size,
+                'digest': 'sha256:'+digest, 'archive_download_url': 'https://api.github.com/repos/'+build.REPOSITORY+'/actions/artifacts/'+str(index)+'/zip',
+                'workflow_run': {'id': 123, 'head_sha': 'd'*40, 'repository_id': 987}})
+        for name, receipt in (('run', run), ('jobs', {'total_count': 3, 'jobs': jobs}),
+                              ('artifacts', {'total_count': 4, 'artifacts': artifacts})):
+            path = root/(name+'-api.json')
+            path.write_text(json.dumps(receipt))
+            result['api_evidence'][name] = {'path': str(path), 'sha256': build.sha(path), 'receipt': receipt}
+        return identity, result
+
+    def test_ci_requires_exact_clean_source_receipts_and_model_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            identity, value = self.ci_fixture(Path(temporary))
             original_read = build.read
             def fake_read(path):
                 if str(path).endswith('/tools/freedv/sources.json'):
@@ -149,13 +173,46 @@ class ReleaseBoundaries(unittest.TestCase):
                 value['run']['url'] = 'https://github.com/Guru-RF/OpenX6X00/actions/runs/123'
                 with self.assertRaises(ValueError):
                     build.validate_ci(value, identity)
-                value['run']['url'] = 'https://github.com/bho18/OpenX6X00/actions/runs/123'
-                entry = value['tested_source_receipts']['windows-runner']
-                entry['receipt']['source_worktree_dirty'] = True
-                Path(entry['path']).write_text(json.dumps(entry['receipt']))
-                entry['sha256'] = build.sha(entry['path'])
+        with tempfile.TemporaryDirectory() as temporary:
+            identity, value = self.ci_fixture(Path(temporary), dirty=True)
+            with patch.object(build, 'read', side_effect=fake_read):
                 with self.assertRaises(ValueError):
                     build.validate_ci(value, identity)
+
+    def test_ci_handwritten_pass_without_actual_downloads_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            identity, value = self.ci_fixture(Path(temporary))
+            value.pop('artifact_downloads')
+            with self.assertRaisesRegex(ValueError, 'four actual downloaded'):
+                build.validate_ci(value, identity)
+
+    def test_ci_download_zip_must_match_actual_api_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            identity, value = self.ci_fixture(Path(temporary))
+            entry = value['artifact_downloads']['tested-source-windows-runner']
+            archive = Path(entry['path'])
+            with archive.open('ab') as stream:
+                stream.write(b'tampering')
+            entry['sha256'] = build.sha(archive)
+            with self.assertRaisesRegex(ValueError, 'API/ZIP binding'):
+                build.validate_ci(value, identity)
+
+    def test_ci_receipt_from_a_different_artifact_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            identity, value = self.ci_fixture(Path(temporary))
+            value['tested_source_receipts']['windows-runner'] = value['tested_source_receipts']['linux-inventory']
+            with self.assertRaisesRegex(ValueError, 'not the member'):
+                build.validate_ci(value, identity)
+
+    def test_ci_artifacts_from_a_different_run_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            identity, value = self.ci_fixture(Path(temporary))
+            api = value['api_evidence']['artifacts']
+            api['receipt']['artifacts'][0]['workflow_run']['id'] = 124
+            Path(api['path']).write_text(json.dumps(api['receipt']))
+            api['sha256'] = build.sha(api['path'])
+            with self.assertRaisesRegex(ValueError, 'API/ZIP binding'):
+                build.validate_ci(value, identity)
 
     def test_build_matrix_preserves_operational_and_full_qualification_flags(self):
         args = argparse.Namespace(work=Path('/work'), build_id='test', jobs=4,

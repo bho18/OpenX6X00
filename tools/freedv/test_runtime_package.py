@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runtime guards reject unreviewed platform changes and incomplete/tampered overlays."""
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 import runtime_package as runtime
 from native_image import sha
@@ -107,6 +109,14 @@ class RuntimePackageTests(unittest.TestCase):
                                  for p in overlay.rglob('*') if p.is_file()}}
         (self.package / 'runtime-inputs.json').write_text('synthetic receipt')
         self.record['runtime_inputs_sha256'] = sha(self.package / 'runtime-inputs.json')
+        build = {'source_commit': 'a' * 40, 'variant': 'x6200-diagnostic',
+                 'runtime_inputs_sha256': self.record['runtime_inputs_sha256'],
+                 'binaries': {name: {'sha256': self.record['files'][destination]['sha256']} for destination, name in
+                              (('/usr/bin/x6x00-mercury', 'x6x00-mercury'), ('/usr/bin/ardopcf', 'ardopcf'),
+                               ('/usr/sbin/btcat', 'btcat'), ('/usr/sbin/x6100-bootanim', 'x6100-bootanim'),
+                               ('/usr/share/x6100/params.default.db', 'params.db'))}}
+        (self.package / 'gui-build-record.json').write_text(json.dumps(build))
+        self.record['gui_build_record_sha256'] = sha(self.package / 'gui-build-record.json')
         self.save()
 
     def save(self):
@@ -115,6 +125,7 @@ class RuntimePackageTests(unittest.TestCase):
     def validate(self):
         with patch.object(runtime, 'git', return_value='a' * 40), \
              patch.object(runtime, 'compatibility', return_value={'record_sha256': 'b' * 64, 'ft8_commit': 'c' * 40}), \
+             patch.object(runtime, 'sealed_runtime_build', side_effect=lambda path: json.loads(path.read_text())), \
              patch.object(runtime, 'validate_inputs', return_value={
                  'ft8': {'library': {'sha256': self.record['files']['/usr/lib/libft8.so']['sha256']}},
                  'xara': {'binary': {'sha256': self.record['files']['/usr/bin/xara']['sha256']}},
@@ -159,6 +170,44 @@ class RuntimePackageTests(unittest.TestCase):
         self.save()
         with self.assertRaises(ValueError):
             self.validate()
+
+    def test_rehashed_helper_cannot_replace_the_sealed_gui_build_artifact(self):
+        destination = '/usr/bin/x6x00-mercury'
+        path = self.package / 'overlay' / destination.lstrip('/')
+        path.write_bytes(path.read_bytes() + b'different helper')
+        self.record['files'][destination]['sha256'] = sha(path)
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'sealed ARM build'):
+            self.validate()
+
+
+class OverlayBoundaryTests(unittest.TestCase):
+    def test_kernel_driver_and_boot_destinations_are_rejected(self):
+        for destination in ('/lib/modules/6.1/unreviewed.ko', '/boot/zImage',
+                            '/usr/lib/modules/unreviewed.ko', '/lib/libc.so.6', '/mnt/params.db'):
+            with self.subTest(destination=destination), self.assertRaises(ValueError):
+                runtime.validate_overlay_destination(destination)
+        runtime.validate_overlay_destination('/usr/bin/xara')
+
+    def test_extra_stale_web_modules_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'x6100_webserver'
+            source.mkdir()
+            (source / '__init__.py').write_text('current source')
+            for extra in (False, True):
+                stream = io.BytesIO()
+                with ZipFile(stream, 'w') as archive:
+                    archive.writestr('x6100_webserver/__init__.py', 'current source')
+                    archive.writestr('x6100_webserver-1.0.dist-info/METADATA', 'metadata')
+                    if extra:
+                        archive.writestr('x6100_webserver/stale_endpoint.py', 'obsolete source')
+                stream.seek(0)
+                with ZipFile(stream) as archive:
+                    if extra:
+                        with self.assertRaisesRegex(ValueError, 'file set'):
+                            runtime.validate_web_wheel(archive, source)
+                    else:
+                        runtime.validate_web_wheel(archive, source)
 
 
 class ShutdownHookTests(unittest.TestCase):

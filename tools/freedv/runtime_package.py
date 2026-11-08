@@ -64,6 +64,43 @@ def checked_path(entry):
     return path
 
 
+def validate_overlay_destination(destination):
+    path = Path(destination)
+    if not path.is_absolute() or '..' in path.parts or path.as_posix() != destination:
+        raise ValueError('invalid runtime destination: ' + destination)
+    protected = ('/boot', '/lib', '/mnt', '/dev', '/proc', '/sys', '/run',
+                 '/usr/lib/modules', '/usr/lib/firmware', '/usr/lib/kernel', '/usr/src')
+    if any(destination == prefix or destination.startswith(prefix + '/') for prefix in protected):
+        raise ValueError('runtime overlay touches protected platform/data: ' + destination)
+    if destination.endswith('/allow-unsigned'):
+        raise ValueError('runtime overlay may not weaken update verification')
+
+
+def validate_web_wheel(archive, source):
+    source = Path(source)
+    expected = {p.relative_to(source.parent).as_posix(): p.read_bytes()
+                for p in source.rglob('*') if p.is_file() and '__pycache__' not in p.parts}
+    names = [entry.filename for entry in archive.infolist() if not entry.is_dir()]
+    if len(names) != len(set(names)):
+        raise ValueError('web wheel contains duplicate entries')
+    actual = {name for name in names if name.startswith(source.name + '/')}
+    if actual != set(expected):
+        raise ValueError('web wheel package file set differs from candidate source')
+    for name, value in expected.items():
+        if archive.read(name) != value:
+            raise ValueError('web wheel differs from candidate source: ' + name)
+    for name in names:
+        if name not in expected and not name.startswith('x6100_webserver-'):
+            raise ValueError('unexpected non-web package in runtime wheel: ' + name)
+
+
+def sealed_runtime_build(path):
+    from build_native_development import validate_build_record
+    record = json.loads(Path(path).read_text())
+    validate_build_record(record)
+    return record
+
+
 def require_static_arm_program(path):
     """CGO-free Go uses static ARM ELF, without the dynamic hard-float tag."""
     path = Path(path)
@@ -110,9 +147,21 @@ def validate_inputs(path, root=ROOT, sdk=None):
         raise ValueError('runtime FT8 source is not the reviewed pin')
     require_arm_elf(checked_path(ft8['library']))
     header_root = Path(ft8['include_dir'])
+    if not (header_root / 'ft8lib/constants.h').is_file():
+        raise ValueError('FT8 include root must expose the production ft8lib/ namespace')
     actual = {p.relative_to(header_root).as_posix(): sha(p) for p in sorted(header_root.rglob('*')) if p.is_file()}
     if not actual or actual != ft8['headers_sha256']:
         raise ValueError('runtime FT8 headers changed or are incomplete')
+    checked_path(ft8['license'])
+    source_root = Path(ft8['source_dir'])
+    source_files = {}
+    for path in sorted(source_root.rglob('*')):
+        if path.is_symlink():
+            raise ValueError('retained FT8 source may not contain symlinks')
+        if path.is_file():
+            source_files[path.relative_to(source_root).as_posix()] = sha(path)
+    if not source_files or source_files != ft8['source_files_sha256']:
+        raise ValueError('retained FT8 source changed or is incomplete')
     smoke = ft8.get('smoke', {})
     if smoke.get('status') != 'PASS' or smoke.get('source_sha256') != sha(root / 'tools/freedv/ft8_runtime_smoke.c'):
         raise ValueError('current executed FT8 compound-callsign check required')
@@ -139,6 +188,14 @@ def validate_inputs(path, root=ROOT, sdk=None):
     if record['pat'].get('smoke', {}).get('status') != 'PASS':
         raise ValueError('executed static Pat version check required')
     checked_path(record['pat']['smoke']['log'])
+    for entry in record.get('archives', {}).values():
+        checked_path(entry)
+    required_logs = {'ft8-build.log', 'ft8-smoke-build.log', 'ft8-smoke.log',
+                     'xara-build.log', 'pat-build.log', 'pat-smoke.log'}
+    if set(record.get('logs', {})) != required_logs:
+        raise ValueError('runtime input build logs are incomplete')
+    for entry in record['logs'].values():
+        checked_path(entry)
     return record
 
 
@@ -156,6 +213,14 @@ def validate_package(package, root=ROOT, sdk=None):
     if sha(input_path) != record.get('runtime_inputs_sha256'):
         raise ValueError('runtime package input receipt changed')
     inputs = validate_inputs(input_path, root=root, sdk=sdk)
+    build_path = package / 'gui-build-record.json'
+    if sha(build_path) != record.get('gui_build_record_sha256'):
+        raise ValueError('runtime GUI build receipt changed')
+    build = sealed_runtime_build(build_path)
+    if build.get('source_commit') != record['source_commit'] or build.get('variant') != 'x6200-diagnostic':
+        raise ValueError('runtime GUI build does not match candidate source/target')
+    if build.get('runtime_inputs_sha256') != record['runtime_inputs_sha256']:
+        raise ValueError('runtime helpers were not built with these dependency inputs')
     if sdk is not None:
         compiler = (Path(sdk).resolve() / 'bin/arm-buildroot-linux-gnueabihf-gcc').resolve()
         if sha(compiler) != record.get('compiler_sha256'):
@@ -166,7 +231,9 @@ def validate_package(package, root=ROOT, sdk=None):
         if path.is_symlink():
             raise ValueError('runtime package may not contain symlinks')
         if path.is_file():
-            actual['/' + path.relative_to(overlay).as_posix()] = {
+            destination = '/' + path.relative_to(overlay).as_posix()
+            validate_overlay_destination(destination)
+            actual[destination] = {
                 'sha256': sha(path), 'mode': path.stat().st_mode & 0o777}
     if actual != record.get('files'):
         raise ValueError('runtime package bytes/modes differ from manifest')
@@ -174,6 +241,12 @@ def validate_package(package, root=ROOT, sdk=None):
                 '/usr/sbin/btcat', '/usr/sbin/x6100-bootanim', '/usr/share/x6100/params.default.db'}
     if not required <= set(actual):
         raise ValueError('runtime package lacks a required upstream component')
+    built = {'/usr/bin/x6x00-mercury': 'x6x00-mercury', '/usr/bin/ardopcf': 'ardopcf',
+             '/usr/sbin/btcat': 'btcat', '/usr/sbin/x6100-bootanim': 'x6100-bootanim',
+             '/usr/share/x6100/params.default.db': 'params.db'}
+    for destination, name in built.items():
+        if actual[destination]['sha256'] != build.get('binaries', {}).get(name, {}).get('sha256'):
+            raise ValueError('runtime component differs from sealed ARM build: ' + name)
     if (actual['/usr/lib/libft8.so']['sha256'] != inputs['ft8']['library']['sha256'] or
             actual['/usr/bin/xara']['sha256'] != inputs['xara']['binary']['sha256'] or
             actual['/usr/bin/pat']['sha256'] != inputs['pat']['binary']['sha256']):
@@ -217,5 +290,6 @@ def overlay_removals(root=ROOT):
             destination = '/usr/share/x6100/' + name
         if destination.startswith(('/mnt/', '/lib/', '/boot/')) or destination.endswith('/update.pub'):
             raise ValueError('removed source requests a protected runtime deletion')
+        validate_overlay_destination(destination)
         result.append(destination)
     return sorted(result)

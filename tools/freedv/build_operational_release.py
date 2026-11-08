@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY = 'bho18/OpenX6X00'
 BASELINE_SHA = 'a11d8fa49156a8a9ada151e2472c1da1fde2115c22563b331270035f6b6285ab'
 JOBS = {'windows-runner', 'linux-inventory', 'usb-controller-regression'}
+CI_ARTIFACTS = {**{'tested-source-'+job: ('tested-source-'+job+'.json', job) for job in JOBS},
+                'pinned-opus-model-acquisition': ('model-acquisition.json', None)}
 VARIANTS = {'host': 'host', 'arm': 'x6200-diagnostic', 'normal': 'x6200-normal',
             'x6100': 'x6100', 'host-native': 'host-native-validation'}
 OBSERVER_VERSION = '2.3.5'
@@ -152,11 +154,84 @@ def builds(args, identity):
     source_identity(args.expected_commit)
 
 
+def checked_json_entry(entry, label):
+    path = Path(entry.get('path', ''))
+    if not path.is_file() or path.is_symlink() or sha(path) != entry.get('sha256'):
+        raise ValueError('Downloaded CI '+label+' is absent or changed')
+    value = read(path)
+    if value != entry.get('receipt'):
+        raise ValueError('Downloaded CI '+label+' differs from its retained receipt')
+    return value
+
+
+def validate_ci_downloads(value):
+    """Recheck actual downloaded ZIPs against the retained GitHub API metadata.
+
+    Collection is not a qualification boundary by itself: verification repeats
+    every API→ZIP→member→receipt binding before accepting source/model claims.
+    """
+    api = value.get('api_evidence', {})
+    if set(api) != {'run', 'jobs', 'artifacts'}:
+        raise ValueError('CI requires retained raw run/job/artifact API receipts')
+    run = checked_json_entry(api['run'], 'run API')
+    jobs = checked_json_entry(api['jobs'], 'jobs API')
+    artifacts = checked_json_entry(api['artifacts'], 'artifacts API')
+    if run != value.get('run') or jobs.get('jobs') != value.get('jobs'):
+        raise ValueError('CI summary differs from its actual run/job API metadata')
+    run_id, repository = run.get('id'), run.get('repository', {})
+    workflow_commit = run.get('head_sha')
+    if (type(run_id) is not int or run_id < 1 or repository.get('full_name') != REPOSITORY or
+            type(repository.get('id')) is not int or repository['id'] < 1 or
+            run.get('head_repository', {}).get('full_name') != REPOSITORY or
+            re.fullmatch('[0-9a-f]{40}', str(workflow_commit)) is None or
+            run.get('html_url') != 'https://github.com/'+REPOSITORY+'/actions/runs/'+str(run_id) or
+            run.get('url') != 'https://api.github.com/repos/'+REPOSITORY+'/actions/runs/'+str(run_id)):
+        raise ValueError('CI run API does not identify the fork and immutable workflow commit')
+    actual_jobs = jobs.get('jobs', [])
+    if (len(actual_jobs) != len(JOBS) or jobs.get('total_count') != len(actual_jobs) or
+            any(job.get('run_id') != run_id for job in actual_jobs)):
+        raise ValueError('CI jobs are missing, duplicated or belong to another actual run')
+    actual_artifacts = artifacts.get('artifacts', [])
+    if artifacts.get('total_count') != len(actual_artifacts):
+        raise ValueError('CI artifact API metadata is incomplete')
+    downloads = value.get('artifact_downloads', {})
+    if set(downloads) != set(CI_ARTIFACTS):
+        raise ValueError('CI requires all four actual downloaded receipt ZIPs')
+    for name, (filename, job) in CI_ARTIFACTS.items():
+        matches = [artifact for artifact in actual_artifacts if artifact.get('name') == name]
+        if len(matches) != 1:
+            raise ValueError('CI artifact name is absent or ambiguous: '+name)
+        artifact, download = matches[0], downloads[name]
+        artifact_id = artifact.get('id')
+        association = artifact.get('workflow_run', {})
+        archive = Path(download.get('path', ''))
+        if (type(artifact_id) is not int or artifact_id < 1 or artifact.get('expired') is not False or
+                association.get('id') != run_id or association.get('head_sha') != workflow_commit or
+                association.get('repository_id') != repository['id'] or
+                artifact.get('archive_download_url') != 'https://api.github.com/repos/'+REPOSITORY+'/actions/artifacts/'+str(artifact_id)+'/zip' or
+                download.get('artifact_id') != artifact_id or not archive.is_file() or archive.is_symlink() or
+                archive.stat().st_size != artifact.get('size_in_bytes') or
+                artifact.get('digest') != 'sha256:'+sha(archive) or
+                download.get('sha256') != sha(archive) or
+                download.get('github_api_digest') != artifact.get('digest')):
+            raise ValueError('Actual CI artifact API/ZIP binding differs: '+name)
+        entry = value.get('tested_source_receipts', {}).get(job, {}) if job else value.get('model_acquisition_receipt', {})
+        receipt = checked_json_entry(entry, name)
+        with zipfile.ZipFile(archive) as zipped:
+            if zipped.namelist() != [filename] or zipped.testzip() is not None:
+                raise ValueError('Actual CI artifact member set differs: '+name)
+            payload = zipped.read(filename)
+            if (hashlib.sha256(payload).hexdigest() != entry.get('sha256') or
+                    payload != Path(entry['path']).read_bytes() or json.loads(payload) != receipt):
+                raise ValueError('CI receipt is not the member of its API-bound artifact: '+name)
+    return run
+
+
 def validate_ci(value, identity):
-    run_record = value.get('run', {})
+    run_record = validate_ci_downloads(value)
     workflow_commit = run_record.get('headSha', run_record.get('head_sha'))
-    url = run_record.get('url', run_record.get('html_url', ''))
-    if (run_record.get('conclusion') != 'success' or
+    url = run_record.get('html_url', run_record.get('url', ''))
+    if (run_record.get('conclusion') != 'success' or run_record.get('status') != 'completed' or
             not url.startswith('https://github.com/'+REPOSITORY+'/actions/runs/') or
             {job.get('name') for job in value.get('jobs', [])} != JOBS or
             any(job.get('conclusion') != 'success' for job in value['jobs'])):
@@ -165,10 +240,7 @@ def validate_ci(value, identity):
     if set(receipts) != JOBS:
         raise ValueError('CI requires downloaded actual-source receipts from all three jobs')
     for job, entry in receipts.items():
-        path = Path(entry['path'])
-        receipt = read(path)
-        if sha(path) != entry['sha256'] or receipt != entry['receipt']:
-            raise ValueError('CI receipt changed: '+job)
+        receipt = checked_json_entry(entry, job)
         if (receipt.get('schema') != 'x6200.usb.ci-tested-source.v1' or
                 receipt.get('source_commit') != identity['source_commit'] or
                 receipt.get('expected_source_commit') != identity['source_commit'] or
@@ -179,11 +251,8 @@ def validate_ci(value, identity):
                 receipt.get('workflow_commit') != workflow_commit or receipt.get('job') != job):
             raise ValueError('CI did not test the exact clean source: '+job)
     model = value.get('model_acquisition_receipt', {})
-    path = Path(model.get('path', ''))
     pins = read(ROOT/'tools/freedv/sources.json')
-    if not path.is_file() or sha(path) != model.get('sha256'):
-        raise ValueError('Actual CI model acquisition receipt is absent or changed')
-    receipt = read(path)
+    receipt = checked_json_entry(model, 'model acquisition')
     if (receipt.get('sha256') != pins['opus']['model_sha256'] or
             receipt.get('expected_sha256') != pins['opus']['model_sha256'] or
             receipt.get('tested_source_commit') != identity['source_commit'] or
