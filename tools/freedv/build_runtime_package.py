@@ -42,9 +42,9 @@ def run(command, log, env=None, cwd=None):
                        check=True, timeout=7200)
 
 
-def retire_build_caches(work):
+def retire_build_caches(work, cache):
     """Retire only this attempt's reconstructed toolchains/object caches."""
-    cache = work / 'cache'
+    cache = Path(cache).resolve()
     protected = {p: sha(p) for directory in (cache / 'xara/dl', cache / 'pat/dl', cache / 'gopath/pkg/mod/cache')
                  for p in directory.rglob('*') if p.is_file() and not p.is_symlink()}
     inputs = json.loads((work / 'runtime-inputs.json').read_text())
@@ -108,6 +108,29 @@ def build_inputs(args):
     if sha(args.ft8_source_archive) != review['ft8_archive_sha256']:
         raise ValueError('FT8 source archive differs from reviewed pin')
     work.mkdir(parents=True, exist_ok=False)
+    cache = args.dependency_cache.resolve() if args.dependency_cache else work / 'cache'
+    cache_source = source_commit
+    inherited_logs = {}
+    if args.dependency_cache:
+        if (args.dependency_cache.is_symlink() or cache.name != 'cache' or
+                cache == ROOT or ROOT in cache.parents or cache.stat().st_uid != os.getuid()):
+            raise ValueError('dependency cache must be an owned prior runtime attempt cache outside source')
+        if not args.cache_source_commit:
+            raise ValueError('a reused dependency cache requires its actual compiled source commit')
+        cache_source = args.cache_source_commit
+        subprocess.run(['git', 'merge-base', '--is-ancestor', cache_source, 'HEAD'], cwd=ROOT,
+                       check=True, capture_output=True)
+        for name, digest in before_sources.items():
+            if name.startswith(('tools/pat/', 'tools/xara/')):
+                original = subprocess.check_output(['git', 'show', cache_source + ':' + name], cwd=ROOT)
+                import hashlib
+                if hashlib.sha256(original).hexdigest() != digest:
+                    raise ValueError('reused cache build source differs: ' + name)
+        for name in ('xara-build.log', 'pat-build.log', 'pat-smoke.log'):
+            path = cache.parent / name
+            if not path.is_file():
+                raise ValueError('reused cache lacks its original attempt log: ' + name)
+            inherited_logs[name] = artifact(path)
     sources = work / 'sources'
     sources.mkdir()
     prefix = 'ft8_lib-' + review['ft8_commit']
@@ -143,7 +166,7 @@ def build_inputs(args):
         work / 'ft8-smoke.log', env=env)
     # The upstream script downloads exact checked source/toolchain archives and
     # builds with this SDK's linker. Cache location is explicit and task-owned.
-    env.update(CC=str(compiler), OPENX6X00_CACHE=str(work / 'cache'))
+    env.update(CC=str(compiler), OPENX6X00_CACHE=str(cache))
     xara_log = work / 'xara-build.log'
     with xara_log.open('x') as output:
         result = subprocess.run(['bash', str(ROOT / 'tools/xara/build.sh')], cwd=ROOT,
@@ -160,7 +183,10 @@ def build_inputs(args):
                                 text=True, check=True, timeout=7200)
     pat = Path(result.stdout.strip()).resolve()
     require_static_arm_program(pat)
-    run(['qemu-arm', '-L', sysroot, pat, 'version'], work / 'pat-smoke.log', env=env)
+    pat_environment = dict(env)
+    for name in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME'):
+        pat_environment[name] = str(work / 'pat-smoke-xdg' / name.lower())
+    run(['qemu-arm', '-L', sysroot, pat, 'version'], work / 'pat-smoke.log', env=pat_environment)
     pat_notices = {p.relative_to(pat.parent / 'doc').as_posix(): artifact(p)
                    for p in sorted((pat.parent / 'doc').rglob('*')) if p.is_file()}
     record = {'schema': INPUT_SCHEMA, 'status': 'PASS',
@@ -179,19 +205,21 @@ def build_inputs(args):
                       'smoke': {'status': 'PASS', 'scope': 'QEMU correctness only; no RF or radio timing',
                                 'binary': artifact(smoke), 'log': artifact(work / 'ft8-smoke.log'),
                                 'source_sha256': sha(ROOT / 'tools/freedv/ft8_runtime_smoke.c')}},
-              'xara': {'binary': artifact(xara), 'notices': notices,
+              'xara': {'binary': artifact(xara), 'notices': notices, 'compiled_source_commit': cache_source,
                        'build_sources_sha256': {p.relative_to(ROOT).as_posix(): sha(p)
                                                 for p in sorted((ROOT / 'tools/xara').rglob('*')) if p.is_file()}},
-              'pat': {'binary': artifact(pat), 'notices': pat_notices,
+              'pat': {'binary': artifact(pat), 'notices': pat_notices, 'compiled_source_commit': cache_source,
                       'build_sources_sha256': {p.relative_to(ROOT).as_posix(): sha(p)
                                                for p in sorted((ROOT / 'tools/pat').rglob('*')) if p.is_file()},
                       'smoke': {'status': 'PASS', 'log': artifact(work / 'pat-smoke.log')}},
-              'archives': {p.relative_to(work).as_posix(): artifact(p) for p in sorted((work / 'cache').rglob('*'))
+              'inherited_build_logs': inherited_logs,
+              'dependency_cache': str(cache),
+              'archives': {p.relative_to(cache).as_posix(): artifact(p) for p in sorted(cache.rglob('*'))
                            if p.is_file() and p.name.endswith(('.tar.xz', '.tar.gz'))},
               'toolchain_versions': {
-                  'go': subprocess.check_output([str(work / 'cache/go-1.27.3/bin/go'), 'version'], text=True).strip(),
-                  'rustc': subprocess.check_output([str(work / 'cache/rust-1.99.1/bin/rustc'), '--version'], text=True).strip()},
-              'toolchain_binaries_sha256': {name: sha(work / 'cache' / name) for name in
+                  'go': subprocess.check_output([str(cache / 'go-1.27.3/bin/go'), 'version'], text=True).strip(),
+                  'rustc': subprocess.check_output([str(cache / 'rust-1.99.1/bin/rustc'), '--version'], text=True).strip()},
+              'toolchain_binaries_sha256': {name: sha(cache / name) for name in
                                            ('go-1.27.3/bin/go', 'rust-1.99.1/bin/rustc', 'rust-1.99.1/bin/cargo')},
               'logs': {name: artifact(work / name) for name in
                        ('ft8-build.log', 'ft8-smoke-build.log', 'ft8-smoke.log',
@@ -201,7 +229,7 @@ def build_inputs(args):
     (work / 'runtime-inputs.json').write_text(json.dumps(record, indent=2) + '\n')
     validate_inputs(work / 'runtime-inputs.json', sdk=sdk)
     if args.retire_build_caches:
-        retire_build_caches(work)
+        retire_build_caches(work, cache)
         validate_inputs(work / 'runtime-inputs.json', sdk=sdk)
     print(work / 'runtime-inputs.json')
 
@@ -288,6 +316,9 @@ def main():
     inputs.add_argument('--work', type=Path, required=True)
     inputs.add_argument('--retire-build-caches', action='store_true',
                         help='Retire reconstructable extracted Go/Rust/object caches after retaining checked inputs')
+    inputs.add_argument('--dependency-cache', type=Path,
+                        help='Owned cache from an interrupted prior inputs attempt; its logs remain retained')
+    inputs.add_argument('--cache-source-commit', help='Actual original compiled revision of a reused dependency cache')
     package = subparsers.add_parser('package', help='Collect current source-bound upstream runtime helpers')
     package.add_argument('--sdk', type=Path, required=True)
     package.add_argument('--inputs', type=Path, required=True)

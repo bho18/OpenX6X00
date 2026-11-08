@@ -196,6 +196,8 @@ def validate_inputs(path, root=ROOT, sdk=None):
         raise ValueError('runtime input build logs are incomplete')
     for entry in record['logs'].values():
         checked_path(entry)
+    for entry in record.get('inherited_build_logs', {}).values():
+        checked_path(entry)
     return record
 
 

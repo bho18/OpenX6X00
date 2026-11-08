@@ -20,6 +20,7 @@ static bool recording,saver_visible;
 static radio_state_t radio_state=RADIO_RX;
 params_t params={.brightness_normal=5,.brightness_idle=4,.brightness_timeout=30,.screen_off_min=5};
 int test_open(const char *path,int flags,...){(void)path;(void)flags;return -1;}
+uint64_t get_time(void){return fake_ms;}
 int clock_gettime(clockid_t clock,struct timespec *out){(void)clock;out->tv_sec=fake_ms/1000;out->tv_nsec=(fake_ms%1000)*1000000;return 0;}
 lv_disp_t *lv_disp_get_default(void){return selected_display;}
 void lv_obj_invalidate(const lv_obj_t *object){assert(object==&screen);++invalidations;}

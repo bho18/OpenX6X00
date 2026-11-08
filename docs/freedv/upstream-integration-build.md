@@ -187,6 +187,21 @@ ABI evidence and checksums. Never mix an old helper kit with a new image.
 Download every published asset afresh and verify its checksums, raw image
 identity, source/tag identity and kit bindings before declaring delivery done.
 
+If an upload/download was interrupted after release creation, use
+`--verify-existing` with a fresh `--download` directory to repeat downloaded
+verification. If some assets were never uploaded, `--complete-existing` first
+checks the exact source/tag and existing asset digests, then adds only missing
+assets. It never overwrites an existing asset.
+
+For environments whose HTTP route cannot upload large assets, stage the same
+verified bytes with `tools/freedv/stage_operational_publish.py --assets ...
+--tag ... --expected-commit ... --notes ... --output ...`. Its temporary
+`publish/<tag>` transport branch contains chunks no larger than 48 MiB and a
+fork-only GitHub Actions uploader. The action reconstructs and validates all
+nine assets, checks out the tested product commit, publishes the prerelease
+and verifies fresh downloads. Push that transport branch only to the fork;
+the release tag identifies the product commit, never the transport commit.
+
 The accepted recording, codec and RF-transmit milestones remain historical
 hardware evidence. They are not claimed as new measurements by software tests.
 The field check for this integration covers normal controls, screen wake,

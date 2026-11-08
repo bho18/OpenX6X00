@@ -110,17 +110,7 @@ def validate_assets(directory, tag, expected_commit):
     # Serialized releases retain sealed campaign integrity even when validating
     # on another machine where the originating absolute paths do not exist.
     verify_usb_integration_serialized(verification)
-    from build_native_development import validate_build_record
-    expected = {'host': 'host', 'arm': 'x6200-diagnostic', 'normal': 'x6200-normal',
-                'x6100': 'x6100', 'host-native': 'host-native-validation'}
-    if set(verification.get('build_records', {})) != set(expected):
-        raise ValueError('All five sealed build variants are required')
-    for name, record in verification['build_records'].items():
-        validate_build_record(record, verify_files=False)
-        if (record.get('variant') != expected[name] or record.get('source_commit') != expected_commit or
-                record.get('source_tree_sha256') != verification.get('source_tree_sha256') or
-                record.get('source_files') != verification.get('source_files') or record.get('build_id') != tag):
-            raise ValueError('Serialized build differs from source: '+name)
+    validate_operational_build_records(verification, tag, expected_commit)
     with zipfile.ZipFile(directory/'x6200-usb-rf-windows.zip') as archive:
         if set(archive.namelist()) != {'x6200-usb-rf.img', 'START-HERE.md', 'candidate-manifest.json'} or archive.testzip() is not None:
             raise ValueError('Image ZIP contents or CRC are invalid')
@@ -154,6 +144,22 @@ def validate_assets(directory, tag, expected_commit):
             raise ValueError('Private research history is reachable from the public source bundle')
     return {'status': 'PASS', 'source_commit': expected_commit, 'build_id': tag,
             'image_sha256': manifest['image_sha256'], 'asset_sha256': {**hashes, 'SHA256SUMS': sha(directory/'SHA256SUMS')}}
+
+
+def validate_operational_build_records(verification, tag, expected_commit):
+    from build_native_development import validate_build_record
+    expected = {'host': 'host', 'arm': 'x6200-diagnostic', 'normal': 'x6200-normal',
+                'x6100': 'x6100', 'host-native': 'host-native-validation'}
+    if set(verification.get('build_records', {})) != set(expected):
+        raise ValueError('All five sealed build variants are required')
+    for name, record in verification['build_records'].items():
+        validate_build_record(record, verify_files=False)
+        if (record.get('variant') != expected[name] or record.get('source_commit') != expected_commit or
+                record.get('source_tree_sha256') != verification.get('source_tree_sha256') or
+                record.get('source_files') != verification.get('source_files') or record.get('build_id') != tag):
+            raise ValueError('Serialized build differs from source: '+name)
+        if name in ('arm', 'host-native') and record.get('usb_voice_enabled') is not True:
+            raise ValueError('Operational USB voice feature was not enabled: '+name)
 
 
 def verify_usb_integration_serialized(verification):
@@ -211,6 +217,11 @@ def package_assets(candidate, output, tag, expected_commit, raw_image=None):
 
 def publish(directory, repository, tag, expected_commit, notes, download):
     require_fork(repository)
+    if not Path(notes).is_file() or not Path(notes).read_text().strip():
+        raise ValueError('Nonempty release notes are required before publication')
+    download = Path(download).resolve()
+    if download.exists() or (download.parent/'published-verification.json').exists():
+        raise ValueError('Select fresh download/evidence paths before creating a release')
     validation = validate_assets(directory, tag, expected_commit)
     exists = subprocess.run(['gh', 'release', 'view', tag, '--repo', repository], capture_output=True)
     if exists.returncode == 0:
@@ -219,7 +230,16 @@ def publish(directory, repository, tag, expected_commit, notes, download):
                '--title', 'X6200 FreeDV operational beta '+tag, '--notes-file', str(notes),
                *[str(Path(directory)/name) for name in sorted(ASSETS)]]
     subprocess.run(command, check=True)
+    return verify_published(directory, repository, tag, expected_commit, download, validation)
+
+
+def verify_published(directory, repository, tag, expected_commit, download, validation=None):
+    require_fork(repository)
+    if validation is None:
+        validation = validate_assets(directory, tag, expected_commit)
     download = Path(download).resolve()
+    if download.exists() or (download.parent/'published-verification.json').exists():
+        raise ValueError('Select fresh downloaded evidence paths; existing files are retained')
     download.mkdir(parents=True, exist_ok=False)
     subprocess.run(['gh', 'release', 'download', tag, '--repo', repository, '--dir', str(download)], check=True)
     remote = json.loads(subprocess.check_output(['gh', 'api', 'repos/'+repository+'/releases/tags/'+tag], text=True))
@@ -237,8 +257,33 @@ def publish(directory, repository, tag, expected_commit, notes, download):
         raise ValueError('Published assets differ from locally verified assets')
     receipt = {**downloaded, 'release_url': remote['html_url'], 'repository': repository,
                'tag_commit': tag_sha[0], 'all_github_api_asset_digests': 'PASS'}
-    (download.parent/'published-verification.json').write_text(json.dumps(receipt, indent=2)+'\n')
+    with (download.parent/'published-verification.json').open('x') as stream:
+        json.dump(receipt, stream, indent=2)
+        stream.write('\n')
     return receipt
+
+
+def complete_existing(directory, repository, tag, expected_commit, download):
+    """Add only missing verified assets after an interrupted initial upload."""
+    require_fork(repository)
+    validation = validate_assets(directory, tag, expected_commit)
+    download = Path(download).resolve()
+    if download.exists() or (download.parent/'published-verification.json').exists():
+        raise ValueError('Select fresh downloaded evidence paths before resuming upload')
+    remote = json.loads(subprocess.check_output(['gh', 'api', 'repos/'+repository+'/releases/tags/'+tag], text=True))
+    if (remote.get('tag_name') != tag or remote.get('target_commitish') != expected_commit or remote.get('prerelease') is not True):
+        raise ValueError('Existing release is not the exact requested product prerelease')
+    names = set()
+    for entry in remote.get('assets', []):
+        name = entry.get('name')
+        if name not in ASSETS or name in names or entry.get('digest') != 'sha256:'+sha(Path(directory)/name):
+            raise ValueError('Existing release asset differs; it will not be overwritten')
+        names.add(name)
+    missing = sorted(ASSETS-names)
+    if missing:
+        subprocess.run(['gh', 'release', 'upload', tag, '--repo', repository,
+                        *[str(Path(directory)/name) for name in missing]], check=True)
+    return verify_published(directory, repository, tag, expected_commit, download, validation)
 
 
 def main():
@@ -250,6 +295,8 @@ def main():
     parser.add_argument('--candidate', type=Path, help='Package this completed candidate before validation/publication')
     parser.add_argument('--raw-image', type=Path)
     parser.add_argument('--publish', action='store_true', help='Explicitly create a new prerelease and verify fresh downloads')
+    parser.add_argument('--verify-existing', action='store_true', help='Verify an already-created release without creating or overwriting it')
+    parser.add_argument('--complete-existing', action='store_true', help='After an interrupted upload, add only missing assets to the exact existing release')
     parser.add_argument('--notes', type=Path)
     parser.add_argument('--download', type=Path)
     args = parser.parse_args()
@@ -258,10 +305,20 @@ def main():
         parser.error('--expected-commit must be the full product commit')
     if args.candidate:
         package_assets(args.candidate, args.assets, args.tag, args.expected_commit, args.raw_image)
+    if sum((args.publish, args.verify_existing, args.complete_existing)) > 1:
+        parser.error('Choose publication, missing-asset completion, or verification of an existing release')
     if args.publish:
         if not args.notes or not args.download:
             parser.error('--publish requires --notes and a fresh --download directory')
         result = publish(args.assets, args.repository, args.tag, args.expected_commit, args.notes, args.download)
+    elif args.verify_existing:
+        if not args.download:
+            parser.error('--verify-existing requires a fresh --download directory')
+        result = verify_published(args.assets, args.repository, args.tag, args.expected_commit, args.download)
+    elif args.complete_existing:
+        if not args.download:
+            parser.error('--complete-existing requires a fresh --download directory')
+        result = complete_existing(args.assets, args.repository, args.tag, args.expected_commit, args.download)
     else:
         result = validate_assets(args.assets, args.tag, args.expected_commit)
     print(json.dumps(result, indent=2))

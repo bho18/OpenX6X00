@@ -293,8 +293,21 @@ def validate_dependencies(args, records):
 def validate_observer(provenance_path):
     if not provenance_path:
         raise ValueError('Qualification requires pinned numerical observer provenance')
-    import numpy
     value = read(provenance_path)
+    target = Path(value.get('target', '')).resolve()
+    module = Path(value.get('import_proof', {}).get('numpy_module', '')).resolve()
+    if (not target.is_dir() or module != target/'numpy/__init__.py' or
+            value.get('pin') != 'numpy=='+OBSERVER_VERSION):
+        raise ValueError('Numerical observer provenance does not identify its installed target')
+    # Set both the current interpreter and every child before importing the
+    # numerical observer or configuring host CTests. The prepared environment
+    # is described by an explicit input, never an old observer-env.sh file.
+    sys.path.insert(0, str(target))
+    existing = [entry for entry in os.environ.get('PYTHONPATH', '').split(os.pathsep) if entry and entry != str(target)]
+    os.environ['PYTHONPATH'] = os.pathsep.join([str(target), *existing])
+    from usb_host_resources import NUMERICAL_THREAD_ENVIRONMENT
+    os.environ.update(NUMERICAL_THREAD_ENVIRONMENT)
+    import numpy
     wheel = Path(value['wheel']['path'])
     if (numpy.__version__ != OBSERVER_VERSION or value.get('pin') != 'numpy=='+OBSERVER_VERSION or
             sha(wheel) != OBSERVER_WHEEL_SHA or value['wheel'].get('sha256') != OBSERVER_WHEEL_SHA or
@@ -337,9 +350,12 @@ def collect_smokes(args, records, checks):
     host = args.work/'host-native/build'
     data = host/'data'
     if data.exists():
-        raise ValueError('Host GUI smoke data already exists; preserve it and use a fresh verification directory')
+        shutil.move(str(data), str(checks/'previous-host-data'))
     data.mkdir()
-    shutil.copy2(host/'params.db', data/'params.db')
+    params = records['host-native']['binaries'].get('params.db')
+    if not params or sha(params['path']) != params['sha256']:
+        raise ValueError('Host GUI smoke requires the sealed current default parameters')
+    shutil.copy2(params['path'], data/'params.db')
     old_library = os.environ.get('LD_LIBRARY_PATH', '')
     os.environ['LD_LIBRARY_PATH'] = str(args.host_codec/'rade_c/src')+os.pathsep+old_library
     simulator = checks/'host-gui'
@@ -541,6 +557,8 @@ def main():
         if path == ROOT or ROOT in path.parents:
             parser.error('Work and output directories must be outside the source checkout')
     args.work.mkdir(parents=True, exist_ok=True)
+    if args.stage in ('builds', 'verify', 'all'):
+        validate_observer(args.observer_provenance)
     identity = source_identity(args.expected_commit)
     freeze_path = args.work/'frozen-source.json'
     frozen = {**identity, 'build_id': args.build_id}

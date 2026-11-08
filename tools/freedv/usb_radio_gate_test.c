@@ -33,7 +33,7 @@ static atomic_int state=RADIO_RX;
 static void *freedv_owner;
 static atomic_uint freedv_base_errors;
 static atomic_bool modem_on;
-static bool morse_on,mute,tci_mute;
+static bool morse_on,mute,tci_mute,scan_mute;
 static pthread_mutex_t radio_mutex=PTHREAD_MUTEX_INITIALIZER;
 static freedv_packet_tx_tracker packet_tx_tracker=FREEDV_PACKET_TX_TRACKER_INIT;
 static atomic_uint_fast64_t clock_ms=10000;

@@ -345,7 +345,7 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
             binary = work / 'build' / relative
             record['binaries'][binary.name] = retained(binary)
     if host_native:
-        for name in ('freedv_voice_runner', 'freedv_usb_audio_test', 'freedv_voice_engine_test',
+        for name in ('params.db', 'freedv_voice_runner', 'freedv_usb_audio_test', 'freedv_voice_engine_test',
                      'freedv_native_stream_test', 'freedv_native_stream_fixture_test', 'freedv_native_audio_codec_adapter_test'):
             if (work/'build'/name).is_file(): record['binaries'][name] = retained(work/'build'/name)
     if args.variant == 'x6200-diagnostic':

@@ -9,6 +9,7 @@ version requirements without starting the GUI or opening hardware devices.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -157,8 +158,11 @@ def verify(gui, package, sdk, image, output, debugfs='debugfs', qemu='qemu-arm',
     for program in extra_static_programs:
         # Pinned CGO-free Pat has no interpreter or dynamic dependencies. Its
         # version command executes offline without starting its server/radio.
+        environment = os.environ.copy()
+        for name in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME'):
+            environment[name] = str(output / 'pat-version-xdg' / name.lower())
         result = subprocess.run([str(qemu), '-L', str(runtime), str(program), 'version'],
-                                check=True, capture_output=True, text=True, timeout=20)
+                                check=True, capture_output=True, text=True, timeout=20, env=environment)
         loader_checks[program.name] = result.stdout
     record = {'schema_version': 1, 'status': 'PASS', 'hardware_qualified': False,
               'compiler_version': run(compiler, '--version').splitlines()[0],

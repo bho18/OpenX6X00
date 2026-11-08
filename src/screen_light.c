@@ -233,7 +233,7 @@ static void stage_cb(lv_timer_t *t) {
     if (seen != idle.viewers) {
         screen_idle_viewers(&idle, seen);   /* a recording started or stopped */
     }
-    screen_idle_tick(&idle, monotonic_ms());
+    screen_idle_tick(&idle, get_time());
     stage_show();
     drawing_update();
     if (stage != before) observe(stage == SCREEN_DARK ? FD_USB_DISPLAY_IDLE_BLANK :
@@ -252,7 +252,7 @@ void backlight_init() {
     power_fd = open(SYS_BL "bl_power", O_WRONLY);
     level_fd = open(SYS_BL "brightness", O_WRONLY);
     idle_settings();
-    screen_idle_start(&idle, monotonic_ms());
+    screen_idle_start(&idle, get_time());
     lv_timer_create(stage_cb, STAGE_MS, NULL);
     if (idle.stage == SCREEN_DARK) {
         stage_show();
@@ -266,7 +266,7 @@ void backlight_init() {
 /* A key or a knob: the minutes start again, the light comes back if it was dimmed.
  * True when the screensaver or a screen dark by the time is gone: the key was for waking, not for the radio */
 bool backlight_tick() {
-    bool woke = screen_idle_use(&idle, monotonic_ms());
+    bool woke = screen_idle_use(&idle, get_time());
 
     stage_show();
     if (!dark()) {
@@ -289,7 +289,7 @@ bool backlight_saver_tick() {
 /* A knob is read every 10 ms: the detents of the turn that ended the screensaver, read in the next loops, only end
  * it too, for KNOB_MS */
 bool backlight_knob_tick() {
-    uint64_t now = monotonic_ms();
+    uint64_t now = get_time();
 
     if (backlight_saver_tick()) {
         knob_woke    = true;
@@ -307,7 +307,7 @@ bool backlight_knob_tick() {
 void backlight_tx(bool on) {
     bool saver = stage == SCREEN_SAVER;
 
-    screen_idle_tx(&idle, on, monotonic_ms());
+    screen_idle_tx(&idle, on, get_time());
     stage_show();
     if (saver && stage == SCREEN_LIT) {
         light_again();
@@ -319,7 +319,7 @@ void backlight_tx(bool on) {
 void backlight_notice() {
     bool saver = stage == SCREEN_SAVER;
 
-    screen_idle_notice(&idle, monotonic_ms());
+    screen_idle_notice(&idle, get_time());
     stage_show();
     if (saver && stage == SCREEN_LIT) {
         light_again();
@@ -358,7 +358,7 @@ int16_t backlight_level() {
 /* POWER: dark when lit (by the key or by the timer, the screensaver too), lit when dark. With the screen always
  * off it stays lit for the screen off time, a minute at least */
 void backlight_switch() {
-    screen_idle_power(&idle, monotonic_ms());
+    screen_idle_power(&idle, get_time());
     stage_show();
     observe(FD_USB_DISPLAY_MANUAL_POWER);
 }
@@ -366,7 +366,7 @@ void backlight_switch() {
 /* The screen off and screensaver settings changed (Settings, the web configurator): the minutes again */
 void backlight_settings_changed() {
     idle_settings();
-    screen_idle_settings(&idle, monotonic_ms());
+    screen_idle_settings(&idle, get_time());
     stage_show();
     observe(FD_USB_DISPLAY_SETTINGS);
 }

@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tarfile
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -16,9 +17,31 @@ import build_operational_release as build
 import operational_clock_probe as clock
 import publish_operational_release as publish
 import release_cache
+import stage_operational_publish as transport
 
 
 class ReleaseBoundaries(unittest.TestCase):
+    def test_transport_reconstructs_exact_assets_and_rejects_tampering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assets = root/'assets'
+            assets.mkdir()
+            for name in publish.ASSETS:
+                (assets/name).write_bytes((name+' fixture').encode())
+            hashes = {name: publish.sha(assets/name) for name in publish.ASSETS}
+            notes = root/'notes.md'
+            notes.write_text('Verified fixture notes')
+            with patch.object(transport, 'validate_assets', return_value={'asset_sha256': hashes}), patch.object(transport, 'CHUNK_BYTES', 7):
+                transport.stage(assets, 'freedv-operational-beta-20261108.1', 'a'*40, notes, root/'transport')
+            assembled = root/'reconstructed'
+            result = subprocess.run([sys.executable, str(root/'transport/assemble.py'), str(assembled)], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual({name: publish.sha(assembled/name) for name in publish.ASSETS}, hashes)
+            part = root/'transport/assets/part-0000'
+            part.write_bytes(b'tampered')
+            result = subprocess.run([sys.executable, str(root/'transport/assemble.py'), str(root/'tampered')], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+
     def test_cache_retirement_preserves_evidence_inputs_and_linked_binaries(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -51,6 +74,34 @@ class ReleaseBoundaries(unittest.TestCase):
                                 'a'*40, Path('/notes'), Path('/download'))
             run.assert_not_called()
             output.assert_not_called()
+
+    def test_publish_preflights_download_before_creating_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            notes = root/'notes.md'
+            notes.write_text('Verified notes')
+            existing = root/'downloads'
+            existing.mkdir()
+            with patch.object(publish.subprocess, 'run') as run, patch.object(publish, 'validate_assets') as validate:
+                with self.assertRaisesRegex(ValueError, 'fresh download'):
+                    publish.publish(root/'assets', build.REPOSITORY, 'freedv-operational-beta-20261108.1', 'a'*40, notes, existing)
+                run.assert_not_called()
+                validate.assert_not_called()
+
+    def test_standalone_publisher_rejects_feature_disabled_builds(self):
+        import build_native_development
+        tag = 'freedv-operational-beta-20261108.1'
+        verification = {'source_tree_sha256': 'b'*64, 'source_files': {'main.c': 'c'*64}, 'build_records': {}}
+        for name, variant in build.VARIANTS.items():
+            verification['build_records'][name] = {'variant': variant, 'source_commit': 'a'*40, 'source_tree_sha256': 'b'*64,
+                'source_files': verification['source_files'], 'build_id': tag, 'usb_voice_enabled': True}
+        with patch.object(build_native_development, 'validate_build_record', side_effect=lambda record, **kwargs: record):
+            publish.validate_operational_build_records(verification, tag, 'a'*40)
+            for name in ('arm', 'host-native'):
+                verification['build_records'][name]['usb_voice_enabled'] = False
+                with self.assertRaisesRegex(ValueError, 'feature was not enabled'):
+                    publish.validate_operational_build_records(verification, tag, 'a'*40)
+                verification['build_records'][name]['usb_voice_enabled'] = True
 
     def test_release_checksums_reject_extras_duplicates_and_tampering(self):
         with tempfile.TemporaryDirectory() as temporary:

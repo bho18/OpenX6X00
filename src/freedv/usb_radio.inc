@@ -175,7 +175,7 @@ static bool usb_radio_capture(usb_radio_profile *p,bool restore){
         cfg_is_tx_freq((int32_t)tx_frequency) && !cfg_tx_refusal((int32_t)tx_frequency);
     p->key_train=param_i_get(cfg_key_train);p->nr=param_i_get(cfg_nr);p->nb=param_i_get(cfg_nb);
     p->dnf=param_i_get(cfg_dnf);p->dnf_auto=param_i_get(cfg_dnf_auto);p->comp=param_i_get(cfg_comp);
-    bool muted=mute || tci_mute || btaudio_speaker_muted() || param_i_get(cfg_speaker_off);
+    bool muted=mute || tci_mute || scan_mute || btaudio_speaker_muted() || param_i_get(cfg_speaker_off);
     p->volume=muted?0:param_i_get(cfg_volume);p->monitor=muted || !p->volume?0:param_i_get(cfg_moni);
     p->if_shift=param_i_get(cfg_band_if_shift);
     radio_mode_t mode=p->mode[p->vfo];radio_agc_t agc=p->agc[p->vfo];
