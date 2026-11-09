@@ -59,7 +59,7 @@ project(x6100_gui)
 # builds without the FreeDV codec. It is inert until explicitly initialized.
 find_package(Threads REQUIRED)
 add_library(process_lifecycle STATIC src/process_lifecycle.c)
-target_include_directories(process_lifecycle PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(process_lifecycle PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(process_lifecycle PUBLIC Threads::Threads)
 
 if(ENABLE_FREEDV_VOICE AND NOT ENABLE_FREEDV_NATIVE_CODEC)
