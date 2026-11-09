@@ -137,7 +137,8 @@ static void wait_wake(int milliseconds) {
     if (poll(&p, 1, milliseconds) > 0) {
         uint64_t count;
         /* Exactly one read: a signal storm cannot trap a drain-to-empty loop. */
-        (void)read(wake_fd, &count, sizeof(count));
+        ssize_t received = read(wake_fd, &count, sizeof(count));
+        (void)received;
     }
 }
 

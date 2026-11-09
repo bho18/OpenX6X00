@@ -9,7 +9,7 @@
 # (--wrap=clock_gettime), moved on by the audio played: a 30 s tune takes no 30 s. It runs for each radio: TUNE's
 # power top is the radio's PWR top (board.h), 10 W on the X6100, 8 W on the X6200 (#87).
 SRC    := ../../src
-CFLAGS := -std=gnu11 -Wall -Wextra -O1 -g -pthread -I stub_include -I $(SRC)
+CFLAGS := -std=gnu11 -Wall -Wextra -O1 -g -pthread -I stub_include -I build -I $(SRC)
 COPIED := tune_tx.c tune_tx.h tx_player.c tx_player.h tx_level.c tx_level.h swr_guard.c swr_guard.h audio.h radio_types.h \
           ext_tune.c ext_tune.h board.h
 SHIMS  := $(wildcard stub_include/*.h stub_include/*/*.h)
