@@ -255,8 +255,14 @@ if(ENABLE_FREEDV_DIAGNOSTICS OR ENABLE_FREEDV_VOICE)
                 set_tests_properties(freedv_btaudio_hold_shell PROPERTIES TIMEOUT 60)
                 add_test(NAME freedv_btaudio_hold_live COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_btaudio_hold_live.py
-                    --hold-binary $<TARGET_FILE:freedv_btaudio_hold_test>)
+                    --hold-binary $<TARGET_FILE:freedv_btaudio_hold_test>
+                    --evidence-root ${CMAKE_BINARY_DIR}/btaudio-live-evidence)
                 set_tests_properties(freedv_btaudio_hold_live PROPERTIES TIMEOUT 60)
+                add_test(NAME freedv_btaudio_hold_delayed_restore COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/freedv/test_btaudio_hold_live.py
+                    --hold-binary $<TARGET_FILE:freedv_btaudio_hold_test> --restore-delay-ms 1650
+                    --evidence-root ${CMAKE_BINARY_DIR}/btaudio-live-evidence)
+                set_tests_properties(freedv_btaudio_hold_delayed_restore PROPERTIES TIMEOUT 60)
                 add_test(NAME freedv_usb_navigation_service COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tools/freedv/test_usb_navigation_service.py)
                 add_test(NAME freedv_usb_test_support COMMAND ${Python3_EXECUTABLE}

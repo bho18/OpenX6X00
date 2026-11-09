@@ -145,8 +145,17 @@ jobs:
         /tmp/btaudio-hold-test
         python tools/freedv/test_btaudio_hold.py --hold-binary /tmp/btaudio-hold-test
         python tools/freedv/test_btaudio_hold_live.py --hold-binary /tmp/btaudio-hold-test
+        python tools/freedv/test_btaudio_hold_live.py --hold-binary /tmp/btaudio-hold-test --restore-delay-ms 1650
         python tools/freedv/test_remote_ack.py
         python tools/freedv/test_wr12_reconcile.py
+    - name: Retain isolated Bluetooth audio diagnostics
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: btaudio-live-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+        retention-days: 14
+        if-no-files-found: ignore
+        path: ${{ runner.temp }}/freedv-btaudio-live-evidence/
     - name: Retain actual tested-source receipt
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
