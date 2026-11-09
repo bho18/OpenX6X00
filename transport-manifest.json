@@ -1,0 +1,133 @@
+{
+  "schema": "x6200.operational-release-transport.v1",
+  "repository": "bho18/OpenX6X00",
+  "tag": "freedv-operational-beta-20261109.1",
+  "source_commit": "58a92964bf93338eb011a2798c7aa59cfbaffe1d",
+  "assets": {
+    "SHA256SUMS": {
+      "sha256": "ff94085efb63409d9a6458b164cbc5e7db94f36b073c95ef55116cb2e0bef482",
+      "bytes": 701,
+      "parts": [
+        {
+          "name": "part-0000",
+          "bytes": 701,
+          "sha256": "ff94085efb63409d9a6458b164cbc5e7db94f36b073c95ef55116cb2e0bef482"
+        }
+      ]
+    },
+    "START-HERE.md": {
+      "sha256": "7fc49b7d5dfff58be0975b89c7348adf0bc070488f4db79c050919ba14104c06",
+      "bytes": 15322,
+      "parts": [
+        {
+          "name": "part-0001",
+          "bytes": 15322,
+          "sha256": "7fc49b7d5dfff58be0975b89c7348adf0bc070488f4db79c050919ba14104c06"
+        }
+      ]
+    },
+    "candidate-manifest.json": {
+      "sha256": "8c36f47975066d36b64f22c4e887684974896c90b60b03572cd7955fe5ad8df2",
+      "bytes": 2543,
+      "parts": [
+        {
+          "name": "part-0002",
+          "bytes": 2543,
+          "sha256": "8c36f47975066d36b64f22c4e887684974896c90b60b03572cd7955fe5ad8df2"
+        }
+      ]
+    },
+    "candidate-source.bundle": {
+      "sha256": "6ddf69aacca03906500a9517b8ddd0197ec11b4fb90eb9d2d598ce5a5f47d8b2",
+      "bytes": 36677059,
+      "parts": [
+        {
+          "name": "part-0003",
+          "bytes": 36677059,
+          "sha256": "6ddf69aacca03906500a9517b8ddd0197ec11b4fb90eb9d2d598ce5a5f47d8b2"
+        }
+      ]
+    },
+    "candidate-source.tar.xz": {
+      "sha256": "f19f6a90fd47cd53875d6c634500cefa01429d89efcf92ba387d038e244fac90",
+      "bytes": 18509972,
+      "parts": [
+        {
+          "name": "part-0004",
+          "bytes": 18509972,
+          "sha256": "f19f6a90fd47cd53875d6c634500cefa01429d89efcf92ba387d038e244fac90"
+        }
+      ]
+    },
+    "image-abi.json": {
+      "sha256": "01baf3de270291bdcb02a7151d4ee298a5c3b7b53fa7386ce371151d0de6ced2",
+      "bytes": 71250,
+      "parts": [
+        {
+          "name": "part-0005",
+          "bytes": 71250,
+          "sha256": "01baf3de270291bdcb02a7151d4ee298a5c3b7b53fa7386ce371151d0de6ced2"
+        }
+      ]
+    },
+    "software-verification.json": {
+      "sha256": "c6d3b95bf33562d39800836447e9c67a30fda2930efa2ad091cd7b64e77efb2d",
+      "bytes": 121113574,
+      "parts": [
+        {
+          "name": "part-0006",
+          "bytes": 50331648,
+          "sha256": "adaaec81cfb90ced933b63c9f28814519a87e7346e5f7fcf03ce51940fbb06c8"
+        },
+        {
+          "name": "part-0007",
+          "bytes": 50331648,
+          "sha256": "8d52f1ab572590010ab36a23067c20764d708a87d3f83026f16cdbb6ac1ac57c"
+        },
+        {
+          "name": "part-0008",
+          "bytes": 20450278,
+          "sha256": "a37bdc504da4f442f585f575eb5b7bc63790cea73ec89fa8f560806ece0d8411"
+        }
+      ]
+    },
+    "usb-rf-test-kit.zip": {
+      "sha256": "cb768ddf2a7336b8343adfc0a316171d7e19f20e51aaf2e11126e89426e5659b",
+      "bytes": 55707,
+      "parts": [
+        {
+          "name": "part-0009",
+          "bytes": 55707,
+          "sha256": "cb768ddf2a7336b8343adfc0a316171d7e19f20e51aaf2e11126e89426e5659b"
+        }
+      ]
+    },
+    "x6200-usb-rf-windows.zip": {
+      "sha256": "7f06f2ba8f6b365975a3b3e9129a22276c0ffdf1962ec7dc486e8c4400b82afd",
+      "bytes": 160087282,
+      "parts": [
+        {
+          "name": "part-0010",
+          "bytes": 50331648,
+          "sha256": "e6ed7f5669f66bc2048265db844aada6cc5703d6d7c1d2ffefe74ea5ecee82d8"
+        },
+        {
+          "name": "part-0011",
+          "bytes": 50331648,
+          "sha256": "8670d208eedcfb26ebce1428ff020a6130df5d0cd29130516049e8d89478d97b"
+        },
+        {
+          "name": "part-0012",
+          "bytes": 50331648,
+          "sha256": "e68ff4ee6a89f7b7c863b73c06037712905e435b5952cd5c1753608c44b7025a"
+        },
+        {
+          "name": "part-0013",
+          "bytes": 9092338,
+          "sha256": "05e2171ddbb9e0e0e905891f436c113afb94678403c2c4fb42a9a55c19ac2159"
+        }
+      ]
+    }
+  },
+  "notes_sha256": "ec86a40bfa3a504c561123a3a7726be514f72f04878f59224a6bef8096b805e1"
+}
