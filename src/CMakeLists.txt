@@ -1,6 +1,8 @@
 # The GUI program, x6100_gui. Copyright (c) 2026 Giovanni Ricciardi IU1WXY
 # The source order below is the link order: keep it when adding files.
 add_executable(${PROJECT_NAME})
+target_sources(${PROJECT_NAME} PRIVATE whole_value_row.c)
+target_link_libraries(${PROJECT_NAME} PRIVATE process_lifecycle)
 if(ENABLE_FREEDV_DIAGNOSTICS)
     target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_FREEDV_DIAGNOSTICS=1)
     if(FREEDV_RETEST_20261102)

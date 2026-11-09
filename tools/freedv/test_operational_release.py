@@ -24,11 +24,98 @@ from release_guide import render_guide, validate_guide_copies
 
 
 class ReleaseBoundaries(unittest.TestCase):
+    def build_arguments(self, root, reclaim_roots=None):
+        return argparse.Namespace(work=root, build_id='fixture', jobs=3,
+            observer_provenance=root/'observer.json', expected_commit='a'*40,
+            control_headers=Path('/headers'), host_codec=Path('/host-codec'), fixtures=Path('/fixtures'),
+            sdk=Path('/sdk'), codec=Path('/codec'), x6100_prefix=Path('/x6100'), runtime_inputs=None,
+            usb_resource_reclaim_root=reclaim_roots or [])
+
+    def test_reclaim_roots_default_and_explicit_forwarding(self):
+        args = self.build_arguments(Path('/work'))
+        commands = build.build_commands(args)
+        native = commands['host-native']
+        self.assertEqual(native.count('--usb-resource-reclaim-root'), 1)
+        self.assertEqual(native[native.index('--usb-resource-reclaim-root')+1], '/work')
+        args.usb_resource_reclaim_root = [Path('/cache-one'), Path('/cache-two')]
+        commands = build.build_commands(args)
+        native = commands['host-native']
+        roots = [native[index+1] for index, value in enumerate(native) if value == '--usb-resource-reclaim-root']
+        self.assertEqual(roots, ['/cache-one', '/cache-two'])
+        for name in ('host', 'arm', 'normal', 'x6100'):
+            self.assertNotIn('--usb-resource-reclaim-root', commands[name])
+
+    def test_failed_builder_still_closes_probe_without_terminating_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.build_arguments(root)
+            identity = {'source_commit': 'a'*40, 'source_tree_sha256': 'b'*64}
+            observations = []
+            class Probe:
+                def __init__(self, command, **kwargs):
+                    self.stop = Path(command[command.index('--stop')+1])
+                    self.output = Path(command[command.index('--output')+1])
+                    Path(command[command.index('--ready')+1]).write_text('{}')
+                def poll(self):
+                    return None
+                def wait(self, timeout):
+                    observations.append('wait')
+                    self.output.write_text(json.dumps({'stop': json.loads(self.stop.read_text())}))
+                    return 0
+                def terminate(self):
+                    observations.append('terminate')
+                def kill(self):
+                    observations.append('kill')
+            def command_result(command, *args, **kwargs):
+                if '--usb-test' in command:
+                    raise ValueError('original builder failure')
+            with patch.object(build, 'validate_observer'), patch.object(build, 'run', side_effect=command_result), \
+                    patch.object(build.os, 'sched_getaffinity', return_value={0, 1, 2}), \
+                    patch.object(build.subprocess, 'Popen', Probe):
+                with self.assertRaisesRegex(ValueError, '^original builder failure$'):
+                    build.builds(args, identity)
+            self.assertEqual(observations, ['wait'])
+            clock = json.loads((root/'host-isolation/clock.json').read_text())
+            self.assertEqual(clock['stop']['source_commit'], identity['source_commit'])
+            self.assertEqual(clock['stop']['build_id'], args.build_id)
+            self.assertGreater(clock['stop']['ended_monotonic_ns'], 0)
+
+    def test_probe_close_timeout_stays_failed_and_uses_bounded_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.build_arguments(root)
+            identity = {'source_commit': 'a'*40, 'source_tree_sha256': 'b'*64}
+            observations = []
+            class Probe:
+                def __init__(self, command, **kwargs):
+                    self.waits = 0
+                    Path(command[command.index('--ready')+1]).write_text('{}')
+                def poll(self):
+                    return None
+                def wait(self, timeout):
+                    observations.append(('wait', timeout))
+                    self.waits += 1
+                    if self.waits == 1:
+                        raise subprocess.TimeoutExpired(['probe'], timeout)
+                    return -15
+                def terminate(self):
+                    observations.append('terminate')
+                def kill(self):
+                    observations.append('kill')
+            with patch.object(build, 'validate_observer'), patch.object(build, 'run'), \
+                    patch.object(build.os, 'sched_getaffinity', return_value={0, 1, 2}), \
+                    patch.object(build.subprocess, 'Popen', Probe):
+                with self.assertRaisesRegex(ValueError, 'observer did not close'):
+                    build.builds(args, identity)
+            self.assertEqual(observations, [('wait', 10), 'terminate', ('wait', 10)])
+
     def test_package_stage_bootstraps_observer_before_source_and_packaging(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             argv = ['build_operational_release.py', '--stage', 'package', '--expected-commit', 'a'*40,
-                    '--build-id', 'fixture', '--observer-provenance', str(root/'observer.json')]
+                    '--build-id', 'fixture', '--observer-provenance', str(root/'observer.json'),
+                    '--usb-resource-reclaim-root', str(root/'cache-one'),
+                    '--usb-resource-reclaim-root', str(root/'cache-two')]
             for name in ('work', 'output', 'sdk', 'codec', 'host-codec', 'fixtures', 'baseline', 'control-headers', 'x6100-prefix'):
                 argv += ['--'+name, str(root/name)]
             order = []
@@ -40,9 +127,12 @@ class ReleaseBoundaries(unittest.TestCase):
             def source(expected):
                 order.append('source')
                 return identity
+            def package(args):
+                self.assertEqual(args.usb_resource_reclaim_root, [root/'cache-one', root/'cache-two'])
+                order.append('package')
             with patch.object(sys, 'argv', argv), patch.object(build, 'validate_observer', side_effect=observer), \
                     patch.object(build, 'source_identity', side_effect=source), \
-                    patch.object(build, 'package', side_effect=lambda args: order.append('package')):
+                    patch.object(build, 'package', side_effect=package), patch.object(sys, 'stdout', new_callable=io.StringIO):
                 build.main()
             self.assertEqual(order, ['observer', 'source', 'package'])
 

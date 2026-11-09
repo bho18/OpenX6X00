@@ -2,6 +2,7 @@
 #include "freedv/features.h"
 #include "freedv/writer_gate.h"
 #include "freedv/mode.h"
+#include "freedv/usb_ui.h"
 /*
  *  SPDX-License-Identifier: LGPL-2.1-or-later
  *
@@ -32,6 +33,7 @@
 #include "btaudio.h"
 #ifdef ENABLE_FREEDV_CONTROL
 #include "freedv/capture_ring.h"
+#include "freedv/main_audio_operation.h"
 #endif
 
 #define AUDIO_RATE_MS   100
@@ -62,6 +64,7 @@ struct audio_freedv_playback {
 static __thread audio_freedv_playback_t *compat_playback;
 static atomic_uint ordinary_playback_streams;
 static atomic_uint ordinary_audio_until_ms;
+static atomic_bool main_context_lost;
 static unsigned audio_clock_ms(void) {
     struct timespec t;
     if (clock_gettime(CLOCK_MONOTONIC, &t)) return 0;
@@ -117,29 +120,15 @@ static void capture_delivery(size_t samples) {
     if (gap > atomic_load(&capture_gap)) atomic_store(&capture_gap, gap);
 }
 
-static void voice_main_operation_done(pa_stream *stream,int success,void *context) {
-    (void)stream;atomic_store_explicit((atomic_int *)context,success?1:-1,memory_order_release);
+audio_main_quiet_result_t audio_freedv_main_quiet_result(bool quiet) {
+    if (atomic_load_explicit(&main_context_lost,memory_order_acquire)) return AUDIO_MAIN_LOST;
+    return fd_main_audio_operation(mloop,play_stm,quiet);
 }
 bool audio_freedv_main_quiet(bool quiet) {
-    if(!mloop || !play_stm)return false;
-    atomic_int cork_status,flush_status;atomic_init(&cork_status,0);atomic_init(&flush_status,quiet?0:1);
-    pa_threaded_mainloop_lock(mloop);
-    pa_operation *cork=pa_stream_cork(play_stm,quiet,voice_main_operation_done,&cork_status);
-    pa_operation *flush=quiet?pa_stream_flush(play_stm,voice_main_operation_done,&flush_status):NULL;
-    pa_threaded_mainloop_unlock(mloop);
-    struct timespec start,t;clock_gettime(CLOCK_MONOTONIC,&start);
-    bool ok=cork && (!quiet || flush);
-    while(ok && (!atomic_load(&cork_status) || !atomic_load(&flush_status))){
-        clock_gettime(CLOCK_MONOTONIC,&t);
-        if((t.tv_sec-start.tv_sec)*1000000000LL+t.tv_nsec-start.tv_nsec>=500000000LL){ok=false;break;}
-        struct timespec pause={0,2000000};nanosleep(&pause,NULL);
-    }
-    ok=ok && atomic_load(&cork_status)==1 && atomic_load(&flush_status)==1;
-    /* Cancel under the PA lock before the callback's stack context expires. */
-    pa_threaded_mainloop_lock(mloop);
-    if(cork){pa_operation_cancel(cork);pa_operation_unref(cork);}
-    if(flush){pa_operation_cancel(flush);pa_operation_unref(flush);}
-    pa_threaded_mainloop_unlock(mloop);return ok;
+    return audio_freedv_main_quiet_result(quiet)==AUDIO_MAIN_ACKNOWLEDGED;
+}
+bool audio_freedv_main_lost(void) {
+    return atomic_load_explicit(&main_context_lost,memory_order_acquire);
 }
 
 static void voice_capture_flush_done(pa_stream *stream, int success, void *unused) {
@@ -592,10 +581,22 @@ static void on_state_change(pa_context *c, void *userdata) {
     if (connected && (st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED)) {
         /* PulseAudio went away under us: every stream is dead, the receiver is silent and the
          * waterfall stands. Out, so x6100_daemon brings PulseAudio and us back. */
-        LV_LOG_ERROR("PulseAudio gone (%s): exiting for a restart", pa_strerror(pa_context_errno(c)));
+        LV_LOG_ERROR("PulseAudio gone (%s): requesting a restart", pa_strerror(pa_context_errno(c)));
         /* Clear native software TX before the daemon restarts this process.
          * This path never waits for a PulseAudio operation or codec worker. */
         freedv_mode_device_fault();
+#ifdef ENABLE_FREEDV_CONTROL
+        atomic_store_explicit(&main_context_lost,true,memory_order_release);
+        #if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
+        if (freedv_usb_active()) {
+            /* The GUI coordinator must stop USB audio, restore the ordinary
+             * radio and observe fresh RX before process exit. PA callbacks
+             * never wait for those operations or tear down live workers. */
+            pa_threaded_mainloop_signal(mloop,0);
+            return;
+        }
+        #endif
+#endif
         fflush(stdout);
         fflush(stderr);
         _exit(AUDIO_EXIT_NO_SERVER);

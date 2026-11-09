@@ -1197,10 +1197,10 @@ static void eth_saved_cb(GObject *obj, GAsyncResult *result, gpointer user_data)
     }
 }
 
-void eth_apply(const eth_cfg_t *cfg) {
+bool eth_apply(const eth_cfg_t *cfg) {
     if (!client) {
         msg_update_text_fmt("NetworkManager is not running");
-        return;
+        return false;
     }
     NMRemoteConnection *rc = nm_client_get_connection_by_id(client, ETH_CON_ID);
 
@@ -1210,7 +1210,7 @@ void eth_apply(const eth_cfg_t *cfg) {
         nm_connection_replace_settings_from_connection(NM_CONNECTION(rc), con);
         g_object_unref(con);
         nm_remote_connection_commit_changes_async(rc, TRUE, NULL, eth_saved_cb, NULL);
-        return;
+        return true;
     }
     char         *uuid = nm_utils_uuid_generate();
     NMConnection *con = eth_connection_new(cfg, uuid);
@@ -1218,4 +1218,5 @@ void eth_apply(const eth_cfg_t *cfg) {
     g_free(uuid);
     nm_client_add_connection_async(client, con, TRUE, NULL, eth_added_cb, NULL);
     g_object_unref(con);
+    return true;
 }

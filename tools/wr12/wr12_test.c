@@ -25,6 +25,7 @@
 
 #define _GNU_SOURCE
 #include "wr12.h"
+#include "process_lifecycle.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -45,6 +46,9 @@
 #include <unistd.h>
 
 #define MARK "test.d/wr12-out"
+#ifndef WR12_BYPASS_SCRIPT
+#define WR12_BYPASS_SCRIPT "../../rootfs/usr/sbin/x6100-wr12-bypass"
+#endif
 
 static int fails, checks;
 
@@ -487,7 +491,7 @@ static void loop_bypass(char *out, size_t size) {
 
     out[0] = 0;
     if (system("X6100_WR12_SYS=test.d/sys X6100_WR12_DEV=test.d/dev X6100_WR12_MARK=" MARK
-               " sh ../../rootfs/usr/sbin/x6100-wr12-bypass > test.d/bypass.out 2>&1") != 0) {
+               " sh '" WR12_BYPASS_SCRIPT "' > test.d/bypass.out 2>&1") != 0) {
         snprintf(out, size, "(it failed)");
         return;
     }
@@ -499,9 +503,14 @@ static void loop_bypass(char *out, size_t size) {
 }
 
 /* `wr12_test term`: a GUI receiving 98 MHz through the WR12, until the test stops it with SIGTERM */
+static void shutdown_bypass(void *unused) { (void)unused; wr12_shutdown_bypass(); }
 static int term_child(void) {
     if (!freopen("wr12_term.log", "w", stderr)) return 1;
     setvbuf(stderr, NULL, _IONBF, 0);
+    /* Exact production order: lifecycle owns TERM before radio_start creates
+     * WR12's worker. HOST_BUILD is intentionally absent in this fixture. */
+    const process_lifecycle_ops lifecycle = {.bypass = shutdown_bypass};
+    if (!process_lifecycle_init(&lifecycle)) return 1;
     wr12_init(on_notify, on_keyed);
     wr12_want(true, true, 98000000);
     for (;;) pause();
@@ -948,8 +957,8 @@ int main(int argc, char **argv) {
     /* A GUI stopped with SIGTERM while the WR12 is out of its bypass (S95gui stop: a restart, an update or its
      * rollback, a shutdown): AT+BYPASS=1 last thing, the GUI ended as SIGTERM ends it, the mark kept for the GUI
      * after it, which holds TX until it has seen the WR12 back in its bypass. The SIGTERM comes from the stand-in as
-     * an AT+AYT reaches it, its OK 8 ms later (the slowest answer measured but AT+INIT's): after on_term's first
-     * 5 ms, so that AT+BYPASS=1 then would cross it, and right after it would go unheard; on_term waits for that OK,
+     * an AT+AYT reaches it, its OK 8 ms later (the slowest answer measured but AT+INIT's): after shutdown_bypass's first
+     * 5 ms, so that AT+BYPASS=1 then would cross it, and right after it would go unheard; shutdown_bypass waits for that OK,
      * then GAP_MS, and is heard */
     {
         pid_t    p;

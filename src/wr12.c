@@ -7,13 +7,13 @@
  *  straight through to the radio, as it starts up. To receive, AT+FREQ=<Hz> and AT+BYPASS=0, the base meanwhile on
  *  the WR12's IF (radio.c); AT+AYT keeps the line alive. The commands and their order as ea4iln reported them in #134.
  *  A command within about 2 ms of its last answer goes unanswered (measured on a WR12: none at 0 ms, a third at 1 ms,
- *  all from 2 ms on): nothing goes to it sooner than GAP_MS after it last sent anything, on_term's AT+BYPASS=1 too.
+ *  all from 2 ms on): nothing goes to it sooner than GAP_MS after it last sent anything, shutdown_bypass's AT+BYPASS=1 too.
  *
  *  One thread has the port: the GUI says what it wants (wr12_want) and reads the state, and never waits for the WR12.
  *  Each answer goes into the log when it differs from the last one to that command, so a knob turned or the
  *  keepalive add nothing; the screen hears once that the WR12 is found, lost, or answered ERROR (the keepalive: twice
  *  in a row), and one set up that then stops answering, again and again, is said once and set up again less and less
- *  often. Stopped with SIGTERM, the GUI puts it back in its bypass on its way out (on_term).
+ *  often. Stopped with SIGTERM, the GUI puts it back in its bypass on its way out (shutdown_bypass).
  *
  *  Copyright (c) 2026 RF.Guru
  */
@@ -110,9 +110,9 @@ static atomic_bool     notify_due;
 static bool          (*notify_fn)(void);
 static bool          (*keyed_fn)(void);
 
-/* The port for on_term, -1 none open; dying: on_term under way, the thread sends nothing more; asked: a command of
+/* The port for shutdown_bypass, -1 none open; dying: shutdown_bypass under way, the thread sends nothing more; asked: a command of
  * the thread's sent or about to be, its answer not in yet nor its time up; heard_ms: when the WR12 last sent anything
- * (now_ms, its low 32 bits: whole in one load, in on_term too) */
+ * (now_ms, its low 32 bits: whole in one load, in shutdown_bypass too) */
 static atomic_int      sig_fd = -1;
 static atomic_bool     dying;
 static atomic_bool     asked;
@@ -162,7 +162,7 @@ static void sleep_ms(unsigned ms) {
     }
 }
 
-/* The WR12 sent something just now; how long it has been quiet since (from on_term too: clock_gettime is a call a
+/* The WR12 sent something just now; how long it has been quiet since (from shutdown_bypass too: clock_gettime is a call a
  * signal handler may make) */
 static void heard(void) {
     atomic_store(&heard_ms, (unsigned)now_ms());
@@ -313,8 +313,8 @@ static bool port_open(const char *name) {
     return true;
 }
 
-/* on_term under way: this thread neither sends nor lets the port go any more, until the GUI ends; the command it was
- * about to send not asked, so that on_term does not wait for its answer */
+/* shutdown_bypass under way: this thread neither sends nor lets the port go any more, until the GUI ends; the command it was
+ * about to send not asked, so that shutdown_bypass does not wait for its answer */
 static void stay_if_dying(void) {
     while (atomic_load(&dying)) {
         atomic_store(&asked, false);
@@ -377,8 +377,8 @@ static answer_t ask(const char *cmd, bool screen) {
     drain_t  d;
 
     d = drain();
-    atomic_store(&asked, d == DRAINED);     /* before dying is looked at: on_term sees it, or this thread sees dying */
-    stay_if_dying();                        /* after drain's wait: on_term may have begun during it */
+    atomic_store(&asked, d == DRAINED);     /* before dying is looked at: shutdown_bypass sees it, or this thread sees dying */
+    stay_if_dying();                        /* after drain's wait: shutdown_bypass may have begun during it */
     sent_ms = now_ms();
     end = sent_ms + ANSWER_MS;
     if (d == DRAIN_GONE || (d == DRAINED && write(fd, out, n) != n)) {
@@ -771,17 +771,19 @@ static void *run(void *arg) {
     return NULL;
 }
 
-/* SIGTERM, which S95gui stops the GUI with (a restart, an update or its rollback, a shutdown): the WR12 back in its
+/* Process exit (a restart, an update or its rollback, a shutdown): the WR12 back in its
  * bypass on the GUI's way out. The GUI after this one may be a version that knows no WR12, and would transmit into
  * it. The thread stopped first (dying), a command of its own on its way let go and its answer waited for (ASKED_MS
  * at most), then AT+BYPASS=1, no sooner than GAP_MS after the WR12 last sent anything (twice that at most, for a port
  * that keeps sending), and TERM_MS for it to leave over USB; its answer is not waited for: the mark stays, and the
- * next GUI that knows the WR12 holds TX until it has seen it. Then the GUI ends as SIGTERM ends it (exit code 143 in
- * x6100_daemon), some 70 ms after it at most. Only calls a signal handler may make */
-static void on_term(int sig) {
+ * next GUI that knows the WR12 holds TX until it has seen it. The lifecycle coordinator
+ * owns signal delivery and termination; WR12 initialization must not replace it. */
+void wr12_shutdown_bypass(void) {
     static const char cmd[] = "AT+BYPASS=1\r\n";
+    static atomic_bool done;
     int               f;
 
+    if (atomic_exchange(&done, true)) return;
     atomic_store(&dying, true);
     poll(NULL, 0, 5);
     for (int i = 0; i < ASKED_MS && atomic_load(&asked); i++) {
@@ -794,14 +796,11 @@ static void on_term(int sig) {
     if (f >= 0 && write(f, cmd, sizeof(cmd) - 1) > 0) {
         poll(NULL, 0, TERM_MS);
     }
-    signal(sig, SIG_DFL);
-    raise(sig);
 }
 
 void wr12_init(bool (*notify)(void), bool (*keyed)(void)) {
     pthread_condattr_t a;
     pthread_t          t;
-    struct sigaction   sa = {.sa_handler = on_term, .sa_flags = SA_RESTART};
 
     notify_fn = notify;
     keyed_fn  = keyed;
@@ -815,13 +814,10 @@ void wr12_init(bool (*notify)(void), bool (*keyed)(void)) {
     if (out) {
         fprintf(stderr, "wr12: left out of its bypass by the GUI before: TX held until it is back in it\n");
     }
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGTERM, &sa, NULL);
     pthread_create(&t, NULL, run, NULL);
     pthread_detach(t);
 #else
     (void)t;
-    (void)sa;
 #endif
 }
 

@@ -2726,8 +2726,7 @@ static void eth_apply_cb(lv_event_t *e) {
     for (int i = 0; i < ETH_FIELDS; i++) {
         lv_label_set_text(lv_obj_get_child(eth.fields[i], 0), cfg.field[i][0] ? cfg.field[i] : "-");
     }
-    eth_apply(&cfg);
-    msg_update_text_fmt("Ethernet settings saved");
+    if (eth_apply(&cfg)) msg_update_text_fmt("Ethernet settings requested");
 }
 
 static uint8_t make_ethernet(uint8_t row) {
@@ -5169,14 +5168,17 @@ static void make_info_page() {
     row = make_factory_reset(row);
     card_end(row);
 
-#if defined(ENABLE_FREEDV_DIAGNOSTICS) && (defined(BOARD_X6200) || defined(HOST_BUILD))
+#if (defined(ENABLE_FREEDV_DIAGNOSTICS) || defined(ENABLE_FREEDV_USB_VOICE)) && (defined(BOARD_X6200) || defined(HOST_BUILD))
     row = card_begin("FREEDV DIAGNOSTICS");
+    row = make_param_switch(row, "Detailed session capture", cfg_sm.p_freedv_detailed_capture);
+#if defined(ENABLE_FREEDV_DIAGNOSTICS)
     row = info_row(row, "Scope", "Local routing and short voice tests");
     wl_row_label(row, "Radio test panel");
     lv_obj_t *freedv_button = wl_button(row, "Open FreeDV Diagnostics",
                                       [](lv_event_t *) { freedv_diagnostics_open(); });
     lv_obj_set_width(freedv_button, SMALL_6);
     lv_obj_set_grid_cell(freedv_button, LV_GRID_ALIGN_STRETCH, 1, 6, LV_GRID_ALIGN_CENTER, row++, 1);
+#endif
     card_end(row);
 #endif
 

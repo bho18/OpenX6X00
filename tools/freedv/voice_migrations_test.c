@@ -192,6 +192,29 @@ static void failed_version_retry(void) {
     assert(!value("SELECT count(*) FROM params WHERE name='tx_outside_bands'"));
     finish();
 }
+static void completed_bridge_stays_complete(void) {
+    fixture(14);
+    complete(14);
+    /* A current numeric version may retain an older durable origin. Completed
+     * feature markers, rather than that old number, determine what runs. */
+    exec("INSERT INTO params VALUES('tx_outside_bands',1),('long_app',128),"
+         "('press_f1',126),('freedv_usb_mic_gain',16),('freedv_usage_hidden',1);"
+         "DELETE FROM digital_modes WHERE type=6;"
+         "INSERT INTO digital_modes(label,freq,mode,type) VALUES('Personal',7177100,2,6)");
+    reopen_fixture();
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        complete(14);
+        assert(value("SELECT val FROM params WHERE name='tx_outside_bands'") == 1);
+        assert(value("SELECT val FROM params WHERE name='long_app'") == 128);
+        assert(value("SELECT val FROM params WHERE name='press_f1'") == 126);
+        assert(value("SELECT val FROM params WHERE name='freedv_usb_mic_gain'") == 16);
+        assert(value("SELECT val FROM params WHERE name='freedv_usage_hidden'") == 1);
+        assert(value("SELECT count(*) FROM digital_modes WHERE type=6") == 1);
+        assert(value("SELECT mode FROM digital_modes WHERE type=6 AND freq=7177100") == 2);
+        reopen_fixture();
+    }
+    finish();
+}
 int main(int argc, char **argv) {
     assert(argc == 2 && CFG_DIG_TYPE_FREEDV == 6);
     defaults_path = argv[1];
@@ -201,6 +224,7 @@ int main(int argc, char **argv) {
     failed_numeric_retry();
     failed_bridge_retry();
     failed_version_retry();
+    completed_bridge_stays_complete();
     puts("PASS: upstream numbering, saved FreeDV preferences/bookmarks, action IDs, durable origin and atomic retry");
     return 0;
 }

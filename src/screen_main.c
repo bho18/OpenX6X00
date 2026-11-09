@@ -16,6 +16,7 @@
 #include "freedv/usb_navigation.h"
 #include "freedv/screen_layout.h"
 #include "control_owner.h"
+#include "process_lifecycle.h"
 #include "freedv/writer_gate.h"
 #ifdef ENABLE_FREEDV_DIAGNOSTICS
 #include "freedv/diagnostics.h"
@@ -2069,7 +2070,13 @@ void freedv_navigation_dispatch(const fd_nav_action *action) {
         case FD_NAV_POWEROFF: radio_poweroff(); break;
         case FD_NAV_RESET: radio_bb_reset(); exit(1); break;
         case FD_NAV_TERMINATE:
-            screen_rec_shutdown(); cfg_api_flush_all(); cfg_db_shutdown(); sync(); exit(0); break;
+            screen_rec_shutdown(); cfg_api_flush_all(); cfg_db_shutdown(); sync();
+            process_lifecycle_cleanup_complete();
+            /* Do not run another GUI callback against the closed database.
+             * The independent coordinator now terminates with the original
+             * signal; its deadline is also independent of a stalled GUI. */
+            while(process_lifecycle_stopping())usleep(10000);
+            break;
         default: break;
     }
 }

@@ -123,8 +123,9 @@ bool net_connected(void);
 const char *eth_check_field(int field, char *val);
 const char *eth_check(eth_cfg_t *cfg);
 
-/* LVGL thread, a checked set: saves the profile and applies it to the adapter */
-void eth_apply(const eth_cfg_t *cfg);
+/* LVGL thread, a checked set: true once the asynchronous profile save/apply
+ * request is submitted. This is not confirmation of network activation. */
+bool eth_apply(const eth_cfg_t *cfg);
 
 #ifdef __cplusplus
 }

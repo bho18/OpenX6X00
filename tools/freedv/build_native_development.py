@@ -376,6 +376,9 @@ def _perform_build(args, parser, work, attempt, record, before, tree, revision, 
             'stream-fixture': [work / 'build/freedv_native_stream_fixture_test', args.codec_fixture.resolve()],
             'codec-adapter': [work / 'build/freedv_native_audio_codec_adapter_test', args.codec_fixture.resolve()],
         }
+        if args.usb_test:
+            checks['usb-summary'] = [sys.executable, ROOT/'tools/freedv/test_usb_summary_capture.py',
+                                     '--binary', record['binaries']['freedv_usb_audio_test']['path']]
         record['codec_checks'] = {}
         for name, command in checks.items():
             run(command, name + '.log')

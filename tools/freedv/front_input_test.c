@@ -24,10 +24,16 @@ lv_event_code_t EVENT_KEYPAD=123;
 radio_state_t radio_get_state(void) { return RADIO_RX; }
 bool backlight_tick(void) { return false; }
 bool backlight_knob_tick(void) { return false; }
+static rotary_reset_result reset_fixture=ROTARY_RESET_READY;
+bool rotary_diagnostic_reset_begin(void) { return true; }
+rotary_reset_result rotary_diagnostic_reset_poll(void) { return reset_fixture; }
 bool rotary_diagnostic_reset(void) { return true; }
 bool rotary_diagnostic_local_event(lv_indev_t *input,unsigned generation) { (void)input;(void)generation;return false; }
 bool keyboard_diagnostic_reset(void) { return true; }
 lv_indev_t *lv_indev_get_act(void) { return active_input; }
+lv_obj_t *lv_group_get_focused(const lv_group_t *group) { (void)group;return NULL; }
+bool lv_obj_check_type(const lv_obj_t *object,const lv_obj_class_t *type) { (void)object;(void)type;return false; }
+bool lv_dropdown_is_open(lv_obj_t *object) { (void)object;return false; }
 lv_indev_type_t lv_indev_get_type(const lv_indev_t *input) { return input==&encoder_input?LV_INDEV_TYPE_ENCODER:LV_INDEV_TYPE_KEYPAD; }
 lv_indev_t *lv_indev_get_next(lv_indev_t *input) { return !input?&pad_input:input==&pad_input?&encoder_input:NULL; }
 void lv_indev_reset(lv_indev_t *input,lv_obj_t *obj) { assert(input&&!obj);++resets; }
@@ -64,7 +70,7 @@ int main(void) {
     assert(fcntl(front[0],F_SETFL,O_NONBLOCK)>=0&&fcntl(encoder[0],F_SETFL,O_NONBLOCK)>=0);
     keypad_t pad={.fd=front[0],.indev=&pad_input,.evdev_state=LV_INDEV_STATE_PRESSED};
     encoder_t knob={.fd=encoder[0],.indev=&encoder_input,.pressed=true};
-    pad.indev_drv.user_data=&pad;mfk=diagnostic_encoder=&knob;
+    pad.indev_drv.user_data=&pad;knob.indev_drv.user_data=&knob;mfk=diagnostic_encoder=&knob;
     diagnostic_pads[0]=&pad;diagnostic_pad_count=1;
     key_st[KEYPAD_F3].hold_timer=(lv_timer_t *)&pad;
     assert(ctl_claim(CTL_BROWSER,9,"remote",false));
@@ -123,6 +129,25 @@ int main(void) {
     physical_key(&pad,front[1],BTN_TRIGGER_HAPPY20,1);
     assert(!key_st[KEYPAD_F5].down && !key_st[KEYPAD_F5].hold_timer);
     assert(!ctl_diagnostic_input_blocked());release_on_press=false;
+    /* Denied asynchronous entry must release its temporary fence, while an
+     * exit never releases ownership until the producer has acknowledged. */
+    reset_fixture=ROTARY_RESET_PENDING;assert(front_keys_input_begin(false));
+    assert(front_keys_input_poll()==FD_FRONT_INPUT_PENDING && ctl_diagnostic_input_blocked());
+    reset_fixture=ROTARY_RESET_FAILED;assert(front_keys_input_poll()==FD_FRONT_INPUT_FAILED);
+    front_keys_input_cancel_acquire();assert(!ctl_diagnostic_input_blocked());
+    assert(ctl_claim(CTL_BROWSER,17,"after-denied-entry",true));
+    struct input_event turn_event={.type=EV_REL,.value=-1};lv_indev_data_t turn_data={0};
+    assert(write(encoder[1],&turn_event,sizeof(turn_event))==sizeof(turn_event));mfk_read(&knob.indev_drv,&turn_data);
+    ctl_get(&owner);assert(owner.kind==CTL_BROWSER && owner.id==17 && turn_data.enc_diff==1); /* upstream inactive behavior */
+    reset_fixture=ROTARY_RESET_READY;assert(front_keys_input_begin(false));
+    assert(front_keys_input_poll()==FD_FRONT_INPUT_READY);
+    assert(write(encoder[1],&turn_event,sizeof(turn_event))==sizeof(turn_event));mfk_read(&knob.indev_drv,&turn_data);
+    ctl_get(&owner);assert(owner.kind==CTL_LOCAL && turn_data.enc_diff==1); /* fresh scoped input */
+    reset_fixture=ROTARY_RESET_PENDING;assert(front_keys_input_begin(true));
+    assert(front_keys_input_poll()==FD_FRONT_INPUT_PENDING && ctl_diagnostic_input_blocked());
+    reset_fixture=ROTARY_RESET_FAILED;assert(front_keys_input_poll()==FD_FRONT_INPUT_FAILED && ctl_diagnostic_input_blocked());
+    reset_fixture=ROTARY_RESET_READY;assert(front_keys_input_begin(true));
+    assert(front_keys_input_poll()==FD_FRONT_INPUT_READY && !ctl_diagnostic_input_blocked());
     close(front[0]);close(front[1]);close(encoder[0]);close(encoder[1]);
     puts("PASS: fresh held-key provenance is dispatch-scoped; release, new press, generation and input drains revoke consent; independent keys retain PTT release");
 }

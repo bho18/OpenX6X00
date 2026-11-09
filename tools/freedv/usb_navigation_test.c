@@ -139,4 +139,18 @@ static void inactive_signal(void){
     }
     int status;assert(waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0);
 }
-int main(void){inactive_signal();pure_policy();physical_exit_edges();runtime_routes();terminal_routes();puts("USB navigation policy, physical Exit edges and deferred runtime routes: PASS");return 0;}
+static void active_signal(void){
+    pid_t child=fork();assert(child>=0);
+    if(!child){
+        active=true;unsigned before=dispatches,prior=leaves,aborts=terminals;
+        freedv_navigation_signal_terminate();freedv_navigation_tick();
+        assert(leaves==prior+1&&terminals==aborts&&freedv_navigation_pending());
+        test_ms+=10000;freedv_navigation_tick();
+        assert(dispatches==before&&freedv_navigation_pending());
+        /* Process termination's independent deadline belongs to the lifecycle
+         * coordinator; the GUI cannot prematurely skip restoration. */
+        finish();assert(dispatches==before+1&&delivered.kind==FD_NAV_TERMINATE);_exit(0);
+    }
+    int status;assert(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0);
+}
+int main(void){inactive_signal();active_signal();pure_policy();physical_exit_edges();runtime_routes();terminal_routes();puts("USB navigation policy, physical Exit edges and deferred runtime routes: PASS");return 0;}

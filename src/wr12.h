@@ -23,6 +23,11 @@
  * keyed: the radio is in TX; the WR12 leaves its bypass only once it is not */
 void wr12_init(bool (*notify)(void), bool (*keyed)(void));
 
+/* Bounded process-exit operation. The process lifecycle coordinator calls it
+ * once after FreeDV cleanup, or as best effort after the independent deadline.
+ * It preserves the out-of-bypass marker; it is not an RF-clear acknowledgement. */
+void wr12_shutdown_bypass(void);
+
 /* What the WR12 is to do, from any thread, never waiting for it. on: WR12 on HOST (off: the WR12 back in its bypass,
  * then its port let go); rx: out of its bypass, tuned to hz (radio.c asks it only with TX held); not rx: in its
  * bypass, the antenna straight through to the radio */
@@ -42,6 +47,8 @@ bool wr12_note(char *buf, size_t size);
 bool wr12_port(const char *dev);
 
 #else
+
+static inline void wr12_shutdown_bypass(void) {}
 
 static inline bool wr12_port(const char *dev) {
     (void)dev;

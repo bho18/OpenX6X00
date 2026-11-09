@@ -12,6 +12,7 @@
 
 #include "cat.h"
 #include "board.h"
+#include "remote_write.h"
 
 #include "cfg/settings_manager.h"
 #include "common/queue.h"
@@ -594,8 +595,14 @@ static void set_unsupported(const Frame *req, Frame *resp) {
     resp->set_code(CODE_NG);
 }
 
-static Frame *process_req(const Frame *req) {
+static Frame *process_req(const Frame *req, unsigned generation) {
     auto resp = new Frame(req);
+    RemoteWriteScope write(generation);
+    auto allow_write = [&] {
+        if (write.enter()) return true;
+        resp->set_code(CODE_NG);
+        return false;
+    };
 
     int32_t        new_freq;
     radio_vfo_t    cur_vfo    = (radio_vfo_t)cfg_sm.p_band_current_vfo.get();
@@ -609,6 +616,7 @@ static Frame *process_req(const Frame *req) {
     switch (req->command) {
         case C_SND_FREQ:
             if (data_size == 5) {
+                if (!allow_write()) return resp;
                 cfg_sm.cp_fg_freq.set(from_bcd(req->data.data(), 10));
                 resp->set_code(CODE_OK);
             } else {
@@ -633,6 +641,7 @@ static Frame *process_req(const Frame *req) {
 
         case C_SET_FREQ:
             if (data_size == 5) {
+                if (!allow_write()) return resp;
                 cfg_sm.cp_fg_freq.set(from_bcd(req->data.data(), 10));
                 resp->set_code(CODE_OK);
             } else {
@@ -642,6 +651,7 @@ static Frame *process_req(const Frame *req) {
 
         case C_SET_MODE:
             if ((data_size >= 1) && (data_size <= 2)) {
+                if (!allow_write()) return resp;
                 cfg_sm.cp_cur_mode.set(ci_mode_2_x_mode(req->data[0]));
                 if (data_size == 2) {
                     // filter selector -> req->data[1]
@@ -654,6 +664,7 @@ static Frame *process_req(const Frame *req) {
 
         case C_SET_VFO:
             if (data_size == 1) {
+                if (!allow_write()) return resp;
                 radio_vfo_t new_vfo;
                 switch (req->data[0]) {
                     case S_VFOA:
@@ -705,6 +716,7 @@ static Frame *process_req(const Frame *req) {
                 resp->set_payload_len(2);
                 resp->data[0] = cfg_sm.p_band_split.get();
             } else if (data_size == 1) {
+                if (!allow_write()) return resp;
                 cfg_sm.p_band_split.set(req->data[0]);
                 resp->set_code(CODE_OK);
             } else {
@@ -717,6 +729,7 @@ static Frame *process_req(const Frame *req) {
                 resp->set_payload_len(2);
                 resp->data[0] = freq_step_to_ci(cfg_sm.p_mode_freq_step.get());
             } else if (data_size == 1) {
+                if (!allow_write()) return resp;
                 cfg_sm.p_mode_freq_step.set(freq_step_from_ci(resp->data[0]));
                 resp->set_code(CODE_OK);
             } else {
@@ -729,6 +742,7 @@ static Frame *process_req(const Frame *req) {
                 resp->set_payload_len(2);
                 resp->data[0] = cfg_sm.cp_cur_att.get() * 0x20;
             } else if (data_size == 1) {
+                if (!allow_write()) return resp;
                 cfg_sm.cp_cur_att.set(req->data[0]);
                 resp->set_code(CODE_OK);
             } else {
@@ -745,6 +759,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(4);
                             to_bcd_be(&resp->data[1], cfg_sm.p_volume.get() * 255 / BOARD_VOL_MAX, 3);
                         } else if (data_size == 3) {
+                            if (!allow_write()) return resp;
                             cfg_sm.p_volume.set(from_bcd_be(&req->data[1], 3) * BOARD_VOL_MAX / 255);
                         }
                         break;
@@ -754,6 +769,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(4);
                             to_bcd_be(&resp->data[1], cfg_sm.p_rfgain.get() * 255 / 100, 3);
                         } else if (data_size == 3) {
+                            if (!allow_write()) return resp;
                             cfg_sm.p_rfgain.set(from_bcd_be(&req->data[1], 3) * 100 / 255);
                         }
                         break;
@@ -763,6 +779,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(4);
                             to_bcd_be(&resp->data[1], cfg_sm.p_squelch.get() * 255 / 100, 3);
                         } else if (data_size == 3) {
+                            if (!allow_write()) return resp;
                             cfg_sm.p_squelch.set(from_bcd_be(&req->data[1], 3) * 100 / 255);
                         }
                         break;
@@ -772,6 +789,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(4);
                             to_bcd_be(&resp->data[1], x_cw_pitch_2_ci(cfg_sm.p_key_tone.get()), 3);
                         } else if (data_size == 3) {
+                            if (!allow_write()) return resp;
                             cfg_sm.p_key_tone.set(ci_cw_pitch_2_x(from_bcd_be(&req->data[1], 3)));
                         }
                         break;
@@ -783,6 +801,7 @@ static Frame *process_req(const Frame *req) {
                         } else if (data_size == 3) {
                             float pwr = from_bcd_be(&req->data[1], 3) * 10.0f / 255.0f;
                             pwr = LV_MIN(pwr, 10.0f);
+                            if (!allow_write()) return resp;
                             cfg_sm.p_pwr.set(pwr);
                         }
                         break;
@@ -851,6 +870,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(3);
                             resp->data[1] = cfg_sm.cp_cur_pre.get();
                         } else {
+                            if (!allow_write()) return resp;
                             cfg_sm.cp_cur_pre.set(req->data[1] > 0);
                             resp->set_code(CODE_OK);
                         }
@@ -861,6 +881,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(3);
                             resp->data[1] = cfg_sm.p_nb.get();
                         } else {
+                            if (!allow_write()) return resp;
                             cfg_sm.p_nb.set(req->data[1]);
                             resp->set_code(CODE_OK);
                         }
@@ -871,6 +892,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(3);
                             resp->data[1] = cfg_sm.p_nr.get();
                         } else {
+                            if (!allow_write()) return resp;
                             cfg_sm.p_nr.set(req->data[1]);
                             resp->set_code(CODE_OK);
                         }
@@ -881,6 +903,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(3);
                             resp->data[1] = 0x00;
                         } else {
+                            if (!allow_write()) return resp;
                             // COMP set is not suported yet
                             resp->set_code(CODE_OK);
                         }
@@ -895,6 +918,7 @@ static Frame *process_req(const Frame *req) {
                             resp->set_payload_len(3);
                             resp->data[1] = 0x00;
                         } else {
+                            if (!allow_write()) return resp;
                             // VOX set is not suported yet
                             resp->set_code(CODE_OK);
                         }
@@ -950,6 +974,7 @@ static Frame *process_req(const Frame *req) {
                         {
                             int32_t freq = ci_band_freq(req->data[1]);
                             if (freq) {
+                                if (!allow_write()) return resp;
                                 cfg_sm.cp_fg_freq.set(freq);
                             }
                             resp->set_code(freq ? CODE_OK : CODE_NG);
@@ -960,6 +985,7 @@ static Frame *process_req(const Frame *req) {
                         break;
                     case MEM_DM_FG:
                         // data mode, filter
+                        if (!allow_write()) return resp;
                         cfg_sm.cp_cur_mode.set(ci_data_mode_2_x_mode(cur_mode, req->data[1]));
                         resp->set_code(CODE_OK);
                         break;
@@ -976,11 +1002,12 @@ static Frame *process_req(const Frame *req) {
                     resp->set_payload_len(3);
                     resp->data[1] = (radio_get_state() == RADIO_RX) ? 0 : 1;
                 } else {
-                    bool ok = true;
+                    bool ok = false;
+                    if (!allow_write()) return resp;
 
                     switch (req->data[1]) {
                         case 0:
-                            radio_set_ptt(false);
+                            ok = radio_set_ptt(false);
                             break;
 
                         case 1:
@@ -1008,6 +1035,7 @@ static Frame *process_req(const Frame *req) {
                     resp->data[3] = rit < 0 ? 1 : 0;
                 } else if (data_size == 4) {
                     int32_t hz = from_bcd(req->data.data() + 1, 4);
+                    if (!allow_write()) return resp;
                     cfg_sm.p_rit.set(req->data[3] ? -hz : hz);
                     resp->set_code(CODE_OK);
                 } else {
@@ -1019,6 +1047,7 @@ static Frame *process_req(const Frame *req) {
                     resp->set_payload_len(3);
                     resp->data[1] = p.get() != 0;
                 } else {
+                    if (!allow_write()) return resp;
                     if (req->data[1] == 0)
                         p.set(0);
                     resp->set_code(CODE_OK);
@@ -1042,6 +1071,7 @@ static Frame *process_req(const Frame *req) {
                     resp->set_payload_len(7);
                     to_bcd(&resp->data[1], freq->get(), 10);
                 } else if (data_size == 6) {
+                    if (!allow_write()) return resp;
                     freq->set(from_bcd(&req->data[1], 10));
                     resp->set_code(CODE_OK);
                 } else {
@@ -1083,6 +1113,7 @@ static Frame *process_req(const Frame *req) {
                     case 2:
                         // Write command
                         new_mode = ci_mode_2_x_mode(req->data[1], data_mode);
+                        if (!allow_write()) return resp;
                         mode_par->set(new_mode);
                         resp->set_code(CODE_OK);
                         break;
@@ -1135,6 +1166,7 @@ static Frame *process_req(const Frame *req) {
                             int32_t zoom = 1;
                             while (zoom < 8 && 50000 / (zoom * 2) >= span)
                                 zoom *= 2;
+                            if (!allow_write()) return resp;
                             cfg_sm.p_mode_zoom.set(zoom);
                             resp->set_code(CODE_OK);
                         } else {
@@ -1176,11 +1208,12 @@ static Frame *process_req(const Frame *req) {
 struct req_job_t {
     const Frame *req;
     Frame       *resp;
+    unsigned     generation;
 };
 
 static void process_req_cb(void *arg) {
     auto *job = static_cast<req_job_t *>(arg);
-    job->resp = process_req(job->req);
+    job->resp = process_req(job->req, job->generation);
 }
 
 static void cat_thread() {
@@ -1192,7 +1225,7 @@ static void cat_thread() {
         if (req) {
             sleep = false;
             conn->send(req);
-            req_job_t job = {req, nullptr};
+            req_job_t job = {req, nullptr, ctl_remote_input_generation()};
             if (!scheduler_call(process_req_cb, &job)) {
                 job.resp = new Frame(req);
                 job.resp->set_code(CODE_NG);

@@ -305,6 +305,10 @@ extern "C" void cfg_freedv_usb_volume_storage_shutdown(void){
     if(scheduler_on_gui_thread())volume_storage_poll();
 }
 extern "C" bool cfg_freedv_usb_preview_enabled(void){return cfg_sm.p_freedv_usb_preview_enabled.get()!=0;}
+extern "C" bool cfg_freedv_detailed_capture_enabled(void){return cfg_sm.p_freedv_detailed_capture.get()!=0;}
+extern "C" bool cfg_freedv_set_detailed_capture(bool enabled){
+    return scheduler_on_gui_thread() && durable(cfg_sm.p_freedv_detailed_capture,int32_t(enabled));
+}
 extern "C" bool cfg_freedv_usb_set_preview_enabled(bool enabled){
     return scheduler_on_gui_thread() && durable(cfg_sm.p_freedv_usb_preview_enabled,int32_t(enabled));
 }

@@ -21,6 +21,9 @@ int radio_usb_power_tenths(void); /* thread-safe selected normal radio power */
 bool radio_usb_terminal_authorize(void);
 bool radio_usb_terminal_hardware(bool reset);
 void radio_usb_inhibit(void *); /* atomic cancellation only; never waits for I2C */
+/* Retain an external protection event even if its live level clears before the
+ * coordinator polls. Distinct from ordinary Exit's cancellation. */
+void radio_usb_policy_inhibit(void);
 bool radio_usb_key(void *,uint64_t expected_release);
 void radio_usb_clear(void *,bool halt);
 void radio_usb_edge(bool pressed);

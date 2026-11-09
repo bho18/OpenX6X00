@@ -40,10 +40,11 @@ static void mfk_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     }
     if (turned) {
 #ifdef ENABLE_FREEDV_CONTROL
-        if (ctl_diagnostic_input_blocked())
+        if (ctl_diagnostic_input_blocked()) {
             knob->diagnostic_generation = ctl_remote_input_generation();
+            ctl_local_input();
+        }
 #endif
-        ctl_local_input();
         if (backlight_knob_tick()) sum = 0; /* waking the screensaver consumes this turn */
     }
     /* An open dropdown list moves one line a click: the detents of a fast turn, read together,

@@ -41,10 +41,16 @@ void usb_ui_cfg_init(void){
     cfg_volume=&cfg_sm.p_volume;cfg_fg_freq=&cfg_sm.cp_fg_freq;
     assert(cfg_sm.p_freedv_usb_mic_gain.get()==0);
     assert(!cfg_freedv_usage_hidden());
+    assert(!cfg_freedv_detailed_capture_enabled());
     cfg_sm.p_volume.set(27);
     /* An actual previous-beta setting, rather than its fresh-image default. */
     cfg_sm.p_freedv_usb_mic_gain.set(16);assert(cfg_sm.p_freedv_usb_mic_gain.save()==SUCCESS);
     assert(sqlite3_trace_v2(database,SQLITE_TRACE_STMT,count_gain_profile_writes,nullptr)==SQLITE_OK);
+}
+void usb_ui_cfg_detailed(bool enabled){
+    assert(cfg_freedv_set_detailed_capture(enabled));
+    auto value=storage_policy_for(StorageType::GLOBAL).load_int(0,"freedv_detailed_capture");
+    assert(value && bool(*value)==enabled);
 }
 unsigned usb_ui_cfg_gain_writes(void){return gain_profile_writes.load();}
 void usb_ui_cfg_verify_hidden(bool expected){

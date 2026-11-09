@@ -99,8 +99,9 @@ def build_commands(args):
             command += ['--control-headers', args.control_headers]
         elif name == 'host-native':
             command += ['--usb-test', '--codec', args.host_codec,
-                        '--codec-fixture', args.fixtures/'rade-modem.raw',
-                        '--usb-resource-reclaim-root', args.work]
+                        '--codec-fixture', args.fixtures/'rade-modem.raw']
+            for root in (getattr(args, 'usb_resource_reclaim_root', None) or [args.work]):
+                command += ['--usb-resource-reclaim-root', root]
         else:
             command += ['--sdk', args.sdk]
             if args.runtime_inputs:
@@ -135,23 +136,37 @@ def builds(args, identity):
                      '--source-tree-sha256', identity['source_tree_sha256'], '--build-id', args.build_id]
     with (area/'probe.log').open('x') as log:
         probe = subprocess.Popen(list(map(str, probe_command)), cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        probe_closed = True
+        probe_code = None
         try:
             until = time.monotonic()+10
             while not ready.exists() and probe.poll() is None and time.monotonic() < until:
                 time.sleep(.02)
             if not ready.exists():
                 raise ValueError('Independent observer did not become ready')
-            try:
-                run(['taskset', '-c', ','.join(map(str, affinity)), *commands['host-native']],
-                    args.work/'host-native-build.log', timeout=7200)
-            finally:
-                save(stop, {**identity, 'build_id': args.build_id, 'ended_monotonic_ns': time.monotonic_ns()})
-            if probe.wait(timeout=10) != 0:
-                raise ValueError('Independent observer failed')
+            run(['taskset', '-c', ','.join(map(str, affinity)), *commands['host-native']],
+                args.work/'host-native-build.log', timeout=7200)
         finally:
-            if probe.poll() is None:
-                probe.terminate()
-                probe.wait(timeout=10)
+            # A failed builder must still close its independent observations.
+            # In particular, do not terminate the probe while it is about to
+            # observe the stop marker and write the failed attempt's clock.
+            try:
+                save(stop, {**identity, 'build_id': args.build_id, 'ended_monotonic_ns': time.monotonic_ns()})
+            finally:
+                try:
+                    probe_code = probe.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    probe_closed = False
+                    probe.terminate()
+                    try:
+                        probe_code = probe.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        probe.kill()
+                        probe_code = probe.wait(timeout=10)
+        if not probe_closed:
+            raise ValueError('Independent observer did not close after the builder ended')
+        if probe_code != 0:
+            raise ValueError('Independent observer failed')
     source_identity(args.expected_commit)
 
 
@@ -476,7 +491,7 @@ def verify(args, identity):
     validate_campaign(matrix, expected_cases=CASES)
     matching_identity(matrix, identity, args.build_id)
     if (set(records['host-native'].get('codec_checks', {})) !=
-            {'voice-engine', 'native-stream', 'stream-fixture', 'codec-adapter', 'usb-matrix'}):
+            {'voice-engine', 'native-stream', 'stream-fixture', 'codec-adapter', 'usb-summary', 'usb-matrix'}):
         raise ValueError('Real codec and complete integration checks are required')
     clock_path = args.work/'host-isolation/clock.json'
     clock = read(clock_path)
@@ -570,10 +585,13 @@ def main():
     for name in ('ci-result', 'dependency-provenance', 'observer-provenance', 'runtime-inputs', 'runtime-package', 'web-wheel'):
         parser.add_argument('--'+name, type=Path)
     parser.add_argument('--jobs', type=int, default=4)
+    parser.add_argument('--usb-resource-reclaim-root', type=Path, action='append', default=[],
+                        help='Explicit task-owned clean-cache root for host qualification; repeat as needed (default: work directory)')
     args = parser.parse_args()
     for name, value in vars(args).items():
         if isinstance(value, Path):
             setattr(args, name, value.resolve())
+    args.usb_resource_reclaim_root = [path.resolve() for path in args.usb_resource_reclaim_root]
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,100}', args.build_id) or args.jobs < 1:
         parser.error('Use a simple unique build ID and a positive job count')
     for path in (args.work, args.output):

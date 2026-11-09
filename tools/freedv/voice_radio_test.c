@@ -97,6 +97,7 @@ PARAM(cfg_band_current_vfo,0);PARAM(cfg_band_id,7);PARAM(cfg_band_split,0);
 PARAM(cfg_band_vfoa_freq,14100000);PARAM(cfg_band_vfob_freq,14100000);PARAM(cfg_band_if_shift,80);
 PARAM(cfg_band_vfoa_mode,radio_mode_lsb);PARAM(cfg_band_vfob_mode,radio_mode_usb_dig);
 PARAM(cfg_band_vfoa_agc,radio_agc_fast);PARAM(cfg_band_vfob_agc,radio_agc_slow);
+PARAM(cfg_cw_decoder,0);
 PARAM(cfg_band_vfoa_pre,0);PARAM(cfg_band_vfob_pre,1);PARAM(cfg_band_vfoa_att,1);PARAM(cfg_band_vfob_att,0);
 PARAM(cfg_rfgain,64);PARAM(cfg_squelch,5);
 PARAM(cfg_rit,12);PARAM(cfg_xit,24);PARAM(cfg_key_train,0);PARAM(cfg_nr,1);PARAM(cfg_nb,1);
@@ -352,6 +353,19 @@ static void contract_failure_cases(void){
 }
 int main(void){
     ctl_init();assert(hw_init());hw_start();observed(false);
+    /* Exercise the real ordinary timing observer with the decoder preference,
+     * retaining desired AUTO rather than overwriting the saved setting. */
+    cfg_band_vfob_agc_value=radio_agc_auto;
+    for(int decoder=0;decoder<2;decoder++){
+        cfg_cw_decoder_value=decoder;
+        cfg_band_vfob_mode_value=radio_mode_cw;update_agc_time(NULL,NULL);
+        assert(hw_get_i(HW_AGC_TIME)==100 && cfg_band_vfob_agc_value==radio_agc_auto);
+        cfg_band_vfob_mode_value=radio_mode_cwr;update_agc_time(NULL,NULL);
+        assert(hw_get_i(HW_AGC_TIME)==100);
+        cfg_band_vfob_mode_value=radio_mode_am;update_agc_time(NULL,NULL);
+        assert(hw_get_i(HW_AGC_TIME)==1000);
+    }
+    cfg_cw_decoder_value=0;cfg_band_vfob_agc_value=radio_agc_slow;cfg_band_vfob_mode_value=radio_mode_usb_dig;
     hw_set_i(HW_HMIC,31);hw_set_i(HW_IMIC,17);hw_set_i(HW_MIC,radio_mic_auto);hw_set_i(HW_VOX,1);
     hw_set_i(HW_RECORD,0);hw_set_i(HW_LINE_IN,7);hw_set_i(HW_LINE_OUT,9);hw_set_i(HW_MONI,15);hw_set_f(HW_TXPWR_F,5);
     hw_vfo_set_freq(RADIO_VFO_A,frequency);hw_vfo_set_mode(RADIO_VFO_A,radio_mode_lsb);hw_vfo_set_mode(RADIO_VFO_B,radio_mode_usb_dig);

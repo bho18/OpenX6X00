@@ -42,6 +42,8 @@ bool cfg_freedv_usb_volume_busy(void); /* short queue check; does not wait for s
 void cfg_freedv_usb_volume_storage_shutdown(void);
 bool cfg_freedv_usb_preview_enabled(void);
 bool cfg_freedv_usb_set_preview_enabled(bool enabled);
+bool cfg_freedv_detailed_capture_enabled(void);
+bool cfg_freedv_set_detailed_capture(bool enabled);
 #ifdef __cplusplus
 }
 #endif

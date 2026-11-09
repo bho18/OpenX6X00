@@ -12,6 +12,7 @@
 
 #include <string>
 #include <thread>
+#include <atomic>
 
 extern "C" {
 #include "scheduler.h"
@@ -27,6 +28,8 @@ extern "C" {
 #define HP_STATE      "/tmp/btaudio-hp"     /* written by btaudio-ctl: headphones connected */
 #define HP_VOL_FILE   BOARD_DATA "/btaudio.hpvol"  /* last headphone volume set with the VOL control */
 #define SAVED_AF_VOL  BOARD_DATA "/btaudio.afvol"  /* AF volume before muting, survives a power off */
+
+#include "btaudio_rx_hold.inc"
 
 struct result_t {
     std::string       out;
@@ -90,6 +93,7 @@ static void hp_vol_done(const char *out, int status, void *user) {
 
 /* One volume command at a time, the last value wins */
 static void hp_vol_send() {
+    if (native_rx_held.load(std::memory_order_acquire)) return;
     if (vol_busy || vol_pending < 0) return;
     std::string args = "volume " + std::to_string(vol_pending * 100 / BOARD_VOL_MAX);
 
@@ -100,6 +104,7 @@ static void hp_vol_send() {
 
 /* While headphones are connected the VOL control is the headphone volume */
 static void vol_changed_cb(Subject *subj, void *user) {
+    if (native_rx_held.load(std::memory_order_acquire)) return;
     if (!hp_on) return;
     hp_vol = cfg_sm.p_volume.get();
     vol_pending = hp_vol;
@@ -112,6 +117,8 @@ static void vol_changed_cb(Subject *subj, void *user) {
 }
 
 static void mute_timer_cb(lv_timer_t *t) {
+    if (native_rx_held.load(std::memory_order_acquire)) return;
+    hp_vol_send(); // Resume a pre-existing volume request deferred by the hold.
     bool hp = access(HP_STATE, F_OK) == 0;
 
     if (hp && saved_vol < 0) {

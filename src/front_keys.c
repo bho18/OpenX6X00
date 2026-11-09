@@ -26,6 +26,7 @@
 #include <linux/input.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
 
 #define HOLD_MS 1000
@@ -309,7 +310,10 @@ keypad_t *keypad_init(char *dev_name) {
 }
 
 #ifdef ENABLE_FREEDV_CONTROL
-static bool diagnostic_inputs_reset(void) {
+static fd_front_input_result input_reset_result=FD_FRONT_INPUT_READY;
+static bool input_reset_releasing,input_reset_acquiring;
+static lv_timer_t *legacy_release_timer;
+static bool diagnostic_inputs_reset_begin(void) {
     bool ok = true;
     held_dispatch_local = false;
     for (unsigned key = 0; key < KEYS; ++key) {
@@ -323,7 +327,7 @@ static bool diagnostic_inputs_reset(void) {
         pad->evdev_state = LV_INDEV_STATE_RELEASED;
         pad->diagnostic_generation = 0;
     }
-    if (!rotary_diagnostic_reset()) ok = false;
+    if (!rotary_diagnostic_reset_begin()) ok = false;
     if (!encoder_diagnostic_reset()) ok = false;
     if (!keyboard_diagnostic_reset()) ok = false;
     for (lv_indev_t *input = lv_indev_get_next(NULL); input; input = lv_indev_get_next(input)) {
@@ -332,17 +336,59 @@ static bool diagnostic_inputs_reset(void) {
     }
     return ok;
 }
+bool front_keys_input_begin(bool release) {
+    if(input_reset_result==FD_FRONT_INPUT_PENDING)return false;
+    if(!release && !input_reset_acquiring){
+        if(!ctl_diagnostic_input_block())return false;
+        input_reset_acquiring=true;
+    }
+    input_reset_releasing=release;
+    if(release && !ctl_diagnostic_input_blocked()){
+        input_reset_acquiring=false;input_reset_result=FD_FRONT_INPUT_READY;return true;
+    }
+    input_reset_result=diagnostic_inputs_reset_begin()?FD_FRONT_INPUT_PENDING:FD_FRONT_INPUT_FAILED;
+    return true;
+}
+fd_front_input_result front_keys_input_poll(void) {
+    if(input_reset_result!=FD_FRONT_INPUT_PENDING)return input_reset_result;
+    rotary_reset_result result=rotary_diagnostic_reset_poll();
+    if(result==ROTARY_RESET_PENDING)return FD_FRONT_INPUT_PENDING;
+    if(result==ROTARY_RESET_FAILED)return input_reset_result=FD_FRONT_INPUT_FAILED;
+    if(input_reset_releasing)ctl_diagnostic_input_unblock();
+    input_reset_acquiring=false;
+    return input_reset_result=FD_FRONT_INPUT_READY;
+}
+void front_keys_input_cancel_acquire(void) {
+    if(!input_reset_acquiring || input_reset_releasing)return;
+    /* No mode/radio ownership was granted. The producer still rejects the old
+     * epoch until its reset completes, so denied entry cannot replay a batch. */
+    ctl_diagnostic_input_unblock();input_reset_acquiring=false;
+    input_reset_result=FD_FRONT_INPUT_FAILED;
+}
+static fd_front_input_result input_reset_wait(void) {
+    fd_front_input_result result;
+    while((result=front_keys_input_poll())==FD_FRONT_INPUT_PENDING){
+        struct timespec wait={.tv_nsec=1000000};nanosleep(&wait,NULL);
+    }
+    return result;
+}
+static void legacy_release_poll(lv_timer_t *unused) {
+    (void)unused;
+    fd_front_input_result result=front_keys_input_poll();
+    if(result==FD_FRONT_INPUT_FAILED){(void)front_keys_input_begin(true);return;}
+    if(result==FD_FRONT_INPUT_READY){lv_timer_del(legacy_release_timer);legacy_release_timer=NULL;}
+}
 bool front_keys_diagnostic_input_acquire(void) {
-    if (!ctl_diagnostic_input_block()) return false;
-    if (diagnostic_inputs_reset()) return true;
-    ctl_diagnostic_input_unblock();
-    return false;
+    if(!front_keys_input_begin(false))return false;
+    if(input_reset_wait()==FD_FRONT_INPUT_READY)return true;
+    front_keys_input_cancel_acquire();return false;
 }
 void front_keys_diagnostic_input_release(void) {
-    if (!ctl_diagnostic_input_blocked()) return;
-    /* Drop any local half-press as well before ordinary controls resume. */
-    (void)diagnostic_inputs_reset();
-    ctl_diagnostic_input_unblock();
+    if(!ctl_diagnostic_input_blocked())return;
+    if(front_keys_input_begin(true) && input_reset_wait()==FD_FRONT_INPUT_READY)return;
+    /* Compatibility callers cannot poll their closed panel. Keep the fence and
+     * retry in the GUI; production USB mode uses the nonblocking API directly. */
+    if(!legacy_release_timer)legacy_release_timer=lv_timer_create(legacy_release_poll,10,NULL);
 }
 bool front_keys_diagnostic_local_event(void) {
     if (!ctl_diagnostic_input_blocked()) return false;

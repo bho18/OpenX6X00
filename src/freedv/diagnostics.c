@@ -393,6 +393,7 @@ static void save_case(void) {
     fputs(",\"alsa_after\":",f);if(d.audio&&fd_native_audio_mixer_describe(d.audio,true,mixer,sizeof(mixer)))fputs(mixer,f);else fputs("null",f);
     fputs("}\n",f);bool bad=ferror(f)!=0;if(fclose(f))bad=true;if(bad)atomic_store(&d.evidence_failed,true);
     char trace[384];snprintf(trace,sizeof(trace),"%s/control-trace.jsonl",d.case_directory);
+    fd_route_trace_end();
     FILE *tf=private_file(trace);if(tf){fd_route_trace_export(tf);if(fclose(tf))atomic_store(&d.evidence_failed,true);}else atomic_store(&d.evidence_failed,true);
 }
 static bool select_case(command cmd) {

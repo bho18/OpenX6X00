@@ -15,6 +15,8 @@
 #include "freedv/route_trace.h"
 #endif
 #include "radio.h"
+#include "process_lifecycle.h"
+#include "control_owner.h"
 #include "freedv/mode.h"
 #include "freedv/usb_navigation.h"
 #if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
@@ -71,7 +73,6 @@
 #include "freedv/packet_tx.h"
 #include "freedv/cached_snapshot.h"
 #include "freedv/radio_session.h"
-#include "control_owner.h"
 #include "recorder.h"
 #include "settings_window.h"
 #include "tci_server.h"
@@ -173,6 +174,7 @@ static void open_tx_tick(void);
 static void recover_processing_audio_inputs();
 #else
 static bool wr12_notify(void);
+static void wr12_reconcile_tick(void);
 static bool wr12_keyed(void);
 static void on_wr12_change(Subject *subj, void *user_data);
 static void pa_bias_send(void);
@@ -336,19 +338,7 @@ static void power_key_cb(void *arg) {
  * (TCI's drive, the Panel's PWR, the X6200's battery cap) came through on_pwr_change, and the sweep went on at PWR */
 #define SWRSCAN_PWR_W   1.0f
 
-static void set_txpwr(float w) {
-    txpwr_asked = w;
-    if (atomic_load(&state) == RADIO_SWRSCAN && w > SWRSCAN_PWR_W) w = SWRSCAN_PWR_W;
-    /* An app open: its cap, but not over a TUNE's own power (#87), which holds the power to it instead */
-    if (digi_cap && tune_cap <= 0.0f && w > TX_PLAYER_MAX_PWR_W) w = TX_PLAYER_MAX_PWR_W;
-    if (tune_cap > 0.0f && w > tune_cap) w = tune_cap;     /* PWR turned up, the battery's top, a restore */
-    if (xvtr_cap > 0.0f && w > xvtr_cap) w = xvtr_cap;     /* whoever asks: PWR, an app's own, TUNE's, TCI, CAT */
-    /* A TUNE keeps its own power: the base is in USB-D for it, and the user asked for that carrier */
-    if (atomic_load(&train_hold) && tune_cap <= 0.0f) w = 0.0f;
-    if (atomic_load(&band_hold)) w = 0.0f;     /* a TUNE too: none starts there, one moved there is stopped */
-    if (cfg_tx_block()) w = 0.0f;
-    hw_set_f(HW_TXPWR_F, w);
-}
+#include "radio_power.inc"
 
 /* Whether the base's charging flag counts: on the X6200 only when charging was asked for, as its base (1.0.8)
  * raises the flag with external power in whatever the setting (#33). The X6100's flag is taken as its base
@@ -920,6 +910,7 @@ bool radio_change_spmode(int16_t df) {
 }
 
 void radio_start_atu() {
+    if (process_lifecycle_stopping()) return;
     FD_WRITE_GUARD(return);
 #ifdef ENABLE_FREEDV_CONTROL
     if (radio_freedv_startup_waiting()) return;
@@ -969,6 +960,7 @@ static uint64_t    swrscan_up_ms;       /* the power last went up */
 
 /* Nothing moves before the scan is known to start: the VFO that transmits goes to `from` only then */
 bool radio_start_swrscan(int32_t from) {
+    if (process_lifecycle_stopping()) return false;
     FD_WRITE_GUARD(return false);
 #ifdef ENABLE_FREEDV_CONTROL
     if (radio_freedv_startup_waiting()) return false;
@@ -1019,6 +1011,7 @@ bool radio_digi_cap(void) {
 }
 
 void radio_set_tune(float w, uint32_t limit_ms) {
+    if (w > 0.0f && process_lifecycle_stopping()) return;
     FD_WRITE_GUARD(return);
     pthread_mutex_lock(&tune_mux);
     tune_guard = (tune_guard_t){.pwr_w = w, .start_ms = get_time(), .limit_ms = limit_ms};
@@ -1236,7 +1229,7 @@ bool radio_set_ptt(bool tx) {
 #ifdef ENABLE_FREEDV_CONTROL
     if (tx && radio_freedv_startup_waiting()) return false;
 #endif
-    if (tx && tx_refused(TX_BY_PTT)) {
+    if (tx && (process_lifecycle_stopping() || tx_refused(TX_BY_PTT))) {
         return false;
     }
     radio_lock();
@@ -1277,7 +1270,7 @@ void radio_set_modem(bool tx) {
     if (tx && radio_freedv_startup_waiting()) return;
 #endif
 
-    if (tx && tx_refused(TX_BY_GUI)) {
+    if (tx && (process_lifecycle_stopping() || tx_refused(TX_BY_GUI))) {
         return;
     }
     if (tx && param_i_get(cfg_band_split) && !atomic_load(&split_held)) {
@@ -1409,7 +1402,7 @@ bool radio_set_morse_key(bool on) {
 #ifdef ENABLE_FREEDV_CONTROL
     if (on && radio_freedv_startup_waiting()) return false;
 #endif
-    if (on && tx_refused(TX_BY_MORSE)) {
+    if (on && (process_lifecycle_stopping() || tx_refused(TX_BY_MORSE))) {
         return false;
     }
     if (on && !morse_on) {
@@ -1538,28 +1531,6 @@ static void train_note(void) {
     if (!tuning && !atomic_exchange(&train_said, true)) {
         msg_schedule_text_fmt("KEY Train: sidetone only, 0 W");
     }
-}
-
-/* Under the lock: the hold outside the amateur bands on or off (band_hold). The base gets the power, VOX and Train
- * at once; the user's VOX and Train settings stay as saved (on_vox_change, on_key_train_change). On the X6200 its
- * open TX looked at first, whether the hold changes or not (open_tx_look) */
-static void band_hold_set(bool hold) {
-    int32_t f;
-
-    open_tx_look();
-    if (hold == atomic_load(&band_hold)) {
-        return;
-    }
-    atomic_store(&band_hold, hold);
-    if (hold) {
-        atomic_store(&band_said, false);
-    }
-    set_txpwr(txpwr_asked);
-    hw_set_i(HW_VOX, param_i_get(cfg_vox_on) && !hold);
-    hw_set_i(HW_KEY_TRAIN, param_i_get(cfg_key_train) || hold);
-    radio_key_refused(&f);  /* the one refused: the dial where the base keys it (split_keys_dial) */
-    LV_LOG_USER("Radio TX %s: TX at %i%s", hold ? "held at 0 W, VOX off, KEY Train on" : "hold off", f,
-                atomic_load(&off_dial) ? ", Birdie Cal off the dial" : "");
 }
 
 /* VOX and KEY Train to the base as set, VOX off and Train on while band_hold holds. Under the lock, which
@@ -1769,10 +1740,17 @@ static void wr12_retune(void) {
 /* On the GUI thread: what the WR12's thread has to say (found, lost, an ERROR answer); the base onto its IF now that it
  * is set up, or back on the dial, and the hold looked at again: TX goes free once the WR12 is seen back in its
  * bypass, or unplugged (cfg_tx_block) */
+static atomic_bool wr12_reconcile_pending;
 static void wr12_changed_cb(void *arg) {
     char note[64];
 
     (void)arg;
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if (radio_usb_owned()) return; /* keep pending until ordinary ownership resumes */
+#endif
+    if (process_lifecycle_stopping() || ctl_diagnostic_input_blocked()) return;
+    FD_WRITE_GUARD(return);
+    atomic_store(&wr12_reconcile_pending, false);
     while (wr12_note(note, sizeof(note))) {
         msg_schedule_text_fmt("%s", note);
     }
@@ -1782,7 +1760,18 @@ static void wr12_changed_cb(void *arg) {
 
 /* From the WR12's thread: its news to the GUI thread. False: the queue is full, it asks again */
 static bool wr12_notify(void) {
+    atomic_store(&wr12_reconcile_pending, true);
+#if defined(ENABLE_FREEDV_USB_TEST) || defined(ENABLE_FREEDV_USB_VOICE)
+    if (radio_usb_owned() && cfg_tx_block()) radio_usb_policy_inhibit();
+#endif
     return scheduler_put_coalesced(wr12_changed_cb);
+}
+
+/* A coalesced callback may have run during an exclusive mode. Keep its final
+ * state pending, including a short block/unblock pulse, until it can be applied. */
+static void wr12_reconcile_tick(void) {
+    if (atomic_load(&wr12_reconcile_pending) && !ctl_diagnostic_input_blocked() && !process_lifecycle_stopping())
+        (void)scheduler_put_coalesced(wr12_changed_cb);
 }
 
 /* The radio is in TX, or the GUI keys it (a PTT, the modem or the tuner's bit set before the base reports TX, the CW
@@ -2236,9 +2225,7 @@ static void apply_vfo_agc(radio_vfo_t vfo) {
     int32_t agc  = subject_i_get((SubjectInt*)(vfo == RADIO_VFO_A ? cfg_band_vfoa_agc : cfg_band_vfob_agc));
     int32_t mode = subject_i_get((SubjectInt*)(vfo == RADIO_VFO_A ? cfg_band_vfoa_mode : cfg_band_vfob_mode));
 
-    if (agc == radio_agc_auto && (mode == radio_mode_cw || mode == radio_mode_cwr) && subject_i_get((SubjectInt*)cfg_cw_decoder)) {
-        agc = radio_agc_fast;
-    }
+    agc = radio_effective_agc(agc, mode, subject_i_get((SubjectInt*)cfg_cw_decoder));
     WITH_RADIO_LOCK(hw_vfo_set_agc(vfo, agc));
     LV_LOG_USER("Radio set vfo %i agc=%i", vfo, agc);
 }
@@ -2270,44 +2257,8 @@ static void update_agc_time(Subject *subj, void *user_data) {
     FD_WRITE_GUARD(return);
     radio_agc_t     agc = cparam_i_get(cfg_cur_agc);
     radio_mode_t    mode = cparam_i_get(cfg_cur_mode);
-    uint16_t        agc_time = 500;
+    uint16_t agc_time = radio_effective_agc_time(agc, mode, param_i_get(cfg_cw_decoder));
 
-    switch (agc) {
-        case radio_agc_off:
-            agc_time = 1000;
-            break;
-
-        case radio_agc_slow:
-            agc_time = 1000;
-            break;
-
-        case radio_agc_fast:
-            agc_time = 100;
-            break;
-
-        case radio_agc_auto:
-            switch (mode) {
-                case radio_mode_lsb:
-                case radio_mode_lsb_dig:
-                case radio_mode_usb:
-                case radio_mode_usb_dig:
-                    agc_time = 500;
-                    break;
-
-                case radio_mode_cw:
-                case radio_mode_cwr:
-                    agc_time = 100;
-                    break;
-
-                case radio_mode_am:
-                case radio_mode_nfm:
-                case radio_mode_sam:
-                case radio_mode_wfm:
-                    agc_time = 1000;
-                    break;
-            }
-            break;
-    }
     radio_lock();
     bool changed = hw_set_i(HW_AGC_TIME, agc_time);
     radio_unlock();
@@ -3343,6 +3294,9 @@ static void * radio_thread(void *arg) {
             idle_time = now_time;
         }
         open_tx_tick();     /* the X6200's open TX when due, after the keepalive's block: its 0.2 s holds none up */
+#ifdef BOARD_X6200
+        wr12_reconcile_tick();
+#endif
     }
     return NULL;
 }

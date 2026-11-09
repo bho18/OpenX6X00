@@ -34,6 +34,9 @@ typedef struct {
     /* Nonblocking TX-admission gate. False prevents new key requests while a
      * graceful active turn may still finish. Operational sessions require it. */
     bool (*permit)(void *,bool);
+    /* Optional lock-free process-deadline publication; observed independently
+     * by audio/control workers, without GUI or mutable audio-pointer access. */
+    bool (*abort_requested)(void *);
 } fd_usb_control;
 typedef struct {
     const char *source,*sink,*radio_source,*radio_sink,*trace_prefix,*incident_dir;
@@ -41,6 +44,7 @@ typedef struct {
     bool rf_disabled;
     bool operational; /* false retains version-3 diagnostic behavior */
     bool retain_runtime_traces; /* UI /tmp timestamp namespace: current + one previous */
+    bool detailed_capture; /* Explicit opt-in: PCM taps and verbose event rows. */
     bool refinement; /* operational refinement v1; legacy diagnostics default false */
     bool hardening; /* refinement v2: resilient controls and RX status recovery */
     bool cues_enabled; /* retained USB-only preview stream; default false */

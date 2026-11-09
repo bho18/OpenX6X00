@@ -55,7 +55,17 @@ float audio_get_peak_db();
 #ifdef ENABLE_FREEDV_CONTROL
 /* Suppress/flush the ordinary playback queue while the native stream owns
  * routing. Bounded device acknowledgements; call without the radio lock. */
+typedef enum {
+    AUDIO_MAIN_ACKNOWLEDGED,
+    AUDIO_MAIN_LOST,
+    AUDIO_MAIN_FAILED,
+    AUDIO_MAIN_TIMED_OUT
+} audio_main_quiet_result_t;
+audio_main_quiet_result_t audio_freedv_main_quiet_result(bool quiet);
 bool audio_freedv_main_quiet(bool quiet);
+/* Lock-free main-context loss observation. Active FreeDV restores the radio
+ * before asking the process coordinator for the established code-3 restart. */
+bool audio_freedv_main_lost(void);
 #include <sys/types.h>
 #include <stdint.h>
 /* The diagnostic session must own routing and competing audio writers before

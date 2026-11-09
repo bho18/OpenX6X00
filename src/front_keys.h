@@ -45,10 +45,14 @@ void keypad_button(keypad_key_t key, int value);
 void keypad_set_long_time(uint32_t hold);
 
 #ifdef ENABLE_FREEDV_CONTROL
-/* GUI-thread-only diagnostic consent barrier. Acquire blocks remote injection,
- * drains queued front inputs and cancels old hold/press state before returning.
- * A false result does not acquire a new barrier. Keep the barrier until both
- * the panel is closed and the radio session is fully restored/released. */
+typedef enum {FD_FRONT_INPUT_PENDING,FD_FRONT_INPUT_READY,FD_FRONT_INPUT_FAILED} fd_front_input_result;
+/* GUI-thread boundary: begin returns immediately; poll completes the producer's
+ * own drain within 100 ms. A failed release retains the fence for retry. A
+ * denied acquisition must be cancelled unless its owner will retry it. */
+bool front_keys_input_begin(bool release);
+fd_front_input_result front_keys_input_poll(void);
+void front_keys_input_cancel_acquire(void);
+/* Bounded compatibility wrappers for the developer diagnostic panels. */
 bool front_keys_diagnostic_input_acquire(void);
 void front_keys_diagnostic_input_release(void);
 /* Also recognizes the synchronous LONG dispatch of a retained fresh physical

@@ -56,6 +56,9 @@ static atomic_uint resends;
 static int32_t cfg[CFG_COUNT];
 static pthread_t gui;
 static bool terminal_replaying;
+static bool process_stopping,process_aborting;
+bool process_lifecycle_stopping(void){return process_stopping;}
+bool process_lifecycle_aborting(void){return process_aborting;}
 static _Thread_local unsigned voice_scope;
 static unsigned terminal_poweroffs,terminal_resets;
 static bool scheduler_on_gui_thread(void){return pthread_equal(gui,pthread_self());}
@@ -201,6 +204,18 @@ static void release(bool terminal){
 int main(void){
     gui=pthread_self();radio_lock();assert(!radio_usb_claim());radio_unlock();
     claim();unsigned initial=modem_on_writes;
+    /* Restoration must use the ordinary effective AGC policy for both VFOs,
+     * not only whichever VFO happened to be active at exit. */
+    cfg[cfg_band_vfoa_mode]=radio_mode_cw;cfg[cfg_band_vfob_mode]=radio_mode_cwr;
+    cfg[cfg_band_vfoa_agc]=cfg[cfg_band_vfob_agc]=radio_agc_auto;cfg[cfg_cw_decoder]=1;
+    for(unsigned active=0;active<2;active++){
+        cfg[cfg_band_current_vfo]=(int)active;usb_radio_profile restored;
+        assert(usb_radio_capture(&restored,true));
+        assert(restored.agc[0]==radio_agc_fast && restored.agc[1]==radio_agc_fast && restored.agc_time==100);
+        assert(cfg[cfg_band_vfoa_agc]==radio_agc_auto && cfg[cfg_band_vfob_agc]==radio_agc_auto);
+    }
+    cfg[cfg_band_current_vfo]=0;cfg[cfg_band_vfoa_mode]=cfg[cfg_band_vfob_mode]=radio_mode_lsb;
+    cfg[cfg_band_vfoa_agc]=cfg[cfg_band_vfob_agc]=radio_agc_auto;cfg[cfg_cw_decoder]=0;
     /* A PTT press during resolution or scope admission must leave the current
      * profile, revision and hardware untouched; a later press is not a retune. */
     for(unsigned phase=0;phase<2;++phase){
@@ -325,6 +340,28 @@ int main(void){
     assert(usb_radio.failed && usb_radio.halted && !usb_radio.rf_allowed);
     fd_usb_inputs unprepared;assert(radio_usb_observe(NULL,&unprepared));
     assert(!unprepared.configuration_ready && !radio_usb_allow_tx(true) && modem_on_writes==initial);release(false);
+
+    claim();initial=modem_on_writes;assert(radio_usb_allow_tx(true));panel_pressed=true;
+    process_stopping=true;
+    assert(!radio_usb_key(NULL,0) && modem_on_writes==initial && usb_radio.halted && !usb_radio.rf_allowed);
+    assert(radio_usb_allow_tx(false)); // Safe admission clears remain available.
+    panel_pressed=false;release(false);process_stopping=false;
+    process_stopping=true;assert(!radio_usb_claim());process_stopping=false;
+    claim();process_aborting=true;assert(!radio_usb_allow_tx(true));
+    assert(radio_usb_observe(NULL,&blocked) && blocked.protection);
+    release(false);process_aborting=false;
+    claim();initial=modem_on_writes;assert(radio_usb_allow_tx(true));
+    global_tx_block=true;radio_usb_policy_inhibit();global_tx_block=false;
+    assert(radio_usb_observe(NULL,&blocked) && blocked.protection && !blocked.configuration_ready);
+    assert(usb_radio.halted && !usb_radio.rf_allowed); // Retained coordinator stop request.
+    panel_pressed=true;assert(!radio_usb_key(NULL,0) && modem_on_writes==initial);
+    release(false); // A short external pulse remains a protection event until exit.
+    claim();assert(radio_usb_allow_tx(true));panel_pressed=true;
+    assert(radio_usb_key(NULL,0));observed(true);
+    global_tx_block=true;radio_usb_policy_inhibit();global_tx_block=false;
+    assert(radio_usb_observe(NULL,&blocked) && blocked.protection && usb_radio.halted);
+    radio_usb_clear(NULL,true);assert(!cached.route.modem && !cached.route.ptt);
+    observed(false);release(false);assert(!radio_usb_owned());
 
     assert(!ptt_on_writes && !pin_on_writes && all_writes && policy_release_calls && !unauthorized_train_writes);
     puts("PASS USB radio transactions: async full profile, unshifted tuning/coalescing, RX-only admission, live normal power, Stop races, upstream band/global policy, prepared base gate and receive-only restore; stub hardware only");

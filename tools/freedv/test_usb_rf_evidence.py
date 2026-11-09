@@ -8,12 +8,26 @@ import json
 import hashlib
 import subprocess
 import shutil
+import struct
 import sys
 import textwrap
 import uuid
 from unittest.mock import patch
 from array import array
 import usb_rf_evidence as subject
+
+
+def lifecycle_journal(state, session_id, previous=False):
+    data=bytearray(800);data[:8]=b'X6LIFEV1';struct.pack_into('<4I',data,8,1,32,384,0x01020304)
+    def record(offset,pid,start,current_state,session):
+        struct.pack_into('<8I',data,offset,pid,start,0,current_state,15,1,2,0)
+        process=f'{pid}-{start:x}'.encode();data[offset+32:offset+32+len(process)]=process
+        identity=session.encode();data[offset+96:offset+96+len(identity)]=identity
+    if previous:
+        record(32,13,101,1,'freedv-usb-new-process')
+        record(416,12,100,state,session_id)
+    else:record(32,12,100,state,session_id)
+    return bytes(data)
 
 
 class WavTests(unittest.TestCase):
@@ -78,7 +92,7 @@ class CollectionTests(unittest.TestCase):
     def collect_fixture(self, root, fault=1, rate=None, decoder_failure=False, rows=None, manifest_fields=None,
                         active_worker=False, immutable_fault=None, decoded_success=False,
                         completion=None, pointer=None, inventory_status='USB_DUPLEX_CANDIDATE',
-                        extra_trace=None, journal=None, mic_frames=480, readiness=None,recent_records=None):
+                        extra_trace=None, journal=None, mic_frames=480, readiness=None,recent_records=None,lifecycle=None):
         traces=root/'traces';traces.mkdir()
         (root/'proc').mkdir()
         if rows is None:
@@ -110,6 +124,9 @@ class CollectionTests(unittest.TestCase):
         manifest.update(manifest_fields or {})
         mapped={'/tmp':traces,'/proc':root/'proc','/opt/freedv-benchmark/bin/freedv_voice_runner':runner,
                 '/opt/freedv-benchmark/lib/librade.so.0.1':library}
+        lifecycle_path=traces/'x6200-process-lifecycle.bin'
+        mapped['/tmp/x6200-process-lifecycle.bin']=lifecycle_path
+        if lifecycle is not None:lifecycle_path.write_bytes(lifecycle)
         if journal is not None:
             directory=root/'journal';directory.mkdir()
             for name,record in journal.items():
@@ -476,6 +493,38 @@ class CurrentSessionTests(unittest.TestCase):
             self.assertEqual(result['session_identity'],self.identity)
             self.assertTrue((output/'runtime-completion.json').exists())
             self.assertEqual(result['output_contract']['completed_turns'],3)
+
+    def test_process_cleanup_timeout_blocks_even_when_audio_completed(self):
+        for previous in (False,True):
+            with self.subTest(previous=previous),tempfile.TemporaryDirectory() as temp:
+                result,output,_=self.fixture(Path(temp),lifecycle=lifecycle_journal(4,self.identity['session_id'],previous))
+                self.assertEqual(result['status'],'BLOCKED')
+                self.assertEqual(result['stages']['session']['status'],'COMPLETE')
+                self.assertEqual(result['primary_failure_stage'],'process_lifecycle')
+                self.assertIn('does not establish successful GUI cleanup',result['reason'])
+                self.assertEqual(result['process_lifecycle']['matching_session']['slot'],'previous' if previous else 'current')
+                self.assertTrue((output/'process-lifecycle.bin').exists())
+
+    def test_other_process_session_is_preserved_without_false_attribution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,_,_=self.fixture(Path(temp),lifecycle=lifecycle_journal(4,'freedv-usb-another-session'))
+            self.assertEqual(result['status'],'READY_FOR_RF_TEST')
+            self.assertIsNone(result['process_lifecycle']['matching_session'])
+            self.assertEqual(result['process_lifecycle']['records']['current']['state'],'INCOMPLETE')
+
+    def test_restored_process_session_is_separate_from_audio_completion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result,_,_=self.fixture(Path(temp),lifecycle=lifecycle_journal(3,self.identity['session_id']))
+            self.assertEqual(result['status'],'READY_FOR_RF_TEST')
+            self.assertEqual(result['process_lifecycle']['matching_session']['state'],'RESTORED')
+
+    def test_partial_process_identity_is_not_attributed(self):
+        journal=bytearray(lifecycle_journal(4,self.identity['session_id']))
+        struct.pack_into('<I',journal,32+24,3)
+        with tempfile.TemporaryDirectory() as temp:
+            result,_,_=self.fixture(Path(temp),lifecycle=journal)
+            self.assertEqual(result['process_lifecycle']['status'],'PARTIAL')
+            self.assertIsNone(result['process_lifecycle']['matching_session'])
 
     def test_legacy_startup_v3_remains_diagnostic_without_output_marker(self):
         with tempfile.TemporaryDirectory() as temp:

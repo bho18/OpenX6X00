@@ -44,7 +44,7 @@ bool freedv_navigation_pending(void);
 bool freedv_navigation_replaying(void);
 void freedv_navigation_completed(void);
 void freedv_navigation_tick(void);
-/* Signal handlers only set a sig_atomic_t flag; process it on the GUI thread. */
+/* The process lifecycle coordinator publishes this lock-free GUI request. */
 void freedv_navigation_signal_terminate(void);
 /* The main screen owns action execution after all FreeDV ownership is gone. */
 void freedv_navigation_dispatch(const fd_nav_action *);

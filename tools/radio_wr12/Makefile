@@ -30,9 +30,9 @@ build/radio.o: radio_thread.c $(SRC)/radio.c $(wildcard $(SRC)/*.h $(SRC)/hw/*.h
 	mkdir -p build && $(CC) $(GUI) -c -o $@ radio_thread.c
 
 radio_wr12_test: radio_wr12_test.c fakes.c fakes.h build/radio.o $(SRC)/hw/stub/hw_stub.c $(SRC)/base_guard.c \
-                 $(SRC)/pa_bias.c $(SRC)/cfg/ham_bands.c
+                 $(SRC)/pa_bias.c $(SRC)/cfg/ham_bands.c $(SRC)/process_lifecycle.c
 	$(CC) $(CFLAGS) -o $@ radio_wr12_test.c fakes.c build/radio.o $(SRC)/hw/stub/hw_stub.c $(SRC)/base_guard.c \
-	    $(SRC)/pa_bias.c $(SRC)/cfg/ham_bands.c -lm $(WRAPS)
+	    $(SRC)/pa_bias.c $(SRC)/cfg/ham_bands.c $(SRC)/process_lifecycle.c -lm $(WRAPS)
 
 test: radio_wr12_test
 	./radio_wr12_test

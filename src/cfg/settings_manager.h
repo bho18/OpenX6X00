@@ -156,6 +156,10 @@ class SettingsManager {
         StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_freedv_usb_preview_enabled{"freedv_usb_preview_enabled", 1, 0, 1,
         StorageType::GLOBAL, pending_writes_, &global_params_};
+    /* Latched at mode entry. Ordinary operation keeps bounded incident
+     * summaries without recording microphone PCM or verbose event streams. */
+    Parameter<int32_t> p_freedv_detailed_capture{"freedv_detailed_capture", 0, 0, 1,
+        StorageType::GLOBAL, pending_writes_, &global_params_};
     Parameter<int32_t> p_imic{"imic", 30, 0, BOARD_MIC_MAX,
         StorageType::GLOBAL, pending_writes_, &global_params_};
     /* The TX monitor off on both radios: at 30 the microphone took the monitor back into the transmission,

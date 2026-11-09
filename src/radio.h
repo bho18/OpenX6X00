@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "radio_types.h"
+#include "radio_policy.h"
 
 #include "lvgl/lvgl.h"
 #include "audio.h"

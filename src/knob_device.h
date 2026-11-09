@@ -41,7 +41,11 @@ rotary_t *rotary_init(char *dev_name);
 void rotary_main_init(char *dev_name);
 
 #ifdef ENABLE_FREEDV_CONTROL
-bool rotary_diagnostic_reset(void);
+typedef enum {ROTARY_RESET_PENDING,ROTARY_RESET_READY,ROTARY_RESET_FAILED} rotary_reset_result;
+/* GUI starts a reset; the producer drains its own fd and acknowledges. */
+bool rotary_diagnostic_reset_begin(void);
+rotary_reset_result rotary_diagnostic_reset_poll(void);
+bool rotary_diagnostic_reset(void); /* bounded compatibility wrapper */
 #ifdef ENABLE_FREEDV_VOICE
 bool rotary_voice_local_event(lv_indev_t *,unsigned generation);
 #endif

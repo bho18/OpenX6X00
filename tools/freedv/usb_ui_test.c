@@ -19,6 +19,7 @@
 void usb_ui_cfg_init(void);
 void usb_ui_cfg_verify_hidden(bool);
 void usb_ui_cfg_verify_profiles(void);
+void usb_ui_cfg_detailed(bool enabled);
 unsigned usb_ui_cfg_gain_writes(void);
 void usb_ui_cfg_pause_volume_storage(void);
 void usb_ui_cfg_release_volume_storage(void);
@@ -41,7 +42,10 @@ buttons_page_t buttons_page_vol_1;
 static buttons_page_t *shown_page=&buttons_page_vol_1;
 static fd_usb_snapshot observed;
 static unsigned headset_changes,mic_changes,claim_count,restore_count,open_count,close_count,leave_count,stop_count,completion_count;
-static bool adapter_owned,leave_pending;
+static bool adapter_owned,leave_pending,ordinary_hardware_restored;
+static bool opened_detailed;
+static bool (*opened_abort_requested)(void *);
+static void *opened_control_context;
 static bool second_headset,radio_input_pressed,radio_input_tx,radio_input_stale;
 static bool honor_startup_volume;
 static bool sample_gain_meter;
@@ -49,6 +53,15 @@ static unsigned opened_initial_volume;
 static pthread_t gui_thread;
 static atomic_uint quiet_calls;
 static atomic_bool quiet_block;
+static atomic_uint quiet_failures;
+static atomic_bool main_audio_lost;
+static bool lifecycle_stopping;
+static unsigned audio_restart_requests;
+static char lifecycle_session[256];
+struct btaudio_rx_hold {bool released;};
+static struct btaudio_rx_hold fake_bt_hold;
+static bool bt_hold_fail;
+static unsigned bt_release_delay;
 static lv_point_t pointer_position;
 static lv_indev_state_t pointer_state;
 struct fd_usb_audio {unsigned placeholder;} fake_audio;
@@ -91,8 +104,8 @@ bool freedv_navigation_request(fd_nav_kind kind,int32_t value,int32_t detail,con
 void freedv_navigation_completed(void){assert(!adapter_owned && !input_owned);++completion_count;}
 bool radio_usb_owned(void){return adapter_owned;}
 int radio_usb_power_tenths(void){return 50;}
-bool radio_usb_claim(void){assert(stage!=UI_NOTICE);++claim_count;assert(!adapter_owned);assert(fd_writer_voice_reserve());adapter_owned=true;return true;}
-bool radio_usb_restore(void){++restore_count;return true;}
+bool radio_usb_claim(void){assert(stage!=UI_NOTICE);++claim_count;assert(!adapter_owned);assert(fd_writer_voice_reserve());adapter_owned=true;ordinary_hardware_restored=false;return true;}
+bool radio_usb_restore(void){++restore_count;bool ready=!radio_input_pressed&&!radio_input_tx&&!radio_input_stale;if(ready)ordinary_hardware_restored=true;return ready;}
 bool radio_usb_terminal_restore(void){return radio_usb_restore();}
 bool radio_usb_release(void){if(adapter_owned){adapter_owned=false;fd_writer_release();}return true;}
 bool radio_usb_observe(void *unused,fd_usb_inputs *in){(void)unused;*in=(fd_usb_inputs){.valid=true,.rf_valid=!radio_input_stale,
@@ -102,16 +115,38 @@ void radio_usb_clear(void *unused,bool halt){(void)unused;(void)halt;}
 void radio_usb_inhibit(void *unused){(void)unused;}
 bool radio_usb_permit(void *unused,bool allow){(void)unused;(void)allow;return true;}
 void radio_usb_edge(bool pressed){(void)pressed;}
-bool audio_freedv_main_quiet(bool quiet){
+audio_main_quiet_result_t audio_freedv_main_quiet_result(bool quiet){
     (void)quiet;assert(!pthread_equal(pthread_self(),gui_thread));atomic_fetch_add(&quiet_calls,1);
     while(atomic_load(&quiet_block)){struct timespec tick={.tv_nsec=1000000};nanosleep(&tick,NULL);}
-    return true;
+    unsigned failed=atomic_load(&quiet_failures);
+    if(failed){atomic_fetch_sub(&quiet_failures,1);return AUDIO_MAIN_FAILED;}
+    return atomic_load(&main_audio_lost)?AUDIO_MAIN_LOST:AUDIO_MAIN_ACKNOWLEDGED;
 }
+bool audio_freedv_main_quiet(bool quiet){return audio_freedv_main_quiet_result(quiet)==AUDIO_MAIN_ACKNOWLEDGED;}
+bool audio_freedv_main_lost(void){return atomic_load(&main_audio_lost);}
+void process_lifecycle_set_session(const char *id){assert(id && !strncmp(id,"freedv-usb-",11) && !strchr(id,'/'));snprintf(lifecycle_session,sizeof(lifecycle_session),"%s",id);}
+bool process_lifecycle_stopping(void){return lifecycle_stopping;}
+bool process_lifecycle_request_audio_restart(void){
+    assert(!audio && !radio_input_pressed && !radio_input_tx && !radio_input_stale);
+    assert(adapter_owned && ordinary_hardware_restored); /* retain the writer lease through safe process exit */
+    ++audio_restart_requests;lifecycle_stopping=true;return true;
+}
+bool radio_no_data(void){return radio_input_stale;}
+btaudio_rx_hold_t *btaudio_rx_hold_begin(void){fake_bt_hold.released=false;return &fake_bt_hold;}
+btaudio_rx_hold_status btaudio_rx_hold_poll(btaudio_rx_hold_t *hold,char *reason,size_t size){
+    assert(hold==&fake_bt_hold);if(reason&&size)*reason=0;return hold->released?BTAUDIO_RX_RELEASED:bt_hold_fail?BTAUDIO_RX_FAILED:BTAUDIO_RX_HELD;
+}
+void btaudio_rx_hold_release(btaudio_rx_hold_t *hold){assert(hold==&fake_bt_hold && !adapter_owned);hold->released=true;}
+bool btaudio_rx_hold_close(btaudio_rx_hold_t *hold){assert(hold==&fake_bt_hold);if(hold->released&&bt_release_delay){--bt_release_delay;return false;}return hold->released;}
+
 fd_usb_audio *fd_usb_audio_open(const fd_usb_config *config){
     assert(config->operational && config->refinement && config->hardening && config->retain_runtime_traces && config->tx_timeout_seconds>=30 && !config->rf_disabled);
     assert(!config->qualification_turns && !config->qualification_idle_ms);
     assert(!strcmp(config->headset_id,"loop110-stable") || !strcmp(config->headset_id,"second-stable"));
     assert(config->mic_gain_db==16 || config->mic_gain_db==7 || config->mic_gain_db==0);
+    assert(!strcmp(lifecycle_session,strrchr(config->trace_prefix,'/')+1));
+    assert(config->control.abort_requested);opened_abort_requested=config->control.abort_requested;opened_control_context=config->control.context;
+    opened_detailed=config->detailed_capture;
     opened_initial_volume=config->headset_volume_initial_percent;
     ++open_count;observed=(fd_usb_snapshot){.state=FD_USB_RX,.startup_ready=true,.tx_eligible=true,.armed=true,
         .mic_gain_db=config->mic_gain_db,.headset_volume_percent=40,.headset_volume_ready=true,.headset_volume_initialized=true,.headset_volume_requested_revision=1,.headset_volume_confirmed_revision=1,.mic_health=FD_USB_MIC_HEALTHY};
@@ -273,9 +308,16 @@ int main(void){
     mfk_click();assert(!number.editing && observed.mic_gain_db==18 && mic_changes==2);
     assert(usb_ui_cfg_gain_writes()==gain_writes+1 && cfg_freedv_usb_gain_for(selected_id,selected_name)==18);
     mfk_click();inner_turn(-1);assert(number.draft==19 && observed.mic_gain_db==19);
-    touch(find_button("Close"));assert(popup && !number.editing && observed.mic_gain_db==18);
+    /* Physical F5 cancels the edit without moving native LVGL focus. */
+    panel_key(BTN_TRIGGER_HAPPY20,1);panel_key(BTN_TRIGGER_HAPPY20,0);
+    assert(popup && !number.editing && observed.mic_gain_db==18);
     assert(usb_ui_cfg_gain_writes()==gain_writes+1 && cfg_freedv_usb_gain_for(selected_id,selected_name)==18);
     touch(find_button("Close"));assert(!popup);
+    /* Pointer Close first defocuses the native slider, rolling back its live
+     * preview; the same click then closes the popup, with no stored change. */
+    popup_open(POP_MIC);pump();mfk_click();inner_turn(-1);assert(number.editing && observed.mic_gain_db==19);
+    touch(find_button("Close"));assert(!popup && observed.mic_gain_db==18);
+    assert(usb_ui_cfg_gain_writes()==gain_writes+1 && cfg_freedv_usb_gain_for(selected_id,selected_name)==18);
     popup_open(POP_MIC);pump();
     assert(!maybe_button("+") && !maybe_button("-"));
     uint32_t injected=KEY_VOL_RIGHT_EDIT;lv_event_send(lv_group_get_focused(popup_group),LV_EVENT_KEY,&injected);assert(!headset_changes);
@@ -433,7 +475,67 @@ int main(void){
     assert(lv_tick_elaps(volume_exit_tick)<2500);tick_advance(2500-lv_tick_elaps(volume_exit_tick));service(NULL);
     assert(!freedv_usb_active() && !adapter_owned && cfg_freedv_usb_volume_busy() && volume_save_pending_warnings==before_warning+2);
     usb_ui_cfg_release_volume_storage();assert(vol->indev->group==keyboard_group);
+    /* A denied Bluetooth raw-route hold must never start USB or quiet main
+     * audio, and asynchronous release keeps the input fence until close. */
+    before_open=open_count;unsigned held_quiet=atomic_load(&quiet_calls);bt_hold_fail=true;
+    freedv_usb_open();wait_closed();assert(open_count==before_open && atomic_load(&quiet_calls)==held_quiet && !adapter_owned);
+    bt_hold_fail=false;freedv_usb_open();wait_running();bt_release_delay=10;freedv_usb_leave();
+    for(unsigned n=0;n<30 && stage!=UI_RELEASE;++n)pump();
+    assert(stage==UI_RELEASE && !adapter_owned && input_owned && freedv_usb_active());wait_closed();
+    /* Detailed PCM is default off, durable when selected, and latched once
+     * per entry rather than switching a live worker's capture policy. */
+    honor_startup_volume=false;freedv_usb_open();wait_running();assert(!opened_detailed);
+    usb_ui_cfg_detailed(true);assert(!opened_detailed && !detailed_capture);
+    freedv_usb_leave();wait_closed();freedv_usb_open();wait_running();assert(opened_detailed && detailed_capture);
+    usb_ui_cfg_detailed(false);assert(opened_detailed && detailed_capture);freedv_usb_leave();wait_closed();
+    /* A transient missing main-audio acknowledgement retries before opening
+     * USB. A repeated entry failure rolls back its possibly partial quiet. */
+    unsigned before_quiet=atomic_load(&quiet_calls);atomic_store(&quiet_failures,1);
+    freedv_usb_open();wait_running();assert(atomic_load(&quiet_calls)==before_quiet+2);
+    freedv_usb_leave();wait_closed();
+    before_quiet=atomic_load(&quiet_calls);before_open=open_count;atomic_store(&quiet_failures,2);
+    freedv_usb_open();for(unsigned n=0;n<100 && freedv_usb_active();++n)pump();
+    assert(!freedv_usb_active() && !adapter_owned && open_count==before_open && atomic_load(&quiet_calls)==before_quiet+3);
+    /* Restore failure is distinct from USB/RF cleanup: no restart is allowed
+     * until ordinary hardware is restored and current RX is established. */
+    freedv_usb_open();wait_running();usb_ui_cfg_pause_volume_storage();atomic_store(&quiet_failures,2);freedv_usb_leave();
+    for(unsigned n=0;n<30 && stage!=UI_UNQUIET;++n)pump();assert(stage==UI_UNQUIET);
+    radio_input_stale=true;for(unsigned n=0;n<100 && !audio_restart_needed;++n)pump();
+    assert(audio_restart_needed && !audio_restart_requests && adapter_owned && !audio);
+    radio_input_stale=false;radio_input_pressed=true;service(NULL);assert(!audio_restart_requests);
+    radio_input_pressed=false;radio_input_tx=true;service(NULL);assert(!audio_restart_requests);
+    radio_input_tx=false;service(NULL);assert(!audio_restart_requests && adapter_owned && volume_exit_queued && cfg_freedv_usb_volume_busy());
+    assert(lv_tick_elaps(volume_exit_tick)<2500);tick_advance(2499-lv_tick_elaps(volume_exit_tick));service(NULL);assert(!audio_restart_requests);
+    tick_advance(1);service(NULL);assert(audio_restart_requests==1 && adapter_owned && lifecycle_stopping);
+    for(unsigned n=0;n<5;++n)service(NULL);assert(audio_restart_requests==1 && adapter_owned);
+    /* The real coordinator exits here. The fixture resets its stub solely to
+     * reclaim resources and independently exercise the live-worker deadline. */
+    lifecycle_stopping=false;audio_restart_needed=audio_restart_sent=false;quiet_begin(false);wait_closed();usb_ui_cfg_release_volume_storage();
+    atomic_store(&quiet_block,true);freedv_usb_open();
+    for(unsigned n=0;n<30 && stage!=UI_QUIET;++n)pump();assert(stage==UI_QUIET && quiet_job.running);
+    quiet_recovery.started_ms=monotonic_ms()-2500;radio_input_stale=true;service(NULL);
+    assert(audio_restart_needed && quiet_job.running && adapter_owned && !audio && audio_restart_requests==1);
+    radio_input_stale=false;service(NULL);assert(audio_restart_requests==2 && quiet_job.running && adapter_owned);
+    service(NULL);assert(audio_restart_requests==2 && quiet_job.running);
+    atomic_store(&quiet_block,false);
+    for(unsigned n=0;n<100 && !atomic_load_explicit(&quiet_job.done,memory_order_acquire);++n){struct timespec t={.tv_nsec=1000000};nanosleep(&t,NULL);}
+    assert(atomic_load_explicit(&quiet_job.done,memory_order_acquire));pthread_join(quiet_job.thread,NULL);quiet_job.running=false;
+    lifecycle_stopping=false;audio_restart_needed=audio_restart_sent=false;wait_closed();
+    /* Main PA loss while USB is running follows the same stop/restore/fresh
+     * RX contract. It cannot re-enter FreeDV during the coordinator stop. */
+    freedv_usb_open();wait_running();radio_input_stale=true;atomic_store(&main_audio_lost,true);service(NULL);
+    assert(audio_restart_needed && !audio && adapter_owned && audio_restart_requests==2);
+    radio_input_stale=false;service(NULL);assert(audio_restart_requests==3 && lifecycle_stopping && adapter_owned);
+    before_open=open_count;freedv_usb_open();service(NULL);assert(open_count==before_open && audio_restart_requests==3);
+    atomic_store(&main_audio_lost,false);lifecycle_stopping=false;audio_restart_needed=audio_restart_sent=false;wait_closed();
+    freedv_usb_open();wait_running();assert(!opened_abort_requested(opened_control_context));
+    /* The deadline callback must return even while GUI mutable audio-pointer
+     * access is locked; only worker-side observation may perform cleanup. */
+    pthread_mutex_lock(&pointer_mutex);freedv_usb_deadline_abort();assert(opened_abort_requested(opened_control_context));pthread_mutex_unlock(&pointer_mutex);
+    freedv_usb_leave();wait_closed();
+    lifecycle_stopping=true;before_open=open_count;freedv_usb_open();assert(!freedv_usb_active() && open_count==before_open && !input_owned);
+    lifecycle_stopping=false;
     usb_ui_cfg_verify_profiles();usb_ui_cfg_close();close(vol->fd);close(mfk->fd);close(panel->fd);close(inner->fd);
-    puts("PASS: native-screen FreeDV notice, live gain/meter editing with commit and rollback, live overload feedback, native headphone units, contextual recovery, RX-safe device selection, warm popups, and non-escalating graceful teardown");
+    puts("PASS: native-screen FreeDV notice, live gain/meter editing with commit and rollback, live overload feedback, native headphone units, contextual recovery, RX-safe device selection, warm popups, non-escalating graceful teardown, bounded main-audio restore/restart, Bluetooth hold rollback, and opt-in per-entry tracing");
     return 0;
 }

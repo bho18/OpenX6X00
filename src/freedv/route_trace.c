@@ -4,15 +4,20 @@
 #include <pthread.h>
 #include <string.h>
 #include <time.h>
+#include <stdatomic.h>
 /* No allocation, filesystem writes or unbounded history on control threads. */
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static struct row {uint64_t ns,generation;int command;uint32_t previous,requested;bool success;char phase[24];} rows[1024];
 static unsigned count,discarded;
 static uint64_t generation;
-void fd_route_trace_begin(uint64_t value){pthread_mutex_lock(&lock);count=discarded=0;generation=value;pthread_mutex_unlock(&lock);}
+static atomic_bool enabled;
+void fd_route_trace_begin(uint64_t value){pthread_mutex_lock(&lock);count=discarded=0;generation=value;atomic_store_explicit(&enabled,true,memory_order_release);pthread_mutex_unlock(&lock);}
+void fd_route_trace_end(void){atomic_store_explicit(&enabled,false,memory_order_release);}
 void fd_route_trace_note(const char *phase,int cmd,uint32_t prev,uint32_t value,bool ok){
+    if(!atomic_load_explicit(&enabled,memory_order_acquire))return;
     struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);
     pthread_mutex_lock(&lock);
+    if(!atomic_load_explicit(&enabled,memory_order_relaxed)){pthread_mutex_unlock(&lock);return;}
     if(count<1024){struct row *r=&rows[count++];*r=(struct row){.ns=(uint64_t)t.tv_sec*1000000000u+t.tv_nsec,.generation=generation,.command=cmd,.previous=prev,.requested=value,.success=ok};strncpy(r->phase,phase,sizeof(r->phase)-1);}
     else ++discarded;
     pthread_mutex_unlock(&lock);

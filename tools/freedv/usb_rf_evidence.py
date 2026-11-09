@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,70 @@ DIAGNOSTIC_LIMIT = 4 * 1024 * 1024
 MAX_SDR_SECONDS = 120
 MAX_SDR_BYTES = 32 * 1024 * 1024
 IDENTITY_FIELDS = ('session_id', 'build_id', 'source_commit')
+
+
+def parse_process_lifecycle(data):
+    """Independent process outcome; audio completion never proves GUI restore."""
+    if len(data) != 800 or data[:8] != b'X6LIFEV1' or struct.unpack_from('<4I', data, 8) != (1, 32, 384, 0x01020304):
+        raise ValueError('Invalid process lifecycle journal layout')
+    records = {}
+    states = {1: 'RUNNING', 2: 'STOPPING', 3: 'RESTORED', 4: 'INCOMPLETE'}
+    for name, offset in (('current', 32), ('previous', 416)):
+        pid, low, high, state, signal_number, reason, sequence, _ = struct.unpack_from('<8I', data, offset)
+        if not pid and not state:
+            continue
+        if not pid or state not in states or sequence % 2:
+            raise ValueError('Incomplete process lifecycle identity/state update')
+        def string(at, size):
+            raw = data[at:at + size]
+            if b'\0' not in raw:
+                raise ValueError('Unterminated process lifecycle identity')
+            return raw.split(b'\0', 1)[0].decode('ascii')
+        start = low | high << 32
+        process_id = string(offset + 32, 64)
+        session_id = string(offset + 96, 256)
+        if process_id != f'{pid}-{start:x}' or (session_id and re.fullmatch(r'freedv-usb-[A-Za-z0-9_-]{1,240}', session_id) is None):
+            raise ValueError('Invalid process lifecycle process/session identity')
+        if signal_number not in (0, 2, 15) or reason not in (0, 1, 2):
+            raise ValueError('Invalid process lifecycle exit reason')
+        records[name] = dict(process_id=process_id, pid=pid, start_monotonic_ns=start,
+                             session_id=session_id or None, state=states[state],
+                             signal=signal_number, reason={0: 'NONE', 1: 'SIGNAL', 2: 'AUDIO_RESTART'}[reason])
+    return dict(schema='x6200.process-lifecycle.v1', status='COLLECTED',
+                scope='Software cleanup acknowledgement, separate from audio completion; no physical RF/WR12 acknowledgement; /tmp survives GUI restart only',
+                records=records)
+
+
+def collect_process_lifecycle(output):
+    path = Path('/tmp/x6200-process-lifecycle.bin')
+    if not path.exists():
+        return dict(status='UNAVAILABLE', scope='No process lifecycle journal; no restoration outcome inferred')
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Nonregular process lifecycle journal')
+    def bounded_read():
+        with path.open('rb') as source:
+            data = source.read(801)
+        if len(data) != 800:
+            raise ValueError('Process lifecycle journal exceeds or lacks its fixed 800-byte layout')
+        return data
+    first = bounded_read()
+    for _ in range(3):
+        second = bounded_read()
+        if second == first:
+            (output / 'process-lifecycle.bin').write_bytes(second)
+            report = parse_process_lifecycle(second)
+            save(output / 'process-lifecycle.json', report)
+            return report
+        first = second
+    raise ValueError('Process lifecycle journal changed during bounded collection')
+
+
+def matching_process_lifecycle(report, session_id):
+    matches = [dict(slot=slot, **record) for slot, record in report.get('records', {}).items()
+               if record.get('session_id') == session_id]
+    if len(matches) > 1:
+        raise ValueError('Ambiguous process lifecycle session identity')
+    return matches[0] if matches else None
 
 
 class ActiveUsbWorkerError(ValueError):
@@ -582,6 +647,11 @@ def collect_evidence(output, manifest, sdr=None):
     summary = None
     try:
         try:
+            result['process_lifecycle'] = collect_process_lifecycle(output)
+        except ERRORS as error:
+            result['process_lifecycle'] = dict(status='PARTIAL', error=str(error),
+                scope='Process journal could not be validated; not attributed to any audio session')
+        try:
             result['persistent_journal'] = collect_persistent_journal(output)
         except ERRORS as error:
             result['persistent_journal'] = dict(status='PARTIAL', scope='PERSISTENT_DIAGNOSTICS_ONLY', error=str(error))
@@ -628,6 +698,11 @@ def collect_evidence(output, manifest, sdr=None):
                 result['session_identity'] = summary['session_identity']
                 result['runtime_completion'] = summary['completion']
                 result['stages']['session'] = dict(status='COMPLETE', identity=summary['session_identity'])
+                lifecycle = matching_process_lifecycle(result['process_lifecycle'], summary['session_identity']['session_id'])
+                result['process_lifecycle']['matching_session'] = lifecycle
+                if lifecycle and lifecycle['state'] in ('STOPPING', 'INCOMPLETE'):
+                    blocker('process_lifecycle', 'Process restoration/finalization is ' + lifecycle['state'] +
+                            '; the audio completion record does not establish successful GUI cleanup.')
             else:
                 result['historical_runtime_evidence'] = True
                 result['stages']['session'] = dict(status='HISTORICAL_ONLY',
@@ -757,7 +832,7 @@ def collect_evidence(output, manifest, sdr=None):
         if not any(item['stage'] == 'collection' for item in result['blockers']):
             result['stages']['collection'] = dict(status='PASS')
         if result['blockers']:
-            priority = {'gui': 0, 'audio': 1, 'startup': 2, 'qualification': 2, 'collection': 3, 'rf_decode': 4}
+            priority = {'gui': 0, 'process_lifecycle': 0, 'audio': 1, 'startup': 2, 'qualification': 2, 'collection': 3, 'rf_decode': 4}
             primary = min(result['blockers'], key=lambda item: priority[item['stage']])
             result['reason'] = primary['reason']
             result['primary_failure_stage'] = primary['stage']

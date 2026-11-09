@@ -18,6 +18,7 @@
 #include "cfg_socket.h"
 #include "freedv/writer_gate.h"
 #include "freedv/mode.h"
+#include "remote_write.h"
 #ifdef ENABLE_FREEDV_VOICE
 extern "C" {
 #include "freedv/voice_audio.h"
@@ -131,6 +132,12 @@ typedef struct {
     int32_t val;
 } disp_set_t;
 
+template <typename T> struct apply_job {
+    T value;
+    unsigned generation;
+    const char *error = nullptr;
+};
+
 static bool get_int(cJSON *req, int32_t min, int32_t max, int32_t *out) {
     cJSON *v = cJSON_GetObjectItemCaseSensitive(req, "val");
 
@@ -142,8 +149,19 @@ static bool get_int(cJSON *req, int32_t min, int32_t max, int32_t *out) {
 
 /* LVGL thread */
 static void disp_apply(void *arg) {
-    FD_WRITE_GUARD(return);
-    disp_set_t *d = (disp_set_t *)arg;
+    auto *job = static_cast<apply_job<disp_set_t> *>(arg);
+    RemoteWriteScope write(job->generation);
+    if (!write.enter()) {
+        job->error = write.error();
+        return;
+    }
+    disp_set_t *d = &job->value;
+    // These conditions may change between parsing and GUI execution.
+    if (!strcmp(d->name, "theme")) {
+        if (radio_get_state() != RADIO_RX) job->error = "Radio is transmitting";
+        else if (walkie_on()) job->error = "Not in walkie mode";
+        if (job->error) return;
+    }
 
     for (auto &o : disp_ints)
         if (!strcmp(d->name, o.name))
@@ -315,8 +333,10 @@ static const char *eth_set(cJSON *req, eth_cfg_t *cfg) {
 }
 
 static void eth_apply_cb(void *arg) {
-    FD_WRITE_GUARD(return);
-    eth_apply((eth_cfg_t *)arg);
+    auto *job = static_cast<apply_job<eth_cfg_t> *>(arg);
+    RemoteWriteScope write(job->generation);
+    if (!write.enter()) job->error = write.error();
+    else if (!eth_apply(&job->value)) job->error = "NetworkManager is not running";
 }
 
 /* What the radio can do somewhere in [lo, hi] Hz (band_use: HF, the transverters that are on, the X6200's receive
@@ -406,14 +426,20 @@ static int handle_line(const char *line, char *out, size_t size) {
         l = disp_get(out, size);
     } else if (!strcmp(name->valuestring, "disp_set")) {
         disp_set_t d;
-        if (!(err = disp_set(req, &d)) && !scheduler_put(disp_apply, &d, sizeof(d)))
-            err = "Busy, try again";    /* not "ok" for a change that will not happen (audit A21) */
+        if (!(err = disp_set(req, &d))) {
+            apply_job<disp_set_t> job{d, ctl_remote_input_generation()};
+            if (!scheduler_call(disp_apply, &job)) err = "Busy, try again";
+            else err = job.error;
+        }
     } else if (!strcmp(name->valuestring, "eth_get")) {
         l = eth_get(out, size);
     } else if (!strcmp(name->valuestring, "eth_set")) {
         eth_cfg_t cfg;
-        if (!(err = eth_set(req, &cfg)) && !scheduler_put(eth_apply_cb, &cfg, sizeof(cfg)))
-            err = "Busy, try again";
+        if (!(err = eth_set(req, &cfg))) {
+            apply_job<eth_cfg_t> job{cfg, ctl_remote_input_generation()};
+            if (!scheduler_call(eth_apply_cb, &job)) err = "Busy, try again";
+            else err = job.error;
+        }
     } else if (!strcmp(name->valuestring, "band_use")) {
         err = band_use_get(req, out, size, &l);
     } else {

@@ -40,6 +40,7 @@ fd_nav_exit_result fd_nav_exit_key(fd_nav_exit_latch *latch,bool press,bool rele
 #include "usb_ui.h"
 #include "../front_keys.h"
 #include "../scheduler.h"
+#include "../process_lifecycle.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -50,7 +51,7 @@ static void *dialog_descriptors[64];
 static unsigned dialog_count;
 static atomic_int terminal_queued;
 static atomic_int terminal_committed;
-static volatile sig_atomic_t terminate_requested;
+static atomic_bool terminate_requested;
 static uint64_t terminal_deadline_ms;
 static uint64_t now_ms(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;}
 
@@ -64,6 +65,7 @@ static void dispatch_pending(void){
     fd_nav_replay_finished(&navigation);
 }
 bool freedv_navigation_request(fd_nav_kind kind,int32_t value,int32_t detail,const char *text){
+    if(process_lifecycle_stopping() && !fd_nav_is_terminal(kind))return true;
     if(!scheduler_on_gui_thread())return freedv_usb_active() || atomic_load(&terminal_committed)!=FD_NAV_NONE;
     if(navigation.replaying)return false;
     fd_nav_kind committed=(fd_nav_kind)atomic_load(&terminal_committed);
@@ -81,7 +83,8 @@ bool freedv_navigation_request(fd_nav_kind kind,int32_t value,int32_t detail,con
     if(fd_nav_is_terminal(navigation.action.kind)){
         atomic_store(&terminal_committed,navigation.action.kind);
         if(!terminal_deadline_ms)terminal_deadline_ms=now_ms()+5000;
-        freedv_usb_terminal_leave();
+        if(navigation.action.kind==FD_NAV_TERMINATE)freedv_usb_leave();
+        else freedv_usb_terminal_leave();
     }else if(offer==FD_NAV_STARTED){
         freedv_usb_leave();
     }
@@ -120,10 +123,10 @@ void freedv_navigation_completed(void){
     if(!scheduler_on_gui_thread() || freedv_usb_active())return;
     dispatch_pending();
 }
-void freedv_navigation_signal_terminate(void){terminate_requested=1;}
+void freedv_navigation_signal_terminate(void){atomic_store_explicit(&terminate_requested,true,memory_order_release);}
 void freedv_navigation_tick(void){
     int kind=atomic_exchange(&terminal_queued,FD_NAV_NONE);
-    if(terminate_requested){terminate_requested=0;if(terminal_priority(FD_NAV_TERMINATE)>terminal_priority((fd_nav_kind)kind))kind=FD_NAV_TERMINATE;}
+    if(atomic_exchange_explicit(&terminate_requested,false,memory_order_acq_rel)){if(terminal_priority(FD_NAV_TERMINATE)>terminal_priority((fd_nav_kind)kind))kind=FD_NAV_TERMINATE;}
     if(kind){
         fd_nav_kind committed=(fd_nav_kind)atomic_load(&terminal_committed);
         if(terminal_priority((fd_nav_kind)kind)>terminal_priority(committed)){
@@ -136,7 +139,7 @@ void freedv_navigation_tick(void){
         }
     }
     if(navigation.pending && !freedv_usb_active())dispatch_pending();
-    if(navigation.pending && fd_nav_is_terminal(navigation.action.kind) && terminal_deadline_ms && now_ms()>=terminal_deadline_ms){
+    if(navigation.pending && navigation.action.kind!=FD_NAV_TERMINATE && fd_nav_is_terminal(navigation.action.kind) && terminal_deadline_ms && now_ms()>=terminal_deadline_ms){
         /* Terminal shutdown cannot wait forever for a failed device or held
          * PTT. This is not an ordinary ownership transfer or an RF-clear ACK. */
         fprintf(stderr,"FreeDV terminal shutdown grace elapsed; RF clear is not confirmed\n");

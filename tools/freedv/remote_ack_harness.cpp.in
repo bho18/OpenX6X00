@@ -1,0 +1,181 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later
+ * Production CAT/socket handlers inserted verbatim by test_remote_ack.py.
+ * Configuration, GUI and hardware endpoints are synthetic; no devices open. */
+#include "src/remote_write.h"
+#include "src/radio_types.h"
+#include "src/freedv/voice_types.h"
+extern "C" {
+#include "src/cJSON.h"
+}
+#include <atomic>
+#include <cassert>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+static unsigned generation, writes, ptt_calls;
+static bool fenced, stopping, ptt_ok=true, ethernet_ok=true;
+extern "C" unsigned ctl_remote_input_generation(void) { return generation; }
+extern "C" bool ctl_diagnostic_input_blocked(void) { return fenced; }
+extern "C" bool process_lifecycle_stopping(void) { return stopping; }
+static void mutation() { assert(!fd_writer_reserve()); ++writes; }
+template <typename T> struct Parameter {
+    T value{};
+    T get() const { return value; }
+    void set(T v) { FD_WRITE_GUARD(return); mutation(); value=v; }
+};
+template <typename T> using ComputedParameter=Parameter<T>;
+static struct {
+@CFG_FIELDS@
+    void cfg_band_vfo_copy() { mutation(); }
+} cfg_sm;
+enum {RADIO_RX, RADIO_TX};
+static int radio_get_state() { return RADIO_RX; }
+static bool radio_set_ptt(bool) { assert(!fd_writer_reserve()); ++ptt_calls; if(ptt_ok)mutation(); return ptt_ok; }
+#define BOARD_VOL_MAX 55
+#define LV_MIN(a,b) ((a)<(b)?(a):(b))
+#define LV_CLAMP(a,b,c) ((b)<(a)?(a):(b)>(c)?(c):(b))
+@CAT_DEFINES@
+struct Frame {
+    unsigned command;
+    std::vector<uint8_t> data;
+    Frame(unsigned c,std::vector<uint8_t> d):command(c),data(d){}
+    explicit Frame(const Frame *other):command(other->command),data(other->data){}
+    void set_code(unsigned c) { command=c; data.clear(); }
+    void set_payload_len(size_t n) { data.resize(n-1); }
+    void log(const char *) const {}
+};
+@BCD_FUNCTIONS@
+static radio_mode_t ci_mode_2_x_mode(uint8_t, bool=false) { return radio_mode_usb; }
+static radio_mode_t ci_data_mode_2_x_mode(radio_mode_t mode,uint8_t) { return mode; }
+static uint8_t x_mode_2_ci_mode(radio_mode_t, bool *data=nullptr) { if(data)*data=false; return M_USB; }
+static int32_t ci_band_freq(uint8_t) { return 7100000; }
+static int ci_cw_pitch_2_x(int v) { return v; }
+static int x_cw_pitch_2_ci(int v) { return v; }
+static int freq_step_from_ci(int v) { return v; }
+static int freq_step_to_ci(int v) { return v; }
+static int get_ci_band_id(int) { return 1; }
+static int get_if_bandwidth() { return 3; }
+static float tx_info_get_alc(void *) { return 0; }
+static void tx_info_get(float *p,float *s) { *p=0;*s=1; }
+static int meter_get_raw_db() { return -100; }
+static int x_swr_2_ci(float) { return 0; }
+@CAT_HANDLER@
+
+struct SmallParam { int x=0; };
+static struct {
+    int brightness_normal=0,brightness_idle=0,brightness_timeout=0,brightness_buttons=0;
+    int screen_off_min=0,screen_off_always=0;
+    SmallParam screen_saver,screen_saver_min;
+    struct { char x[40]{}; } theme_name;
+    struct { int brightness_normal,brightness_idle,brightness_timeout,screen_off_min,screen_off_always; } dirty;
+} params;
+static Parameter<int32_t> display_value;
+static const struct {const char *name;Parameter<int32_t>*p;int32_t min,max;} disp_ints[]={
+    {"wf_mode",&display_value,0,1}
+};
+static const struct {const char *name;SmallParam *b;} disp_bools[]={
+    {"wf_center_line",&params.screen_saver}
+};
+static void params_lock(){}
+static void params_unlock(int *){}
+static void params_bool_set(SmallParam*p,int v){mutation();p->x=v;}
+static void params_uint8_set(SmallParam*p,int v){mutation();p->x=v;}
+static void params_uint16_set(SmallParam*p,int v){mutation();p->x=v;}
+template<class T> static void params_str_set(T*p,const char*v){mutation();std::snprintf(p->x,sizeof(p->x),"%s",v);}
+static void params_flush(){}
+static void cfg_api_flush_all(){}
+static void backlight_set_brightness(int){}
+static void backlight_tick(){}
+static void backlight_settings_changed(){}
+using buttons_light_t=int;
+static void backlight_set_buttons(int){}
+static void main_screen_set_theme(const char*){}
+static bool walkie_on(){return false;}
+static int theme_list(char (*names)[32],int){std::strcpy(names[0],"default");return 1;}
+#define ETH_FIELDS 4
+struct eth_cfg_t {bool dhcp;char field[ETH_FIELDS][64];};
+static bool eth_apply(const eth_cfg_t*){mutation();return ethernet_ok;}
+@SOCKET_TYPES@
+@SOCKET_CALLBACKS@
+static const char *disp_set(cJSON*,disp_set_t*d){std::strcpy(d->name,"wf_mode");d->val=1;return nullptr;}
+static const char *eth_set(cJSON*,eth_cfg_t*d){*d={};return nullptr;}
+static int disp_get(char*out,size_t size){return std::snprintf(out,size,"{\"t\":\"disp\",\"wf_mode\":%d}\n",display_value.get());}
+static int eth_get(char*out,size_t size){return std::snprintf(out,size,"{\"t\":\"eth\"}\n");}
+static bool freedv_mode_status(fd_voice_status*){return false;}
+static int freedv_stats_get(char*out,size_t size){return std::snprintf(out,size,"{\"t\":\"freedv_stats\"}\n");}
+static const char *band_use_get(cJSON*,char*,size_t,int*){return nullptr;}
+static unsigned queue_action;
+static bool scheduler_call(void(*fn)(void*),void*arg){
+    unsigned action=queue_action;queue_action=0;
+    if(action==1)return false;
+    if(action==2)++generation; // An entire entry/exit occurred before dispatch.
+    if(action==3){assert(fd_writer_reserve());fenced=true;}
+    if(action==4)fenced=true; // Input fence starts before the settings lease.
+    fn(arg);return true;
+}
+@SOCKET_HANDLER@
+
+static void socket_reply(const char *command,bool ok){
+    char request[64],reply[1024];std::snprintf(request,sizeof(request),"{\"cmd\":\"%s\"}",command);
+    assert(handle_line(request,reply,sizeof(reply))>0);
+    cJSON *json=cJSON_Parse(reply);assert(json);
+    const cJSON *type=cJSON_GetObjectItemCaseSensitive(json,"t");assert(cJSON_IsString(type));
+    assert(!std::strcmp(type->valuestring,ok?"ok":"err"));cJSON_Delete(json);
+}
+static void cat_reply(const Frame &request,bool allowed,unsigned expected_generation){
+    unsigned before=writes;Frame *reply=process_req(&request,expected_generation);
+    assert((reply->command!=CODE_NG)==allowed);
+    if(!allowed)assert(writes==before);
+    delete reply;
+}
+int main(){
+    cfg_sm.cp_fg_freq.value=7074000;cfg_sm.cp_bg_freq.value=7100000;
+    const std::vector<Frame> mutations={
+        {C_SND_FREQ,{0,0,0x10,0x14,0}},{C_SET_FREQ,{0,0,0x10,0x14,0}},{C_SET_MODE,{M_USB}},
+        {C_SET_VFO,{S_VFOA}},{C_SET_VFO,{S_VFOB}},{C_SET_VFO,{S_XCHNG}},{C_SET_VFO,{S_BTOA}},
+        {C_CTL_SPLT,{0}},{C_SET_TS,{1}},{C_CTL_ATT,{0}},
+        {C_CTL_LVL,{1,0x80,0}},{C_CTL_LVL,{2,0x80,0}},{C_CTL_LVL,{3,0x80,0}},
+        {C_CTL_LVL,{9,0x80,0}},{C_CTL_LVL,{10,0x80,0}},
+        {C_CTL_FUNC,{2,1}},{C_CTL_FUNC,{0x22,1}},{C_CTL_FUNC,{0x40,1}},
+        {C_CTL_FUNC,{0x44,1}},{C_CTL_FUNC,{0x46,1}},
+        {C_CTL_MEM,{MEM_BS_REG,1}},{C_CTL_MEM,{MEM_DM_FG,1}},
+        {C_CTL_PTT,{0,0}},{C_CTL_PTT,{0,1}},
+        {C_CTL_RIT,{0,0x10,0,0}},{C_CTL_RIT,{1,0}},{C_CTL_RIT,{2,0}},
+        {C_SEND_SEL_FREQ,{0,0,0,0x10,0x14,0}},{C_SEND_SEL_FREQ,{1,0,0,0x10,0x14,0}},
+        {C_SEND_SEL_MODE,{0,M_USB}},{C_SEND_SEL_MODE,{1,M_USB,1}},
+        {C_CTL_SCP,{0x15,0,0,0,0,0x10,0}}
+    };
+    for(const auto&r:mutations)cat_reply(r,true,generation);
+    for(unsigned phase=0;phase<3;++phase){
+        if(phase==0){assert(fd_writer_reserve());fenced=true;}
+        else if(phase==1)fenced=true;
+        for(const auto&r:mutations)cat_reply(r,false,generation-(phase==2));
+        for(const Frame&r:std::vector<Frame>{{C_RD_FREQ,{}},{C_RD_MODE,{}},{C_SET_VFO,{}},
+                {C_CTL_PTT,{0}},{C_SEND_SEL_FREQ,{0}},{C_SEND_SEL_MODE,{1}},{C_CTL_RIT,{1}}}){
+            unsigned before=writes;Frame *reply=process_req(&r,generation-1);
+            assert(reply->command!=CODE_NG && writes==before);delete reply;
+        }
+        if(phase==0)fd_writer_release();fenced=false;
+    }
+    ptt_ok=false;cat_reply({C_CTL_PTT,{0,0}},false,generation);
+    cat_reply({C_CTL_PTT,{0,1}},false,generation);ptt_ok=true;
+    // PTT endpoint refusal may be reached, but a failed outer admission never calls it.
+    unsigned ptt_before=ptt_calls;fenced=true;
+    Frame ptt{C_CTL_PTT,{0,1}};Frame *answer=process_req(&ptt,generation);
+    assert(answer->command==CODE_NG && ptt_calls==ptt_before);delete answer;fenced=false;
+    for(const char*cmd:{"disp_set","eth_set"}){
+        socket_reply(cmd,true);
+        for(unsigned action:{1u,2u,3u,4u}){
+            unsigned before=writes;queue_action=action;socket_reply(cmd,false);assert(writes==before);
+            if(action==3)fd_writer_release();fenced=false;
+        }
+    }
+    ethernet_ok=false;socket_reply("eth_set",false);ethernet_ok=true;
+    stopping=true;
+    for(const auto&r:mutations)cat_reply(r,false,generation);
+    socket_reply("disp_set",false);socket_reply("eth_set",false);
+    stopping=false;
+    puts("PASS: production CAT/socket responses match actual guarded execution, stale queues and immediate refusal");
+}

@@ -12,7 +12,10 @@ load-module module-bluetooth-policy auto_switch=0 a2dp_source=false ag=false
 # Keep the default sink/source on the radio codec when a device connects.
 unload-module module-switch-on-connect
 
-# No HFP/HSP at all: on this radio (RTL8723BU on the MUSB host) SCO gives no
-# audio and drops the WiFi. headset=ofono without oFono = no headset backend.
+# HFP/HSP remains disabled pending qualification on X6200. Upstream reported
+# SCO silence/WiFi loss on X6100's RTL8723BU/MUSB path; that is not proof of an
+# X6200 limit (the supplied X6200 inventory identifies RTL8723DU). Native
+# headset mic+speaker remains a candidate. The current release keeps the
+# validated USB headset path. headset=ofono without oFono disables this backend.
 unload-module module-bluetooth-discover
 load-module module-bluetooth-discover headset=ofono

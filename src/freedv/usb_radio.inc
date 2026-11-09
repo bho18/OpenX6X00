@@ -5,6 +5,8 @@
 #include "usb_radio.h"
 #include "usb_ptt.h"
 #include "../cfg/voice_settings.h"
+#include "../radio_policy.h"
+#include "../process_lifecycle.h"
 #include <linux/input.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
@@ -42,6 +44,9 @@ void radio_usb_inhibit(void *unused){
     (void)unused;atomic_store(&usb_radio.halted,true);atomic_store(&usb_radio.rf_allowed,false);
     pthread_cond_signal(&usb_radio.queue_cond);
 }
+void radio_usb_policy_inhibit(void){
+    atomic_store(&usb_radio.failed,true);radio_usb_inhibit(NULL);
+}
 bool radio_usb_terminal_authorize(void){
     if(!radio_usb_owned() || !scheduler_on_gui_thread() || !freedv_navigation_replaying())return false;
     radio_usb_inhibit(NULL);atomic_store(&usb_radio.terminal_authorized,true);return true;
@@ -72,12 +77,13 @@ bool radio_usb_observe(void *unused,fd_usb_inputs *out){
             !atomic_load(&usb_radio.restoring) && !atomic_load(&usb_radio.failed),
         .tuning_revision=wanted,
         .tx_eligible=eligible && !blocked,
-        .protection=blocked || atomic_load(&usb_radio.failed) || radio_swr_trips()!=usb_radio.swr ||
+        .protection=process_lifecycle_aborting() || blocked || atomic_load(&usb_radio.failed) || radio_swr_trips()!=usb_radio.swr ||
             atomic_load(&freedv_base_errors)!=usb_radio.errors};
     return true;
 }
 bool radio_usb_allow_tx(bool allow){
     if(!allow){atomic_store(&usb_radio.rf_allowed,false);return true;}
+    if(process_lifecycle_stopping() || process_lifecycle_aborting()){radio_usb_inhibit(NULL);return false;}
     fd_usb_inputs in;
     if(!radio_usb_owned() || atomic_load(&usb_radio.halted) || !radio_usb_observe(NULL,&in) ||
        !in.valid || in.pressed || !in.rf_valid || in.rf_tx || in.protection || !in.configuration_ready ||
@@ -109,6 +115,7 @@ void radio_usb_clear(void *unused,bool halt){
 }
 bool radio_usb_key(void *unused,uint64_t expected_release){
     (void)unused;fd_usb_inputs in={0};
+    if(process_lifecycle_stopping() || process_lifecycle_aborting()){radio_usb_inhibit(NULL);return false;}
     if(!atomic_load(&usb_radio.rf_allowed) || atomic_load(&usb_radio.halted) ||
        !radio_usb_observe(NULL,&in) || !in.valid || !in.pressed || !in.configuration_ready ||
        !in.rf_valid || in.rf_tx || in.protection || !in.tx_eligible || cfg_tx_block())return false;
@@ -127,7 +134,8 @@ bool radio_usb_key(void *unused,uint64_t expected_release){
         hw_set_f(HW_TXPWR_F,cfg_tx_block()?0.0f:radio_usb_power_tenths()/10.0f);
         hw_set_i(HW_RECORD,false);hw_set_i(HW_PTT,false);
         /* Stop and a retune both win while either preceding I/O was blocked. */
-        ok=atomic_load(&usb_radio.rf_allowed) && !atomic_load(&usb_radio.halted) &&
+        ok=!process_lifecycle_stopping() && !process_lifecycle_aborting() &&
+           atomic_load(&usb_radio.rf_allowed) && !atomic_load(&usb_radio.halted) &&
            radio_usb_observe(NULL,&in) && in.valid && in.pressed && in.release==expected_release &&
            in.configuration_ready && in.rf_valid && !in.rf_tx && !in.protection &&
            in.tx_eligible && !cfg_tx_block();
@@ -178,11 +186,9 @@ static bool usb_radio_capture(usb_radio_profile *p,bool restore){
     bool muted=mute || tci_mute || scan_mute || btaudio_speaker_muted() || param_i_get(cfg_speaker_off);
     p->volume=muted?0:param_i_get(cfg_volume);p->monitor=muted || !p->volume?0:param_i_get(cfg_moni);
     p->if_shift=param_i_get(cfg_band_if_shift);
-    radio_mode_t mode=p->mode[p->vfo];radio_agc_t agc=p->agc[p->vfo];
-    if(agc==radio_agc_auto && (mode==radio_mode_cw || mode==radio_mode_cwr) && param_i_get(cfg_cw_decoder))p->agc[p->vfo]=agc=radio_agc_fast;
-    p->agc_time=agc==radio_agc_fast?100:agc==radio_agc_auto?
-        ((mode==radio_mode_cw || mode==radio_mode_cwr)?100:
-         (mode==radio_mode_am || mode==radio_mode_sam || mode==radio_mode_nfm || mode==radio_mode_wfm)?1000:500):1000;
+    bool decoder=param_i_get(cfg_cw_decoder);
+    for(unsigned i=0;i<2;i++)p->agc[i]=radio_effective_agc(p->agc[i],p->mode[i],decoder);
+    p->agc_time=radio_effective_agc_time(p->agc[p->vfo],p->mode[p->vfo],decoder);
     for(unsigned i=0;i<2;i++)p->frequency[i]-=cfg_transverter_shift_for(p->frequency[i])+p->if_shift;
     return true;
 }
@@ -320,7 +326,7 @@ static void *usb_radio_worker(void *unused){
     }
 }
 bool radio_usb_claim(void){
-    if(!scheduler_on_gui_thread() || radio_freedv_startup_waiting() || freedv_busy() || radio_usb_owned() ||
+    if(process_lifecycle_stopping() || !scheduler_on_gui_thread() || radio_freedv_startup_waiting() || freedv_busy() || radio_usb_owned() ||
        cfg_transverter_shift_for(cparam_i_get(cfg_fg_freq)))return false;
     int keypad=open(BOARD_DEV_KEYPAD,O_RDONLY|O_NONBLOCK|O_CLOEXEC);if(keypad<0)return false;
     /* A busy control transaction delays mode entry; it must never freeze LVGL. */

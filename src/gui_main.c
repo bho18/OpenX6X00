@@ -10,6 +10,9 @@
  */
 
 #include "gui_wake.h"
+#include "process_lifecycle.h"
+#include "wr12.h"
+#include "freedv/usb_ui.h"
 #include "dialog_field.h"
 #include "msg_box.h"
 #include "board.h"
@@ -84,12 +87,7 @@ static lv_color_t           draw_mem[DISP_BUF_SIZE];
 static lv_disp_draw_buf_t   draw_buf;
 static lv_disp_drv_t        disp_drv;
 
-#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
-static void terminate_signal(int sig) {
-    (void)sig;
-    freedv_navigation_signal_terminate();
-}
-#endif
+#include "process_lifecycle_gui.inc"
 
 #if USE_DRM
 /* Transparent screen: LVGL cleared the whole draw buffer (6 MB) before every area it redraws,
@@ -412,13 +410,13 @@ static void gui_loop(void) {
 }
 
 int main(void) {
+    if (!lifecycle_initialize()) {
+        perror("process lifecycle");
+        return 1;
+    }
     tick_start();       /* LVGL's clock, from the start */
     gui_wake_init();    /* the loop's wake, before any thread that posts to it */
     scheduler_init();   /* this is the GUI thread */
-#if defined(ENABLE_FREEDV_USB_VOICE) || defined(ENABLE_FREEDV_USB_TEST)
-    signal(SIGTERM, terminate_signal);
-    signal(SIGINT, terminate_signal);
-#endif
     start_trace("GUI start, %s", VERSION);
     /* the helpers' User-Agent (x6100-field, spots), the logs' PROGRAMVERSION (field_adif_header) */
     setenv("X6100_FW", strrchr(VERSION, 'v') + 1, 1);

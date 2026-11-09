@@ -3,15 +3,17 @@
 # log goes to wr12_test.log here, removed after; its times are cut short so that the keepalive and the retries
 # come within the test.
 SRC    := ../../src
+SOURCE_ROOT ?= $(abspath $(SRC)/..)
 CFLAGS := -std=gnu11 -Wall -Wextra -O1 -g -pthread -I $(SRC) -DBOARD_X6200=1 \
+          -DWR12_BYPASS_SCRIPT='"$(SOURCE_ROOT)/rootfs/usr/sbin/x6100-wr12-bypass"' \
           -DWR12_SYS='"test.d/sys"' -DWR12_DEV='"test.d/dev"' -DWR12_GPSD='"test.d/gpsd.sock"' \
           -DWR12_MARK='"test.d/wr12-out"' -DANSWER_MS=150 -DAYT_MS=400 -DRETRY_MS=300 -DGONE_MS=600 \
           -DBACKOFF_MS=600 -DSTABLE_MS=2500
 
 all: test
 
-wr12_test: wr12_test.c $(SRC)/wr12.c $(SRC)/wr12.h
-	$(CC) $(CFLAGS) -o $@ wr12_test.c $(SRC)/wr12.c
+wr12_test: wr12_test.c $(SRC)/wr12.c $(SRC)/wr12.h $(SRC)/process_lifecycle.c $(SRC)/process_lifecycle.h
+	$(CC) $(CFLAGS) -o $@ $< $(SRC)/wr12.c $(SRC)/process_lifecycle.c
 
 test: wr12_test
 	./wr12_test

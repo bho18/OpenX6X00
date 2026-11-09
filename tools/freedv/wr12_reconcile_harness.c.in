@@ -1,0 +1,68 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later
+ * Production WR12 callbacks/power policy with a deterministic coalescing queue. */
+#define _GNU_SOURCE
+#define ENABLE_FREEDV_USB_VOICE 1
+#define ENABLE_FREEDV_VOICE 1
+#include "src/control_owner.h"
+#include "src/freedv/writer_gate.h"
+#include "src/process_lifecycle.h"
+#include <assert.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+
+enum {RADIO_RX,RADIO_SWRSCAN,HW_TXPWR_F,HW_VOX,HW_KEY_TRAIN,cfg_vox_on,cfg_key_train};
+static atomic_int state;
+static atomic_bool train_hold,band_hold,band_said;
+static bool digi_cap,blocked,owned,fenced,stopping,full,inject_note;
+static float tune_cap,xvtr_cap,txpwr_asked,hardware_power;
+static unsigned inhibits,retunes;
+static void (*queued)(void*);
+#define SWRSCAN_PWR_W 1.0f
+#define TX_PLAYER_MAX_PWR_W 5.0f
+#define LV_LOG_USER(...) ((void)0)
+bool ctl_diagnostic_input_blocked(void){return fenced;}
+bool process_lifecycle_stopping(void){return stopping;}
+static bool radio_usb_owned(void){return owned;}
+static void radio_usb_policy_inhibit(void){++inhibits;}
+static const char *cfg_tx_block(void){return blocked?"WR12 not in bypass":NULL;}
+static void hw_set_f(int field,float value){assert(field==HW_TXPWR_F);hardware_power=value;}
+static void hw_set_i(int field,int value){(void)field;(void)value;}
+static int param_i_get(int key){(void)key;return 0;}
+static void open_tx_look(void){}
+static bool radio_key_refused(int32_t*frequency){if(frequency)*frequency=7074000;return blocked;}
+#include "src/radio_power.inc"
+static bool wr12_notify(void);
+static bool wr12_note(char*note,size_t size){(void)note;(void)size;return false;}
+static void msg_schedule_text_fmt(const char*format,const char*note){(void)format;(void)note;}
+static void wr12_retune(void){++retunes;if(inject_note){inject_note=false;blocked=true;assert(wr12_notify());}}
+static void band_look(bool settled){assert(settled);band_hold_set(blocked);}
+static bool scheduler_put_coalesced(void(*fn)(void*)){if(full)return false;if(!queued)queued=fn;return true;}
+static atomic_bool wr12_reconcile_pending;
+@WR12_FUNCTIONS@
+static void dispatch(void){assert(queued);void(*fn)(void*)=queued;queued=NULL;fn(NULL);}
+
+int main(void){
+    set_txpwr(8);assert(hardware_power==8);
+    assert(fd_writer_voice_reserve());owned=true;fenced=true;
+    blocked=true;set_txpwr(txpwr_asked);assert(hardware_power==0);
+    assert(wr12_notify());assert(inhibits==1);
+    blocked=false;assert(wr12_notify()); // Both notifications share one callback.
+    dispatch();assert(!retunes && wr12_reconcile_pending && hardware_power==0);
+    wr12_reconcile_tick();assert(!queued);
+    owned=false;fenced=false;fd_writer_release();
+    wr12_reconcile_tick();dispatch();
+    assert(retunes==1 && !wr12_reconcile_pending && hardware_power==8 && !band_hold);
+    // Queue pressure and an input fence must retain the final notification.
+    full=true;blocked=true;assert(!wr12_notify());assert(wr12_reconcile_pending);
+    wr12_reconcile_tick();assert(!queued);full=false;
+    wr12_reconcile_tick();fenced=true;dispatch();assert(wr12_reconcile_pending);
+    fenced=false;wr12_reconcile_tick();dispatch();assert(hardware_power==0 && band_hold);
+    // A new notification during execution must not be cleared as old work.
+    blocked=false;inject_note=true;assert(wr12_notify());dispatch();
+    assert(queued && wr12_reconcile_pending && hardware_power==0);
+    blocked=false;dispatch();assert(!wr12_reconcile_pending && hardware_power==8);
+    stopping=true;assert(wr12_notify());dispatch();
+    assert(wr12_reconcile_pending);wr12_reconcile_tick();assert(!queued);
+    puts("PASS: production coalesced WR12 callbacks retain owned/fenced changes and reconcile final effective power");
+}
